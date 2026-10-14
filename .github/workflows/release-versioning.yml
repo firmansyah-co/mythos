@@ -2,14 +2,21 @@ name: Release Versioning & Changelog Generation
 
 on:
   push:
+    branches:
+      - dev
+      - rc
+      - release
     tags:
       - 'v*.*.*'
-    branches:
-      - release
   pull_request:
     types:
+      - opened
+      - synchronize
+      - reopened
       - closed
     branches:
+      - dev
+      - rc
       - release
 
 permissions:
@@ -17,10 +24,8 @@ permissions:
   pull-requests: read
 
 jobs:
-  changelog-and-release:
-    name: Generate Changelog with git-cliff
-    # Run on release tag push, or when a PR targeting release is merged
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event.pull_request.merged == true && github.base_ref == 'release')
+  version-and-changelog:
+    name: Compute SemVer & Generate Changelog
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code Repository
@@ -31,16 +36,53 @@ jobs:
       - name: Determine Target Version / Tag
         id: vars
         run: |
-          if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" =~ ^refs/tags/ ]]; then
-            TAG_NAME="${GITHUB_REF#refs/tags/}"
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            PR_NUM="${{ github.event.pull_request.number }}"
-            TAG_NAME="v$(date +'%Y.%m.%d')+PR${PR_NUM}"
+          # 1. Retrieve latest release tag base or fallback to root commit
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            REF_BASE="$LAST_TAG"
+            BASE_VERSION="${LAST_TAG#v}"
           else
-            TAG_NAME="v$(date +'%Y.%m.%d')"
+            REF_BASE=$(git rev-list --max-parents=0 HEAD)
+            BASE_VERSION="0.1.0"
           fi
+
+          # 2. Compute delta commits count since REF_BASE
+          DELTA=$(git rev-list --count "${REF_BASE}..HEAD")
+
+          # 3. Determine branch context and event type
+          EVENT_NAME="${{ github.event_name }}"
+          BASE_REF="${{ github.base_ref }}"
+          REF_NAME="${{ github.ref_name }}"
+
+          if [ "$EVENT_NAME" = "push" ] && [[ "${{ github.ref }}" =~ ^refs/tags/v ]]; then
+            # Direct semver tag push
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            PR_NUM="${{ github.event.pull_request.number }}"
+            if [ "$BASE_REF" = "rc" ]; then
+              TAG_NAME="v${BASE_VERSION}-rc.${DELTA}+pr${PR_NUM}"
+            elif [ "$BASE_REF" = "release" ]; then
+              TAG_NAME="v${BASE_VERSION}+pr${PR_NUM}"
+            else
+              # dev branch PR builds
+              TAG_NAME="v${BASE_VERSION}-dev.${DELTA}+pr${PR_NUM}"
+            fi
+          elif [ "$EVENT_NAME" = "push" ]; then
+            if [ "$REF_NAME" = "rc" ]; then
+              TAG_NAME="v${BASE_VERSION}-rc.${DELTA}"
+            elif [ "$REF_NAME" = "release" ]; then
+              TAG_NAME="v${BASE_VERSION}"
+            else
+              # dev branch pushes
+              TAG_NAME="v${BASE_VERSION}-dev.${DELTA}"
+            fi
+          else
+            TAG_NAME="v${BASE_VERSION}-dev.${DELTA}"
+          fi
+
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
-          echo "Determined release tag: ${TAG_NAME}"
+          echo "Determined SemVer tag: ${TAG_NAME}"
+          echo "Delta from ${REF_BASE}: ${DELTA}"
 
       - name: Generate Changelog using git-cliff
         uses: orhun/git-cliff-action@v3
@@ -52,12 +94,12 @@ jobs:
 
       - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref_name == 'release')
         with:
           tag_name: ${{ steps.vars.outputs.tag_name }}
           name: Release ${{ steps.vars.outputs.tag_name }}
           body_path: CHANGELOG.md
           draft: false
-          prerelease: false
+          prerelease: ${{ startsWith(steps.vars.outputs.tag_name, 'v') && contains(steps.vars.outputs.tag_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

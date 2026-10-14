@@ -1,6 +1,7 @@
 # ==============================================================================
 # git-cliff ~ MythOS Changelog & Conventional Commit Configuration
-# SemVer format: A.B.C+PR
+# SemVer format: A.B.C-dev.<delta> (dev), A.B.C-rc.<iter> (rc), A.B.C (release)
+# Optional PR build metadata: A.B.C-dev.<delta>+pr<id>
 # ==============================================================================
 
 [changelog]
@@ -8,7 +9,7 @@ header = """
 # Changelog
 
 All notable changes to MythOS are documented here.
-Format adheres strictly to Conventional Commits and SemVer A.B.C+PR.
+Format adheres strictly to Conventional Commits and SemVer 2.0.0 pre-release specifications.
 """
 body = """
 {% if version %}\
