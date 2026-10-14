@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
+  <defs>
+    <linearGradient id="bodyGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#334155" />
+      <stop offset="100%" stop-color="#1E293B" />
+    </linearGradient>
+    <linearGradient id="metallicGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#94A3B8" />
+      <stop offset="50%" stop-color="#F1F5F9" />
+      <stop offset="100%" stop-color="#64748B" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background Canvas Card -->
+  <rect x="4" y="4" width="112" height="112" rx="12" fill="#0F172A" stroke="#334155" stroke-width="1.5" />
+
+  <!-- Process Thread Mount (Bottom fitting) -->
+  <rect x="52" y="96" width="16" height="14" rx="2" fill="url(#metallicGrad)" stroke="#475569" stroke-width="1" />
+  <line x1="52" y1="101" x2="68" y2="101" stroke="#334155" stroke-width="1" />
+  <line x1="52" y1="105" x2="68" y2="105" stroke="#334155" stroke-width="1" />
+
+  <!-- Hexagonal Nut Base -->
+  <polygon points="46,86 74,86 80,96 40,96" fill="#64748B" stroke="#475569" stroke-width="1" />
+
+  <!-- Main Stainless Sensor Body -->
+  <rect x="44" y="42" width="32" height="44" rx="4" fill="url(#metallicGrad)" stroke="#475569" stroke-width="1.5" />
+
+  <!-- Terminal Head / Housing (Top) -->
+  <rect x="36" y="16" width="48" height="26" rx="6" fill="url(#bodyGrad)" stroke="#3B82F6" stroke-width="2" />
+
+  <!-- Status / Power LED -->
+  <circle cx="48" cy="29" r="3.5" fill="#10B981" />
+  <circle cx="48" cy="29" r="5" fill="none" stroke="#10B981" stroke-width="0.75" opacity="0.6" />
+
+  <!-- Cable Gland Entry (Right side) -->
+  <rect x="84" y="22" width="12" height="14" rx="2" fill="#475569" stroke="#334155" stroke-width="1" />
+
+  <!-- Label Details -->
+  <text x="60" y="32" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="700" fill="#F8FAFC" text-anchor="start">P300</text>
+  <text x="60" y="68" font-family="system-ui, -apple-system, sans-serif" font-size="6.5" font-weight="600" fill="#1E293B" text-anchor="middle">0-10 bar</text>
+  <text x="60" y="78" font-family="system-ui, -apple-system, sans-serif" font-size="5" font-weight="500" fill="#475569" text-anchor="middle">RS485 RTU</text>
+</svg>

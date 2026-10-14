@@ -1,0 +1,235 @@
+{
+  "schemaVersion": "1.0.0",
+  "metadata": {
+    "id": "sentec-rainfall",
+    "vendor": "Chengdu SenTec Technology Co., Ltd.",
+    "vendorId": "SENTEC",
+    "model": "ST-YL1",
+    "category": "sensor",
+    "description": "Industrial Precision Tipping Bucket Rainfall Sensor with RS485 Modbus RTU",
+    "revision": "1.3.0",
+    "certifications": [
+      "CE",
+      "WMO-Compliant",
+      "ISO14001"
+    ]
+  },
+  "physicalInterface": {
+    "connectorType": "terminal-block",
+    "signaling": "rs485-2wire",
+    "supplyVoltage": {
+      "nominalVdc": 12.0,
+      "minVdc": 5.0,
+      "maxVdc": 24.0,
+      "powerWatts": 0.15
+    },
+    "pinout": [
+      {
+        "pin": "Brown",
+        "label": "VCC",
+        "function": "Power Supply Positive (5-24VDC)"
+      },
+      {
+        "pin": "Black",
+        "label": "GND",
+        "function": "Power Supply Common Ground"
+      },
+      {
+        "pin": "Yellow",
+        "label": "A+",
+        "function": "RS485 Non-inverting Differential Data"
+      },
+      {
+        "pin": "Blue",
+        "label": "B-",
+        "function": "RS485 Inverting Differential Data"
+      }
+    ]
+  },
+  "protocol": {
+    "type": "modbus-rtu",
+    "modbusRtu": {
+      "defaultSlaveId": 2,
+      "defaultBaudRate": 9600,
+      "supportedBaudRates": [
+        2400,
+        4800,
+        9600
+      ],
+      "defaultFraming": "8-N-1",
+      "endianness": "big-endian",
+      "minPollIntervalMs": 200,
+      "timeoutMs": 200
+    }
+  },
+  "discovery": {
+    "probe_register": 40001,
+    "expected_function_code": "0x03",
+    "expected_fc": "0x03",
+    "priority_baudrates": [
+      9600,
+      4800,
+      19200
+    ],
+    "priority_parities": [
+      "None"
+    ],
+    "default_id_range": [
+      1,
+      32
+    ],
+    "probe_timeout_ms": 200
+  },
+  "registers": [
+    {
+      "name": "Rainfall Today",
+      "tagSuffix": "RAIN_TODAY",
+      "addressHex": "0x0000",
+      "addressDec": 0,
+      "functionCode": "0x03",
+      "dataType": "UINT16",
+      "access": "RO",
+      "unit": "mm",
+      "scaling": {
+        "type": "divisor",
+        "divisor": 10.0,
+        "offset": 0.0
+      },
+      "description": "Daily rainfall accumulation from 00:00 to current timestamp (0.1mm per pulse)"
+    },
+    {
+      "name": "Instantaneous Rainfall Rate",
+      "tagSuffix": "RAIN_RATE",
+      "addressHex": "0x0001",
+      "addressDec": 1,
+      "functionCode": "0x03",
+      "dataType": "UINT16",
+      "access": "RO",
+      "unit": "mm/min",
+      "scaling": {
+        "type": "divisor",
+        "divisor": 10.0,
+        "offset": 0.0
+      },
+      "description": "Rainfall rate between consecutive sensor query cycles"
+    },
+    {
+      "name": "Rainfall Yesterday",
+      "tagSuffix": "RAIN_YESTERDAY",
+      "addressHex": "0x0002",
+      "addressDec": 2,
+      "functionCode": "0x03",
+      "dataType": "UINT16",
+      "access": "RO",
+      "unit": "mm",
+      "scaling": {
+        "type": "divisor",
+        "divisor": 10.0,
+        "offset": 0.0
+      },
+      "description": "Total 24-hour rainfall accumulation for the previous calendar day"
+    },
+    {
+      "name": "Total Lifetime Rainfall",
+      "tagSuffix": "RAIN_TOTAL",
+      "addressHex": "0x0003",
+      "addressDec": 3,
+      "functionCode": "0x03",
+      "dataType": "UINT16",
+      "access": "RO",
+      "unit": "mm",
+      "scaling": {
+        "type": "divisor",
+        "divisor": 10.0,
+        "offset": 0.0
+      },
+      "description": "Cumulative lifetime precipitation recorded since device first boot"
+    },
+    {
+      "name": "Hourly Rainfall",
+      "tagSuffix": "RAIN_HOURLY",
+      "addressHex": "0x0004",
+      "addressDec": 4,
+      "functionCode": "0x03",
+      "dataType": "UINT16",
+      "access": "RO",
+      "unit": "mm",
+      "scaling": {
+        "type": "divisor",
+        "divisor": 10.0,
+        "offset": 0.0
+      },
+      "description": "Rainfall accumulation in the current 60-minute window"
+    },
+    {
+      "name": "Previous Hour Rainfall",
+      "tagSuffix": "RAIN_PREV_HOUR",
+      "addressHex": "0x0005",
+      "addressDec": 5,
+      "functionCode": "0x03",
+      "dataType": "UINT16",
+      "access": "RO",
+      "unit": "mm",
+      "scaling": {
+        "type": "divisor",
+        "divisor": 10.0,
+        "offset": 0.0
+      },
+      "description": "Rainfall accumulation recorded during the completed preceding hour"
+    },
+    {
+      "name": "Peak Rainfall 24 Hours",
+      "tagSuffix": "RAIN_PEAK_24H",
+      "addressHex": "0x0006",
+      "addressDec": 6,
+      "functionCode": "0x03",
+      "dataType": "UINT16",
+      "access": "RO",
+      "unit": "mm/h",
+      "scaling": {
+        "type": "divisor",
+        "divisor": 10.0,
+        "offset": 0.0
+      },
+      "description": "Maximum 24-hour rain rate recorded by onboard microcontroller"
+    },
+    {
+      "name": "Slave Address Register",
+      "tagSuffix": "CFG_SLAVE_ID",
+      "addressHex": "0x07D0",
+      "addressDec": 2000,
+      "functionCode": "0x03",
+      "dataType": "UINT16",
+      "access": "RW",
+      "unit": "",
+      "scaling": {
+        "type": "none"
+      },
+      "description": "Device Modbus Address (Default: 1, Configured: 2)"
+    },
+    {
+      "name": "Baud Rate Register",
+      "tagSuffix": "CFG_BAUD_RATE",
+      "addressHex": "0x07D1",
+      "addressDec": 2001,
+      "functionCode": "0x03",
+      "dataType": "UINT16",
+      "access": "RW",
+      "unit": "",
+      "scaling": {
+        "type": "lookup"
+      },
+      "enumMapping": {
+        "0": "2400 bps",
+        "1": "4800 bps",
+        "2": "9600 bps"
+      },
+      "description": "Device Baud Rate Register (0=2400, 1=4800, 2=9600)"
+    }
+  ],
+  "ui": {
+    "iconPath": "icon.svg",
+    "colorAccent": "#06B6D4",
+    "rackWidthUnits": 1
+  }
+}

@@ -1,0 +1,177 @@
+schemaVersion: "1.0.0"
+metadata:
+  id: "supmea-p300"
+  vendor: "Supmea Automation Co., Ltd."
+  vendorId: "SUPMEA"
+  model: "SUP-P300"
+  category: "sensor"
+  description: "Industrial Piezoresistive Pressure Transmitter with Modbus RTU RS485 Interface"
+  revision: "2.1.0"
+  certifications:
+    - "CE"
+    - "RoHS"
+    - "ISO9001"
+
+physicalInterface:
+  connectorType: "terminal-block"
+  signaling: "rs485-2wire"
+  supplyVoltage:
+    nominalVdc: 24.0
+    minVdc: 12.0
+    maxVdc: 36.0
+    powerWatts: 0.5
+  pinout:
+    - pin: "1"
+      label: "VCC"
+      function: "Power Supply Positive (12-36VDC)"
+    - pin: "2"
+      label: "GND"
+      function: "Power Supply Common Ground"
+    - pin: "3"
+      label: "A+"
+      function: "RS485 Non-inverting Differential Data"
+    - pin: "4"
+      label: "B-"
+      function: "RS485 Inverting Differential Data"
+
+protocol:
+  type: "modbus-rtu"
+  modbusRtu:
+    defaultSlaveId: 1
+    defaultBaudRate: 9600
+    supportedBaudRates: [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200]
+    defaultFraming: "8-N-1"
+    endianness: "big-endian"
+    minPollIntervalMs: 50
+    timeoutMs: 150
+
+discovery:
+  probe_register: 40001
+  expected_function_code: "0x03"
+  expected_fc: "0x03"
+  priority_baudrates:
+    - 9600
+    - 19200
+    - 4800
+  priority_parities:
+    - "None"
+    - "Even"
+  default_id_range:
+    - 1
+    - 32
+  probe_timeout_ms: 150
+
+registers:
+  - name: "Slave Address"
+    tagSuffix: "SLAVE_ID"
+    addressHex: "0x0000"
+    addressDec: 0
+    functionCode: "0x03"
+    dataType: "UINT16"
+    access: "RW"
+    unit: ""
+    scaling:
+      type: "none"
+    description: "Modbus RTU Slave Node Address (1 to 247)"
+
+  - name: "Baud Rate Code"
+    tagSuffix: "BAUD_CODE"
+    addressHex: "0x0001"
+    addressDec: 1
+    functionCode: "0x03"
+    dataType: "UINT16"
+    access: "RW"
+    unit: ""
+    scaling:
+      type: "lookup"
+    enumMapping:
+      "0": "1200 bps"
+      "1": "2400 bps"
+      "2": "4800 bps"
+      "3": "9600 bps"
+      "4": "19200 bps"
+      "5": "38400 bps"
+      "6": "57600 bps"
+      "7": "115200 bps"
+    description: "Serial Communication Baud Rate Configuration"
+
+  - name: "Engineering Unit"
+    tagSuffix: "UNIT_CODE"
+    addressHex: "0x0002"
+    addressDec: 2
+    functionCode: "0x03"
+    dataType: "UINT16"
+    access: "RO"
+    unit: ""
+    scaling:
+      type: "lookup"
+    enumMapping:
+      "0": "MPa"
+      "1": "kPa"
+      "2": "Pa"
+      "3": "bar"
+      "4": "mbar"
+      "5": "kg/cm2"
+      "6": "psi"
+      "7": "mH2O"
+      "8": "mmH2O"
+    description: "Active Physical Engineering Unit of Pressure Measurement"
+
+  - name: "Decimal Places"
+    tagSuffix: "DECIMAL_PLACES"
+    addressHex: "0x0003"
+    addressDec: 3
+    functionCode: "0x03"
+    dataType: "UINT16"
+    access: "RO"
+    unit: ""
+    scaling:
+      type: "none"
+    description: "Decimal places applied to measured raw value (0=0, 1=0.1, 2=0.01, 3=0.001)"
+
+  - name: "Measured Pressure"
+    tagSuffix: "PRESSURE"
+    addressHex: "0x0004"
+    addressDec: 4
+    functionCode: "0x03"
+    dataType: "INT16"
+    access: "RO"
+    unit: "bar"
+    scaling:
+      type: "divisor"
+      divisor: 1000.0
+      offset: 0.0
+    description: "Real-time process pressure value scaled according to decimal places"
+
+  - name: "Zero Calibration Range"
+    tagSuffix: "RANGE_ZERO"
+    addressHex: "0x0005"
+    addressDec: 5
+    functionCode: "0x03"
+    dataType: "INT16"
+    access: "RO"
+    unit: "bar"
+    scaling:
+      type: "divisor"
+      divisor: 1000.0
+      offset: 0.0
+    description: "Lower limit calibrated pressure range value"
+
+  - name: "Full Calibration Range"
+    tagSuffix: "RANGE_FULL"
+    addressHex: "0x0006"
+    addressDec: 6
+    functionCode: "0x03"
+    dataType: "INT16"
+    access: "RO"
+    unit: "bar"
+    scaling:
+      type: "divisor"
+      divisor: 1000.0
+      offset: 0.0
+    description: "Upper limit calibrated pressure range value (Full Scale)"
+
+ui:
+  iconPath: "icon.svg"
+  colorAccent: "#3B82F6"
+  rackWidthUnits: 1

@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
+  <defs>
+    <linearGradient id="funnelGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E2E8F0" />
+      <stop offset="100%" stop-color="#94A3B8" />
+    </linearGradient>
+    <linearGradient id="chassisGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#334155" />
+      <stop offset="100%" stop-color="#0F172A" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background Canvas Card -->
+  <rect x="4" y="4" width="112" height="112" rx="12" fill="#0F172A" stroke="#334155" stroke-width="1.5" />
+
+  <!-- Base Pedestal & Leveling Screws -->
+  <rect x="28" y="96" width="64" height="10" rx="3" fill="#475569" stroke="#334155" stroke-width="1" />
+  <circle cx="36" cy="101" r="2.5" fill="#94A3B8" />
+  <circle cx="84" cy="101" r="2.5" fill="#94A3B8" />
+
+  <!-- Cylindrical Sensor Housing Body -->
+  <rect x="34" y="44" width="52" height="52" rx="4" fill="url(#chassisGrad)" stroke="#06B6D4" stroke-width="1.5" />
+
+  <!-- Collector Funnel (Top Opening) -->
+  <polygon points="24,18 96,18 84,44 36,44" fill="url(#funnelGrad)" stroke="#475569" stroke-width="1.5" />
+  <ellipse cx="60" cy="18" rx="36" ry="6" fill="#F8FAFC" stroke="#64748B" stroke-width="1.5" />
+
+  <!-- Tipping Bucket Schematic Symbol inside Body -->
+  <polygon points="52,66 68,66 60,74" fill="#06B6D4" stroke="#0891B2" stroke-width="1" />
+  <circle cx="60" cy="65" r="2" fill="#F8FAFC" />
+
+  <!-- Rain Droplets Graphic -->
+  <path d="M50,30 Q50,34 48,36 Q46,38 48,40 Q50,42 50,40 Q50,36 50,30 Z" fill="#38BDF8" opacity="0.85" />
+  <path d="M68,26 Q68,30 66,32 Q64,34 66,36 Q68,38 68,36 Q68,32 68,26 Z" fill="#38BDF8" opacity="0.85" />
+
+  <!-- Sensor Label -->
+  <text x="60" y="88" font-family="system-ui, -apple-system, sans-serif" font-size="6.5" font-weight="700" fill="#F8FAFC" text-anchor="middle">ST-YL1</text>
+  <text x="60" y="94" font-family="system-ui, -apple-system, sans-serif" font-size="4.5" font-weight="500" fill="#94A3B8" text-anchor="middle">0.1mm / Tip</text>
+</svg>

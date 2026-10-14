@@ -1,0 +1,47 @@
+# ==============================================================================
+# MythOS SCADA: Production Docker Compose Manifest
+# First-Class Industrial Automation Stack
+# ==============================================================================
+
+version: "3.8"
+
+services:
+  mythos:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: firmansyahco/mythos:latest
+    container_name: mythos-scada
+    restart: unless-stopped
+
+    # Host networking required for Layer 2 DCP Ethernet Discovery and zero-overhead industrial fieldbuses
+    network_mode: host
+
+    # Host IPC namespace required for POSIX shared memory TagBus (/dev/shm)
+    ipc: host
+
+    # Linux kernel capabilities for hard real-time SCHED_FIFO priority and raw Ethernet sockets
+    cap_add:
+      - SYS_NICE       # Real-time thread scheduling (SCHED_FIFO 85)
+      - NET_RAW        # PROFINET DCP Layer 2 raw Ethernet socket frames
+      - NET_ADMIN      # Network interface hardware discovery & configuration
+
+    # Serial interface pass-through for industrial RS-485 / RS-232 Modbus RTU (optional)
+    # devices:
+    #   - "/dev/ttyUSB0:/dev/ttyUSB0"
+
+    # Persistent project data, tag namespace, recipes, and time-series historian archive
+    volumes:
+      - mythos_production_data:/var/lib/mythos
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+
+    environment:
+      - RUST_LOG=info
+      - MYTHOS_HTTP_PORT=8080
+      - MYTHOS_STORAGE_ROOT=/var/lib/mythos
+      - MYTHOS_WEB_ROOT=/opt/mythos/web
+
+volumes:
+  mythos_production_data:
+    name: mythos_production_data

@@ -1,0 +1,899 @@
+{
+  "$schema": "https://design-tokens.github.io/community-group/format/2025.10/schema.json",
+  "name": "MythOS High-Performance SCADA Design Tokens",
+  "description": "W3C DTCG-compliant multi-theme design token suite for MythOS Mission-Critical Edge SCADA. Supports Dark Obsidian Mode (ANSI/ISA-101.01-2015 High-Performance HMI, ANSI/ISA-18.2-2016 Alarm Management, ISO 9241-110 Ergonomics) and Light Clean Slate Mode (High-contrast outdoor sunlight readability for industrial tablets and day shift plant operations).",
+  "version": "2.0.0",
+  "$themes": {
+    "dark": {
+      "id": "dark",
+      "name": "SCADA Obsidian (Dark)",
+      "description": "ISA-101 compliant muted dark obsidian palette for 24/7 mission-critical control rooms to minimize operator fatigue."
+    },
+    "light": {
+      "id": "light",
+      "name": "Engineering Clean Slate (Light / Day Shift)",
+      "description": "High-contrast day shift and rugged outdoor tablet palette engineered for sunlight legibility and field commissioning."
+    }
+  },
+  "color": {
+    "background": {
+      "base": {
+        "$type": "color",
+        "$description": "Deepest canvas background for SCADA workbench and container viewport",
+        "$value": "{color.theme.dark.background.base}",
+        "$extensions": {
+          "mode": {
+            "dark": "#0A0D12",
+            "light": "#F8FAFC"
+          }
+        }
+      },
+      "surface": {
+        "$type": "color",
+        "$description": "Primary workbench surface, docking layout zone, and panel backing",
+        "$value": "{color.theme.dark.background.surface}",
+        "$extensions": {
+          "mode": {
+            "dark": "#0F141C",
+            "light": "#FFFFFF"
+          }
+        }
+      },
+      "elevated": {
+        "$type": "color",
+        "$description": "Elevated cards, inspector drawers, modal sheets, and floating palettes",
+        "$value": "{color.theme.dark.background.elevated}",
+        "$extensions": {
+          "mode": {
+            "dark": "#161E2E",
+            "light": "#F1F5F9"
+          }
+        }
+      },
+      "muted": {
+        "$type": "color",
+        "$description": "Muted vessel bodies, non-alarm process pipe fills, and inactive module slots",
+        "$value": "{color.theme.dark.background.muted}",
+        "$extensions": {
+          "mode": {
+            "dark": "#1E293B",
+            "light": "#E2E8F0"
+          }
+        }
+      },
+      "highlight": {
+        "$type": "color",
+        "$description": "Subtle hover states and active tab outline highlighting",
+        "$value": "{color.theme.dark.background.highlight}",
+        "$extensions": {
+          "mode": {
+            "dark": "#334155",
+            "light": "#CBD5E1"
+          }
+        }
+      }
+    },
+    "border": {
+      "subtle": {
+        "$type": "color",
+        "$description": "Subtle boundary borders between docking canvas zones",
+        "$value": "{color.theme.dark.border.subtle}",
+        "$extensions": {
+          "mode": {
+            "dark": "#1E293B",
+            "light": "#E2E8F0"
+          }
+        }
+      },
+      "default": {
+        "$type": "color",
+        "$description": "Default structural separator, card boundary, and split pane divider",
+        "$value": "{color.theme.dark.border.default}",
+        "$extensions": {
+          "mode": {
+            "dark": "#334155",
+            "light": "#CBD5E1"
+          }
+        }
+      },
+      "focus": {
+        "$type": "color",
+        "$description": "High-visibility focus ring indicator for accessible keyboard navigation",
+        "$value": "{color.theme.dark.border.focus}",
+        "$extensions": {
+          "mode": {
+            "dark": "#38BDF8",
+            "light": "#0284C7"
+          }
+        }
+      }
+    },
+    "text": {
+      "primary": {
+        "$type": "color",
+        "$description": "High-contrast telemetry readout values, primary engineering tags, and headers",
+        "$value": "{color.theme.dark.text.primary}",
+        "$extensions": {
+          "mode": {
+            "dark": "#F8FAFC",
+            "light": "#0F172A"
+          }
+        }
+      },
+      "secondary": {
+        "$type": "color",
+        "$description": "Secondary metadata, engineering units (EU), descriptor labels, and subheadings",
+        "$value": "{color.theme.dark.text.secondary}",
+        "$extensions": {
+          "mode": {
+            "dark": "#94A3B8",
+            "light": "#475569"
+          }
+        }
+      },
+      "muted": {
+        "$type": "color",
+        "$description": "Muted timestamps, disabled action controls, and watermark indicators",
+        "$value": "{color.theme.dark.text.muted}",
+        "$extensions": {
+          "mode": {
+            "dark": "#64748B",
+            "light": "#64748B"
+          }
+        }
+      },
+      "inverse": {
+        "$type": "color",
+        "$description": "Text rendered over high-luminance alarm banners and active selection badges",
+        "$value": "{color.theme.dark.text.inverse}",
+        "$extensions": {
+          "mode": {
+            "dark": "#020617",
+            "light": "#FFFFFF"
+          }
+        }
+      }
+    },
+    "isa101": {
+      "process": {
+        "vessel": {
+          "$type": "color",
+          "$description": "ISA-101 compliant muted neutral tank and reactor structural fill",
+          "$value": "{color.theme.dark.isa101.process.vessel}",
+          "$extensions": {
+            "mode": {
+              "dark": "#334155",
+              "light": "#E2E8F0"
+            }
+          }
+        },
+        "pipe-inactive": {
+          "$type": "color",
+          "$description": "ISA-101 unpressurized or zero-flow process piping line",
+          "$value": "{color.theme.dark.isa101.process.pipe-inactive}",
+          "$extensions": {
+            "mode": {
+              "dark": "#475569",
+              "light": "#CBD5E1"
+            }
+          }
+        },
+        "pipe-active": {
+          "$type": "color",
+          "$description": "ISA-101 pressurized or flowing process line in nominal state (non-distracting)",
+          "$value": "{color.theme.dark.isa101.process.pipe-active}",
+          "$extensions": {
+            "mode": {
+              "dark": "#64748B",
+              "light": "#94A3B8"
+            }
+          }
+        },
+        "valve-closed": {
+          "$type": "color",
+          "$description": "Muted static neutral symbol for closed digital valve",
+          "$value": "{color.theme.dark.isa101.process.valve-closed}",
+          "$extensions": {
+            "mode": {
+              "dark": "#475569",
+              "light": "#94A3B8"
+            }
+          }
+        },
+        "valve-open": {
+          "$type": "color",
+          "$description": "Slightly elevated neutral symbol for open active flow valve",
+          "$value": "{color.theme.dark.isa101.process.valve-open}",
+          "$extensions": {
+            "mode": {
+              "dark": "#94A3B8",
+              "light": "#475569"
+            }
+          }
+        },
+        "pump-running": {
+          "$type": "color",
+          "$description": "Subtle non-saturated cyan/blue indicator for energized rotary motor",
+          "$value": "{color.theme.dark.isa101.process.pump-running}",
+          "$extensions": {
+            "mode": {
+              "dark": "#0284C7",
+              "light": "#0284C7"
+            }
+          }
+        },
+        "pump-stopped": {
+          "$type": "color",
+          "$description": "De-energized motor pump fill in normal stopped standby",
+          "$value": "{color.theme.dark.isa101.process.pump-stopped}",
+          "$extensions": {
+            "mode": {
+              "dark": "#475569",
+              "light": "#94A3B8"
+            }
+          }
+        }
+      },
+      "alarm": {
+        "critical": {
+          "$type": "color",
+          "$description": "ISA-18.2 Priority 1 / Emergency Shutdown trip alarm. Flashes when unacknowledged.",
+          "$value": "{color.theme.dark.isa101.alarm.critical}",
+          "$extensions": {
+            "mode": {
+              "dark": "#DC2626",
+              "light": "#DC2626"
+            }
+          }
+        },
+        "major": {
+          "$type": "color",
+          "$description": "ISA-18.2 Priority 2 / High process limit excursion requiring immediate operator action.",
+          "$value": "{color.theme.dark.isa101.alarm.major}",
+          "$extensions": {
+            "mode": {
+              "dark": "#EA580C",
+              "light": "#D97706"
+            }
+          }
+        },
+        "minor": {
+          "$type": "color",
+          "$description": "ISA-18.2 Priority 3 / Low warning threshold excursion requiring scheduled intervention.",
+          "$value": "{color.theme.dark.isa101.alarm.minor}",
+          "$extensions": {
+            "mode": {
+              "dark": "#CA8A04",
+              "light": "#CA8A04"
+            }
+          }
+        },
+        "diagnostic": {
+          "$type": "color",
+          "$description": "ISA-18.2 Priority 4 / Sensor fault, wire break, communication packet drop warning.",
+          "$value": "{color.theme.dark.isa101.alarm.diagnostic}",
+          "$extensions": {
+            "mode": {
+              "dark": "#2563EB",
+              "light": "#2563EB"
+            }
+          }
+        },
+        "normal": {
+          "$type": "color",
+          "$description": "ISA-101 quiescent nominal process state. Strictly no flashing or vibrant accents.",
+          "$value": "{color.theme.dark.isa101.alarm.normal}",
+          "$extensions": {
+            "mode": {
+              "dark": "#475569",
+              "light": "#64748B"
+            }
+          }
+        },
+        "shelved": {
+          "$type": "color",
+          "$description": "Operator-shelved or out-of-service point suppressed under ISA-18.2 Section 10.",
+          "$value": "{color.theme.dark.isa101.alarm.shelved}",
+          "$extensions": {
+            "mode": {
+              "dark": "#78716C",
+              "light": "#94A3B8"
+            }
+          }
+        }
+      }
+    },
+    "bus": {
+      "ethernet": {
+        "$type": "color",
+        "$description": "TIA Portal / PROFINET & Modbus TCP industrial green topology cable link",
+        "$value": "{color.theme.dark.bus.ethernet}",
+        "$extensions": {
+          "mode": {
+            "dark": "#16A34A",
+            "light": "#15803D"
+          }
+        }
+      },
+      "serial": {
+        "$type": "color",
+        "$description": "TIA Portal / RS-485 Modbus RTU / PROFIBUS DP industrial blue cable link",
+        "$value": "{color.theme.dark.bus.serial}",
+        "$extensions": {
+          "mode": {
+            "dark": "#0284C7",
+            "light": "#0369A1"
+          }
+        }
+      },
+      "can": {
+        "$type": "color",
+        "$description": "CANopen / DeviceNet fieldbus amber cable link",
+        "$value": "{color.theme.dark.bus.can}",
+        "$extensions": {
+          "mode": {
+            "dark": "#CA8A04",
+            "light": "#B45309"
+          }
+        }
+      },
+      "safety": {
+        "$type": "color",
+        "$description": "PROFIsafe / SIL-3 Emergency Stop safety bus cable link",
+        "$value": "{color.theme.dark.bus.safety}",
+        "$extensions": {
+          "mode": {
+            "dark": "#DC2626",
+            "light": "#DC2626"
+          }
+        }
+      },
+      "io-link": {
+        "$type": "color",
+        "$description": "Point-to-point IO-Link digital sensor line",
+        "$value": "{color.theme.dark.bus.io-link}",
+        "$extensions": {
+          "mode": {
+            "dark": "#9333EA",
+            "light": "#7E22CE"
+          }
+        }
+      },
+      "offline": {
+        "$type": "color",
+        "$description": "Severed physical topology segment or timed-out ping beacon",
+        "$value": "{color.theme.dark.bus.offline}",
+        "$extensions": {
+          "mode": {
+            "dark": "#475569",
+            "light": "#64748B"
+          }
+        }
+      }
+    },
+    "theme": {
+      "dark": {
+        "background": {
+          "base": {
+            "$value": "#0A0D12",
+            "$type": "color",
+            "$description": "Deepest dark obsidian canvas"
+          },
+          "surface": {
+            "$value": "#0F141C",
+            "$type": "color",
+            "$description": "Primary workbench surface"
+          },
+          "elevated": {
+            "$value": "#161E2E",
+            "$type": "color",
+            "$description": "Elevated cards and modals"
+          },
+          "muted": {
+            "$value": "#1E293B",
+            "$type": "color",
+            "$description": "Muted vessel and pipe fill"
+          },
+          "highlight": {
+            "$value": "#334155",
+            "$type": "color",
+            "$description": "Hover and tab outline highlight"
+          }
+        },
+        "border": {
+          "subtle": {
+            "$value": "#1E293B",
+            "$type": "color",
+            "$description": "Subtle zone borders"
+          },
+          "default": {
+            "$value": "#334155",
+            "$type": "color",
+            "$description": "Default structural borders"
+          },
+          "focus": {
+            "$value": "#38BDF8",
+            "$type": "color",
+            "$description": "Cyan focus ring indicator"
+          }
+        },
+        "text": {
+          "primary": {
+            "$value": "#F8FAFC",
+            "$type": "color",
+            "$description": "Primary high-contrast readout"
+          },
+          "secondary": {
+            "$value": "#94A3B8",
+            "$type": "color",
+            "$description": "Secondary descriptors and units"
+          },
+          "muted": {
+            "$value": "#64748B",
+            "$type": "color",
+            "$description": "Muted timestamps and disabled text"
+          },
+          "inverse": {
+            "$value": "#020617",
+            "$type": "color",
+            "$description": "Text over bright alarm badges"
+          }
+        },
+        "isa101": {
+          "process": {
+            "vessel": {
+              "$value": "#334155",
+              "$type": "color"
+            },
+            "pipe-inactive": {
+              "$value": "#475569",
+              "$type": "color"
+            },
+            "pipe-active": {
+              "$value": "#64748B",
+              "$type": "color"
+            },
+            "valve-closed": {
+              "$value": "#475569",
+              "$type": "color"
+            },
+            "valve-open": {
+              "$value": "#94A3B8",
+              "$type": "color"
+            },
+            "pump-running": {
+              "$value": "#0284C7",
+              "$type": "color"
+            },
+            "pump-stopped": {
+              "$value": "#475569",
+              "$type": "color"
+            }
+          },
+          "alarm": {
+            "critical": {
+              "$value": "#DC2626",
+              "$type": "color"
+            },
+            "major": {
+              "$value": "#EA580C",
+              "$type": "color"
+            },
+            "minor": {
+              "$value": "#CA8A04",
+              "$type": "color"
+            },
+            "diagnostic": {
+              "$value": "#2563EB",
+              "$type": "color"
+            },
+            "normal": {
+              "$value": "#475569",
+              "$type": "color"
+            },
+            "shelved": {
+              "$value": "#78716C",
+              "$type": "color"
+            }
+          }
+        },
+        "bus": {
+          "ethernet": {
+            "$value": "#16A34A",
+            "$type": "color"
+          },
+          "serial": {
+            "$value": "#0284C7",
+            "$type": "color"
+          },
+          "can": {
+            "$value": "#CA8A04",
+            "$type": "color"
+          },
+          "safety": {
+            "$value": "#DC2626",
+            "$type": "color"
+          },
+          "io-link": {
+            "$value": "#9333EA",
+            "$type": "color"
+          },
+          "offline": {
+            "$value": "#475569",
+            "$type": "color"
+          }
+        }
+      },
+      "light": {
+        "background": {
+          "base": {
+            "$value": "#F8FAFC",
+            "$type": "color",
+            "$description": "Clean paper daylight canvas background"
+          },
+          "surface": {
+            "$value": "#FFFFFF",
+            "$type": "color",
+            "$description": "Pure white surface for panels and cards"
+          },
+          "elevated": {
+            "$value": "#F1F5F9",
+            "$type": "color",
+            "$description": "Elevated modal and drawer fill"
+          },
+          "muted": {
+            "$value": "#E2E8F0",
+            "$type": "color",
+            "$description": "Subtle vessel fill and inactive module slots"
+          },
+          "highlight": {
+            "$value": "#CBD5E1",
+            "$type": "color",
+            "$description": "Hover state and subtle selection highlight"
+          }
+        },
+        "border": {
+          "subtle": {
+            "$value": "#E2E8F0",
+            "$type": "color",
+            "$description": "Subtle daylight zone separator"
+          },
+          "default": {
+            "$value": "#CBD5E1",
+            "$type": "color",
+            "$description": "Default crisp daylight boundary border"
+          },
+          "focus": {
+            "$value": "#0284C7",
+            "$type": "color",
+            "$description": "High-contrast focus ring for outdoor sunlight"
+          }
+        },
+        "text": {
+          "primary": {
+            "$value": "#0F172A",
+            "$type": "color",
+            "$description": "Deep slate primary text for maximum sunlight contrast"
+          },
+          "secondary": {
+            "$value": "#475569",
+            "$type": "color",
+            "$description": "Slate secondary descriptor text"
+          },
+          "muted": {
+            "$value": "#64748B",
+            "$type": "color",
+            "$description": "Muted timestamps and metadata"
+          },
+          "inverse": {
+            "$value": "#FFFFFF",
+            "$type": "color",
+            "$description": "Text rendered over dark alarm banners"
+          }
+        },
+        "isa101": {
+          "process": {
+            "vessel": {
+              "$value": "#E2E8F0",
+              "$type": "color"
+            },
+            "pipe-inactive": {
+              "$value": "#CBD5E1",
+              "$type": "color"
+            },
+            "pipe-active": {
+              "$value": "#94A3B8",
+              "$type": "color"
+            },
+            "valve-closed": {
+              "$value": "#94A3B8",
+              "$type": "color"
+            },
+            "valve-open": {
+              "$value": "#475569",
+              "$type": "color"
+            },
+            "pump-running": {
+              "$value": "#0284C7",
+              "$type": "color"
+            },
+            "pump-stopped": {
+              "$value": "#94A3B8",
+              "$type": "color"
+            }
+          },
+          "alarm": {
+            "critical": {
+              "$value": "#DC2626",
+              "$type": "color"
+            },
+            "major": {
+              "$value": "#D97706",
+              "$type": "color"
+            },
+            "minor": {
+              "$value": "#CA8A04",
+              "$type": "color"
+            },
+            "diagnostic": {
+              "$value": "#2563EB",
+              "$type": "color"
+            },
+            "normal": {
+              "$value": "#64748B",
+              "$type": "color"
+            },
+            "shelved": {
+              "$value": "#94A3B8",
+              "$type": "color"
+            }
+          }
+        },
+        "bus": {
+          "ethernet": {
+            "$value": "#15803D",
+            "$type": "color"
+          },
+          "serial": {
+            "$value": "#0369A1",
+            "$type": "color"
+          },
+          "can": {
+            "$value": "#B45309",
+            "$type": "color"
+          },
+          "safety": {
+            "$value": "#DC2626",
+            "$type": "color"
+          },
+          "io-link": {
+            "$value": "#7E22CE",
+            "$type": "color"
+          },
+          "offline": {
+            "$value": "#64748B",
+            "$type": "color"
+          }
+        }
+      }
+    }
+  },
+  "dimension": {
+    "hud": {
+      "height": {
+        "$value": "38px",
+        "$type": "dimension",
+        "$description": "Fixed spatial height of Top SCADA HUD banner per Adrian Box-Model Rule"
+      }
+    },
+    "activity-bar": {
+      "width": {
+        "$value": "48px",
+        "$type": "dimension",
+        "$description": "Fixed spatial width of Activity Bar selector per Adrian Box-Model Rule"
+      }
+    },
+    "status-bar": {
+      "height": {
+        "$value": "24px",
+        "$type": "dimension",
+        "$description": "Fixed spatial height of Industrial Status Bar per Adrian Box-Model Rule"
+      }
+    },
+    "primary-explorer": {
+      "min-width": {
+        "$value": "240px",
+        "$type": "dimension",
+        "$description": "Minimum width constraint for Primary Explorer tree pane"
+      },
+      "max-width": {
+        "$value": "480px",
+        "$type": "dimension",
+        "$description": "Maximum width constraint for Primary Explorer tree pane"
+      },
+      "default-width": {
+        "$value": "280px",
+        "$type": "dimension",
+        "$description": "Initial launch width of Primary Explorer tree pane"
+      }
+    },
+    "inspector": {
+      "fixed-width": {
+        "$value": "384px",
+        "$type": "dimension",
+        "$description": "Fixed constant width of Sidebar Inspector Drawer per Adrian Ergonomic Constraint (Zero horizontal resizing across all plant screens)"
+      },
+      "min-width": {
+        "$value": "384px",
+        "$type": "dimension",
+        "$description": "Strict floor width constraint"
+      },
+      "max-width": {
+        "$value": "384px",
+        "$type": "dimension",
+        "$description": "Strict ceiling width constraint (100% plant-wide visual uniformity)"
+      },
+      "default-width": {
+        "$value": "384px",
+        "$type": "dimension",
+        "$description": "Standardized fixed width"
+      }
+    },
+    "grid": {
+      "snap-8": {
+        "$value": "8px",
+        "$type": "dimension",
+        "$description": "Fine snap grid spacing for micro-alignments and terminal pin connections"
+      },
+      "snap-16": {
+        "$value": "16px",
+        "$type": "dimension",
+        "$description": "Standard industrial snap grid step for P&ID equipment symbols and sub-canvases"
+      },
+      "canvas-standard-width": {
+        "$value": "1920px",
+        "$type": "dimension",
+        "$description": "Standard FHD native bounded grid canvas width (120 cells @ 16px)"
+      },
+      "canvas-standard-height": {
+        "$value": "1080px",
+        "$type": "dimension",
+        "$description": "Standard FHD native bounded grid canvas height (67.5 cells @ 16px)"
+      },
+      "canvas-4k-max-width": {
+        "$value": "3840px",
+        "$type": "dimension",
+        "$description": "Maximum bounded grid canvas ceiling width for ultra-high-resolution 4K control room video walls (240 cells @ 16px)"
+      },
+      "canvas-4k-max-height": {
+        "$value": "2160px",
+        "$type": "dimension",
+        "$description": "Maximum bounded grid canvas ceiling height for ultra-high-resolution 4K control room video walls (135 cells @ 16px)"
+      }
+    },
+    "console": {
+      "min-height": {
+        "$value": "160px",
+        "$type": "dimension",
+        "$description": "Bottom Industrial Console collapsible minimum height"
+      },
+      "default-height": {
+        "$value": "220px",
+        "$type": "dimension",
+        "$description": "Bottom Industrial Console default expanded height"
+      }
+    },
+    "radius": {
+      "none": {
+        "$value": "0px",
+        "$type": "dimension",
+        "$description": "Crisp 90-degree industrial borders for docking canvas panes"
+      },
+      "sm": {
+        "$value": "2px",
+        "$type": "dimension",
+        "$description": "Micro-radius for tag badges and status indicators"
+      },
+      "md": {
+        "$value": "4px",
+        "$type": "dimension",
+        "$description": "Card, drawer, and input element rounded corners"
+      },
+      "lg": {
+        "$value": "8px",
+        "$type": "dimension",
+        "$description": "Modal dialog and floating popover rounded corners"
+      }
+    }
+  },
+  "typography": {
+    "font-family": {
+      "mono": {
+        "$value": "'JetBrains Mono', 'Fira Code', 'Roboto Mono', ui-monospace, monospace",
+        "$type": "fontFamily",
+        "$description": "Monospaced font stack for tag addresses, hex values, register IDs, and telemetry numbers"
+      },
+      "sans": {
+        "$value": "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        "$type": "fontFamily",
+        "$description": "Clean modern sans-serif font stack for UI labels, table headers, and narrative text"
+      }
+    },
+    "font-size": {
+      "micro": {
+        "$value": "10px",
+        "$type": "dimension",
+        "$description": "Dense rack slot indicators and bus line protocol chips"
+      },
+      "caption": {
+        "$value": "11px",
+        "$type": "dimension",
+        "$description": "Secondary descriptors and status bar telemetry metrics"
+      },
+      "body": {
+        "$value": "13px",
+        "$type": "dimension",
+        "$description": "Standard workbench body text, tree items, and property values"
+      },
+      "header-sm": {
+        "$value": "14px",
+        "$type": "dimension",
+        "$description": "Panel headers, drawer section banners, and card titles"
+      },
+      "header-md": {
+        "$value": "16px",
+        "$type": "dimension",
+        "$description": "Faceplate titles and primary dialog titles"
+      },
+      "header-lg": {
+        "$value": "20px",
+        "$type": "dimension",
+        "$description": "Full screen title banners and system overview headers"
+      },
+      "telemetry-display": {
+        "$value": "28px",
+        "$type": "dimension",
+        "$description": "High-visibility primary process variable digital readouts on faceplates"
+      }
+    },
+    "font-weight": {
+      "regular": {
+        "$value": "400",
+        "$type": "fontWeight",
+        "$description": "Standard descriptive text weight"
+      },
+      "medium": {
+        "$value": "500",
+        "$type": "fontWeight",
+        "$description": "Form labels and active tab identifiers"
+      },
+      "semibold": {
+        "$value": "600",
+        "$type": "fontWeight",
+        "$description": "Alarm severity badges and critical state callouts"
+      },
+      "bold": {
+        "$value": "700",
+        "$type": "fontWeight",
+        "$description": "Faceplate tag numbers and primary HUD identifiers"
+      }
+    }
+  },
+  "animation": {
+    "alarm-flash": {
+      "$value": "1000ms cubic-bezier(0.4, 0, 0.6, 1) infinite",
+      "$type": "duration",
+      "$description": "1 Hz ISA-18.2 unacknowledged alarm flashing cycle (50% on, 50% off)"
+    },
+    "drawer-slide": {
+      "$value": "200ms cubic-bezier(0.16, 1, 0.3, 1)",
+      "$type": "duration",
+      "$description": "Smooth slide-over drawer entrance and departure timing curve"
+    },
+    "telemetry-pulse": {
+      "$value": "300ms ease-out",
+      "$type": "duration",
+      "$description": "Subtle border highlight flash when tag value updates"
+    }
+  }
+}
