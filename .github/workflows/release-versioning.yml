@@ -1,0 +1,63 @@
+name: Release Versioning & Changelog Generation
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+    branches:
+      - release
+  pull_request:
+    types:
+      - closed
+    branches:
+      - release
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  changelog-and-release:
+    name: Generate Changelog with git-cliff
+    # Run on release tag push, or when a PR targeting release is merged
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event.pull_request.merged == true && github.base_ref == 'release')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Target Version / Tag
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" =~ ^refs/tags/ ]]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            PR_NUM="${{ github.event.pull_request.number }}"
+            TAG_NAME="v$(date +'%Y.%m.%d')+PR${PR_NUM}"
+          else
+            TAG_NAME="v$(date +'%Y.%m.%d')"
+          fi
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Determined release tag: ${TAG_NAME}"
+
+      - name: Generate Changelog using git-cliff
+        uses: orhun/git-cliff-action@v3
+        with:
+          config: cliff.toml
+          args: --verbose --tag ${{ steps.vars.outputs.tag_name }}
+        env:
+          OUTPUT: CHANGELOG.md
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          tag_name: ${{ steps.vars.outputs.tag_name }}
+          name: Release ${{ steps.vars.outputs.tag_name }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
