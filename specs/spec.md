@@ -337,6 +337,56 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
     - Injected simulation tags shall carry OPC UA quality code `UNCERTAIN_SUBSTITUTED` (`0x0044`) with the simulation bit active.
     - The microkernel shall write an immutable append-only audit trail event recording operator identity, timestamp, target device path, and mode transition (`[OPERATOR: <id>] [ACTION: Enable Simulation Mode] [TARGET: external.<namespace>.<device>]`).
 
+### 3.13 Siemens TIA Portal Workspace & Project Tree Parity (`docs/04-hmi-and-ui/`)
+
+- **SYS-REQ-097 [Siemens TIA Portal Workspace & Project Tree Parity]**: The engineering workbench shall mirror canonical Siemens TIA Portal workspace paradigms:
+  - **The 3 Canonical Hardware Engineering Views (Devices & Networks)**:
+    - `Network View`: Displays interconnected devices, controllers, and distributed I/O over industrial fieldbuses. Cable vectors show explicit protocol colors (PROFINET `#16A34A` Green, RS-485 Modbus `#0284C7` Blue, Safety Loop / STO `#DC2626` Crimson Red). Supports subnet grouping and IP address configuration.
+    - `Device View`: Displays physical rack chassis slot-by-slot (`Rack 0`, `Slot 0` = Power Supply, `Slot 1` = CPU / Soft-Logic Controller, `Slot 2..N` = Distributed I/O slices). Allows terminal pin inspection, channel configuration, and address filtering.
+    - `Topology View`: Displays port-to-port physical cabling (`Port 1 [P1]` on Controller to `Port 2 [P2]` on Switch). Enables deterministic Layer 2 DCP device recognition and cable discrepancy detection without manual IP setup.
+  - **Zone 2 Canonical Project Tree Taxonomy**:
+    The primary navigation tree shall enforce the standardized hierarchical taxonomy:
+    ```
+    ▼ Project: [Project_Name]
+      ▼ Devices & Networks
+        ├── Network View (Bus overview & subnet mapping)
+        ├── Device View (Rack & slot chassis configuration)
+        └── Topology View (Port-to-port physical cabling)
+      ▼ Controller [MythOS Soft-Logic / STruC++]
+        ├── Device configuration & Network interfaces
+        ├── Online & Diagnostics (Live CPU cycle time, buffer usage)
+        ▼ Program Blocks
+          ├── [➕ Add new block: OB / FB / FC / DB]
+          ├── Main [OB1] (Cyclic main task)
+          └── Function Blocks & Data Blocks
+        ▼ PLC Tags
+          ├── Show all tags
+          └── Tag Tables (external.* vs internal.*)
+        ▼ PLC Data Types (UDTs)
+        └── Watch and Force Tables
+      ▼ Visualization [MythOS Web HMI / WinCC Kiosk]
+        ▼ HMI Screens
+          ├── [➕ Add new screen]
+          ├── Screen_01_PlantOverview
+          └── Screen_02_BoilerArea (with nested Sub-Screens)
+        ▼ Screen Management (Templates, Pop-up screens, Slide-in drawers)
+        ▼ Faceplate Types (Project Library Master Templates)
+        ├── HMI Tags & Alarm Management (ISA-18.2)
+        └── Recipes (ISA-88)
+    ```
+  - **Zone 4 Far-Right Collapsible Task Cards**:
+    The right dock shall provide collapsible vertical task cards for rapid asset selection:
+    - `Instructions`: Standard IEC 61131-3 logic operations (Bit logic, Timers, Counters, Math, Comparators, Move/Convert).
+    - `Hardware Catalog`: Searchable hierarchical tree of OEM modules, field sensors, motor drives, and I/O racks.
+    - `Libraries`: Split view hosting Project Library (Master Faceplate Types, Project UDTs) and Global Vendor Libraries.
+    - `Layout & Widgets`: Modular iOS-style 2-column widgets, ISA-101 process symbols, P&ID assets, and vector shapes.
+  - **Zone 5 Context-Sensitive Bottom Properties & Inspector**:
+    Selecting any block, device node, rack slot, or cable vector in Zone 3 shall drive the bottom tabbed inspector:
+    - `General`: Element identification, author, semantic name, hardware release, and operational comments.
+    - `IO Addresses / Variables`: Absolute hardware addresses (`%IX`, `%QX`, `%IW`, `%QW`), tag bindings (`external.*`), and process scaling.
+    - `Diagnostics`: Real-time online communication health, CRC packet drops, cycle latency, and firmware status.
+    - `Alarms`: Contextual ISA-18.2 alarm status banner, trip thresholds, deadband tolerances, and sequence-of-events history.
+
 ---
 
 ## 4. Non-Functional & Quality Requirements
@@ -414,6 +464,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 | **SYS-REQ-094** | One-Click Native Desktop Installers | Zero-Prerequisite Install Test | Executes automated installation of `.exe`, `.dmg`, and `.AppImage` packages on clean machines with zero manual toolchain setup. |
 | **SYS-REQ-095** | Headless Controller Automated Bootstrap | One-Line Installation Test | Executes curl bootstrap command on bare-metal Industrial PC; validates automatic systemd service creation and operational status. |
 | **SYS-REQ-096** | Explicit Per-Device Simulation Mode & Zero-Silent-Fallback | Hardware Disconnect Fault Test | Sever RS-485 / Ethernet connection during PhysicalHardware mode; verify immediate `BAD_COMM_FAILURE` alarm generation with zero synthetic fallback. Toggle ManualSimulation; verify slider injection unlocked, amber simulation indicators active, and audit entry recorded. |
+| **SYS-REQ-097** | Siemens TIA Portal Workspace & Project Tree Parity | Workspace Interaction & Navigation Test | Validates switching between Network, Device, and Topology views in Zone 3; verifies Zone 2 project tree taxonomy; confirms drag-and-drop from Zone 4 Task Cards (Instructions, Catalog, Libraries, Layout); verifies Zone 5 Context-Sensitive Bottom Inspector updates dynamically on node selection. |
 
 ---
 
