@@ -35,8 +35,8 @@ pub use discovery::{
 pub use namespace::{TagDomain, TagNamespaceError, TagUri};
 pub use nvram::{NvramError, NvramWalEngine, WalRecordHeader, DEFAULT_NVRAM_PATH, WAL_MAGIC};
 pub use pal::*;
-pub use sdui::*;
 pub use plugin::{PluginHost, PluginPackageManifest, PluginPackager, VerifiedPluginPackage};
+pub use sdui::*;
 pub use storage::{
     ControllerStorage, ProjectConfig, ProjectWal, ProjectWalEntry, StorageError, TaskConfig,
     WalError, DEFAULT_PROJECTS_DIR,

@@ -1,8 +1,8 @@
 //! Integration tests for Server-Driven UI (SDUI) TypeScript type generation (TSK-302 / ADR-006).
 
 use mythos_core::sdui::{
-    ComponentType, DeploymentRequest, DeploymentResponse, FaceplateBindingConfig,
-    HmiLifecycleMode, SduiComponent, SduiProperty, SduiScreenLayout, SduiZone,
+    ComponentType, DeploymentRequest, DeploymentResponse, FaceplateBindingConfig, HmiLifecycleMode,
+    SduiComponent, SduiProperty, SduiScreenLayout, SduiZone,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -28,7 +28,8 @@ fn test_sdui_typescript_type_export() {
         HmiLifecycleMode::export_all_to(target_dir).expect("Failed to export HmiLifecycleMode");
         ComponentType::export_all_to(target_dir).expect("Failed to export ComponentType");
         SduiProperty::export_all_to(target_dir).expect("Failed to export SduiProperty");
-        FaceplateBindingConfig::export_all_to(target_dir).expect("Failed to export FaceplateBindingConfig");
+        FaceplateBindingConfig::export_all_to(target_dir)
+            .expect("Failed to export FaceplateBindingConfig");
         SduiComponent::export_all_to(target_dir).expect("Failed to export SduiComponent");
         SduiZone::export_all_to(target_dir).expect("Failed to export SduiZone");
         SduiScreenLayout::export_all_to(target_dir).expect("Failed to export SduiScreenLayout");

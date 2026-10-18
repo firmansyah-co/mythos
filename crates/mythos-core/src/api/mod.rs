@@ -7,12 +7,12 @@ pub mod state;
 pub mod telemetry;
 pub mod web;
 
+use crate::sdui::{DeploymentRequest, DeploymentResponse};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use crate::sdui::{DeploymentRequest, DeploymentResponse};
 use mythos_pal::PlatformShm;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -79,10 +79,7 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
             get(telemetry_stream_handler::<S>),
         )
         // Control Logic Deployment (TSK-302 / SYS-REQ-021)
-        .route(
-            "/api/v1/control/deploy",
-            post(control_deploy_handler::<S>),
-        )
+        .route("/api/v1/control/deploy", post(control_deploy_handler::<S>))
         // Web HMI Static Asset Serving & SPA Routing
         .merge(web::web_router::<S>())
         .with_state(state)
