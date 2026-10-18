@@ -17,6 +17,8 @@ mythos-plugin-sdk.workspace = true
 async-trait.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true
+tokio-util = { workspace = true, features = ["codec"] }
+libc = { workspace = true }
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

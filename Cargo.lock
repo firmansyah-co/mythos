@@ -705,6 +705,7 @@ dependencies = [
  "axum",
  "bytemuck",
  "crc32fast",
+ "libc",
  "mythos-pal",
  "mythos-plugin-sdk",
  "mythos-shm",
@@ -714,6 +715,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tower 0.4.13",
  "tower-http",
  "tracing",
@@ -1337,6 +1339,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "libc",
  "pin-project-lite",
  "tokio",
 ]
