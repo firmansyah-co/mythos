@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #0A0D12;
+  color: #E2E8F0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* Dockview Dark Industrial Theme Overrides */
+.dockview-theme-dark {
+  --dv-drag-over-background-color: rgba(14, 165, 233, 0.2);
+  --dv-drag-over-border-color: #0ea5e9;
+  --dv-tabs-and-actions-container-background-color: #0A0D12;
+  --dv-activegroup-visiblepanel-tab-background-color: #0F141C;
+  --dv-activegroup-hiddenpanel-tab-background-color: #0A0D12;
+  --dv-inactivegroup-visiblepanel-tab-background-color: #0F141C;
+  --dv-inactivegroup-hiddenpanel-tab-background-color: #0A0D12;
+  --dv-tab-divider-color: #1F2937;
+  --dv-activegroup-visiblepanel-tab-color: #38BDF8;
+  --dv-separator-border: #1F2937;
+}

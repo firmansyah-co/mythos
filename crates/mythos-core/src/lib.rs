@@ -12,6 +12,7 @@ pub mod namespace;
 pub mod nvram;
 pub mod pal;
 pub mod plugin;
+pub mod sdui;
 pub mod storage;
 pub mod tag;
 pub mod topology;
@@ -34,6 +35,7 @@ pub use discovery::{
 pub use namespace::{TagDomain, TagNamespaceError, TagUri};
 pub use nvram::{NvramError, NvramWalEngine, WalRecordHeader, DEFAULT_NVRAM_PATH, WAL_MAGIC};
 pub use pal::*;
+pub use sdui::*;
 pub use plugin::{PluginHost, PluginPackageManifest, PluginPackager, VerifiedPluginPackage};
 pub use storage::{
     ControllerStorage, ProjectConfig, ProjectWal, ProjectWalEntry, StorageError, TaskConfig,
