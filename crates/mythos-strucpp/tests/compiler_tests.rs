@@ -73,3 +73,48 @@ fn test_compiler_pipeline_and_so_generation() {
         assert!(out_desc.read_bool());
     }
 }
+
+#[test]
+fn test_standalone_fallback_compilation() {
+    let temp = tempdir().expect("create temp dir");
+    let config = CompilerConfig {
+        strucpp_cli: "/nonexistent/strucpp/cli.js".into(),
+        strucpp_include: "/nonexistent/strucpp/include".into(),
+        output_dir: temp.path().to_path_buf(),
+        ..Default::default()
+    };
+
+    let compiler = StrucppCompiler::new(config);
+    let artifacts = compiler
+        .compile_source(TEST_ST_SRC)
+        .expect("standalone fallback compilation successful");
+
+    assert!(artifacts.shared_library.exists());
+    assert!(artifacts.cpp_source.exists());
+    assert!(artifacts.cpp_header.exists());
+
+    // Test dynamic loading of standalone .so via LoadedLogicModule
+    let loaded = LoadedLogicModule::load(&artifacts.shared_library).expect("load .so module");
+    assert_eq!(loaded.located_descriptors.len(), 2);
+
+    let in_desc = loaded
+        .located_descriptors
+        .iter()
+        .find(|d| d.iec_address() == "%IX0.0")
+        .unwrap();
+    let out_desc = loaded
+        .located_descriptors
+        .iter()
+        .find(|d| d.iec_address() == "%QX0.0")
+        .unwrap();
+
+    unsafe {
+        in_desc.write_bool(true);
+    }
+
+    loaded.step_cycle();
+
+    unsafe {
+        assert!(out_desc.read_bool());
+    }
+}
