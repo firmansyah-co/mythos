@@ -20,23 +20,41 @@ jobs:
   core-engine-tests:
     name: Rust Workspace Test Suite & Lints
     runs-on: arc-runner-org
+    env:
+      RUSTUP_HOME: /tmp/rustup
+      CARGO_HOME: /tmp/cargo
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Install System Dependencies
+        run: |
+          mkdir -p /tmp/cargo/bin /tmp/rustup
+          echo "/tmp/cargo/bin" >> $GITHUB_PATH
+
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --component rustfmt,clippy
+          source /tmp/cargo/env
+          rustc --version
+          cargo --version
 
       - name: Cargo Format Check
-        run: cargo fmt --all -- --check
+        run: |
+          source /tmp/cargo/env
+          cargo fmt --all -- --check
 
       - name: Cargo Clippy Audit
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: |
+          source /tmp/cargo/env
+          cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run All Workspace Tests
-        run: cargo test --workspace --verbose
+        run: |
+          source /tmp/cargo/env
+          cargo test --workspace --verbose
 
       - name: Run SHM Micro-Benchmark Check
-        run: cargo bench -p mythos-shm --no-run
+        run: |
+          source /tmp/cargo/env
+          cargo bench -p mythos-shm --no-run

@@ -36,7 +36,6 @@ jobs:
       - name: Determine Target Version / Tag
         id: vars
         run: |
-          # 1. Retrieve latest release tag base or fallback to root commit
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           if [ -n "$LAST_TAG" ]; then
             REF_BASE="$LAST_TAG"
@@ -46,16 +45,13 @@ jobs:
             BASE_VERSION="0.1.0"
           fi
 
-          # 2. Compute delta commits count since REF_BASE
           DELTA=$(git rev-list --count "${REF_BASE}..HEAD")
 
-          # 3. Determine branch context and event type
           EVENT_NAME="${{ github.event_name }}"
           BASE_REF="${{ github.base_ref }}"
           REF_NAME="${{ github.ref_name }}"
 
           if [ "$EVENT_NAME" = "push" ] && [[ "${{ github.ref }}" =~ ^refs/tags/v ]]; then
-            # Direct semver tag push
             TAG_NAME="${GITHUB_REF#refs/tags/}"
           elif [ "$EVENT_NAME" = "pull_request" ]; then
             PR_NUM="${{ github.event.pull_request.number }}"
@@ -64,7 +60,6 @@ jobs:
             elif [ "$BASE_REF" = "release" ]; then
               TAG_NAME="v${BASE_VERSION}+pr${PR_NUM}"
             else
-              # dev branch PR builds
               TAG_NAME="v${BASE_VERSION}-dev.${DELTA}+pr${PR_NUM}"
             fi
           elif [ "$EVENT_NAME" = "push" ]; then
@@ -73,7 +68,6 @@ jobs:
             elif [ "$REF_NAME" = "release" ]; then
               TAG_NAME="v${BASE_VERSION}"
             else
-              # dev branch pushes
               TAG_NAME="v${BASE_VERSION}-dev.${DELTA}"
             fi
           else
@@ -84,13 +78,15 @@ jobs:
           echo "Determined SemVer tag: ${TAG_NAME}"
           echo "Delta from ${REF_BASE}: ${DELTA}"
 
+      - name: Install Prebuilt git-cliff
+        run: |
+          mkdir -p /tmp/bin
+          curl -sL https://github.com/orhun/git-cliff/releases/download/v2.14.2/git-cliff-2.14.2-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /tmp/bin --strip-components=1
+          echo "/tmp/bin" >> $GITHUB_PATH
+
       - name: Generate Changelog using git-cliff
-        uses: orhun/git-cliff-action@v3
-        with:
-          config: cliff.toml
-          args: --verbose --tag ${{ steps.vars.outputs.tag_name }}
-        env:
-          OUTPUT: CHANGELOG.md
+        run: |
+          /tmp/bin/git-cliff --config cliff.toml --tag ${{ steps.vars.outputs.tag_name }} --output CHANGELOG.md
 
       - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
