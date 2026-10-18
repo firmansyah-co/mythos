@@ -34,6 +34,7 @@ mythos-mcp-macros = { path = "crates/mythos-mcp-macros" }
 # Concurrency and Async
 tokio = { version = "1.40", features = ["full"] }
 tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["codec"] }
 async-trait = "0.1"
 flume = "0.11"
 parking_lot = "0.12"
