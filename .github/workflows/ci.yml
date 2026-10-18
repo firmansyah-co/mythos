@@ -30,10 +30,14 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Install Build Tools & Linker
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends build-essential gcc libc6-dev
+
       - name: Setup Cache Symlinks and Directories
         run: |
           mkdir -p /tmp/rustup /tmp/cargo/bin
-          # Link mounted host cargo cache if available
           if [ -d "/home/runner/.cargo/registry" ]; then
             ln -s /home/runner/.cargo/registry /tmp/cargo/registry 2>/dev/null || true
           fi
