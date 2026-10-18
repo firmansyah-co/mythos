@@ -26,7 +26,7 @@ permissions:
 jobs:
   version-and-changelog:
     name: Compute SemVer & Generate Changelog
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
     steps:
       - name: Checkout Code Repository
         uses: actions/checkout@v4
