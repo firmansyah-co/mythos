@@ -5,8 +5,8 @@ use crate::traits::PlatformShm;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
 #[cfg(windows)]
 use windows_sys::Win32::System::Memory::{
-    CreateFileMappingW, FlushViewOfFile, MapViewOfFile, UnmapViewOfFile,
-    FILE_MAP_ALL_ACCESS, PAGE_READWRITE,
+    CreateFileMappingW, FlushViewOfFile, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
+    PAGE_READWRITE,
 };
 
 /// Windows named shared memory implementation using Pagefile-backed File Mappings.
@@ -82,15 +82,7 @@ impl PlatformShm for WindowsShm {
             });
         }
 
-        let view_ptr = unsafe {
-            MapViewOfFile(
-                handle,
-                FILE_MAP_ALL_ACCESS,
-                0,
-                0,
-                size_bytes,
-            )
-        };
+        let view_ptr = unsafe { MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, size_bytes) };
 
         if view_ptr.Value.is_null() {
             let err = unsafe { GetLastError() };
@@ -128,7 +120,9 @@ impl PlatformShm for WindowsShm {
     fn flush(&self) -> Result<(), PalError> {
         let res = unsafe {
             FlushViewOfFile(
-                windows_sys::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS { Value: self.ptr as *mut _ },
+                windows_sys::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS {
+                    Value: self.ptr as *mut _,
+                },
                 self.size,
             )
         };
@@ -148,7 +142,11 @@ impl Drop for WindowsShm {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             unsafe {
-                UnmapViewOfFile(windows_sys::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS { Value: self.ptr as *mut _ });
+                UnmapViewOfFile(
+                    windows_sys::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS {
+                        Value: self.ptr as *mut _,
+                    },
+                );
             }
         }
         if !self.handle.is_null() {

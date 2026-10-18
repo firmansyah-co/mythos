@@ -4,8 +4,7 @@ use std::time::Duration;
 
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
-    GetCurrentThread, SetThreadAffinityMask, SetThreadPriority,
-    THREAD_PRIORITY_TIME_CRITICAL,
+    GetCurrentThread, SetThreadAffinityMask, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
 };
 
 /// Windows scheduler implementation using THREAD_PRIORITY_TIME_CRITICAL and affinity masks.

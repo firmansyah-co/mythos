@@ -3,9 +3,7 @@
 //! Verifies monotonic sleep precision, core pinning contract handling,
 //! and real-time scheduling elevation without panics.
 
-use mythos_pal::{
-    DefaultScheduler, LinuxScheduler, NoopScheduler, PalError, PlatformScheduler,
-};
+use mythos_pal::{DefaultScheduler, LinuxScheduler, NoopScheduler, PalError, PlatformScheduler};
 use std::time::Instant;
 
 #[test]

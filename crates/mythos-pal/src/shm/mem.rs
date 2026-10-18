@@ -30,12 +30,11 @@ impl MemoryShm {
         }
 
         // Align to 4096 bytes (standard page boundary)
-        let layout = Layout::from_size_align(size_bytes, 4096).map_err(|e| {
-            PalError::InvalidSize {
+        let layout =
+            Layout::from_size_align(size_bytes, 4096).map_err(|e| PalError::InvalidSize {
                 requested: size_bytes,
                 reason: format!("Memory alignment error: {}", e),
-            }
-        })?;
+            })?;
 
         let raw_ptr = unsafe { alloc_zeroed(layout) };
         if raw_ptr.is_null() {

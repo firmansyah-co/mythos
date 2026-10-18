@@ -13,4 +13,8 @@ workspace = true
 [dependencies]
 mythos-pal.workspace = true
 bytemuck.workspace = true
+crc32fast.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"

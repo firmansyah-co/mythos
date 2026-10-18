@@ -33,10 +33,7 @@ pub enum PalError {
     PermissionDenied { operation: String, reason: String },
 
     #[error("Realtime scheduling priority denied for level {priority_level}: {reason}")]
-    RealtimePriorityDenied {
-        priority_level: u32,
-        reason: String,
-    },
+    RealtimePriorityDenied { priority_level: u32, reason: String },
 
     #[error("Failed to pin thread to CPU core {core_id}: {reason}")]
     CorePinningFailed { core_id: usize, reason: String },
@@ -48,10 +45,7 @@ pub enum PalError {
     SymbolLookupFailed { symbol: String, reason: String },
 
     #[error("Operation '{operation}' not supported on target platform '{platform}'")]
-    UnsupportedPlatform {
-        operation: String,
-        platform: String,
-    },
+    UnsupportedPlatform { operation: String, platform: String },
 
     #[error("Underlying I/O error: {0}")]
     Io(#[from] io::Error),

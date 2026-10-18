@@ -39,12 +39,13 @@ impl PlatformLibrary for DynamicLibrary {
 
     unsafe fn get_symbol<T>(&self, symbol_name: &str) -> Result<*const T, PalError> {
         let symbol_bytes = symbol_name.as_bytes();
-        let sym: libloading::Symbol<*const T> = self.lib.get(symbol_bytes).map_err(|e| {
-            PalError::SymbolLookupFailed {
-                symbol: symbol_name.to_string(),
-                reason: e.to_string(),
-            }
-        })?;
+        let sym: libloading::Symbol<*const T> =
+            self.lib
+                .get(symbol_bytes)
+                .map_err(|e| PalError::SymbolLookupFailed {
+                    symbol: symbol_name.to_string(),
+                    reason: e.to_string(),
+                })?;
         Ok(*sym)
     }
 }

@@ -67,14 +67,8 @@ mod tests {
 
     #[test]
     fn test_windows_shm_format_name() {
-        assert_eq!(
-            WindowsShm::format_name("tagbus"),
-            "Local\\MythOS_tagbus"
-        );
-        assert_eq!(
-            WindowsShm::format_name("/tagbus"),
-            "Local\\MythOS_tagbus"
-        );
+        assert_eq!(WindowsShm::format_name("tagbus"), "Local\\MythOS_tagbus");
+        assert_eq!(WindowsShm::format_name("/tagbus"), "Local\\MythOS_tagbus");
     }
 
     #[cfg(target_os = "linux")]

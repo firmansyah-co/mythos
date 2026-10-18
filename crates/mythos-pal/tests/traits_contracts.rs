@@ -3,8 +3,8 @@
 
 use mythos_pal::{
     DefaultScheduler, DefaultShm, DynamicLibrary, LinuxScheduler, MacOsScheduler, MacOsShm,
-    MemoryShm, NoopScheduler, PalError, PlatformLibrary, PlatformScheduler, PlatformShm,
-    PosixShm, WindowsScheduler, WindowsShm,
+    MemoryShm, NoopScheduler, PalError, PlatformLibrary, PlatformScheduler, PlatformShm, PosixShm,
+    WindowsScheduler, WindowsShm,
 };
 
 fn assert_send<T: Send>() {}
