@@ -1,4 +1,4 @@
-# MythOS Architecture Specification: OpenPLC Runtime v4 FFI Bridge
+# MythOS Architecture Specification: Native STruC++ Runtime Engine & In-Process FFI Bridge
 
 - **Document Identifier**: MYTHOS-ARCH-003
 - **Version**: 2.0.0
@@ -10,9 +10,9 @@
 
 ## 1. Scope and Objective
 
-This specification details the dynamic Foreign Function Interface (FFI) integration between the MythOS Pure Rust Microkernel and the OpenPLC Runtime v4 execution engine.
+This specification details the dynamic Foreign Function Interface (FFI) integration between the MythOS Pure Rust Microkernel and the Native STruC++ Runtime Engine (`crates/mythos-strucpp`).
 
-OpenPLC Runtime v4 executes soft-logic control programs specified under IEC 61131-3 (Structured Text, Ladder Diagram, Function Block Diagram, Instruction List, and Sequential Function Chart). MythOS integrates OpenPLC v4 as an embedded real-time engine rather than an external standalone process.
+The Native STruC++ Runtime Engine executes soft-logic control programs specified under IEC 61131-3 (Structured Text, Ladder Diagram, Function Block Diagram, Instruction List, and Sequential Function Chart). MythOS integrates STruC++ as an embedded real-time engine rather than an external standalone PLC daemon.
 
 This integration delivers four core capabilities:
 1. **Automated STruC++ Compilation Pipeline**: Compiling IEC 61131-3 logic directly into C++17 shared object libraries (`.so`) using the STruC++ (`strucpp`) compiler.
@@ -24,7 +24,7 @@ This integration delivers four core capabilities:
 
 ## 2. Compilation and Code Generation Pipeline
 
-OpenPLC Runtime v4 utilizes the STruC++ (`strucpp`) compiler pipeline. STruC++ compiles Structured Text (`.st`) directly to C++17 source files and structural metadata.
+The Native STruC++ Runtime Engine utilizes the STruC++ (`strucpp`) compiler pipeline. STruC++ compiles Structured Text (`.st`) directly to C++17 source files and structural metadata.
 
 ```
 IEC 61131-3 Logic
@@ -56,7 +56,7 @@ IEC 61131-3 Logic
 +───────────────────────────+
        │
        ▼
-libopenplc_program_<sha256>.so
+libstrucpp_program_<sha256>.so
        │
        ▼
 Loaded into MythOS via dlopen()
@@ -77,7 +77,7 @@ Loaded into MythOS via dlopen()
   * `iec_threading.hpp`: Mutex definitions and lock guards (`IMAGE_TABLES_LOCK_GUARD`).
 - **Binary Toolchain**: G++ or Clang with required flags:
   `-std=c++17 -O3 -march=native -fPIC -shared -Wall -Wextra -Werror -Wl,-z,relro,-z,now`
-- **Output Artifact**: `/var/lib/mythos/runtimes/libopenplc_program_<sha256>.so`
+- **Output Artifact**: `/var/lib/mythos/runtimes/libstrucpp_program_<sha256>.so`
 
 ---
 
@@ -191,7 +191,7 @@ for (size_t r = 0; r < resource_count; ++r) {
 
 ## 4. Real-Time Thread-Per-Task Architecture and Linux SCHED_FIFO
 
-Industrial automation requires hard real-time scheduling. Standard Linux kernel scheduling (`SCHED_OTHER`) introduces non-deterministic thread preemption. OpenPLC Runtime v4 deploys a dedicated POSIX thread per IEC task under `SCHED_FIFO`.
+Industrial automation requires hard real-time scheduling. Standard Linux kernel scheduling (`SCHED_OTHER`) introduces non-deterministic thread preemption. The Native STruC++ Runtime Engine deploys a dedicated POSIX thread per IEC task under `SCHED_FIFO`.
 
 ### 4.1 Thread Configuration Parameters
 - **Scheduling Policy**: `SCHED_FIFO` (POSIX real-time First-In, First-Out).
@@ -320,7 +320,7 @@ impl RealtimeTaskHost {
 
 To preserve operational safety and determinism in industrial environments, MythOS strictly decouples the **Engineering Edit View** from the **Live Production Runtime View** for task scheduling parameters (task intervals, priorities, watchdog limits, CPU core affinities, and program bindings).
 
-Modifying task scheduling parameters in the MythOS Engineering IDE or via the REST API operates exclusively on the staging document (`tasks.draft.json`). The live Linux `SCHED_FIFO` real-time threads running in OpenPLC v4 execute against the immutable active descriptor (`tasks.active.json`) and remain completely isolated from editing actions until explicitly promoted.
+Modifying task scheduling parameters in the MythOS Engineering IDE or via the REST API operates exclusively on the staging document (`tasks.draft.json`). The live Linux `SCHED_FIFO` real-time threads running in the Native STruC++ Engine execute against the immutable active descriptor (`tasks.active.json`) and remain completely isolated from editing actions until explicitly promoted.
 
 ```
 +─────────────────────────────────────────────────────────────────────────────+
@@ -338,7 +338,7 @@ Modifying task scheduling parameters in the MythOS Engineering IDE or via the RE
 |                     ATOMIC PROMOTION & SCHEDULER RE-ARM                     |
 |                                                                             |
 |  1. Parse & validate tasks.draft.json against system resource quotas        |
-|  2. Compile associated STruC++ logic if code changed -> libopenplc_prog.so  |
+|  2. Compile associated STruC++ logic if code changed -> libstrucpp_prog.so  |
 |  3. Scan Cycle Dead-Time Synchronization Barrier (< 50 ms dead-time)        |
 |  4. Atomic File Promotion: tasks.draft.json -> tasks.active.json            |
 |  5. Reconfigure running SCHED_FIFO pthreads or hot-spawn new task threads   |
@@ -392,7 +392,7 @@ When the engineer or supervisor issues `POST /api/v1/control/draft/commit`, the 
 Hot-reload replaces control logic while maintaining continuous field bus communication.
 
 ```
-1. Compile new logic via STruC++ -> libopenplc_program_v2.so
+1. Compile new logic via STruC++ -> libstrucpp_program_v2.so
 2. Verify C-linkage export: strucpp_get_config()
 3. Instantiate and inspect ConfigurationInstance
 4. Re-bind LocatedVar pointers to /dev/shm/mythos_tagbus
@@ -407,7 +407,7 @@ Hot-reload replaces control logic while maintaining continuous field bus communi
 use libloading::{Library, Symbol};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use crate::error::OpenPlcError;
+use crate::error::StrucppError;
 
 #[repr(C)]
 pub struct ConfigurationInstanceOpaque {
@@ -435,17 +435,17 @@ impl DynamicRuntimeLoader {
     }
 
     /// Load and inspect a newly compiled shared library
-    pub unsafe fn load_library(&self, path: &std::path::Path) -> Result<Box<LoadedProgram>, OpenPlcError> {
-        let lib = Library::new(path).map_err(|e| OpenPlcError::DlOpenFailed(e.to_string()))?;
+    pub unsafe fn load_library(&self, path: &std::path::Path) -> Result<Box<LoadedProgram>, StrucppError> {
+        let lib = Library::new(path).map_err(|e| StrucppError::DlOpenFailed(e.to_string()))?;
 
         let get_config: Symbol<GetConfigFn> = lib.get(b"strucpp_get_config")
-            .map_err(|e| OpenPlcError::SymbolNotFound { symbol: "strucpp_get_config".into(), source: e.to_string() })?;
+            .map_err(|e| StrucppError::SymbolNotFound { symbol: "strucpp_get_config".into(), source: e.to_string() })?;
         let set_locks: Symbol<SetLocksFn> = lib.get(b"strucpp_set_locks")
-            .map_err(|e| OpenPlcError::SymbolNotFound { symbol: "strucpp_set_locks".into(), source: e.to_string() })?;
+            .map_err(|e| StrucppError::SymbolNotFound { symbol: "strucpp_set_locks".into(), source: e.to_string() })?;
 
         let config_ptr = get_config();
         if config_ptr.is_null() {
-            return Err(OpenPlcError::NullConfigPointer);
+            return Err(StrucppError::NullConfigPointer);
         }
 
         Ok(Box::new(LoadedProgram {
@@ -483,7 +483,7 @@ Legacy PLC compilers generated a single flat `debug_vars[]` array that expanded 
 
 ### 6.2 STruC++ Hierarchical Debugging Model
 
-OpenPLC Runtime v4 and STruC++ solve this through hierarchical debug addressing:
+The Native STruC++ Engine solves this through hierarchical debug addressing:
 1. **Multiple Array Partitioning**: `generated_debug.cpp` splits debug entries across multiple arrays, each capped at 8,000 entries.
 2. **Read-Only Memory Mapping with Lazy Paging**: On Linux targets, debug arrays reside in `.rodata` of the `.so`. The Linux kernel maps these pages read-only on demand. Scoping a few variables incurs zero RAM overhead for unused arrays.
 3. **PDU Coordinate Shims**: Variables are identified by `(arr_idx, elem_idx)` tuples:
@@ -513,7 +513,7 @@ OpenPLC Runtime v4 and STruC++ solve this through hierarchical debug addressing:
 
 ### 7.1 `LocatedVar` Descriptor Model
 
-OpenPLC Runtime v4 exposes located variables through `strucpp::locatedVars[]` defined in `iec_located.hpp`:
+The Native STruC++ Engine exposes located variables through `strucpp::locatedVars[]` defined in `iec_located.hpp`:
 
 ```cpp
 namespace strucpp {
@@ -567,13 +567,13 @@ MythOS iterates `strucpp::locatedVars[]` directly during runtime initialization 
 ```
 
 ### 7.3 Cyclic I/O Synchronization Sequence
-1. **Cycle Start ($t = 0\,\mu	ext{s}$)**:
+1. **Cycle Start ($t = 0\,\mu\text{s}$)**:
    - Microkernel / protocol drivers update process inputs in `/dev/shm/mythos_tagbus`.
    - `IoBufferBridge` transfers TagBus values directly into `LocatedArea::Input` pointers via `raw_ptr()`.
-2. **Logic Execution ($0\,\mu	ext{s} < t < 250\,\mu	ext{s}$)**:
+2. **Logic Execution ($0\,\mu\text{s} < t < 250\,\mu\text{s}$)**:
    - Dedicated `SCHED_FIFO` task thread executes `task.programs[p]->run()` via virtual dispatch.
    - POU logic evaluates equations against `IECVar<T>` memory blocks.
-3. **Cycle Commit ($t = 250\,\mu	ext{s}$)**:
+3. **Cycle Commit ($t = 250\,\mu\text{s}$)**:
    - `IoBufferBridge` reads `LocatedArea::Output` pointers.
    - Outputs are committed to the `/dev/shm/mythos_tagbus` write buffer, and the clean buffer pointer is atomically swapped.
    - Outbound field protocol drivers (Modbus, PROFINET, MQTT) dispatch fresh actuator outputs to physical devices.

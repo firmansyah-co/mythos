@@ -26,9 +26,9 @@ MythOS resolves this problem through:
 
 | Mode | Semantic Name | Permitted Writers | Permitted Readers | Industrial Use Case |
 | :--- | :--- | :--- | :--- | :--- |
-| **RO** | Read-Only | Field Protocol Driver, OpenPLC Engine outputs | HMI, Historian, MCP AI Agents, Rule Engines | Process feedback, physical sensor readings, status bitmasks, fault codes, operating hours. |
+| **RO** | Read-Only | Field Protocol Driver, Native STruC++ Engine outputs | HMI, Historian, MCP AI Agents, Rule Engines | Process feedback, physical sensor readings, status bitmasks, fault codes, operating hours. |
 | **WO** | Write-Only | HMI Operator actions, MCP AI Tools, Higher-level Batch scripts | Field Protocol Driver (outbound transmission queue) | Momentary commands: Start, Stop, Reset, E-Stop trip, jog pulse, calibration zero command. |
-| **RW** | Read-Write | OpenPLC Logic, HMI (via Shadow Buffer), MCP Agents | All subsystems | PID tuning setpoints (Kp, Ti), temperature limits, recipe setpoint arrays, operational modes. |
+| **RW** | Read-Write | Native STruC++ Logic, HMI (via Shadow Buffer), MCP Agents | All subsystems | PID tuning setpoints (Kp, Ti), temperature limits, recipe setpoint arrays, operational modes. |
 
 ---
 
@@ -294,13 +294,13 @@ When a device is explicitly transitioned to `DeviceExecutionMode::ManualSimulati
                                     │
             ┌───────────────────────┴───────────────────────┐
             ▼                                               ▼
-   OpenPLC Execution Engine                        SCADA Canvas Mimic Faceplate
+   Native STruC++ Engine                           SCADA Canvas Mimic Faceplate
    Reads simulated input                           Displays value with amber border
 ```
 
 #### Invariant Enforcement Rules:
 1. **Hardware Mode Lockout**: If `DeviceExecutionMode == PhysicalHardware`, all injection endpoints (`POST /api/v1/simulation/inject`, Quick Slider events, and Forcing hooks) REJECT incoming mutations with HTTP `403 Forbidden` (`ErrSimulationModeDisabled`).
-2. **Quality Code Stamping**: All tags written via simulation injection are marked with OPC DA quality `UNCERTAIN_SUBSTITUTED` (`0x0044`), ensuring downstream historian systems, safety trip logic, and OpenPLC scripts detect non-physical data.
+2. **Quality Code Stamping**: All tags written via simulation injection are marked with OPC DA quality `UNCERTAIN_SUBSTITUTED` (`0x0044`), ensuring downstream historian systems, safety trip logic, and Native STruC++ scripts detect non-physical data.
 3. **Audit Trail Logging**:
    Every state change and variable forcing action generates an immutable audit record:
    ```json

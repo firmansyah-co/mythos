@@ -16,7 +16,7 @@ This specification defines the frontend software architecture, component hierarc
 The frontend application executes as a high-performance Single Page Application (SPA) built on **React 19**, **Vite 6**, and **TypeScript 5.6+**. It renders inside standard Chromium-based industrial touch panels, multi-monitor control room workstations, and field engineering laptops.
 
 The frontend architecture enforces eight core engineering principles:
-1. **Pure Dumb Presentation Layer**: The frontend performs zero mathematical process modeling, zero business logic calculations, and zero raw hardware register manipulation. The Rust microkernel and OpenPLC runtime act as the absolute Single Source of Truth (SSOT). The UI strictly renders schemas and dispatches structured user intent.
+1. **Pure Dumb Presentation Layer**: The frontend performs zero mathematical process modeling, zero business logic calculations, and zero raw hardware register manipulation. The Rust microkernel and Native STruC++ runtime act as the absolute Single Source of Truth (SSOT). The UI strictly renders schemas and dispatches structured user intent.
 2. **Dockview Multi-Zone Industrial Shell**: The entire workspace utilizes `@hexact/dockview-react` to host a deterministic 5-Zone layout accommodating multi-screen workflows, docking panels, floating diagnostic drawers, and tabbed document editors.
 3. **Throttled Real-Time Telemetry (100ms / 10 Hz Sliding Window)**: Server-Sent Events (SSE) stream process values into a dedicated Zustand store. Tag updates are buffered and applied at 100 ms intervals, preventing browser DOM thrashing while preserving smooth visual indicators.
 4. **Integrated In-Canvas PLC Logic Editor**: There is no file upload form. IEC 61131-3 Structured Text (Monaco) and Ladder Diagram canvases reside directly inside the workbench. Clicking **[Deploy / Hot-Reload to Controller]** dispatches source code directly to the backend compilation pipeline (`POST /api/v1/control/deploy`), triggering zero-downtime hot-reloading in under 50 ms.
@@ -75,7 +75,7 @@ frontend/
     │   │   ├── PropertiesIoAddressesTab.tsx -- %I/%Q bounds, process image, tag channel table
     │   │   ├── PropertiesDiagnosticsTab.tsx -- Live hardware status, CRC packet counters, log
     │   │   ├── PropertiesAlarmsTab.tsx -- ISA-18.2 active alarm banner and setpoint thresholds
-    │   │   └── CompilerConsoleTab.tsx  -- STruC++ / OpenPLC build logs and hot-reload status
+    │   │   └── CompilerConsoleTab.tsx  -- STruC++ build logs and hot-reload status
     │   ├── hmi-screens/               -- TIA Portal style HMI screens & sub-screens
     │   │   ├── ScreenHierarchyTree.tsx -- Zone 2 nested tree for screens and subscreens
     │   │   ├── ScreenCanvasHost.tsx   -- Zone 3 tab host for FHD/4K screen drafting & preview
@@ -1006,7 +1006,7 @@ The MythOS logic editor is **100% integrated into Zone 3 of the workbench**. It 
 | Zone 5 Output Console:                                                            |
 | [14:22:01] POST /api/v1/control/deploy dispatched.                                |
 | [14:22:01] STruC++ compiler: generated.cpp produced (0 warnings).                 |
-| [14:22:02] libopenplc_program_v5.so hot-swapped during 410us scan dead-time.      |
+| [14:22:02] libstrucpp_program_v5.so hot-swapped during 410us scan dead-time.      |
 | [14:22:02] Hot-reload SUCCESSFUL. Production control loop unaffected.             |
 +───────────────────────────────────────────────────────────────────────────────────+
 ```
@@ -1060,7 +1060,7 @@ export const DeployControlBar: React.FC<DeployControlBarProps> = ({ getStSource 
     <div className="flex items-center justify-between px-4 py-2 bg-neutral-900 border-b border-neutral-700">
       <div className="flex items-center space-x-2">
         <span className="text-xs font-semibold text-neutral-400">RUNTIME TARGET:</span>
-        <span className="text-xs font-mono text-emerald-400">OpenPLC v4 (SCHED_FIFO Core 1)</span>
+        <span className="text-xs font-mono text-emerald-400">Native STruC++ (SCHED_FIFO Core 1)</span>
       </div>
 
       <div className="flex items-center space-x-4">
@@ -1358,7 +1358,7 @@ To guarantee 100% operational safety on active industrial lines, the frontend st
   * Simulates exactly how the operator will experience the screen without deploying to production.
   * Screen-to-screen navigation buttons, subscreen popups, and drawer expansions execute realistically.
   * Widget animations (e.g. spinning agitators, color transitions on simulated sensor trips) are active.
-  * **Strict Isolation Contract**: Actuator write commands are intercepted by the client sandbox. Zero hardware register write requests are dispatched to OpenPLC or fieldbus drivers.
+  * **Strict Isolation Contract**: Actuator write commands are intercepted by the client sandbox. Zero hardware register write requests are dispatched to the Native STruC++ Engine or fieldbus drivers.
 
 ### 11.3 Stage 3: Runtime View (Live Production Release)
 - **Visual Badge**: Green badge in Zone 1 Top HUD: `[🟢 RUNTIME MODE — LIVE COMMITTED]`.

@@ -12,7 +12,7 @@
 
 A high-performance SCADA system connects numerous concurrent readers and writers:
 - Field drivers writing 10,000 to 50,000 register updates per second.
-- OpenPLC execution loops reading inputs and writing outputs every 1 to 10 milliseconds.
+- Native STruC++ execution loops reading inputs and writing outputs every 1 to 10 milliseconds.
 - Web clients streaming real-time dashboards via WebSockets / SSE at 30 to 60 FPS.
 - Historian and alarm engines evaluating thresholds continuously.
 

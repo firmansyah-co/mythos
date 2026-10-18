@@ -63,7 +63,7 @@ Rather than relying on external web scrapers or unsecured REST endpoints, MythOS
                                    ┌────────────────────────────────┴───────┐
                                    ▼                                        ▼
                          +──────────────────+                     +──────────────────+
-                         | MythOS Shm Bus   |                     | OpenPLC & Kernel |
+                         | MythOS Shm Bus   |                     | STruC++ & Kernel |
                          +──────────────────+                     +──────────────────+
 ```
 
@@ -197,7 +197,7 @@ The MythOS native MCP server provides complete operational visibility to AI agen
 | `mythos_ack_alarm` | Operator Control | Acknowledges an active industrial alarm per ISA-18.2 state machine. |
 | `mythos_query_historian` | Read Only | Retrieves historical time-series points over a designated time window. |
 | `mythos_get_runtime_status`| Read Only | Returns CPU usage, cycle times, overrun statistics, and driver health. |
-| `mythos_reload_openplc` | Engineer Control| Compiles and hot-reloads Structured Text into the real-time core. |
+| `mythos_reload_strucpp` | Engineer Control| Compiles and hot-reloads Structured Text into the Native STruC++ core. |
 
 ---
 

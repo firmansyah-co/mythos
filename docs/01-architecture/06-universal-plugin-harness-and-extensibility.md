@@ -31,7 +31,7 @@ The **MythOS Core Microkernel** provides only four foundational primitives:
 |                                  FIRST-PARTY BUILT-IN CORE PLUGINS                                 |
 |                                                                                                    |
 |  +--------------------+  +--------------------+  +--------------------+  +--------------------+    |
-|  |   plugin-openplc   |  |   plugin-alarms    |  |   plugin-recipes   |  |  plugin-historian  |    |
+|  |   plugin-strucpp   |  |   plugin-alarms    |  |   plugin-recipes   |  |  plugin-historian  |    |
 |  |  (IEC 61131-3 PLC) |  |  (ANSI/ISA-18.2)   |  |  (ISA-88 Batch)    |  |  (SDC & Parquet)   |    |
 |  +--------------------+  +--------------------+  +--------------------+  +--------------------+    |
 |  +--------------------+  +--------------------+  +--------------------+                            |
@@ -137,10 +137,10 @@ Every plugin package advertises one or more of the six universal plugin categori
 - **Community Extensions**: 3D Digital Twin Three.js viewer, GIS plant map viewer, custom OEM gauge faceplates.
 
 ### 2.5 Category 5: `LogicExtension`
-- **Role**: Custom IEC 61131-3 Function Blocks and native math accelerators compiled into the OpenPLC STruC++ pipeline.
+- **Role**: Custom IEC 61131-3 Function Blocks and native math accelerators compiled into the Native STruC++ pipeline.
 - **Contract**: Position-independent code (`-fPIC`) C-ABI dynamic library providing `strucpp` symbols.
 - **Built-in First-Party Plugins**:
-  * `plugin-openplc`: Core OpenPLC Runtime v4 execution harness bridging Structured Text C++ virtual dispatch with the TagBus.
+  * `plugin-strucpp`: Native STruC++ execution harness bridging Structured Text C++ virtual dispatch with the TagBus.
 - **Community Extensions**: Neural network inference Function Block (ONNX Runtime), matrix transformation blocks for 6-DOF robotics.
 
 ### 2.6 Category 6: `McpContributor`
@@ -158,7 +158,7 @@ All core features are developed as independent plugins residing in `plugins/` an
 
 | Plugin Identifier | Primary Category | Secondary Categories | Package Path | Functionality |
 |---|---|---|---|---|
-| `plugin-openplc` | `LogicExtension` | `ProcessEngine`, `McpContributor` | `plugins/plugin-openplc` | IEC 61131-3 soft-logic execution engine, STruC++ compilation, and cyclic execution. |
+| `plugin-strucpp` | `LogicExtension` | `ProcessEngine`, `McpContributor` | `plugins/plugin-strucpp` | IEC 61131-3 soft-logic execution engine, STruC++ compilation, and cyclic execution. |
 | `plugin-alarms` | `ProcessEngine` | `HmiWidget`, `McpContributor` | `plugins/plugin-alarms` | ANSI/ISA-18.2 alarm lifecycle, first-out detection, shelving, and flood suppression. |
 | `plugin-recipes` | `ProcessEngine` | `HmiWidget`, `McpContributor` | `plugins/plugin-recipes` | ANSI/ISA-88 batch recipe coordinator, parameter validation, and PackML sequencing. |
 | `plugin-historian` | `ProcessEngine` | `McpContributor` | `plugins/plugin-historian` | Loss-minimized Boxcar-SDC compression, in-memory circular chunking, and Parquet persistence. |
@@ -439,13 +439,13 @@ To guarantee that third-party plugins cannot compromise the industrial plant or 
 +-------------------------------------+--------------------------------------------------------------+
 | 2. TagBus Namespace Write Fencing   | Plugins may ONLY write to tags within their assigned         |
 |                                     | namespace (e.g., `external.modbus.*`). Writing to internal   |
-|                                     | OpenPLC tags (`internal.*`) results in instant SIGSEGV/Fault.|
+|                                     | Internal soft-logic tags (`internal.*`) results in instant SIGSEGV/Fault.|
 +-------------------------------------+--------------------------------------------------------------+
 | 3. CPU Time Quota & Fuel Metering   | - WASI: Deterministic instruction fuel consumption.          |
 |                                     | - Native: Tokio 100ms watchdog timer aborts runaway loops.  |
 +-------------------------------------+--------------------------------------------------------------+
 | 4. Panic Isolation                  | Host wraps all plugin invocations in `catch_unwind`. A panic |
-|                                     | in a plugin never crashes the microkernel or stops OpenPLC.  |
+|                                     | in a plugin never crashes the microkernel or stops the Native STruC++ Engine.  |
 +-------------------------------------+--------------------------------------------------------------+
 | 5. Cryptographic Packaging          | Ed25519 digital signatures verified against trusted roots.   |
 +-------------------------------------+--------------------------------------------------------------+

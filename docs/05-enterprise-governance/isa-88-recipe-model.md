@@ -3,7 +3,7 @@
 ## 1. Executive Summary & Purpose
 This document specifies the software architecture, data structures, and deterministic PLC synchronization contracts for the MythOS Recipe Management Subsystem. The design complies strictly with ANSI/ISA-88.01-2010 (*Batch Control Part 1: Models and Terminology*) and integrates with ISA-TR88.00.02 (PackML) procedural state execution.
 
-The MythOS Recipe Engine bridges high-level process manufacturing recipes (formulations, step sequences, phase parameters) to physical runtime execution in pure Rust and OpenPLC Runtime v4. It guarantees two-way atomic synchronization over the lock-free TagBus (`/dev/shm/mythos_tagbus`), preventing partial parameter writes or race conditions during batch execution.
+The MythOS Recipe Engine bridges high-level process manufacturing recipes (formulations, step sequences, phase parameters) to physical runtime execution in pure Rust and the Native STruC++ Runtime Engine. It guarantees two-way atomic synchronization over the lock-free TagBus (`/dev/shm/mythos_tagbus`), preventing partial parameter writes or race conditions during batch execution.
 
 ---
 
@@ -44,7 +44,7 @@ MythOS models batch production using the four-tier ISA-88 procedural hierarchy:
 +-------------------------------------------------------------------------+
 | PHASE (PLC Equipment Phase)                                             |
 | Smallest procedural element directly commanding field actuators         |
-| Executed inside OpenPLC v4 with bidirectional TagBus handshakes         |
+| Executed inside Native STruC++ Engine with bidirectional TagBus handshakes |
 +-------------------------------------------------------------------------+
 ```
 
@@ -162,7 +162,7 @@ external.Recipe.
 The two-way exchange adheres to a non-blocking 4-phase synchronization handshake:
 
 ```
-      SCADA / MythOS Recipe Engine                       OpenPLC Runtime v4
+      SCADA / MythOS Recipe Engine                       Native STruC++ Engine
                    |                                             |
    (1) PREPARE:    |                                             |
        Serialize formula parameters                              |

@@ -28,8 +28,8 @@ The `.mythos-pkg` archive is a single-file, encrypted, compressed container usin
 |                                                                         |
 | ├── manifest.json                  -- Cryptographic metadata & manifest |
 | ├── plc/                                                                |
-| │   ├── logic.st                   -- OpenPLC Structured Text source    |
-| │   ├── compiled_openplc.so        -- Pre-compiled machine binary (x86) |
+| │   ├── logic.st                   -- STruC++ Structured Text source    |
+| │   ├── compiled_strucpp.so        -- Pre-compiled machine binary (x86) |
 | │   └── io_mapping.json            -- Hardware pin & bus assignments    |
 | ├── topology/                                                           |
 | │   ├── network_topology.json      -- Modbus, EtherNet/IP, OPC UA nodes |
@@ -82,7 +82,7 @@ The unencrypted or primary decrypted manifest contains integrity checksums for e
       "sha256": "3a7b9c...10f4"
     },
     {
-      "path": "plc/compiled_openplc.so",
+      "path": "plc/compiled_strucpp.so",
       "size_bytes": 1420800,
       "sha256": "9f8e7d...65a1"
     },
@@ -121,13 +121,13 @@ When field technicians Dewa Bagus / Fadhil replace a damaged IPC with a new fact
        - Validate all file SHA-256 checksums against manifest.
  5.0s  Filesystem Extraction & In-Place Replacement:
        - Unpack configurations into /etc/mythos/.
-       - Copy compiled_openplc.so to /usr/lib/mythos/plc/.
+       - Copy compiled_strucpp.so to /usr/lib/mythos/plc/.
        - Re-establish user database and RBAC tokens.
  8.0s  Kernel & Hardware Topology Initialization:
        - Allocate /dev/shm/mythos_tagbus lock-free shared memory block.
        - Initialize network NICs and industrial fieldbus ports.
-12.0s  OpenPLC Runtime v4 Launch:
-       - dlopen("/usr/lib/mythos/plc/compiled_openplc.so").
+12.0s  Native STruC++ Runtime Launch:
+       - dlopen("/usr/lib/mythos/plc/compiled_strucpp.so").
        - Attach cyclic real-time thread with SCHED_FIFO priority 99.
 18.0s  Fieldbus Bus Scanning & Synchronization:
        - Modbus TCP, EtherNet/IP, and Profinet scanners establish connections.
@@ -152,7 +152,7 @@ To guarantee recovery points without manual intervention:
    - Retained locally for 7 days (rolling FIFO) and synced to off-site SFTP / SMB NAS.
 2. **Event-Driven Pre-Change Snapshots**:
    - Automatically executed prior to any:
-     - OpenPLC Structured Text re-compilation or hot-reload.
+     - STruC++ Structured Text re-compilation or hot-reload.
      - Master Recipe release / modification.
      - System firmware or package updates.
 3. **Emergency Snapshot on Brownout / UPS Alert**:
@@ -278,5 +278,5 @@ impl DisasterRecoveryEngine {
 
 ## 8. Verification & Acceptance Criteria
 1. **Benchmark Hot-Restore**: Complete decompression, integrity validation, and runtime spin-up on a standard quad-core industrial IPC (e.g., Advantech MIC-770 / Siemens IPC427E) takes $\le 21.4\,\text{seconds}$, well below the 30-second requirement.
-2. **Tamper Resilience**: Modifying even 1 byte in `compiled_openplc.so` or `manifest.json` triggers an AEAD tag mismatch or SHA-256 failure during extraction, cleanly aborting restore before executing untrusted machine code.
+2. **Tamper Resilience**: Modifying even 1 byte in `compiled_strucpp.so` or `manifest.json` triggers an AEAD tag mismatch or SHA-256 failure during extraction, cleanly aborting restore before executing untrusted machine code.
 3. **Power-Loss Immunity**: Atomic unpacking uses atomic directory rename (`renameat2` with `RENAME_EXCHANGE`), preventing half-written system states if power fails mid-restore.

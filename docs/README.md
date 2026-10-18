@@ -1,6 +1,6 @@
 # MythOS Enterprise Documentation Suite
 
-Welcome to the comprehensive technical documentation and system specification repository for **MythOS**, an industrial-grade Supervisory Control and Data Acquisition (SCADA) and soft-logic runtime platform engineered in pure Rust with embedded OpenPLC Runtime v4.
+Welcome to the comprehensive technical documentation and system specification repository for **MythOS**, an industrial-grade Supervisory Control and Data Acquisition (SCADA) and soft-logic runtime platform engineered in pure Rust with the embedded Native STruC++ Runtime Engine.
 
 ---
 
@@ -13,7 +13,7 @@ Welcome to the comprehensive technical documentation and system specification re
 ### 1.2 Architectural Decision Records (`specs/adr/`)
 - **[ADR-001: Pure Rust Microkernel Actor Architecture](../specs/adr/ADR-001-rust-microkernel-actors.md)**: Decoupled Tokio actor supervision replacing monolithic loops.
 - **[ADR-002: External Namespace Tag Bus & Shared Memory](../specs/adr/ADR-002-external-namespace-tag-bus.md)**: Lock-free triple-buffered POSIX SHM (`/dev/shm/mythos_tagbus`) supporting 32,768 tags with sub-50ns reads.
-- **[ADR-003: OpenPLC Runtime v4 Execution Bridge](../specs/adr/ADR-003-openplc-v4-runtime-bridge.md)**: C-ABI FFI wrapper, STruC++ compiler pipeline, Linux `SCHED_FIFO` real-time thread scheduling, and dynamic hot-reload.
+- **[ADR-003: Native STruC++ Runtime Engine Architecture](../specs/adr/ADR-003-openplc-v4-runtime-bridge.md)**: In-process C-ABI FFI wrapper, STruC++ compiler pipeline, Linux `SCHED_FIFO` real-time thread scheduling, and dynamic hot-reload.
 - **[ADR-004: Layer 2 DCP Discovery and Deterministic Fieldbus Topology](../specs/adr/ADR-004-layer2-dcp-discovery-topology.md)**: Subnet-agnostic PROFINET Layer 2 DCP broadcast frames, LED blink signalization, and RS485 bus timing constraints.
 - **[ADR-005: Native Model Context Protocol (MCP) Self-Registration](../specs/adr/ADR-005-native-mcp-self-registration.md)**: Native Rust MCP server with procedural macros for autonomous AI agent inspection and tool execution.
 - **[ADR-006: Server-Driven UI (SDUI) & Auto-Generated TypeScript Contract](../specs/adr/ADR-006-server-driven-ui-auto-types.md)**: Pure Dumb Frontend paradigm with build-time `ts-rs` type synchronization.
@@ -23,7 +23,7 @@ Welcome to the comprehensive technical documentation and system specification re
 - **[00-Cargo Workspace and Crates Design](01-architecture/00-cargo-workspace-and-crates-design.md)**: Modular crate layout, internal dependencies, trait interfaces, and compilation invariants.
 - **[01-Microkernel and Shared Memory Architecture](01-architecture/01-microkernel-and-shm.md)**: Detailed memory layout, atomic pointer swap mechanics, and lock-free concurrency.
 - **[02-Protocol Driver Service Provider Interface (SPI)](01-architecture/02-protocol-driver-spi.md)**: Dynamic driver trait contract, configuration schemas, and fault isolation mechanisms.
-- **[03-OpenPLC v4 FFI Bridge](01-architecture/03-openplc-v4-ffi-bridge.md)**: Linux real-time thread priority, memory synchronization cycle, and STruC++ pipeline.
+- **[03-Native STruC++ Runtime Engine & In-Process FFI Bridge](01-architecture/03-openplc-v4-ffi-bridge.md)**: Linux real-time thread priority, memory synchronization cycle, and STruC++ pipeline.
 - **[04-Model Context Protocol (MCP) Subsystem](01-architecture/04-mcp-subsystem-spec.md)**: Stdio and SSE transports, procedural macros, and cryptographic security scopes for AI agents.
 - **[05-HTTP, SSE, and WebSocket API](01-architecture/05-http-sse-and-websocket-api.md)**: OpenAPI 3.1 endpoints, 100ms SSE telemetry streaming, oscilloscope WebSocket protocol, and in-canvas logic deployment.
 

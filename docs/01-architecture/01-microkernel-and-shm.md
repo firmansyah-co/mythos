@@ -13,7 +13,7 @@
 This document defines the high-speed, lock-free inter-process shared memory architecture for MythOS. 
 
 Industrial SCADA runtimes face two conflicting requirements:
-1. Hard real-time control loops (OpenPLC Runtime v4) require deterministic sub-millisecond cycle times with zero lock contention.
+1. Hard real-time control loops (Native STruC++ Runtime Engine) require deterministic sub-millisecond cycle times with zero lock contention.
 2. High-throughput telemetry consumers (HMI WebSocket gateways, historian writers, MCP servers, and cloud edge sync) require continuous read access to thousands of process variables.
 
 MythOS resolves this contention by decoupling writers and readers through a triple-buffered, lock-free POSIX Shared Memory architecture (`/dev/shm/mythos_tagbus`).

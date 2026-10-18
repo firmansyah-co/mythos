@@ -45,7 +45,7 @@ pub enum PluginError {
 pub enum PluginType {
     /// Fieldbus or communication protocol driver (e.g. Modbus, MQTT, Profinet)
     ProtocolDriver,
-    /// Real-time or batch process execution engine (e.g. OpenPLC, Alarms, Recipes)
+    /// Real-time or batch process execution engine (e.g. Native STruC++, Alarms, Recipes)
     ProcessEngine,
     /// Hardware and network discovery provider
     DiscoveryScanner,

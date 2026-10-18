@@ -10,7 +10,7 @@
 
 ## 1. Executive Summary
 
-MythOS is an industrial-grade Supervisory Control and Data Acquisition (SCADA) and soft-logic runtime written in pure Rust. MythOS integrates the OpenPLC Runtime v4 execution engine, provides sub-millisecond lock-free shared memory tag distribution, hosts an isolated protocol driver SPI, and exposes a native Model Context Protocol (MCP) server for autonomous AI agent inspection and control.
+MythOS is an industrial-grade Supervisory Control and Data Acquisition (SCADA) and soft-logic runtime written in pure Rust. MythOS integrates the embedded Native STruC++ Runtime Engine (`crates/mythos-strucpp`), provides sub-millisecond lock-free shared memory tag distribution, hosts an isolated protocol driver SPI, and exposes a native Model Context Protocol (MCP) server for autonomous AI agent inspection and control.
 
 To guarantee hard fault isolation, zero circular dependencies, fast incremental compilation, and deterministic memory safety, the codebase is structured as a modular Cargo Workspace.
 
@@ -95,8 +95,8 @@ crc32fast = "1.4"
            ┌────────────────────────┼────────────────────────┐
            ▼                        ▼                        ▼
 ┌────────────────────┐   ┌────────────────────┐   ┌────────────────────┐
-│   mythos-openplc   │   │     mythos-mcp     │   │ drivers/driver-*   │
-│  (OpenPLC Bridge)  │   │   (MCP AI Server)  │   │ (Modbus, MQTT, ..) │
+│   mythos-strucpp   │   │     mythos-mcp     │   │ drivers/driver-*   │
+│ (Native STruC++)   │   │   (MCP AI Server)  │   │ (Modbus, MQTT, ..) │
 └──────────┬─────────┘   └──────────┬─────────┘   └──────────┬─────────┘
            │                        │                        │
            │                        ▼                        │
@@ -117,7 +117,7 @@ crc32fast = "1.4"
 ### 3.1 Crate Dependency Rules
 1. **Zero Downward Pollution**: `mythos-shm` and `mythos-driver-api` are bottom-tier leaf crates. They depend only on standard library and minimal zero-cost dependencies (`bytemuck`, `serde`, `thiserror`). They never depend on `mythos-core`.
 2. **Driver Isolation**: Specific protocol drivers (`drivers/driver-modbus`, `drivers/driver-mqtt`) depend solely on `mythos-driver-api` and `mythos-shm`. Drivers never depend on each other or on `mythos-core`.
-3. **OpenPLC Isolation**: `mythos-openplc` interacts with the rest of the system strictly through `mythos-shm` memory maps and `mythos-driver-api` event abstractions.
+3. **STruC++ Engine Isolation**: `crates/mythos-strucpp` interacts with the rest of the system strictly through `mythos-shm` memory maps and `mythos-driver-api` event abstractions without external PLC daemons.
 
 ---
 
@@ -142,8 +142,8 @@ crc32fast = "1.4"
   * `enum DriverEvent`: State change notifications, connection lifecycle events, and telemetry counters.
   * `enum DriverError`: Structured, recoverable vs non-recoverable protocol errors.
 
-### 4.3 `mythos-openplc` (OpenPLC Runtime v4 FFI Engine)
-- **Role**: Structured Text compilation pipeline and dynamic FFI runtime execution harness based on OpenPLC Runtime v4 STruC++ architecture.
+### 4.3 `crates/mythos-strucpp` (Native STruC++ Runtime Engine)
+- **Role**: Structured Text compilation pipeline and dynamic in-process runtime execution harness based on the STruC++ architecture, executing soft-logic without external PLC daemons.
 - **Core Abstractions**:
   * `CompilerPipeline`: Automates compilation of IEC 61131-3 Structured Text to C++17 via STruC++ (`strucpp compile`), generating `generated.cpp`, `generated.hpp`, `generated_debug.cpp`, and `debug-map.json`, compiled to a dynamic shared object (`.so`) with Clang/G++.
   * `DynamicRuntimeLoader`: Safe dynamic library loader (`libloading::Library`) resolving the C-linkage configuration entrypoint (`strucpp_get_config`), lock plumbing (`strucpp_set_locks`), and hierarchical debug exports (`strucpp_debug_*`), enabling atomic hot-reloading during cyclic dead-time.
@@ -164,7 +164,7 @@ crc32fast = "1.4"
 ### 4.5 `mythos-core` (Microkernel Host Daemon)
 - **Role**: Process supervisor, actor coordinator, configuration engine, and REST/WebSocket edge interface.
 - **Core Abstractions**:
-  * `KernelSupervisor`: Spawns and monitors driver worker threads, OpenPLC real-time host, and MCP server.
+  * `KernelSupervisor`: Spawns and monitors driver worker threads, Native STruC++ real-time host, and MCP server.
   * `TagRegistry`: Semantic namespace resolver mapping `external.<namespace>.<device>.<variable>` string URIs to numeric SHM slot indices.
   * `NvramWalEngine`: Persistence engine writing `RETAIN` and `PERSISTENT` tags to `/var/lib/mythos/nvram.dat`.
   * `ApiGateway`: Axum-based HTTP/WebSocket server exposing telemetry and Server-Driven UI (SDUI) contracts.
@@ -203,8 +203,8 @@ pub enum MythosError {
         source: DriverError,
     },
 
-    #[error("OpenPLC runtime error: {0}")]
-    OpenPlcError(#[from] OpenPlcError),
+    #[error("Native STruC++ runtime error: {0}")]
+    StrucppError(#[from] StrucppError),
 
     #[error("MCP protocol error: {0}")]
     McpError(#[from] McpError),
@@ -259,7 +259,7 @@ pub enum DriverError {
 }
 
 #[derive(Error, Debug)]
-pub enum OpenPlcError {
+pub enum StrucppError {
     #[error("Structured Text STruC++ compilation failed: {0}")]
     CompilationFailed(String),
 
@@ -328,7 +328,7 @@ pub enum NvramError {
 
 1. **Send + Sync Bounds**: All inter-thread message payloads and shared driver contexts implement `Send + Sync + 'static`.
 2. **Zero Dynamic Allocation in Hard Real-Time Loops**:
-   - The OpenPLC execution loop and the SHM cyclic update loops pre-allocate all buffers during initialization.
+   - The Native STruC++ execution loop and the SHM cyclic update loops pre-allocate all buffers during initialization.
    - Zero `Vec` resizing, zero `String` formatting, and zero `Box::new` calls occur during the cyclic scanning window.
 3. **Panic Containment**:
    - Protocol drivers and MCP tool calls execute within caught unwinding boundaries (`std::panic::catch_unwind`).

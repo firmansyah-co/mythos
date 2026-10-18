@@ -24,7 +24,7 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 |  [ SPRINT 0 ]  Core Foundations, SHM TagBus, Driver SPI & Universal Plugin SDK Harness      |
 |         |                                                                                     |
 |         v                                                                                     |
-|  [ SPRINT 1 ]  OpenPLC Runtime v4 C-ABI Bridge, STruC++ Compiler Pipeline & Logic Execution   |
+|  [ SPRINT 1 ]  Native STruC++ Runtime Engine & In-Canvas Logic Compilation                    |
 |         |                                                                                     |
 |         v                                                                                     |
 |  [ SPRINT 2 ]  Layer 2 PROFINET DCP Discovery, Hardware Catalog & Dynamic Plugin Packaging    |
@@ -67,21 +67,21 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 
 ---
 
-### Sprint 1: OpenPLC Runtime v4 C-ABI Bridge & Logic Compilation
-- **Sprint Goal**: Embed OpenPLC Runtime v4 via an `extern "C"` Foreign Function Interface, establish the STruC++ compiler pipeline with in-canvas deploy, and verify cyclic execution with real-time Linux priority.
+### Sprint 1: Native STruC++ Runtime Engine & In-Canvas Logic Compilation
+- **Sprint Goal**: Embed the Native STruC++ Runtime Engine via an `extern "C"` Foreign Function Interface, establish the STruC++ compiler pipeline with in-canvas deploy, and verify cyclic execution with real-time Linux priority without external PLC daemons.
 - **Duration**: Weeks 3 - 4
 - **Lead Division**: Software (`head-software`), Hardware (`head-hardware`)
 
 | Task ID | Task Description | Assigned Division | Deliverables & Code Artifacts | Acceptance Criteria |
 |---|---|---|---|---|
-| **TSK-101** | Construct OpenPLC v4 FFI C-ABI Wrapper | Software (`head-software`) | `crates/mythos-openplc/src/ffi.rs`, `glue.c`, `glue.h` | Safe Rust wrapper exposing runtime initialization, cycle step, and memory buffer pointers. |
-| **TSK-102** | Build STruC++ Compiler Engine & In-Canvas Deploy | Software (`head-software`) | `crates/mythos-openplc/src/compiler.rs`, `deploy.rs` | Compiles `.st` logic into native `.so` dynamic libraries using `strucpp compile` directly on the target controller via `POST /api/v1/control/deploy`. Manual file uploads eliminated. |
-| **TSK-103** | Implement Real-Time Linux Scan Thread Scheduling | Hardware (`head-hardware`), Software (`head-software`) | `crates/mythos-openplc/src/runtime.rs` | Attaches scan loop to `SCHED_FIFO` with real-time priority 80. Scan jitter within $\pm 100\,\mu\text{s}$. |
-| **TSK-104** | Develop Dynamic Hot-Reload Subsystem | Software (`head-software`) | `crates/mythos-openplc/src/hot_reload.rs` | Dynamic library swap using `dlopen()` completed in $< 50\,\text{ms}$ at end-of-scan boundary without zeroing outputs. |
-| **TSK-105** | Integrate TagBus Bidirectional Memory Synchronization | Software (`head-software`) | `crates/mythos-openplc/src/sync.rs` | Copies inputs into OpenPLC `%IX` memory and extracts outputs from `%QX` memory into `/dev/shm/mythos_tagbus` per scan cycle. |
-| **TSK-106** | Create IEC 61131-3 Standard Test Program Suite | Hardware (`head-hardware`) | `crates/mythos-openplc/tests/programs/` | Automated test suites for Timer (TON), Counter (CTU), and State Machine logic verify expected execution. |
-| **TSK-107** | Implement Task Scheduler Staging Isolation | Software (`head-software`) | `crates/mythos-openplc/src/scheduler.rs` | Decouples draft task configuration edits from the running `SCHED_FIFO` loop until atomic project activation. |
-| **TSK-108** | Implement Tag Quality Alarm Propagation & Simulation Input Gating | Software (`head-software`) | `crates/mythos-openplc/src/quality_gate.rs`, `sync.rs` | Enforces `BAD_COMM_FAILURE` (0x0008/0x0018) quality latching on physical field communication loss (SYS-REQ-096). Restricts TagBus manual slider injection and direct variable forcing strictly to devices configured in `ManualSimulation` mode. |
+| **TSK-101** | Native STruC++ C-ABI Bridge & Symbol Loader | Software (`head-software`) | `crates/mythos-strucpp/src/ffi.rs`, `symbol.rs`, `glue.h` | Safe Rust wrapper exposing native runtime initialization, cycle step, and memory buffer pointers without external PLC daemons. |
+| **TSK-102** | STruC++ Compiler Engine & In-Canvas Deploy | Software (`head-software`) | `crates/mythos-strucpp/src/compiler.rs`, `deploy.rs` | Compiles `.st` logic into native C++17 `.so` dynamic libraries using `strucpp compile` directly on the target controller via `POST /api/v1/control/deploy`. Manual file uploads eliminated. |
+| **TSK-103** | Native Cyclic Scheduling & Real-Time Linux Scan Thread | Hardware (`head-hardware`), Software (`head-software`) | `crates/mythos-strucpp/src/runtime.rs` | Attaches cyclic scan loop to `SCHED_FIFO` with real-time priority 80. Scan jitter within $\pm 100\,\mu\text{s}$. |
+| **TSK-104** | Dynamic Hot-Reload Subsystem | Software (`head-software`) | `crates/mythos-strucpp/src/hot_reload.rs` | Dynamic library swap using `libloading` completed in $< 50\,\text{ms}$ at end-of-scan boundary without zeroing outputs. |
+| **TSK-105** | TagBus Bidirectional Memory Synchronization | Software (`head-software`) | `crates/mythos-strucpp/src/sync.rs` | Copies inputs into STruC++ `%IX` memory and extracts outputs from `%QX` memory into `/dev/shm/mythos_tagbus` per scan cycle. |
+| **TSK-106** | IEC 61131-3 Standard Test Program Suite | Hardware (`head-hardware`) | `crates/mythos-strucpp/tests/programs/` | Automated test suites for Timer (TON), Counter (CTU), and State Machine logic verify expected execution. |
+| **TSK-107** | Task Scheduler Staging Isolation | Software (`head-software`) | `crates/mythos-strucpp/src/scheduler.rs` | Decouples draft task configuration edits from the running `SCHED_FIFO` loop until atomic project activation. |
+| **TSK-108** | Tag Quality Alarm Propagation & Simulation Input Gating | Software (`head-software`) | `crates/mythos-strucpp/src/quality_gate.rs`, `sync.rs` | Enforces `BAD_COMM_FAILURE` (0x0008/0x0018) quality latching on physical field communication loss (SYS-REQ-096). Restricts TagBus manual slider injection and direct variable forcing strictly to devices configured in `ManualSimulation` mode. |
 
 ---
 
@@ -179,7 +179,7 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
                                                   v
 +---------------------------------------------------------------------------------------------------+
 | GATE 1: Logic Engine & Control Loop Sign-Off (End of Sprint 1)                                    |
-| Criteria: OpenPLC v4 compiles ST logic via STruC++; in-canvas POST /deploy hot-reloads < 50 ms;   |
+| Criteria: Native STruC++ compiles ST logic via STruC++; in-canvas POST /deploy hot-reloads < 50 ms;|
 |           Linux real-time thread runs with < 100 us jitter bounds; scheduler staging isolated.    |
 +---------------------------------------------------------------------------------------------------+
                                                   |
@@ -220,7 +220,7 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 |---|---|---|---|---|---|---|
 | **Cargo Workspace & Microkernel** | **Accountable** | Consulted | Informed | Consulted | Responsible (Specs) | Approver |
 | **SHM Lock-Free TagBus** | **Accountable** | Consulted | Informed | Consulted | Responsible (Specs) | Approver |
-| **OpenPLC v4 Runtime Bridge** | **Accountable** | Responsible | Informed | Informed | Responsible (Specs) | Approver |
+| **Native STruC++ Runtime Engine** | **Accountable** | Responsible | Informed | Informed | Responsible (Specs) | Approver |
 | **Layer 2 DCP Discovery** | Responsible | **Accountable** | Informed | Informed | Responsible (Specs) | Approver |
 | **Universal Protocol Auto-Discovery** | **Accountable** | Responsible | Responsible | Informed | Responsible (Specs) | Approver |
 | **Device Catalog Packages** | Consulted | **Accountable** | Informed | Informed | Responsible (Specs) | Approver |

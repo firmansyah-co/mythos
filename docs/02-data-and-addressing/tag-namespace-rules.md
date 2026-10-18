@@ -22,7 +22,7 @@ MythOS enforces a **Physical Plant Hierarchy URI Convention**:
 ```
 external.<namespace>.<device>.<variable>[.<subfield>]
 ```
-All system components—including the OpenPLC FFI bridge, protocol drivers, HMI visual widgets, time-series historians, and MCP tools—address process data through this unified semantic format.
+All system components—including the Native STruC++ FFI bridge, protocol drivers, HMI visual widgets, time-series historians, and MCP tools—address process data through this unified semantic format.
 
 ---
 

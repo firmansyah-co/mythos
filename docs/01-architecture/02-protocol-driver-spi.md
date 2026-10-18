@@ -322,7 +322,7 @@ pub async fn run_supervised_driver<D: ProtocolDriver>(
 ```
 
 ### 5.2 Key Isolation Rules
-1. **No Shared Locks**: A driver must never acquire a mutex or lock held by another driver or by the OpenPLC real-time loop.
+1. **No Shared Locks**: A driver must never acquire a mutex or lock held by another driver or by the Native STruC++ real-time loop.
 2. **Dedicated Channel**: Driver communication with the kernel uses bounded MPSC channels (`tokio::sync::mpsc`). When a channel is full, excess telemetry events drop cleanly without blocking the network loop.
 3. **Dedicated Shm Slice**: Drivers receive handles to only the tag slot IDs defined in their validated configuration. A driver cannot overwrite memory owned by another driver.
 ---

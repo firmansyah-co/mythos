@@ -38,7 +38,7 @@ MythOS establishes five discrete human roles and dedicated machine/agent service
 | **Execute / Hold Batch Recipe** | No | Yes | Yes | Yes | Yes | Conditional (`mcp:batch:cmd`) |
 | **Edit / Sign Master Recipe** | No | No | Yes (Sign) | Yes (Edit) | Yes | Denied (21 CFR Part 11) |
 | **Tune PID Parameters** | No | No | No | Yes | Yes | Conditional (`mcp:pid:tune`) |
-| **Hot-Reload OpenPLC Logic** | No | No | No | Yes | Yes | Denied |
+| **Hot-Reload Native STruC++ Logic** | No | No | No | Yes | Yes | Denied |
 | **Configure Protocol Drivers** | No | No | No | Yes | Yes | Denied |
 | **Export Historian CSV Data** | No | Yes | Yes | Yes | Yes | Yes (`mcp:historian:read`) |
 | **User Account & Role Admin** | No | No | No | No | Yes | Denied |

@@ -14,11 +14,11 @@
 ## 1. Introduction
 
 ### 1.1 Purpose
-This document specifies the system requirements for MythOS. MythOS is an industrial-grade Supervisory Control and Data Acquisition (SCADA) and soft-logic runtime platform. MythOS executes in pure Rust. MythOS integrates OpenPLC Runtime v4 directly. This specification eliminates technical assumptions before implementation begins.
+This document specifies the system requirements for MythOS. MythOS is an industrial-grade Supervisory Control and Data Acquisition (SCADA) and soft-logic runtime platform. MythOS executes in pure Rust. MythOS integrates the Native STruC++ Runtime Engine directly, eliminating external PLC daemons. This specification eliminates technical assumptions before implementation begins.
 
 ### 1.2 Scope
 MythOS controls industrial manufacturing plants, utilities, palm oil mills, and municipal water facilities. MythOS provides:
-1. Sub-millisecond cyclic control execution via embedded OpenPLC Runtime v4.
+1. Sub-millisecond cyclic control execution via the embedded Native STruC++ Runtime Engine.
 2. High-throughput, lock-free, triple-buffered shared memory tag distribution (`/dev/shm/mythos_tagbus`).
 3. Isolated, modular protocol driver execution via a strictly bounded Service Provider Interface (SPI).
 4. Subnet-agnostic Layer 2 Ethernet device discovery via PROFINET Discovery and Configuration Protocol (DCP).
@@ -50,7 +50,7 @@ MythOS controls industrial manufacturing plants, utilities, palm oil mills, and 
 - **MCP**: Model Context Protocol (standard for AI agent tool integration).
 - **MTTR**: Mean Time To Recovery.
 - **NVRAM**: Non-Volatile Random Access Memory.
-- **OpenPLC**: Open-source IEC 61131-3 compliant programmable logic controller runtime.
+- **STruC++**: Structured Text to C++ compiler and native runtime execution framework for IEC 61131-3 control logic.
 - **POD**: Plain Old Data (C-compatible, copyable memory layout).
 - **RBAC**: Role-Based Access Control.
 - **SDC**: Swinging Door Compression.
@@ -126,7 +126,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 |  |  +------------^-----------------------------^------------------------------^-------------+  |  |
 |  |               |                             |                              |                |  |
 |  |  +------------+------------+  +-------------+-------------+  +-------------+-------------+  |  |
-|  |  | OpenPLC v4 Runtime Bridge|  | Isolated Driver SPI Crates|  | Layer 2 DCP Discovery     |  |  |
+|  |  | Native STruC++ Engine    |  | Isolated Driver SPI Crates|  | Layer 2 DCP Discovery     |  |  |
 |  |  | (STruC++ C-ABI / .so)   |  | (Modbus TCP/RTU Actors)   |  | (Raw PROFINET Frames)     |  |  |
 |  |  +-------------------------+  +---------------------------+  +---------------------------+  |  |
 |  |                                                                                             |  |
@@ -139,7 +139,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 
 ### 2.2 System Invariants
 1. **Zero Monolithic Leakage**: Protocol drivers exist in isolated crates (`drivers/driver-*`). A driver crash or defect cannot terminate the core runtime or other drivers.
-2. **Pure Rust Execution**: The core daemon, driver runtime, alarm engine, historian, and MCP server use safe Rust. OpenPLC v4 integrates exclusively through strict C-ABI Foreign Function Interfaces.
+2. **Pure Rust Execution**: The core daemon, driver runtime, alarm engine, historian, and MCP server use safe Rust. The Native STruC++ Runtime Engine integrates exclusively through strict C-ABI Foreign Function Interfaces.
 3. **Pure Dumb Frontend**: The user interface executes as a stateless consumer. The frontend never computes tag engineering scales, alarm thresholds, or interlock logic. The backend transmits Server-Driven UI definitions.
 4. **Sub-Millisecond Tag Access**: All read operations on the TagBus complete in less than 50 nanoseconds. No mutexes or lock primitives guard the real-time scan cycle.
 5. **AI Accessibility**: Every platform capability exposes an equivalent Model Context Protocol (MCP) tool. AI agents inspect and configure the platform with full cryptographic auditability.
@@ -172,13 +172,13 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 - **SYS-REQ-018 [Instrument Tag Mapping]**: Field drivers shall identify physical instruments using ISA-5.1 standards. Examples include `PT101` for pressure transmitters and `TT204` for temperature sensors.
 - **SYS-REQ-019 [Physical Metric Registration]**: Field drivers shall register measured physical quantities as the variable segment. Permitted variables include `pressure`, `temperature`, and `flow_rate`, with standard subfields (`.pv`, `.raw`, `.fault`).
 
-### 3.3 OpenPLC Runtime v4 Integration (`crates/mythos-openplc`)
+### 3.3 Native STruC++ Runtime Engine Integration (`crates/mythos-strucpp`)
 
-- **SYS-REQ-020 [C-ABI Bridge]**: MythOS shall bridge OpenPLC Runtime v4 through an `extern "C"` Foreign Function Interface.
+- **SYS-REQ-020 [Native STruC++ C-ABI Bridge & Symbol Loader]**: MythOS shall interface with STruC++ compiled control logic through a standardized `extern "C"` Foreign Function Interface, consuming C++17 shared object libraries (`.so`) loaded via `libloading` without external PLC daemons.
 - **SYS-REQ-021 [STruC++ Pipeline & In-Canvas Logic Deployment]**: The system shall compile Structured Text (`.st`) code into native `.so` dynamic libraries via STruC++ (`strucpp compile`) directly on the target controller. The IEC 61131-3 logic editor (Monaco ST editor and Ladder diagram canvas) shall be 100% integrated inside the MythOS web workbench. The platform shall eliminate manual file upload forms. Deploying logic shall execute as a single atomic user action ([Deploy to Controller] dispatching `POST /api/v1/control/deploy`), generating native binaries and hot-reloading without control interruption.
-- **SYS-REQ-022 [Real-Time Scheduling]**: The OpenPLC loop shall run on a real-time Linux thread (`SCHED_FIFO`, priority 80 to 99).
+- **SYS-REQ-022 [Native Cyclic Scheduling]**: The Native STruC++ cyclic scan loop shall run on a dedicated real-time Linux thread (`SCHED_FIFO`, priority 80 to 99) with deterministic cycle timing.
 - **SYS-REQ-023 [Dynamic Hot-Reload]**: The system shall hot-reload compiled logic binaries using `dlopen()` and `dlclose()`. Hot-reload shall verify checksums and pause execution at scan boundaries. It shall transfer retain buffers and resume execution within 50 milliseconds.
-- **SYS-REQ-024 [Tag Synchronization]**: At scan start, the bridge transfers inputs from TagBus to OpenPLC located memory (`%IX`). The bridge shall resolve field inputs using `external.<namespace>.<device>.<variable>`. At scan end, the bridge shall copy outputs (`%QX`) back to the TagBus.
+- **SYS-REQ-024 [Tag Synchronization]**: At scan start, the engine transfers inputs from TagBus to STruC++ located input memory (`%IX`). The engine shall resolve field inputs using `external.<namespace>.<device>.<variable>`. At scan end, the engine shall copy outputs (`%QX`) directly back to the TagBus.
 - **SYS-REQ-025 [Internal PLC Variable Isolation]**: Internal PLC program variables and timers shall NOT use the `external` root prefix. Internal variables shall use the domain prefix `internal.<namespace>.<program>.<variable>`. The runtime shall isolate internal variables from fieldbus driver overwrites.
 
 ### 3.4 Data Tagging, Addressing & Retention (`docs/02-data-and-addressing/`)
@@ -260,7 +260,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 - **SYS-REQ-061 [First-Out Latching]**: During trip events, the alarm engine latches root-cause faults using 64-bit nanosecond timestamps (`CLOCK_MONOTONIC_RAW`).
 - **SYS-REQ-062 [Deadband & Alarm Hysteresis]**: Analog alarms shall enforce configurable deadbands ($\Delta_{\text{db}}$) and on/off-delay filter timers to eliminate chatter.
 - **SYS-REQ-063 [ISA-88 Batch Recipe Engine]**: The recipe engine shall separate Formula (setpoints and parameters) from Procedure (PackML sequential phases).
-- **SYS-REQ-064 [4-Phase Recipe Handshake]**: Recipe setpoint transfer to OpenPLC executes through a 4-phase handshake over `external.Recipe.*`. Verification uses SHA-256 parameter digests.
+- **SYS-REQ-064 [4-Phase Recipe Handshake]**: Recipe setpoint transfer to the Native STruC++ Engine executes through a 4-phase handshake over `external.Recipe.*`. Verification uses SHA-256 parameter digests.
 - **SYS-REQ-065 [Columnar Historian Engine]**: Real-time telemetry shall pass through Boxcar-Swinging Door Compression (SDC). The engine writes daily Apache Parquet columnar files partitioned by date.
 - **SYS-REQ-066 [CSV Exporter]**: The system shall expose an RFC 4180 streaming API supporting multiple resampled data streams.
 - **SYS-REQ-067 [IEC 62443 RBAC & Audit Trail]**: Five hierarchical roles (`Guest`, `Operator`, `Supervisor`, `Engineer`, `Admin`) shall govern system operations. All setpoint mutations and alarm acknowledgments shall write to an append-only, SHA-256 Merkle-chained JSONL audit ledger.
@@ -285,7 +285,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 - **SYS-REQ-077 [Debounced Atomic Autosave]**: The engineering workbench and controller storage daemon shall implement debounced autosaving with an idle timeout of 1,000 milliseconds. Every autosave mutation commits append-only changes immediately to `project.wal`. The background storage actor then writes a temporary file and atomically replaces project artifacts via POSIX `rename`, guaranteeing zero data loss and crash resilience across power interruptions.
 - **SYS-REQ-078 [Multi-User Real-Time Collaborative IDE via CRDT]**: The engineering IDE and canvas subsystem shall support concurrent multi-engineer collaboration across local area networks using Conflict-Free Replicated Data Types (CRDT). The backend utilizes `yrs` (Rust Yjs port) over WebSocket (`/api/v1/collab/ws`). The frontend integrates `yjs`, `y-monaco`, and `y-websocket` to deliver real-time multi-cursor position indicators, peer awareness presence avatars, and conflict-free concurrent editing of logic code and canvas topologies.
 - **SYS-REQ-079 [Edit View vs Runtime View State Decoupling]**: The platform shall enforce strict two-phase separation between draft editing (Edit View) and active production execution (Runtime View) across HMI screens (Engineering & Operator) and soft-logic code. Modifications to canvas objects, piping vectors, faceplate cards, or logic code shall reside exclusively in an isolated draft staging buffer (`project.draft.json`). Modifications shall not mutate the live running plant until an explicit user commit action is executed.
-- **SYS-REQ-080 [Task Scheduler Staging Isolation]**: Cyclic task configurations (scan intervals, execution priorities, CPU core affinities) within OpenPLC v4 shall adhere to Edit vs Runtime staging. Modifying a task schedule in Edit View shall update only draft project configurations. The live real-time `SCHED_FIFO` task thread continues executing existing cycle bounds until an atomic project activation is committed.
+- **SYS-REQ-080 [Task Scheduler Staging Isolation]**: Cyclic task configurations (scan intervals, execution priorities, CPU core affinities) within the Native STruC++ Engine shall adhere to Edit vs Runtime staging. Modifying a task schedule in Edit View shall update only draft project configurations. The live real-time `SCHED_FIFO` task thread continues executing existing cycle bounds until an atomic project activation is committed.
 - **SYS-REQ-081 [Visual Mode Indicator & Promotion Handshake]**: The user interface shall display persistent status badges indicating operational mode (`[✏️ EDIT MODE — UNCOMMITTED]` versus `[🟢 RUNTIME MODE — LIVE]`). Committing shall promote draft files (`project.draft.json`) to active production (`project.active.json`), recompile Structured Text via STruC++, and trigger an atomic hot-reload in $< 50\,\text{ms}$ at scan dead-time.
 - **SYS-REQ-082 [TIA Portal-Style Screen & Sub-Screen Hierarchy]**: The engineering workbench shall organize HMI screens in a hierarchical tree inside the primary navigation panel (Zone 2). The tree supports adding, renaming, and deleting top-level Screens (`Screen_01_PlantOverview`) and child Sub-Screens or Popup Windows (`SubScreen_FeedPumpSkid`). Double-clicking any Screen or Sub-Screen node opens its dedicated canvas tab in the multi-zone workspace (Zone 3) for independent graphic authoring.
 - **SYS-REQ-083 [3-Stage HMI Lifecycle: Edit, Preview, Deploy]**: HMI displays shall adhere to a strict three-stage operational lifecycle:
@@ -298,7 +298,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 ### 3.10 Universal Plugin Harness & Extensibility Subsystem (`docs/01-architecture/06-universal-plugin-harness-and-extensibility.md`, `specs/adr/ADR-008`)
 
 - **SYS-REQ-086 [Universal Plugin SPI & Lifecycle Engine]**: Every functional subsystem shall implement the standardized `MythosPlugin` trait. The trait shall mandate lifecycle hooks: `init`, `start`, `tick`, `stop`, and `health_check`. The core runtime manages plugin lifecycles deterministically. The microkernel contains zero domain-specific logic. All first-party features operate as built-in plugins under this unified interface:
-  - `plugin-openplc`: IEC 61131-3 soft-logic runtime execution engine.
+  - `plugin-strucpp`: Native STruC++ IEC 61131-3 soft-logic runtime execution engine.
   - `plugin-alarms`: ANSI/ISA-18.2 alarm state machine and flood suppression.
   - `plugin-recipes`: ANSI/ISA-88 batch recipe control engine.
   - `plugin-historian`: Boxcar-Swinging Door telemetry compression and Parquet archiver.
@@ -401,7 +401,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 
 ### 4.1 Performance & Timing Bounds
 - **NFR-001**: TagBus read latency under peak load shall not exceed 100 nanoseconds (target: $< 50\,\text{ns}$).
-- **NFR-002**: Real-time OpenPLC scan jitter shall not exceed $\pm 100\,\mu\text{s}$ when executing on a Linux kernel with `PREEMPT_RT` patches.
+- **NFR-002**: Real-time Native STruC++ scan jitter shall not exceed $\pm 100\,\mu\text{s}$ when executing on a Linux kernel with `PREEMPT_RT` patches.
 - **NFR-003**: Discovery scan over Layer 2 DCP shall return responses from all active physical devices within 2,500 milliseconds.
 - **NFR-004**: Swinging Door Compression shall achieve over $90\%$ data reduction on telemetry while preserving peak and inflection accuracy.
 
@@ -420,7 +420,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 | Interface ID | Interface Name | Protocol / Mechanism | Data Format | Latency Bound |
 |---|---|---|---|---|
 | **IF-001** | Internal Tag Bus | POSIX SHM (`/dev/shm/mythos_tagbus`) | POD Structs (64-byte aligned), Plant Hierarchy URIs (`external.*` & `internal.*`) | $< 100\,\text{ns}$ |
-| **IF-002** | OpenPLC Runtime Bridge | Linux FFI (`extern "C"`) | C-ABI Pointers, Dual-Zone Mapping (%IX field inputs / %QX, %MX internal logic) | $< 10\,\mu\text{s}$ |
+| **IF-002** | Native STruC++ Engine Bridge | Linux FFI (`extern "C"`) | C-ABI Pointers, Dual-Zone Mapping (%IX field inputs / %QX, %MX internal logic) | $< 10\,\mu\text{s}$ |
 | **IF-003** | Fieldbus Discovery | PROFINET Layer 2 DCP | Raw Ethernet Frames (`0x8892`) | $< 2.5\,\text{s}$ |
 | **IF-004** | Serial Fieldbus | RS485 / Modbus RTU | Binary Modbus frames mapped to `external.<namespace>.<device>.<variable>` | $10\,\text{ms} - 500\,\text{ms}$ |
 | **IF-005** | Web Client UI & Telemetry | HTTP/2, WebSocket & SSE | JSON / Typed Payloads with Plant Namespace Hierarchy, 100ms Telemetry Throttle | $< 100\,\text{ms}$ (stream tick), $< 10\,\text{ms}$ (REST) |
@@ -437,10 +437,10 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 | Requirement ID | Specification Item | Verification Method | Acceptance Pass Criteria |
 |---|---|---|---|
 | **SYS-REQ-002** | Lock-Free Shared Memory | Benchmark Test | 1,000,000 tag reads complete with average latency $< 50\,\text{ns}$. Zero data corruption. |
-| **SYS-REQ-010** | Protocol Driver SPI | Fault Injection Test | Simulated crash in Modbus driver terminates only that driver actor. Core and OpenPLC remain healthy. |
+| **SYS-REQ-010** | Protocol Driver SPI | Fault Injection Test | Simulated crash in Modbus driver terminates only that driver actor. Core and Native STruC++ Engine remain healthy. |
 | **SYS-REQ-016** | Field Device Tag Ingestion | Tag Registry Verification | Confirms `external` prefix applies strictly to external field device telemetry. |
 | **SYS-REQ-021** | In-Canvas Logic Deployment | End-to-End API Test | Logic deployed via `POST /api/v1/control/deploy` compiles on-device and reloads without manual file upload. |
-| **SYS-REQ-023** | OpenPLC Logic Hot-Reload | Integration Test | Code reloaded in $< 50\,\text{ms}$ without drop in physical I/O output states. |
+| **SYS-REQ-023** | Native STruC++ Hot-Reload | Integration Test | Code reloaded in $< 50\,\text{ms}$ without drop in physical I/O output states. |
 | **SYS-REQ-025** | Internal Variable Isolation | Memory Boundary Test | Confirms internal PLC variables and timers execute without the `external` prefix. |
 | **SYS-REQ-030** | Canonical Plant Hierarchy | URI Parser Unit Test | Validates `external.<namespace>.<device>.<variable>` against plant topology; rejects protocol names in namespace. |
 | **SYS-REQ-034** | Target Device Primary Storage | Autonomous Boot Test | Controller boots and executes project without connected laptop; laptop successfully pulls/pushes project changes over LAN. |
@@ -457,7 +457,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 | **SYS-REQ-078** | Multi-User Collaborative IDE | Multi-Client Concurrency Test | Two concurrent clients edit logic file simultaneously; verifies deterministic CRDT convergence and multi-cursor rendering. |
 | **SYS-REQ-079** | Edit vs Runtime View Decoupling | HMI Staging Isolation Test | Adding pump symbol to P&ID in Edit View causes zero visual change or tag subscription mutation in Operator Runtime View until explicit commit. |
 | **SYS-REQ-080** | Task Scheduler Staging Isolation | Real-Time Thread Timing Test | Modifying task interval from 10ms to 50ms in Edit View leaves live `SCHED_FIFO` loop executing at 10ms until promotion handshake completes. |
-| **SYS-REQ-081** | Visual Mode Indicator & Promotion | Promotion Handshake Test | Status badge transitions from `[✏️ EDIT MODE]` to `[🟢 RUNTIME MODE]`; OpenPLC hot-reloads within 50ms at scan boundary. |
+| **SYS-REQ-081** | Visual Mode Indicator & Promotion | Promotion Handshake Test | Status badge transitions from `[✏️ EDIT MODE]` to `[🟢 RUNTIME MODE]`; Native STruC++ Engine hot-reloads within 50ms at scan boundary. |
 | **SYS-REQ-082** | TIA Portal Screen Hierarchy | Navigation Tree Test | Double-clicking Screen or Sub-Screen in Zone 2 tree opens dedicated canvas tab in Zone 3 with independent layout state. |
 | **SYS-REQ-083** | 3-Stage HMI Lifecycle | Staging & Simulation Test | Edit canvas changes persist to draft; Preview simulates navigation without actuator writes; Deploy broadcasts `HMI_LAYOUT_UPDATED` via SSE. |
 | **SYS-REQ-084** | Faceplate Master Propagation | Multi-Instance Cascade Test | Modifying master Faceplate Type in Library propagates visual updates across 20+ instantiated screen symbols atomically. |
@@ -481,7 +481,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 The requirements defined in this specification are backed by the approved Architectural Decision Records and technical architecture handbooks:
 - **ADR-001**: Pure Rust Microkernel Actor Architecture (`specs/adr/ADR-001-rust-microkernel-actors.md`)
 - **ADR-002**: External Namespace Tag Bus and Shared Memory Architecture (`specs/adr/ADR-002-external-namespace-tag-bus.md`)
-- **ADR-003**: OpenPLC Runtime v4 Execution Bridge (`specs/adr/ADR-003-openplc-v4-runtime-bridge.md`)
+- **ADR-003**: Native STruC++ Runtime Engine Architecture (`specs/adr/ADR-003-openplc-v4-runtime-bridge.md`)
 - **ADR-004**: Layer 2 DCP Discovery and Deterministic Fieldbus Topology (`specs/adr/ADR-004-layer2-dcp-discovery-topology.md`)
 - **ADR-005**: Native Model Context Protocol (MCP) Self-Registration (`specs/adr/ADR-005-native-mcp-self-registration.md`)
 - **ADR-006**: Server-Driven UI (SDUI) and Auto-Generated TypeScript Contract (`specs/adr/ADR-006-server-driven-ui-auto-types.md`)
