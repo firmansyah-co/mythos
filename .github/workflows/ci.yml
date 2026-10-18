@@ -23,13 +23,23 @@ jobs:
     env:
       RUSTUP_HOME: /tmp/rustup
       CARGO_HOME: /tmp/cargo
+      CARGO_HTTP_IP_RESOLVE: "ipv4"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install System Dependencies
+      - name: Setup Cache Symlinks and Directories
         run: |
-          mkdir -p /tmp/cargo/bin /tmp/rustup
+          mkdir -p /tmp/rustup /tmp/cargo/bin
+          # Link mounted host cargo cache if available
+          if [ -d "/home/runner/.cargo/registry" ]; then
+            ln -s /home/runner/.cargo/registry /tmp/cargo/registry 2>/dev/null || true
+          fi
+          if [ -d "/home/runner/.cargo/git" ]; then
+            ln -s /home/runner/.cargo/git /tmp/cargo/git 2>/dev/null || true
+          fi
           echo "/tmp/cargo/bin" >> $GITHUB_PATH
 
       - name: Install Rust Toolchain
