@@ -5,7 +5,7 @@ use crate::hot_reload::HotReloadManager;
 use crate::quality_gate::QualityGate;
 use crate::scheduler::StagedSchedulerConfig;
 use crate::sync::TagSynchronizer;
-use mythos_pal::scheduler::LinuxScheduler;
+use mythos_pal::scheduler::DefaultScheduler;
 use mythos_pal::traits::PlatformScheduler;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -96,21 +96,21 @@ impl StrucppRuntime {
                 let init_cfg = scheduler_config.get_active();
 
                 // 1. Elevate real-time priority (graceful non-root fallback)
-                if let Err(e) = LinuxScheduler::set_realtime_priority(init_cfg.priority) {
+                if let Err(e) = DefaultScheduler::set_realtime_priority(init_cfg.priority) {
                     warn!(
                         "Real-time priority elevation to {} skipped/failed: {}",
                         init_cfg.priority, e
                     );
                 } else {
                     info!(
-                        "Successfully elevated thread to SCHED_FIFO priority {}",
+                        "Successfully elevated thread to real-time priority {}",
                         init_cfg.priority
                     );
                 }
 
                 // 2. Core affinity pinning if requested
                 if let Some(core) = init_cfg.core_affinity {
-                    if let Err(e) = LinuxScheduler::pin_to_core(core) {
+                    if let Err(e) = DefaultScheduler::pin_to_core(core) {
                         warn!("Core affinity pinning to core {} failed: {}", core, e);
                     } else {
                         info!("Pinned real-time scan thread to CPU core {}", core);
@@ -169,7 +169,7 @@ impl StrucppRuntime {
                     let now = Instant::now();
                     if next_cycle_start > now {
                         let remaining = next_cycle_start - now;
-                        LinuxScheduler::sleep_nanos(remaining.as_nanos() as u64);
+                        DefaultScheduler::sleep_nanos(remaining.as_nanos() as u64);
                     } else {
                         // Scan overrun
                         debug!("Cycle overrun: target cycle deadline elapsed");

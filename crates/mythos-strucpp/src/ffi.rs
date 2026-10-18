@@ -213,7 +213,7 @@ impl LocatedVarDescriptor {
     }
 }
 
-/// Dynamic symbol bindings for loaded STruC++ `.so` runtime modules.
+/// Dynamic symbol bindings for loaded STruC++ dynamic runtime modules.
 pub struct StrucppSymbols {
     pub get_config: libloading::Symbol<'static, unsafe extern "C" fn() -> *mut c_void>,
     pub set_locks:

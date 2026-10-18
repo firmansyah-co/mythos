@@ -10,7 +10,18 @@ pub const DEFAULT_STRUCPP_CLI: &str =
     "/home/adrian/Projects/openplc-editor/node_modules/strucpp/dist/node/cli.js";
 pub const DEFAULT_STRUCPP_INCLUDE: &str =
     "/home/adrian/Projects/openplc-editor/node_modules/strucpp/src/runtime/include";
-pub const DEFAULT_CXX_COMPILER: &str = "/usr/bin/g++";
+
+cfg_if::cfg_if! {
+    if #[cfg(target_os = "macos")] {
+        pub const DEFAULT_CXX_COMPILER: &str = "/usr/bin/clang++";
+    } else if #[cfg(target_os = "windows")] {
+        pub const DEFAULT_CXX_COMPILER: &str = "g++.exe";
+    } else if #[cfg(target_os = "linux")] {
+        pub const DEFAULT_CXX_COMPILER: &str = "/usr/bin/g++";
+    } else {
+        pub const DEFAULT_CXX_COMPILER: &str = "g++";
+    }
+}
 
 /// Configuration parameters for the STruC++ compiler pipeline.
 #[derive(Debug, Clone)]
@@ -94,13 +105,14 @@ impl StrucppCompiler {
         format!("{:08x}{:016x}", crc, s_hash)
     }
 
-    /// Compile IEC 61131-3 Structured Text source into a native C++17 shared library (`.so`).
+    /// Compile IEC 61131-3 Structured Text source into a native C++17 shared library.
     pub fn compile_source(&self, source_st: &str) -> Result<CompilationArtifacts, StrucppError> {
         let hash = Self::compute_hash(source_st);
         let build_dir = self.config.output_dir.join(format!("build_{}", hash));
         fs::create_dir_all(&build_dir)?;
 
-        let so_path = build_dir.join("logic.so");
+        let lib_filename = format!("logic.{}", std::env::consts::DLL_EXTENSION);
+        let so_path = build_dir.join(lib_filename);
         let cpp_path = build_dir.join("generated.cpp");
         let hpp_path = build_dir.join("generated.hpp");
         let glue_path = build_dir.join("glue.cpp");
@@ -258,7 +270,7 @@ impl StrucppCompiler {
             let stderr = String::from_utf8_lossy(&cxx_output.stderr);
             let stdout = String::from_utf8_lossy(&cxx_output.stdout);
             return Err(StrucppError::CppCompilationFailed {
-                reason: format!("g++ standalone compilation failed: {}\n{}", stderr, stdout),
+                reason: format!("C++ compiler standalone compilation failed: {}\n{}", stderr, stdout),
             });
         }
 

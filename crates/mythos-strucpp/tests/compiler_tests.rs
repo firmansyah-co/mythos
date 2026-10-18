@@ -35,6 +35,10 @@ fn test_compiler_pipeline_and_so_generation() {
         .expect("compilation successful");
 
     assert!(artifacts.shared_library.exists());
+    assert_eq!(
+        artifacts.shared_library.extension().and_then(|e| e.to_str()),
+        Some(std::env::consts::DLL_EXTENSION)
+    );
     assert!(artifacts.cpp_source.exists());
     assert!(artifacts.cpp_header.exists());
 
@@ -44,8 +48,8 @@ fn test_compiler_pipeline_and_so_generation() {
         .expect("cached compilation");
     assert_eq!(artifacts.source_hash, artifacts_cached.source_hash);
 
-    // Test dynamic loading of .so via LoadedLogicModule
-    let loaded = LoadedLogicModule::load(&artifacts.shared_library).expect("load .so module");
+    // Test dynamic loading of shared library via LoadedLogicModule
+    let loaded = LoadedLogicModule::load(&artifacts.shared_library).expect("load dynamic module");
     assert_eq!(loaded.located_descriptors.len(), 2);
 
     let in_desc = loaded
@@ -90,11 +94,15 @@ fn test_standalone_fallback_compilation() {
         .expect("standalone fallback compilation successful");
 
     assert!(artifacts.shared_library.exists());
+    assert_eq!(
+        artifacts.shared_library.extension().and_then(|e| e.to_str()),
+        Some(std::env::consts::DLL_EXTENSION)
+    );
     assert!(artifacts.cpp_source.exists());
     assert!(artifacts.cpp_header.exists());
 
-    // Test dynamic loading of standalone .so via LoadedLogicModule
-    let loaded = LoadedLogicModule::load(&artifacts.shared_library).expect("load .so module");
+    // Test dynamic loading of standalone shared library via LoadedLogicModule
+    let loaded = LoadedLogicModule::load(&artifacts.shared_library).expect("load dynamic module");
     assert_eq!(loaded.located_descriptors.len(), 2);
 
     let in_desc = loaded
