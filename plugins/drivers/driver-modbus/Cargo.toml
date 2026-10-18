@@ -1,0 +1,23 @@
+[package]
+name = "driver-modbus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Reference Modbus RTU/TCP Protocol Driver for MythOS"
+
+[lints]
+workspace = true
+
+[dependencies]
+mythos-plugin-sdk = { path = "../../../crates/mythos-plugin-sdk" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full", "io-util", "net"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio-test = "0.4"

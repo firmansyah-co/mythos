@@ -283,3 +283,183 @@ fn test_project_draft_commit_with_rollback() {
         "Updated staging draft description"
     );
 }
+
+#[tokio::test]
+async fn test_plugin_host_registration_and_lifecycle() {
+    use mythos_plugin_sdk::*;
+    use serde_json::json;
+    use std::collections::HashSet;
+
+    struct DummyPlugin {
+        started: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl MythosPlugin for DummyPlugin {
+        fn metadata(&self) -> PluginMetadata {
+            PluginMetadata {
+                id: "test.dummy".to_string(),
+                name: "Dummy".to_string(),
+                version: "1.0.0".to_string(),
+                author: "Test".to_string(),
+                description: "Test".to_string(),
+                plugin_type: PluginType::Extension,
+                capabilities: vec![],
+            }
+        }
+        async fn init(&mut self, _ctx: &PluginContext) -> Result<(), PluginError> {
+            Ok(())
+        }
+        async fn start(
+            &mut self,
+            _ctx: &PluginContext,
+            _config: &serde_json::Value,
+        ) -> Result<(), PluginError> {
+            self.started = true;
+            Ok(())
+        }
+        async fn stop(&mut self, _ctx: &PluginContext) -> Result<(), PluginError> {
+            self.started = false;
+            Ok(())
+        }
+        async fn health_check(&self) -> Result<PluginHealthReport, PluginError> {
+            if self.started {
+                Ok(PluginHealthReport::healthy("Running"))
+            } else {
+                Ok(PluginHealthReport::stopped("Stopped"))
+            }
+        }
+    }
+
+    let host = mythos_core::PluginHost::new();
+    let ctx = PluginContext::new("test.dummy", HashSet::new(), "/tmp");
+    let plugin = Box::new(DummyPlugin { started: false });
+
+    let meta = host.register(plugin, ctx).await.unwrap();
+    assert_eq!(meta.id, "test.dummy");
+
+    // Init & Start
+    host.initialize_plugin("test.dummy").await.unwrap();
+    host.start_plugin("test.dummy", &json!({})).await.unwrap();
+
+    let reports = host.health_check_all().await;
+    assert_eq!(
+        reports.get("test.dummy").unwrap().status,
+        HealthStatus::Healthy
+    );
+
+    // Stop
+    host.stop_plugin("test.dummy").await.unwrap();
+    let report = host.health_check("test.dummy").await.unwrap();
+    assert_eq!(report.status, HealthStatus::Stopped);
+}
+
+#[tokio::test]
+async fn test_axum_api_gateway_rest_and_telemetry_stream() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use mythos_core::api::{create_router, ApiState};
+    use mythos_core::storage::ControllerStorage;
+    use mythos_core::tag::{TagCatalog, TagMetadata};
+    use mythos_shm::{QualityCode, ShmWriterHandle, TagFlags, TagValueRaw};
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use tower::ServiceExt; // for oneshot()
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let storage = Arc::new(ControllerStorage::new(tmp_dir.path()).unwrap());
+
+    let mut catalog = TagCatalog::new();
+    let meta = TagMetadata::new("external.BoilerRoom.PT101.pressure.pv", 0).unwrap();
+    catalog.register(meta).unwrap();
+    let tag_catalog = Arc::new(RwLock::new(catalog));
+
+    // Create SHM segments for testing
+    let shm_name = format!("mythos_test_api_{}", std::process::id());
+    let mut writer = ShmWriterHandle::<mythos_pal::MemoryShm>::new(&shm_name, 64).unwrap();
+    let reader = mythos_shm::ShmReaderHandle::<mythos_pal::MemoryShm>::new(&shm_name, 64).unwrap();
+
+    // Write a tag value (e.g. 12.5 bar)
+    writer
+        .write_tag(
+            0,
+            0,
+            QualityCode::GOOD,
+            TagValueRaw::from_f64(12.5),
+            1000,
+            TagFlags::ACCESS_RO,
+        )
+        .unwrap();
+    writer.publish();
+
+    let state = ApiState::new(storage.clone(), tag_catalog.clone(), Some(reader));
+    let router = create_router(state);
+
+    // 1. Test GET /api/v1/health
+    let req = Request::builder()
+        .uri("/api/v1/health")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 2. Test GET /api/v1/tags
+    let req = Request::builder()
+        .uri("/api/v1/tags")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 3. Test POST /api/v1/projects
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/projects")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "id": "proj_alpha",
+                "name": "Project Alpha",
+                "description": "Industrial control setup",
+                "author": "Neo"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // 4. Test GET /api/v1/projects/proj_alpha
+    let req = Request::builder()
+        .uri("/api/v1/projects/proj_alpha")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 5. Test POST /api/v1/projects/proj_alpha/activate
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/projects/proj_alpha/activate")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        storage.get_active_project().unwrap(),
+        Some("proj_alpha".to_string())
+    );
+
+    // 6. Test GET /api/v1/telemetry/stream (verify SSE headers)
+    let req = Request::builder()
+        .uri("/api/v1/telemetry/stream")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "text/event-stream"
+    );
+}

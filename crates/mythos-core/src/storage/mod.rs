@@ -108,6 +108,34 @@ impl ControllerStorage {
     }
 
     /// Resolve the name of the currently active project via the `active` symlink.
+    /// Retrieve project configuration descriptor (`project.active.json` or `project.draft.json`).
+    pub fn get_project(&self, project_name: &str) -> Result<ProjectConfig, StorageError> {
+        let pdir = self.project_dir(project_name);
+        if !pdir.exists() {
+            return Err(StorageError::ProjectNotFound(project_name.to_string()));
+        }
+
+        let active_file = pdir.join("project.active.json");
+        let draft_file = pdir.join("project.draft.json");
+
+        let target_file = if active_file.exists() {
+            active_file
+        } else if draft_file.exists() {
+            draft_file
+        } else {
+            return Err(StorageError::ProjectNotFound(project_name.to_string()));
+        };
+
+        let content = fs::read_to_string(&target_file)?;
+        let config: ProjectConfig = serde_json::from_str(&content)?;
+        Ok(config)
+    }
+
+    /// Alias for switch_active_project to activate a project.
+    pub fn activate_project(&self, project_name: &str) -> Result<(), StorageError> {
+        self.switch_active_project(project_name)
+    }
+
     pub fn get_active_project(&self) -> Result<Option<String>, StorageError> {
         let symlink = self.active_symlink_path();
         if !symlink.exists() && fs::symlink_metadata(&symlink).is_err() {

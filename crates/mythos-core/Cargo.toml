@@ -13,13 +13,20 @@ workspace = true
 [dependencies]
 mythos-pal.workspace = true
 mythos-shm.workspace = true
-tokio.workspace = true
+mythos-plugin-sdk.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tokio-stream.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 crc32fast.workspace = true
 bytemuck.workspace = true
+axum.workspace = true
+tower = { workspace = true, features = ["util"] }
+tower-http.workspace = true
 
 [dev-dependencies]
 tempfile = "3.10"

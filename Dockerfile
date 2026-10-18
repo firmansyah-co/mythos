@@ -47,7 +47,7 @@ COPY plugins/ ./plugins/
 
 # Build release workspace binaries if Cargo manifests are populated, or prepare stub
 RUN if [ -f "Cargo.toml" ] && grep -q "workspace" Cargo.toml; then \
-        cargo build --release --workspace || true; \
+        cargo build --release --bin mythos-server; \
     fi
 
 # Ensure bin directory exists
