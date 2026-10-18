@@ -48,7 +48,10 @@ jobs:
 
       - name: Install Rust Toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --component rustfmt,clippy
+          for i in 1 2 3 4 5; do
+            echo "Attempt $i to install rustup..."
+            curl --proto '=https' --tlsv1.2 --retry 5 --retry-delay 2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --component rustfmt,clippy && break || sleep 5
+          done
           source /tmp/cargo/env
           rustc --version
           cargo --version
