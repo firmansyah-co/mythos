@@ -5,6 +5,7 @@
 
 pub mod state;
 pub mod telemetry;
+pub mod web;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -17,6 +18,10 @@ use serde_json::json;
 
 pub use state::ApiState;
 pub use telemetry::{telemetry_stream_handler, TagValueUpdate, TelemetryBatch};
+pub use web::{
+    asset_handler, index_handler, mime_type_for_path, sanitize_relative_path, spa_fallback_handler,
+    web_router, DEFAULT_INDEX_HTML, EMBEDDED_ARCH_SVG, EMBEDDED_BANNER_SVG,
+};
 
 /// Health response schema
 #[derive(Debug, Serialize, Deserialize)]
@@ -70,6 +75,8 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
             "/api/v1/telemetry/stream",
             get(telemetry_stream_handler::<S>),
         )
+        // Web HMI Static Asset Serving & SPA Routing
+        .merge(web::web_router::<S>())
         .with_state(state)
 }
 

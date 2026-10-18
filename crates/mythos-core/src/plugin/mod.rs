@@ -3,11 +3,16 @@
 //! Provides dynamic registration, capability isolation, and lifecycle management
 //! for first-party engines and third-party extensions ("Everything is a Plugin" - ADR-008).
 
+pub mod packager;
+
+pub use packager::{PluginPackageManifest, PluginPackager, VerifiedPluginPackage};
+
 use mythos_plugin_sdk::{
     MythosPlugin, PluginContext, PluginError, PluginHealthReport, PluginMetadata,
 };
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -143,6 +148,54 @@ impl PluginHost {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Install a plugin package (.mythos-plugin) into the plugins directory,
+    /// verifying its integrity and capabilities.
+    pub fn install_from_package(
+        &self,
+        package_path: &Path,
+        plugins_dir: &Path,
+        allowed_caps: HashSet<String>,
+    ) -> Result<PluginMetadata, PluginError> {
+        let verified = PluginPackager::extract_and_verify(package_path, plugins_dir)?;
+        PluginPackager::verify_capabilities(&verified.manifest, &allowed_caps)?;
+        Ok(verified.manifest.metadata)
+    }
+
+    /// Gracefully hot-swap a running or registered plugin with a new implementation.
+    ///
+    /// Stops the existing plugin (if started), replaces it with `new_plugin`,
+    /// initializes it with the existing PluginContext, and starts it with `config`.
+    /// The TagBus and underlying microkernel state remain uninterrupted.
+    pub async fn hotswap_plugin(
+        &self,
+        plugin_id: &str,
+        mut new_plugin: Box<dyn MythosPlugin>,
+        config: &JsonValue,
+    ) -> Result<(), PluginError> {
+        let mut lock = self.plugins.write().await;
+        let managed = lock.get_mut(plugin_id).ok_or_else(|| {
+            PluginError::RuntimeError(format!("Cannot hotswap nonexistent plugin '{}'", plugin_id))
+        })?;
+
+        // 1. Gracefully stop existing plugin if started
+        if managed.is_started {
+            managed.plugin.stop(&managed.context).await?;
+            managed.is_started = false;
+        }
+
+        // 2. Initialize new plugin instance
+        new_plugin.init(&managed.context).await?;
+
+        // 3. Start new plugin instance with config
+        new_plugin.start(&managed.context, config).await?;
+
+        // 4. Swap new plugin into managed slot
+        managed.plugin = new_plugin;
+        managed.is_started = true;
+
         Ok(())
     }
 }
