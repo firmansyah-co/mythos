@@ -48,3 +48,8 @@ Thumbs.db
 # Logs & Diagnostics
 *.log
 logs/
+
+# ts-rs default test exports
+bindings/
+**/bindings/
+*.tsbuildinfo

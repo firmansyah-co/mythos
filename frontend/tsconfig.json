@@ -1,0 +1,20 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./packages/ui-shell"
+    },
+    {
+      "path": "./plugins/ui-logic-editor"
+    },
+    {
+      "path": "./plugins/ui-topology"
+    },
+    {
+      "path": "./plugins/ui-inspector"
+    },
+    {
+      "path": "./plugins/ui-faceplate-lib"
+    }
+  ]
+}

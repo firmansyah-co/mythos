@@ -1,0 +1,61 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": false,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": false,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": true,
+    "baseUrl": ".",
+    "paths": {
+      "@mythos/ui-shell": [
+        "./packages/ui-shell/src/index.ts"
+      ],
+      "@mythos/ui-shell/*": [
+        "./packages/ui-shell/src/*"
+      ],
+      "@mythos/ui-logic-editor": [
+        "./plugins/ui-logic-editor/src/index.ts"
+      ],
+      "@mythos/ui-logic-editor/*": [
+        "./plugins/ui-logic-editor/src/*"
+      ],
+      "@mythos/ui-topology": [
+        "./plugins/ui-topology/src/index.ts"
+      ],
+      "@mythos/ui-topology/*": [
+        "./plugins/ui-topology/src/*"
+      ],
+      "@mythos/ui-inspector": [
+        "./plugins/ui-inspector/src/index.ts"
+      ],
+      "@mythos/ui-inspector/*": [
+        "./plugins/ui-inspector/src/*"
+      ],
+      "@mythos/ui-faceplate-lib": [
+        "./plugins/ui-faceplate-lib/src/index.ts"
+      ],
+      "@mythos/ui-faceplate-lib/*": [
+        "./plugins/ui-faceplate-lib/src/*"
+      ]
+    }
+  }
+}

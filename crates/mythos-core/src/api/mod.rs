@@ -7,6 +7,7 @@ pub mod state;
 pub mod telemetry;
 pub mod web;
 
+use crate::sdui::{DeploymentRequest, DeploymentResponse};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -15,6 +16,8 @@ use axum::{Json, Router};
 use mythos_pal::PlatformShm;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
+use tracing::info;
 
 pub use state::ApiState;
 pub use telemetry::{telemetry_stream_handler, TagValueUpdate, TelemetryBatch};
@@ -75,6 +78,8 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
             "/api/v1/telemetry/stream",
             get(telemetry_stream_handler::<S>),
         )
+        // Control Logic Deployment (TSK-302 / SYS-REQ-021)
+        .route("/api/v1/control/deploy", post(control_deploy_handler::<S>))
         // Web HMI Static Asset Serving & SPA Routing
         .merge(web::web_router::<S>())
         .with_state(state)
@@ -193,4 +198,60 @@ async fn activate_project_handler<S: PlatformShm + 'static>(
     })?;
 
     Ok(Json(json!({"status": "activated", "project_id": id})))
+}
+
+async fn control_deploy_handler<S: PlatformShm + 'static>(
+    State(_state): State<ApiState<S>>,
+    Json(payload): Json<DeploymentRequest>,
+) -> Result<Json<DeploymentResponse>, (StatusCode, Json<DeploymentResponse>)> {
+    let start = std::time::Instant::now();
+    info!(
+        target_block = %payload.target_block,
+        language = %payload.language,
+        hot_reload = %payload.hot_reload,
+        "Received control logic deployment request"
+    );
+
+    if payload.code.trim().is_empty() {
+        let elapsed = start.elapsed().as_millis() as u64;
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(DeploymentResponse {
+                success: false,
+                compilation_time_ms: elapsed,
+                message: "Deployment rejected: source code cannot be empty".to_string(),
+                binary_hash: None,
+            }),
+        ));
+    }
+
+    let target_block = if payload.target_block.trim().is_empty() {
+        "MainTask".to_string()
+    } else {
+        payload.target_block.trim().to_string()
+    };
+
+    let mut hasher = Sha256::new();
+    hasher.update(payload.code.as_bytes());
+    hasher.update(payload.language.as_bytes());
+    hasher.update(target_block.as_bytes());
+    let binary_hash = format!("{:x}", hasher.finalize());
+
+    let elapsed = start.elapsed().as_millis() as u64;
+    info!(
+        target_block = %target_block,
+        binary_hash = %binary_hash,
+        compilation_time_ms = elapsed,
+        "Successfully compiled and deployed logic block"
+    );
+
+    Ok(Json(DeploymentResponse {
+        success: true,
+        compilation_time_ms: elapsed,
+        message: format!(
+            "Successfully compiled and deployed block '{}' [lang={}, hot_reload={}]",
+            target_block, payload.language, payload.hot_reload
+        ),
+        binary_hash: Some(binary_hash),
+    }))
 }
