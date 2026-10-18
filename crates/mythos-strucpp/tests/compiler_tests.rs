@@ -36,7 +36,10 @@ fn test_compiler_pipeline_and_so_generation() {
 
     assert!(artifacts.shared_library.exists());
     assert_eq!(
-        artifacts.shared_library.extension().and_then(|e| e.to_str()),
+        artifacts
+            .shared_library
+            .extension()
+            .and_then(|e| e.to_str()),
         Some(std::env::consts::DLL_EXTENSION)
     );
     assert!(artifacts.cpp_source.exists());
@@ -95,7 +98,10 @@ fn test_standalone_fallback_compilation() {
 
     assert!(artifacts.shared_library.exists());
     assert_eq!(
-        artifacts.shared_library.extension().and_then(|e| e.to_str()),
+        artifacts
+            .shared_library
+            .extension()
+            .and_then(|e| e.to_str()),
         Some(std::env::consts::DLL_EXTENSION)
     );
     assert!(artifacts.cpp_source.exists());

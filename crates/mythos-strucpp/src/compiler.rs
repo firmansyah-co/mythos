@@ -270,7 +270,10 @@ impl StrucppCompiler {
             let stderr = String::from_utf8_lossy(&cxx_output.stderr);
             let stdout = String::from_utf8_lossy(&cxx_output.stdout);
             return Err(StrucppError::CppCompilationFailed {
-                reason: format!("C++ compiler standalone compilation failed: {}\n{}", stderr, stdout),
+                reason: format!(
+                    "C++ compiler standalone compilation failed: {}\n{}",
+                    stderr, stdout
+                ),
             });
         }
 
