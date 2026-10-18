@@ -1,0 +1,16 @@
+[package]
+name = "mythos-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Native Model Context Protocol (MCP) server for MythOS SCADA and soft-logic runtime"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

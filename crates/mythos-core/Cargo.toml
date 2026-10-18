@@ -1,0 +1,18 @@
+[package]
+name = "mythos-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Microkernel Host Daemon, Actor Supervisor and Service Coordinator for MythOS"
+
+[lints]
+workspace = true
+
+[dependencies]
+mythos-pal.workspace = true
+mythos-shm.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "mythos-shm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Ultra-fast lock-free shared memory bus and TagBus for MythOS"
+
+[lints]
+workspace = true
+
+[dependencies]
+mythos-pal.workspace = true
+bytemuck.workspace = true
+thiserror.workspace = true
