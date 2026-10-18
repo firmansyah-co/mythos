@@ -6,6 +6,7 @@
 
 pub mod api;
 pub mod catalog;
+pub mod collab;
 pub mod device;
 pub mod discovery;
 pub mod namespace;
@@ -24,6 +25,7 @@ pub use catalog::{
     PhysicalInterface, PinoutEntry, ProtocolConfig, RegisterDefinition, ScalingConfig,
     SupplyVoltage, UiConfig,
 };
+pub use collab::{handle_collab_ws, CollabRoom, RoomManager};
 pub use device::{
     DeviceExecutionMode, DeviceModeController, DeviceModeError, SimulationAuditEvent,
 };

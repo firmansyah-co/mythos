@@ -24,14 +24,18 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@mythos/ui-inspector": "workspace:*",
     "@mythos/ui-logic-editor": "workspace:*",
+    "@mythos/ui-topology": "workspace:*",
     "clsx": "^2.1.1",
     "dockview-react": "^8.6.0",
     "lucide-react": "^1.59.0",
     "tailwind-merge": "^3.0.0",
-    "zustand": "^5.0.3",
-    "@mythos/ui-topology": "workspace:*",
-    "@mythos/ui-inspector": "workspace:*"
+    "y-monaco": "^0.1.6",
+    "y-protocols": "^1.0.7",
+    "y-websocket": "^3.1.0",
+    "yjs": "^13.6.33",
+    "zustand": "^5.0.3"
   },
   "peerDependencies": {
     "react": ">=18.0.0",

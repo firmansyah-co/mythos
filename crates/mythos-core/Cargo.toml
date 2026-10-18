@@ -33,5 +33,9 @@ tower = { workspace = true, features = ["util"] }
 tower-http.workspace = true
 ts-rs = { workspace = true, features = ["serde-json-impl", "no-serde-warnings"] }
 
+yrs = { workspace = true }
+
 [dev-dependencies]
 tempfile = "3.10"
+tokio-tungstenite = "0.24"
+futures-util = "0.3"

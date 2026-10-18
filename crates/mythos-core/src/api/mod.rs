@@ -8,6 +8,7 @@ pub mod telemetry;
 pub mod web;
 
 use crate::sdui::{DeploymentRequest, DeploymentResponse};
+use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -80,6 +81,8 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
         )
         // Control Logic Deployment (TSK-302 / SYS-REQ-021)
         .route("/api/v1/control/deploy", post(control_deploy_handler::<S>))
+        // CRDT Collaboration WebSocket Gateway (TSK-311)
+        .route("/api/v1/collab/ws/:room_id", get(collab_ws_handler::<S>))
         // Web HMI Static Asset Serving & SPA Routing
         .merge(web::web_router::<S>())
         .with_state(state)
@@ -254,4 +257,13 @@ async fn control_deploy_handler<S: PlatformShm + 'static>(
         ),
         binary_hash: Some(binary_hash),
     }))
+}
+
+async fn collab_ws_handler<S: PlatformShm + 'static>(
+    ws: WebSocketUpgrade,
+    Path(room_id): Path<String>,
+    State(state): State<ApiState<S>>,
+) -> impl IntoResponse {
+    let room = state.room_manager.get_or_create_room(&room_id).await;
+    ws.on_upgrade(move |socket| crate::collab::handle_collab_ws(socket, room))
 }
