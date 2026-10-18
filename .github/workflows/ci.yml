@@ -21,8 +21,8 @@ jobs:
     name: Rust Workspace Test Suite & Lints
     runs-on: arc-runner-org
     env:
-      RUSTUP_HOME: /tmp/rustup
-      CARGO_HOME: /tmp/cargo
+      RUSTUP_HOME: /opt/hostedtoolcache/rustup
+      CARGO_HOME: /opt/hostedtoolcache/cargo
       CARGO_HTTP_IP_RESOLVE: "ipv4"
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
@@ -37,41 +37,62 @@ jobs:
 
       - name: Setup Cache Symlinks and Directories
         run: |
-          mkdir -p /tmp/rustup /tmp/cargo/bin
+          sudo mkdir -p /opt/hostedtoolcache/rustup /opt/hostedtoolcache/cargo/bin
+          sudo chown -R $(id -u):$(id -g) /opt/hostedtoolcache/rustup /opt/hostedtoolcache/cargo 2>/dev/null || true
           if [ -d "/home/runner/.cargo/registry" ]; then
-            ln -s /home/runner/.cargo/registry /tmp/cargo/registry 2>/dev/null || true
+            ln -s /home/runner/.cargo/registry /opt/hostedtoolcache/cargo/registry 2>/dev/null || true
           fi
           if [ -d "/home/runner/.cargo/git" ]; then
-            ln -s /home/runner/.cargo/git /tmp/cargo/git 2>/dev/null || true
+            ln -s /home/runner/.cargo/git /opt/hostedtoolcache/cargo/git 2>/dev/null || true
           fi
-          echo "/tmp/cargo/bin" >> $GITHUB_PATH
+          echo "/opt/hostedtoolcache/cargo/bin" >> $GITHUB_PATH
 
       - name: Install Rust Toolchain
         run: |
-          for i in 1 2 3 4 5; do
-            echo "Attempt $i to install rustup..."
-            curl --proto '=https' --tlsv1.2 --retry 5 --retry-delay 2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --component rustfmt,clippy && break || sleep 5
-          done
-          source /tmp/cargo/env
+          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
+          if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1 && rustup component list | grep -q "rustfmt.*(installed)" && rustup component list | grep -q "clippy.*(installed)"; then
+            echo "Rust toolchain already present in cache, skipping re-download."
+          else
+            echo "Installing or updating Rust toolchain via rustup..."
+            for i in 1 2 3 4 5; do
+              echo "Attempt $i to install rustup..."
+              curl --proto '=https' --tlsv1.2 --retry 5 --retry-delay 2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --component rustfmt,clippy && break || sleep 5
+            done
+          fi
+          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
+            source /opt/hostedtoolcache/cargo/env
+          fi
           rustc --version
           cargo --version
 
       - name: Cargo Format Check
         run: |
-          source /tmp/cargo/env
+          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
+          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
+            source /opt/hostedtoolcache/cargo/env
+          fi
           cargo fmt --all -- --check
 
       - name: Cargo Clippy Audit
         run: |
-          source /tmp/cargo/env
+          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
+          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
+            source /opt/hostedtoolcache/cargo/env
+          fi
           cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run All Workspace Tests
         run: |
-          source /tmp/cargo/env
+          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
+          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
+            source /opt/hostedtoolcache/cargo/env
+          fi
           cargo test --workspace --verbose
 
       - name: Run SHM Micro-Benchmark Check
         run: |
-          source /tmp/cargo/env
+          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
+          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
+            source /opt/hostedtoolcache/cargo/env
+          fi
           cargo bench -p mythos-shm --no-run

@@ -4,15 +4,18 @@
 //! microkernel plugin host, Axum REST/SSE API Gateway, target controller storage,
 //! open hardware catalog parser, network topology model, and universal discovery engine.
 
+pub mod alarm;
 pub mod api;
 pub mod catalog;
 pub mod collab;
 pub mod device;
 pub mod discovery;
+pub mod historian;
 pub mod namespace;
 pub mod nvram;
 pub mod pal;
 pub mod plugin;
+pub mod recipe;
 pub mod sdui;
 pub mod storage;
 pub mod tag;
@@ -47,4 +50,20 @@ pub use tag::{AccessMode, RetentionMode, TagCatalog, TagMetadata};
 pub use topology::{
     EthernetBusTopology, IpBlock, NetworkTopology, NodeType, PortDefinition, TopologyEdge,
     TopologyError, TopologyNode, TopologyValidationError, ValidationSeverity,
+};
+
+pub use alarm::{
+    get_monotonic_raw_ns, AlarmDefinition, AlarmEventTrigger, AlarmFilterTimer, AlarmRuntimeState,
+    AlarmSeverity, AlarmState, AlarmStateTransitionEvent, AlarmTripType, ChatterDetector,
+    DeadbandConfig, FirstOutCaptureResult, FirstOutGroupStatus, FirstOutManager,
+};
+pub use historian::{
+    CsvExportRequest, CsvExporter, CsvExporterError, HistorianSample, ParquetHistorianError,
+    ParquetHistorianStorage, ResampleStrategy, SwingingDoorCompressor, TelemetryRecord,
+    TimeSeriesPoint,
+};
+pub use recipe::{
+    BatchExecutionInstance, BatchRunStatus, MasterRecipe, PackMlState, ParameterConstraint,
+    ParameterValue, RecipeBusRegisters, RecipeLifecycleState, RecipeStep, RecipeSyncCoordinator,
+    RecipeSyncError, StepTransitionCondition,
 };
