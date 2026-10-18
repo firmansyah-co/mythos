@@ -5,9 +5,16 @@ import path from 'path';
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: {
-      '@mythos/ui-logic-editor': path.resolve(__dirname, '../../plugins/ui-logic-editor/src/index.ts'),
-    },
+    alias: [
+      {
+        find: '@mythos/ui-logic-editor',
+        replacement: path.resolve(__dirname, '../../plugins/ui-logic-editor/src/index.ts'),
+      },
+      {
+        find: 'monaco-editor/esm/vs/editor/editor.api.js',
+        replacement: 'monaco-editor',
+      },
+    ],
   },
   server: {
     port: 5173,
@@ -25,5 +32,10 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'happy-dom',
+    server: {
+      deps: {
+        inline: ['y-monaco'],
+      },
+    },
   },
 });

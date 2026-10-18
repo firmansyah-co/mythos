@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import * as Y from 'yjs';
+import type { Awareness } from 'y-protocols/awareness';
 import { MonacoStEditor } from './MonacoStEditor';
 import { LadderCanvas } from './LadderCanvas';
 import { DeployControlBar, DeployResultInfo } from './DeployControlBar';
@@ -11,6 +13,11 @@ export interface LogicEditorPluginProps {
   onCodeChange?: (code: string) => void;
   onDeployResult?: (result: DeployResultInfo) => void;
   className?: string;
+
+  // Collaborative editing support (TSK-311)
+  yText?: Y.Text;
+  awareness?: Awareness;
+  roomId?: string;
 }
 
 export const LogicEditorPlugin: React.FC<LogicEditorPluginProps> = ({
@@ -20,6 +27,9 @@ export const LogicEditorPlugin: React.FC<LogicEditorPluginProps> = ({
   onCodeChange,
   onDeployResult,
   className = '',
+  yText,
+  awareness,
+  roomId,
 }) => {
   const [code, setCode] = useState<string>(initialCode ?? '');
   const [viewMode, setViewMode] = useState<'ST' | 'LADDER'>('ST');
@@ -66,8 +76,16 @@ export const LogicEditorPlugin: React.FC<LogicEditorPluginProps> = ({
           </button>
         </div>
 
-        <div className="text-[11px] text-neutral-500 font-mono">
-          {viewMode === 'ST' ? 'Monaco Engine • ISO/IEC 61131-3' : 'Graphical Rung Engine'}
+        <div className="flex items-center gap-3 text-[11px] text-neutral-500 font-mono">
+          {roomId && (
+            <span className="text-cyan-400 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+              Room: {roomId}
+            </span>
+          )}
+          <span>
+            {viewMode === 'ST' ? 'Monaco Engine • ISO/IEC 61131-3' : 'Graphical Rung Engine'}
+          </span>
         </div>
       </div>
 
@@ -78,6 +96,9 @@ export const LogicEditorPlugin: React.FC<LogicEditorPluginProps> = ({
             value={code}
             onChange={handleCodeChange}
             readOnly={readOnly}
+            yText={yText}
+            awareness={awareness}
+            roomId={roomId}
           />
         ) : (
           <LadderCanvas />

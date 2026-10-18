@@ -1,5 +1,8 @@
 export * from './stores/useHmiStore';
 export * from './types/hmi';
+export * from './collab/useCollabStore';
+export { TopBar, type TopBarProps } from './components/TopBar';
+export * from './components/collab/PresenceAvatarStack';
 export * from './components/workbench/Zone1TopNav';
 export * from './components/workbench/Zone2ProjectTree';
 export * from './components/workbench/DockviewWorkspace';

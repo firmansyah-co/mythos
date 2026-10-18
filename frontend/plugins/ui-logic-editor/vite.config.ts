@@ -4,6 +4,14 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: [
+      {
+        find: 'monaco-editor/esm/vs/editor/editor.api.js',
+        replacement: 'monaco-editor',
+      },
+    ],
+  },
   build: {
     lib: {
       entry: path.resolve(__dirname, 'src/index.ts'),
@@ -24,5 +32,10 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'happy-dom',
+    server: {
+      deps: {
+        inline: ['y-monaco'],
+      },
+    },
   },
 });
