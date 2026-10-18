@@ -102,7 +102,10 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | **TSK-208** | Universal Protocol Discovery Engine & Trait Implementation | Software (`head-software`) | `crates/mythos-core/src/discovery/engine.rs`, `traits.rs` | Implements `ProtocolDiscoverer` async trait. Coordinates Guided Discovery and Blind Bus Sweep. Supports cancellation tokens and enforces fast probe ($\le 1.0\,	ext{s}$) timeout bounds. |
 | **TSK-209** | Device Catalog Fingerprinting & Modbus Heuristic Sweep | Hardware (`head-hardware`) | `crates/mythos-core/src/discovery/modbus_sweep.rs`, `crates/mythos-core/src/catalog/fingerprint.rs` | Sweeps baud rates (9600 to 115200), parity, and slave IDs (1 to 247). Matches response registers against catalog signatures. Completes guided sweep in $\le 4.0\,\text{s}$. |
 | **TSK-210** | Network View Guided Discovery UI & Bus Scanner Progress Modal | Design (`head-design`) | `frontend/src/features/discovery/DiscoveryModal.tsx`, `BusScannerProgress.tsx` | Dark Obsidian modal displays scan progress, live discovered devices, and cancellation button. Complies with ISA-101 contrast and box-model invariants. |
-| **TSK-211** | Plugin Packaging, CLI Installer & Dynamic Host Manager | Software (`head-software`) | `crates/mythos-core/src/plugin/`, `crates/mythos-cli/src/plugin.rs` | Builds single-file `.mythos-plugin` packager, capability verifier, and dynamic hot-reload engine without process restarts. |
+| **TSK-211** | Plugin Packaging, CLI Toolchain & Dynamic Host Manager | Software (`head-software`) | `crates/mythos-core/src/plugin/`, `crates/mythos-cli/src/plugin.rs` | Builds single-file `.mythos-plugin` packager, capability verifier, and dynamic hot-reload engine without process restarts. |
+| **TSK-212** | Universal Bootstrap Scripts (POSIX Bash & Windows PowerShell) | Software (`head-software`), Publication (`head-publication`) | `scripts/install.sh`, `scripts/install.ps1` | Develops one-line bootstrap scripts for `https://get.mythos.firmansyah.co`. Supports `--channel <release|rc|dev>` and `--version <semver>` flags, environment variables, OS/arch detection (`x86_64`, `aarch64`, `armv7l`), SHA-256 verification, and systemd service configuration. |
+| **TSK-213** | Multi-Channel CLI Lifecycle Management & Instant Rollback | Software (`head-software`) | `crates/mythos-cli/src/channel.rs`, `update.rs`, `rollback.rs` | Implements `mythos channel [switch <channel>]`, `mythos versions --remote`, `mythos update [--version <semver>]`, and sub-second (`< 1.0 s`) atomic binary rollback via cached versions. |
+| **TSK-214** | Web HMI Asset Embedding & Desktop Launcher Registration | Software (`head-software`), Design (`head-design`) | `crates/mythos-server/src/web/`, `scripts/register-launcher.sh` | Embeds production Web HMI static assets into the daemon microkernel binary (served on `http://localhost:8080`). Automatically registers macOS `.app`, Windows shortcuts, and Linux `.desktop` entries during installation. |
 
 ---
 
@@ -182,9 +185,10 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
                                                   |
                                                   v
 +---------------------------------------------------------------------------------------------------+
-| GATE 2: Discovery, Catalog & Plugin Packaging Sign-Off (End of Sprint 2)                          |
+| GATE 2: Discovery, Catalog, Distribution & Plugin Packaging Sign-Off (End of Sprint 2)            |
 | Criteria: Layer 2 DCP identifies unassigned devices; golden reference device packages ingested;  |
-|           universal sweep runs <= 4.0 s; .mythos-plugin packager & dynamic hot-reload verified.   |
+|           universal sweep runs <= 4.0 s; .mythos-plugin packager & dynamic hot-reload verified;   |
+|           universal bootstrap scripts, multi-channel CLI, and instant rollback validated.          |
 +---------------------------------------------------------------------------------------------------+
                                                   |
                                                   v
@@ -228,6 +232,7 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | **Native MCP AI Subsystem** | **Accountable** | Informed | Informed | Consulted | Responsible (Specs) | Approver |
 | **Universal Plugin Harness & SDK** | **Accountable** | Consulted | Responsible | Consulted | Responsible (Specs) | Approver |
 | **Plugin Dynamic Host & Packaging** | **Accountable** | Consulted | Informed | Consulted | Responsible (Specs) | Approver |
+| **Universal Bootstrap & Multi-Channel CLI** | **Accountable** | Consulted | Consulted | Informed | Responsible (Specs) | Approver |
 | **Modular Frontend Plugin Shell** | Responsible | Informed | **Accountable** | Informed | Responsible (Specs) | Approver |
 | **Target Controller Storage & WAL**| **Accountable** | Consulted | Informed | Informed | Responsible (Specs) | Approver |
 | **In-Canvas Logic IDE & Deploy** | **Accountable** | Responsible | Responsible | Informed | Responsible (Specs) | Approver |
@@ -245,7 +250,7 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 |---|---|---|
 | **Sprint 0** | SYS-REQ-001, 002, 003, 004, 005, 010, 011, 012, 013, 016, 017, 018, 019, 030, 031, 032, 033, 034, 075, 076, 077, 086, 087 | ADR-001, ADR-002, ADR-008, ARCH-005, ARCH-006, DATA-004 |
 | **Sprint 1** | SYS-REQ-020, 021, 022, 023, 024, 025, 080, 096 | ADR-003, ARCH-005, ARCH-002, DATA-003 |
-| **Sprint 2** | SYS-REQ-040, 041, 042, 043, 044, 045, 074, 088, 089, 096 | ADR-004, ADR-008, ARCH-006, ARCH-002, HMI-000 |
+| **Sprint 2** | SYS-REQ-040, 041, 042, 043, 044, 045, 074, 088, 089, 095, 096 | ADR-004, ADR-008, ARCH-006, ARCH-002, ARCH-008, HMI-000 |
 | **Sprint 3** | SYS-REQ-050, 051, 052, 053, 054, 055, 056, 057, 078, 079, 081, 082, 083, 084, 085, 090 | ADR-006, ADR-008, HMI-000, ARCH-005, ARCH-006 |
 | **Sprint 4** | SYS-REQ-060, 061, 062, 063, 064, 065, 066 | ADR-007 |
 | **Sprint 5** | SYS-REQ-067, 068, 070, 071, 072, 073 | ADR-005, ADR-007 |
