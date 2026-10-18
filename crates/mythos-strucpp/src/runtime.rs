@@ -102,7 +102,10 @@ impl StrucppRuntime {
                         init_cfg.priority, e
                     );
                 } else {
-                    info!("Successfully elevated thread to SCHED_FIFO priority {}", init_cfg.priority);
+                    info!(
+                        "Successfully elevated thread to SCHED_FIFO priority {}",
+                        init_cfg.priority
+                    );
                 }
 
                 // 2. Core affinity pinning if requested

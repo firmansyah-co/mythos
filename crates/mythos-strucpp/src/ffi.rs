@@ -138,9 +138,20 @@ impl LocatedVarDescriptor {
     /// Return canonical IEC address string (e.g. `%IX0.0`, `%QW2`, `%MD100`).
     pub fn iec_address(&self) -> String {
         if self.size == LocatedSize::Bit {
-            format!("%{}{}{}.{}", self.area.as_char(), self.size.as_char(), self.byte_index, self.bit_index)
+            format!(
+                "%{}{}{}.{}",
+                self.area.as_char(),
+                self.size.as_char(),
+                self.byte_index,
+                self.bit_index
+            )
         } else {
-            format!("%{}{}{}", self.area.as_char(), self.size.as_char(), self.byte_index)
+            format!(
+                "%{}{}{}",
+                self.area.as_char(),
+                self.size.as_char(),
+                self.byte_index
+            )
         }
     }
 
@@ -205,16 +216,21 @@ impl LocatedVarDescriptor {
 /// Dynamic symbol bindings for loaded STruC++ `.so` runtime modules.
 pub struct StrucppSymbols {
     pub get_config: libloading::Symbol<'static, unsafe extern "C" fn() -> *mut c_void>,
-    pub set_locks: Option<libloading::Symbol<'static, unsafe extern "C" fn(*mut c_void, *mut c_void)>>,
-    pub get_located_vars: Option<libloading::Symbol<'static, unsafe extern "C" fn(*mut u32) -> *mut LocatedVarRaw>>,
+    pub set_locks:
+        Option<libloading::Symbol<'static, unsafe extern "C" fn(*mut c_void, *mut c_void)>>,
+    pub get_located_vars:
+        Option<libloading::Symbol<'static, unsafe extern "C" fn(*mut u32) -> *mut LocatedVarRaw>>,
     pub get_located_vars_count: Option<libloading::Symbol<'static, unsafe extern "C" fn() -> u32>>,
     pub step_cycle: Option<libloading::Symbol<'static, unsafe extern "C" fn()>>,
     pub debug_array_count: Option<libloading::Symbol<'static, unsafe extern "C" fn() -> u8>>,
     pub debug_elem_count: Option<libloading::Symbol<'static, unsafe extern "C" fn(u8) -> u16>>,
     pub debug_size: Option<libloading::Symbol<'static, unsafe extern "C" fn(u8, u16) -> u16>>,
-    pub debug_set: Option<libloading::Symbol<'static, unsafe extern "C" fn(u8, u16, *const c_void) -> u8>>,
-    pub debug_read: Option<libloading::Symbol<'static, unsafe extern "C" fn(u8, u16, *mut c_void) -> u16>>,
-    pub debug_write: Option<libloading::Symbol<'static, unsafe extern "C" fn(u8, u16, *const c_void) -> u8>>,
+    pub debug_set:
+        Option<libloading::Symbol<'static, unsafe extern "C" fn(u8, u16, *const c_void) -> u8>>,
+    pub debug_read:
+        Option<libloading::Symbol<'static, unsafe extern "C" fn(u8, u16, *mut c_void) -> u16>>,
+    pub debug_write:
+        Option<libloading::Symbol<'static, unsafe extern "C" fn(u8, u16, *const c_void) -> u8>>,
 }
 
 impl StrucppSymbols {
@@ -224,12 +240,12 @@ impl StrucppSymbols {
     /// The returned symbols are tied to the lifetime of `lib`. Caller must keep `lib` alive
     /// as long as `StrucppSymbols` is used.
     pub unsafe fn resolve(lib: &'static libloading::Library) -> Result<Self, StrucppError> {
-        let get_config = lib.get(b"strucpp_get_config").map_err(|e| {
-            StrucppError::SymbolNotFound {
-                symbol: "strucpp_get_config".into(),
-                reason: e.to_string(),
-            }
-        })?;
+        let get_config =
+            lib.get(b"strucpp_get_config")
+                .map_err(|e| StrucppError::SymbolNotFound {
+                    symbol: "strucpp_get_config".into(),
+                    reason: e.to_string(),
+                })?;
 
         let set_locks = lib.get(b"strucpp_set_locks").ok();
         let get_located_vars = lib.get(b"strucpp_get_located_vars").ok();

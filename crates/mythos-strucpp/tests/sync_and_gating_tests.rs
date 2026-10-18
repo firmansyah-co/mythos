@@ -38,8 +38,12 @@ fn test_tagbus_sync_and_isolation_sys_req_024_025() {
     assert!(invalid_reg.is_err());
 
     // Register valid bindings
-    synchronizer.register_binding("external.Line1.Sensor1.pv", 0, in_desc).unwrap();
-    synchronizer.register_binding("external.Line1.Actuator1.sp", 1, out_desc).unwrap();
+    synchronizer
+        .register_binding("external.Line1.Sensor1.pv", 0, in_desc)
+        .unwrap();
+    synchronizer
+        .register_binding("external.Line1.Actuator1.sp", 1, out_desc)
+        .unwrap();
 
     // Setup dummy TagBus slots
     let slot0 = TagSlot {
@@ -63,7 +67,9 @@ fn test_tagbus_sync_and_isolation_sys_req_024_025() {
     assert_eq!(in_memory, 1); // Value copied into PLC located input
 
     // Simulate PLC logic execution writing output
-    unsafe { std::ptr::write_volatile(&mut out_memory, 1); }
+    unsafe {
+        std::ptr::write_volatile(&mut out_memory, 1);
+    }
 
     // Scan End: Sync outputs -> TagBus %QX
     unsafe {
@@ -87,7 +93,10 @@ fn test_quality_gate_comm_loss_latching_sys_req_096() {
     // Record comm loss -> immediately latches BAD_COMM_FAILURE
     let code = gate.record_comm_loss(tag);
     assert_eq!(code, QualityCode::BAD_COMM_FAILURE);
-    assert_eq!(gate.get_latched_quality(tag), Some(QualityCode::BAD_COMM_FAILURE));
+    assert_eq!(
+        gate.get_latched_quality(tag),
+        Some(QualityCode::BAD_COMM_FAILURE)
+    );
 
     // Clear alarm upon reconnect
     gate.clear_comm_loss(tag);

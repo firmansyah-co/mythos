@@ -6,8 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{debug, info};
 
-pub const DEFAULT_STRUCPP_CLI: &str = "/home/adrian/Projects/openplc-editor/node_modules/strucpp/dist/node/cli.js";
-pub const DEFAULT_STRUCPP_INCLUDE: &str = "/home/adrian/Projects/openplc-editor/node_modules/strucpp/src/runtime/include";
+pub const DEFAULT_STRUCPP_CLI: &str =
+    "/home/adrian/Projects/openplc-editor/node_modules/strucpp/dist/node/cli.js";
+pub const DEFAULT_STRUCPP_INCLUDE: &str =
+    "/home/adrian/Projects/openplc-editor/node_modules/strucpp/src/runtime/include";
 pub const DEFAULT_CXX_COMPILER: &str = "/usr/bin/g++";
 
 /// Configuration parameters for the STruC++ compiler pipeline.
@@ -130,7 +132,10 @@ impl StrucppCompiler {
         fs::write(&glue_path, glue_code)?;
 
         // 4. Compile to shared library using g++ / clang++
-        debug!("Compiling C++ shared library with {}", self.config.cxx_compiler.display());
+        debug!(
+            "Compiling C++ shared library with {}",
+            self.config.cxx_compiler.display()
+        );
         let mut cxx_cmd = Command::new(&self.config.cxx_compiler);
         cxx_cmd
             .arg("-std=c++17")
@@ -145,9 +150,11 @@ impl StrucppCompiler {
             .arg(&so_path)
             .arg("-lpthread");
 
-        let cxx_output = cxx_cmd.output().map_err(|e| StrucppError::CppCompilationFailed {
-            reason: format!("Failed to invoke C++ compiler: {}", e),
-        })?;
+        let cxx_output = cxx_cmd
+            .output()
+            .map_err(|e| StrucppError::CppCompilationFailed {
+                reason: format!("Failed to invoke C++ compiler: {}", e),
+            })?;
 
         if !cxx_output.status.success() {
             let stderr = String::from_utf8_lossy(&cxx_output.stderr);
@@ -157,7 +164,10 @@ impl StrucppCompiler {
             });
         }
 
-        info!("Successfully compiled logic binary to {}", so_path.display());
+        info!(
+            "Successfully compiled logic binary to {}",
+            so_path.display()
+        );
         Ok(CompilationArtifacts {
             source_hash: hash,
             cpp_source: cpp_path,
@@ -169,7 +179,9 @@ impl StrucppCompiler {
 
     /// Generate glue C++ bridge file
     fn generate_glue_cpp(&self, hpp_path: &Path) -> String {
-        let hpp_abs = hpp_path.canonicalize().unwrap_or_else(|_| hpp_path.to_path_buf());
+        let hpp_abs = hpp_path
+            .canonicalize()
+            .unwrap_or_else(|_| hpp_path.to_path_buf());
         let hpp_str = hpp_abs.display().to_string();
         let inc_dir = self.config.strucpp_include.display().to_string();
 

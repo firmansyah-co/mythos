@@ -30,22 +30,32 @@ fn test_compiler_pipeline_and_so_generation() {
     };
 
     let compiler = StrucppCompiler::new(config);
-    let artifacts = compiler.compile_source(TEST_ST_SRC).expect("compilation successful");
+    let artifacts = compiler
+        .compile_source(TEST_ST_SRC)
+        .expect("compilation successful");
 
     assert!(artifacts.shared_library.exists());
     assert!(artifacts.cpp_source.exists());
     assert!(artifacts.cpp_header.exists());
 
     // Test zero-recompilation caching
-    let artifacts_cached = compiler.compile_source(TEST_ST_SRC).expect("cached compilation");
+    let artifacts_cached = compiler
+        .compile_source(TEST_ST_SRC)
+        .expect("cached compilation");
     assert_eq!(artifacts.source_hash, artifacts_cached.source_hash);
 
     // Test dynamic loading of .so via LoadedLogicModule
     let loaded = LoadedLogicModule::load(&artifacts.shared_library).expect("load .so module");
     assert_eq!(loaded.located_descriptors.len(), 2);
 
-    let in_desc = loaded.located_descriptors.iter().find(|d| d.iec_address() == "%IX0.0");
-    let out_desc = loaded.located_descriptors.iter().find(|d| d.iec_address() == "%QX0.0");
+    let in_desc = loaded
+        .located_descriptors
+        .iter()
+        .find(|d| d.iec_address() == "%IX0.0");
+    let out_desc = loaded
+        .located_descriptors
+        .iter()
+        .find(|d| d.iec_address() == "%QX0.0");
     assert!(in_desc.is_some());
     assert!(out_desc.is_some());
 

@@ -41,7 +41,10 @@ impl LogicDeployer {
     }
 
     /// Compile and prepare logic binary atomically.
-    pub fn deploy_logic(&self, req: &DeployRequest) -> Result<(DeployResult, CompilationArtifacts), StrucppError> {
+    pub fn deploy_logic(
+        &self,
+        req: &DeployRequest,
+    ) -> Result<(DeployResult, CompilationArtifacts), StrucppError> {
         let start = Instant::now();
         info!("Initiating in-controller logic deployment");
 

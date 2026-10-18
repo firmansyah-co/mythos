@@ -89,8 +89,16 @@ fn test_ton_timer_logic() {
     let art = compiler.compile_source(TON_SRC).expect("compile TON");
     let loaded = LoadedLogicModule::load(&art.shared_library).expect("load TON");
 
-    let in_trig = loaded.located_descriptors.iter().find(|d| d.iec_address() == "%IX0.0").unwrap();
-    let out_q = loaded.located_descriptors.iter().find(|d| d.iec_address() == "%QX0.0").unwrap();
+    let in_trig = loaded
+        .located_descriptors
+        .iter()
+        .find(|d| d.iec_address() == "%IX0.0")
+        .unwrap();
+    let out_q = loaded
+        .located_descriptors
+        .iter()
+        .find(|d| d.iec_address() == "%QX0.0")
+        .unwrap();
 
     // Initially false
     loaded.step_cycle();
@@ -119,9 +127,21 @@ fn test_ctu_counter_logic() {
     let art = compiler.compile_source(CTU_SRC).expect("compile CTU");
     let loaded = LoadedLogicModule::load(&art.shared_library).expect("load CTU");
 
-    let cu = loaded.located_descriptors.iter().find(|d| d.iec_address() == "%IX0.0").unwrap();
-    let rst = loaded.located_descriptors.iter().find(|d| d.iec_address() == "%IX0.1").unwrap();
-    let q = loaded.located_descriptors.iter().find(|d| d.iec_address() == "%QX0.0").unwrap();
+    let cu = loaded
+        .located_descriptors
+        .iter()
+        .find(|d| d.iec_address() == "%IX0.0")
+        .unwrap();
+    let rst = loaded
+        .located_descriptors
+        .iter()
+        .find(|d| d.iec_address() == "%IX0.1")
+        .unwrap();
+    let q = loaded
+        .located_descriptors
+        .iter()
+        .find(|d| d.iec_address() == "%QX0.0")
+        .unwrap();
 
     unsafe {
         rst.write_bool(false);
@@ -133,19 +153,29 @@ fn test_ctu_counter_logic() {
     }
 
     // Pulse 1
-    unsafe { cu.write_bool(true); }
+    unsafe {
+        cu.write_bool(true);
+    }
     loaded.step_cycle();
-    unsafe { cu.write_bool(false); }
+    unsafe {
+        cu.write_bool(false);
+    }
     loaded.step_cycle();
 
     // Pulse 2
-    unsafe { cu.write_bool(true); }
+    unsafe {
+        cu.write_bool(true);
+    }
     loaded.step_cycle();
-    unsafe { cu.write_bool(false); }
+    unsafe {
+        cu.write_bool(false);
+    }
     loaded.step_cycle();
 
     // Pulse 3 (hits PV=3)
-    unsafe { cu.write_bool(true); }
+    unsafe {
+        cu.write_bool(true);
+    }
     loaded.step_cycle();
     unsafe {
         assert!(q.read_bool(), "Counter should trigger Q at PV=3");
@@ -161,13 +191,31 @@ fn test_state_machine_logic() {
     };
 
     let compiler = StrucppCompiler::new(config);
-    let art = compiler.compile_source(STATE_MACHINE_SRC).expect("compile SM");
+    let art = compiler
+        .compile_source(STATE_MACHINE_SRC)
+        .expect("compile SM");
     let loaded = LoadedLogicModule::load(&art.shared_library).expect("load SM");
 
-    let start = loaded.located_descriptors.iter().find(|d| d.iec_address() == "%IX0.0").unwrap();
-    let stop = loaded.located_descriptors.iter().find(|d| d.iec_address() == "%IX0.1").unwrap();
-    let motor = loaded.located_descriptors.iter().find(|d| d.iec_address() == "%QX0.0").unwrap();
-    let fault = loaded.located_descriptors.iter().find(|d| d.iec_address() == "%QX0.1").unwrap();
+    let start = loaded
+        .located_descriptors
+        .iter()
+        .find(|d| d.iec_address() == "%IX0.0")
+        .unwrap();
+    let stop = loaded
+        .located_descriptors
+        .iter()
+        .find(|d| d.iec_address() == "%IX0.1")
+        .unwrap();
+    let motor = loaded
+        .located_descriptors
+        .iter()
+        .find(|d| d.iec_address() == "%QX0.0")
+        .unwrap();
+    let fault = loaded
+        .located_descriptors
+        .iter()
+        .find(|d| d.iec_address() == "%QX0.1")
+        .unwrap();
 
     // 1. Initial State: Idle
     loaded.step_cycle();
@@ -177,9 +225,13 @@ fn test_state_machine_logic() {
     }
 
     // 2. Press start button -> Transitions to Running
-    unsafe { start.write_bool(true); }
+    unsafe {
+        start.write_bool(true);
+    }
     loaded.step_cycle();
-    unsafe { start.write_bool(false); }
+    unsafe {
+        start.write_bool(false);
+    }
     loaded.step_cycle();
 
     unsafe {
@@ -188,9 +240,13 @@ fn test_state_machine_logic() {
     }
 
     // 3. Press stop button -> Transitions to Idle
-    unsafe { stop.write_bool(true); }
+    unsafe {
+        stop.write_bool(true);
+    }
     loaded.step_cycle();
-    unsafe { stop.write_bool(false); }
+    unsafe {
+        stop.write_bool(false);
+    }
     loaded.step_cycle();
 
     unsafe {

@@ -124,10 +124,7 @@ impl HotReloadManager {
 
             // Verify strict < 50ms SLA
             if elapsed > Duration::from_millis(50) {
-                warn!(
-                    "Hot-reload duration {:?} exceeded 50ms target SLA",
-                    elapsed
-                );
+                warn!("Hot-reload duration {:?} exceeded 50ms target SLA", elapsed);
             }
 
             // Drop old module outside critical hot path

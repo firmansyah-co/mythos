@@ -70,11 +70,7 @@ impl TagSynchronizer {
     ///
     /// # Safety
     /// Caller must ensure `slots` contains valid TagSlot pointers for configured slot_ids.
-    pub unsafe fn sync_inputs(
-        &self,
-        slots: &[TagSlot],
-        quality_gate: &QualityGate,
-    ) {
+    pub unsafe fn sync_inputs(&self, slots: &[TagSlot], quality_gate: &QualityGate) {
         for binding in &self.bindings {
             if binding.descriptor.area != LocatedArea::Input {
                 continue;
@@ -124,11 +120,7 @@ impl TagSynchronizer {
     ///
     /// # Safety
     /// Caller guarantees slots slice is mutable and bounds are valid.
-    pub unsafe fn sync_outputs(
-        &self,
-        slots: &mut [TagSlot],
-        quality_gate: &QualityGate,
-    ) {
+    pub unsafe fn sync_outputs(&self, slots: &mut [TagSlot], quality_gate: &QualityGate) {
         let is_sim = quality_gate.current_mode() == DeviceExecutionMode::ManualSimulation;
 
         for binding in &self.bindings {

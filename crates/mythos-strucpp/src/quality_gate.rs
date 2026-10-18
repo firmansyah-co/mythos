@@ -71,7 +71,10 @@ impl QualityGate {
     pub fn clear_comm_loss(&self, tag_uri: &str) {
         let mut alarms = self.latched_alarms.write();
         if alarms.remove(tag_uri).is_some() {
-            info!("Communication recovered for {}. Cleared alarm latch.", tag_uri);
+            info!(
+                "Communication recovered for {}. Cleared alarm latch.",
+                tag_uri
+            );
         }
     }
 
