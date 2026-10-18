@@ -16,7 +16,7 @@ pub mod storage;
 pub mod tag;
 pub mod topology;
 
-pub use api::{create_router, ApiState, HealthResponse, TelemetryBatch};
+pub use api::{create_router, ApiState, HealthResponse, TelemetryBatch, DEFAULT_INDEX_HTML};
 pub use catalog::{
     AccessType, CatalogError, CatalogFingerprintEngine, DataType, DeviceCatalog, DeviceCategory,
     DeviceManifest, DeviceMetadata, DiscoveryConfig, FingerprintMatch, ModbusRtuConfig,
@@ -34,7 +34,7 @@ pub use discovery::{
 pub use namespace::{TagDomain, TagNamespaceError, TagUri};
 pub use nvram::{NvramError, NvramWalEngine, WalRecordHeader, DEFAULT_NVRAM_PATH, WAL_MAGIC};
 pub use pal::*;
-pub use plugin::PluginHost;
+pub use plugin::{PluginHost, PluginPackageManifest, PluginPackager, VerifiedPluginPackage};
 pub use storage::{
     ControllerStorage, ProjectConfig, ProjectWal, ProjectWalEntry, StorageError, TaskConfig,
     WalError, DEFAULT_PROJECTS_DIR,

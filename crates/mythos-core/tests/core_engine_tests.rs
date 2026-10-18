@@ -463,3 +463,121 @@ async fn test_axum_api_gateway_rest_and_telemetry_stream() {
         "text/event-stream"
     );
 }
+
+#[tokio::test]
+async fn test_plugin_host_install_from_package_and_hotswap() {
+    use mythos_core::plugin::{PluginPackageManifest, PluginPackager};
+    use mythos_plugin_sdk::*;
+    use serde_json::json;
+    use std::collections::HashSet;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let pkg_path = tmp.path().join("mypkg.mythos-plugin");
+
+    let manifest = PluginPackageManifest {
+        metadata: PluginMetadata {
+            id: "engine.calculator".to_string(),
+            name: "Calculator".to_string(),
+            version: "1.0.0".to_string(),
+            author: "MythOS".to_string(),
+            description: "Calc".to_string(),
+            plugin_type: PluginType::ProcessEngine,
+            capabilities: vec!["tagbus:read".to_string()],
+        },
+        entrypoint: "calc.bin".to_string(),
+        checksum: String::new(),
+        min_core_version: "0.1.0".to_string(),
+    };
+    PluginPackager::build_package(&manifest, b"CALC_V1_BIN", &pkg_path).unwrap();
+
+    let host = mythos_core::PluginHost::new();
+
+    // 1. Install from package with valid capabilities
+    let mut allowed_caps = HashSet::new();
+    allowed_caps.insert("tagbus:read".to_string());
+    let installed_meta = host
+        .install_from_package(&pkg_path, &plugins_dir, allowed_caps.clone())
+        .unwrap();
+    assert_eq!(installed_meta.id, "engine.calculator");
+    assert_eq!(installed_meta.version, "1.0.0");
+
+    // 2. Reject installation if capability forbidden
+    let restricted_caps = HashSet::new();
+    let reject_res = host.install_from_package(&pkg_path, &plugins_dir, restricted_caps);
+    assert!(reject_res.is_err());
+
+    // 3. Register initial plugin instance
+    struct MockPlugin {
+        version: &'static str,
+        counter: u32,
+    }
+
+    #[async_trait::async_trait]
+    impl MythosPlugin for MockPlugin {
+        fn metadata(&self) -> PluginMetadata {
+            PluginMetadata {
+                id: "engine.calculator".to_string(),
+                name: "Calculator".to_string(),
+                version: self.version.to_string(),
+                author: "MythOS".to_string(),
+                description: "Calc".to_string(),
+                plugin_type: PluginType::ProcessEngine,
+                capabilities: vec!["tagbus:read".to_string()],
+            }
+        }
+        async fn init(&mut self, _ctx: &PluginContext) -> Result<(), PluginError> {
+            Ok(())
+        }
+        async fn start(
+            &mut self,
+            _ctx: &PluginContext,
+            _cfg: &serde_json::Value,
+        ) -> Result<(), PluginError> {
+            self.counter += 1;
+            Ok(())
+        }
+        async fn stop(&mut self, _ctx: &PluginContext) -> Result<(), PluginError> {
+            Ok(())
+        }
+        async fn health_check(&self) -> Result<PluginHealthReport, PluginError> {
+            Ok(PluginHealthReport::healthy(format!(
+                "v{} cnt={}",
+                self.version, self.counter
+            )))
+        }
+    }
+
+    let ctx = PluginContext::new(
+        "engine.calculator",
+        allowed_caps,
+        plugins_dir.to_str().unwrap(),
+    );
+    host.register(
+        Box::new(MockPlugin {
+            version: "1.0.0",
+            counter: 10,
+        }),
+        ctx,
+    )
+    .await
+    .unwrap();
+    host.start_plugin("engine.calculator", &json!({}))
+        .await
+        .unwrap();
+
+    let h1 = host.health_check("engine.calculator").await.unwrap();
+    assert_eq!(h1.message, "v1.0.0 cnt=11");
+
+    // 4. Hotswap to v2.0.0 without dropping host state
+    let v2_plugin = Box::new(MockPlugin {
+        version: "2.0.0",
+        counter: 50,
+    });
+    host.hotswap_plugin("engine.calculator", v2_plugin, &json!({}))
+        .await
+        .unwrap();
+
+    let h2 = host.health_check("engine.calculator").await.unwrap();
+    assert_eq!(h2.message, "v2.0.0 cnt=51");
+}

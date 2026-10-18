@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MythOS — High-Performance SCADA Web HMI</title>
+  <style>
+    :root {
+      --bg-base: #0A0D12;
+      --bg-surface: #0F141C;
+      --bg-card: #161D29;
+      --bg-card-hover: #1C2534;
+      --border-subtle: #1E293B;
+      --border-focus: #38BDF8;
+      --text-primary: #F8FAFC;
+      --text-secondary: #94A3B8;
+      --text-muted: #64748B;
+      --isa101-vessel: #334155;
+      --isa101-pipe-inactive: #475569;
+      --isa101-pipe-active: #64748B;
+      --isa101-valve-closed: #475569;
+      --isa101-valve-open: #94A3B8;
+      --isa101-pump-running: #0284C7;
+      --isa101-pump-stopped: #475569;
+      --alarm-critical: #DC2626;
+      --alarm-major: #EA580C;
+      --alarm-minor: #CA8A04;
+      --alarm-diagnostic: #2563EB;
+      --status-normal: #10B981;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      line-height: 1.5;
+      font-size: 14px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Top Navigation Bar */
+    header {
+      background-color: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 16px;
+      letter-spacing: 0.5px;
+      text-decoration: none;
+      color: var(--text-primary);
+    }
+
+    .brand-icon {
+      width: 26px;
+      height: 26px;
+      background: linear-gradient(135deg, #0284C7 0%, #38BDF8 100%);
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 900;
+      color: #0A0D12;
+      box-shadow: 0 0 10px rgba(2, 132, 199, 0.4);
+    }
+
+    .badge-embedded {
+      background-color: #1E293B;
+      color: #38BDF8;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid #334155;
+    }
+
+    nav.spa-tabs {
+      display: flex;
+      gap: 6px;
+    }
+
+    .tab-link {
+      color: var(--text-secondary);
+      text-decoration: none;
+      padding: 6px 14px;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.15s ease;
+      cursor: pointer;
+    }
+
+    .tab-link:hover {
+      color: var(--text-primary);
+      background-color: var(--bg-card);
+    }
+
+    .tab-link.active {
+      color: var(--text-primary);
+      background-color: var(--bg-card);
+      border-bottom: 2px solid var(--border-focus);
+    }
+
+    .header-status {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+      font-family: var(--font-mono);
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background-color: rgba(16, 185, 129, 0.1);
+      color: var(--status-normal);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background-color: var(--status-normal);
+      animation: pulse 2s infinite ease-in-out;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      padding: 24px;
+      max-width: 1440px;
+      width: 100%;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* Metric Cards Grid */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .card-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-secondary);
+    }
+
+    .card-value {
+      font-size: 24px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+    }
+
+    .card-subtext {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* Dashboard Split: Process SVG & TagBus Table */
+    .dashboard-split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    @media (max-width: 992px) {
+      .dashboard-split {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .panel {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: 12px;
+    }
+
+    .panel-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* ISA-101 Process Graphic */
+    .process-canvas {
+      width: 100%;
+      height: 260px;
+      background-color: #06090e;
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    /* TagBus Table */
+    .table-container {
+      overflow-x: auto;
+      max-height: 280px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 12px;
+      font-family: var(--font-mono);
+    }
+
+    th {
+      background-color: var(--bg-card);
+      color: var(--text-secondary);
+      font-weight: 600;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border-subtle);
+      position: sticky;
+      top: 0;
+    }
+
+    td {
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+      color: var(--text-primary);
+    }
+
+    tr:hover td {
+      background-color: rgba(255, 255, 255, 0.02);
+    }
+
+    .quality-good {
+      color: var(--status-normal);
+      font-weight: 700;
+    }
+
+    .quality-bad {
+      color: var(--alarm-critical);
+      font-weight: 700;
+    }
+
+    .tag-flash {
+      animation: highlight 0.5s ease-out;
+    }
+
+    @keyframes highlight {
+      0% { background-color: rgba(56, 189, 248, 0.25); }
+      100% { background-color: transparent; }
+    }
+
+    /* Info Banner */
+    .notice-box {
+      background-color: rgba(30, 41, 59, 0.3);
+      border: 1px dashed var(--border-subtle);
+      border-radius: 6px;
+      padding: 14px 18px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .notice-icon {
+      font-size: 16px;
+      color: #38BDF8;
+    }
+
+    footer {
+      margin-top: auto;
+      border-top: 1px solid var(--border-subtle);
+      padding: 12px 20px;
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+      background-color: var(--bg-surface);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" class="brand" data-spa="true">
+      <div class="brand-icon">M</div>
+      <span>MythOS Web HMI</span>
+      <span class="badge-embedded">Embedded Fallback</span>
+    </a>
+
+    <nav class="spa-tabs">
+      <a href="/" class="tab-link active" data-spa="true" id="tab-dashboard">Dashboard</a>
+      <a href="/tagbus" class="tab-link" data-spa="true" id="tab-tagbus">TagBus Monitor</a>
+      <a href="/topology" class="tab-link" data-spa="true" id="tab-topology">Network Topology</a>
+      <a href="/telemetry" class="tab-link" data-spa="true" id="tab-telemetry">Telemetry</a>
+      <a href="/projects" class="tab-link" data-spa="true" id="tab-projects">Projects</a>
+    </nav>
+
+    <div class="header-status">
+      <div class="status-pill" id="sse-pill">
+        <span class="status-dot" id="sse-dot"></span>
+        <span id="sse-label">SSE CONNECTED</span>
+      </div>
+      <div id="clock">--:--:-- UTC</div>
+    </div>
+  </header>
+
+  <main>
+    <!-- View Container: Dynamic SPA Target -->
+    <div id="spa-view-header" style="display:none; margin-bottom: 4px;">
+      <h2 id="spa-view-title" style="font-size: 18px; font-weight: 600;">Topology View</h2>
+      <p id="spa-view-desc" style="font-size: 12px; color: var(--text-secondary);">Client-side SPA route served by fallback router.</p>
+    </div>
+
+    <!-- Telemetry Metric Cards -->
+    <section class="metrics-grid">
+      <div class="card">
+        <div class="card-title">Microkernel Status</div>
+        <div class="card-value" id="kernel-status" style="color: var(--status-normal);">HEALTHY</div>
+        <div class="card-subtext">mythos-microkernel · Port 8080</div>
+      </div>
+      <div class="card">
+        <div class="card-title">TagBus Registered Tags</div>
+        <div class="card-value" id="tag-count">0</div>
+        <div class="card-subtext">Capacity: 32,768 lock-free SHM slots</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Telemetry Rate</div>
+        <div class="card-value">100 ms</div>
+        <div class="card-subtext">10 Hz sliding window batching</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Soft-Logic Scan Target</div>
+        <div class="card-value">1,000 µs</div>
+        <div class="card-subtext">Real-time deterministic loop (1 kHz)</div>
+      </div>
+    </section>
+
+    <!-- Main SCADA Workspace -->
+    <div class="dashboard-split" id="main-dashboard-grid">
+      <!-- Left Panel: ISA-101 Process Graphic -->
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2"></rect>
+              <line x1="8" y1="21" x2="16" y2="21"></line>
+              <line x1="12" y1="17" x2="12" y2="21"></line>
+            </svg>
+            <span>ISA-101 Process Overview (Unit 101)</span>
+          </div>
+          <span style="font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono);">ANSI/ISA-101.01-2015</span>
+        </div>
+
+        <div class="process-canvas">
+          <svg viewBox="0 0 540 220" width="100%" height="100%">
+            <!-- Process Vessel -->
+            <rect x="80" y="40" width="120" height="140" rx="8" fill="#161D29" stroke="var(--isa101-vessel)" stroke-width="2" />
+            <text x="140" y="70" fill="var(--text-secondary)" font-size="12" font-family="monospace" text-anchor="middle">TK-101</text>
+            <text x="140" y="88" fill="var(--text-muted)" font-size="10" font-family="sans-serif" text-anchor="middle">Feed Vessel</text>
+
+            <!-- Vessel Level Indicator -->
+            <rect x="95" y="105" width="90" height="60" fill="#1E293B" rx="3" />
+            <rect id="vessel-level-bar" x="95" y="125" width="90" height="40" fill="var(--isa101-pump-running)" opacity="0.75" rx="3" />
+            <text id="vessel-level-txt" x="140" y="142" fill="#F8FAFC" font-size="12" font-weight="bold" font-family="monospace" text-anchor="middle">66.7 %</text>
+
+            <!-- Process Piping -->
+            <path d="M 200 150 L 300 150" stroke="var(--isa101-pipe-active)" stroke-width="4" fill="none" />
+            <path d="M 360 150 L 460 150" stroke="var(--isa101-pipe-active)" stroke-width="4" fill="none" />
+
+            <!-- Recirculation Pump P-101 -->
+            <circle cx="330" cy="150" r="24" fill="#161D29" stroke="var(--border-subtle)" stroke-width="2" />
+            <circle id="pump-circle" cx="330" cy="150" r="18" fill="var(--isa101-pump-running)" />
+            <text x="330" y="120" fill="var(--text-secondary)" font-size="11" font-family="monospace" text-anchor="middle">P-101</text>
+            <text id="pump-status-txt" x="330" y="154" fill="#0A0D12" font-size="10" font-weight="bold" font-family="sans-serif" text-anchor="middle">RUN</text>
+
+            <!-- Discharge Transmitter PT-101 -->
+            <line x1="410" y1="150" x2="410" y2="100" stroke="var(--isa101-pipe-active)" stroke-width="2" />
+            <circle cx="410" cy="85" r="18" fill="#161D29" stroke="var(--border-subtle)" stroke-width="2" />
+            <text x="410" y="80" fill="var(--text-secondary)" font-size="9" font-family="monospace" text-anchor="middle">PT-101</text>
+            <text id="pt101-readout" x="410" y="94" fill="#38BDF8" font-size="10" font-weight="bold" font-family="monospace" text-anchor="middle">12.5 b</text>
+
+            <!-- Flow Arrow -->
+            <polygon points="255,145 265,150 255,155" fill="var(--isa101-pipe-active)" />
+            <polygon points="435,145 445,150 435,155" fill="var(--isa101-pipe-active)" />
+          </svg>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-muted); font-family:var(--font-mono);">
+          <span>TK-101 LEVEL: <strong id="tk101-val" style="color:var(--text-primary)">66.7 %</strong></span>
+          <span>PT-101 PRESSURE: <strong id="pt101-val" style="color:var(--text-primary)">12.50 bar</strong></span>
+          <span>P-101 SPEED: <strong id="p101-val" style="color:var(--text-primary)">1450 RPM</strong></span>
+        </div>
+      </section>
+
+      <!-- Right Panel: TagBus Real-Time Status Monitor -->
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 6h16M4 12h16M4 18h16"></path>
+            </svg>
+            <span>TagBus Real-Time Status Monitor</span>
+          </div>
+          <span id="tag-sync-badge" style="font-size:11px; color:var(--status-normal); font-family:var(--font-mono);">● LIVE 10 Hz</span>
+        </div>
+
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Tag URI</th>
+                <th>Slot</th>
+                <th>Value</th>
+                <th>Quality</th>
+                <th>Updated</th>
+              </tr>
+            </thead>
+            <tbody id="tagbus-tbody">
+              <tr>
+                <td colspan="5" style="text-align:center; color:var(--text-muted); padding:20px;">
+                  Polling Tag Catalog and streaming SSE updates...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--text-muted);">
+          <span>Buffer: POSIX Shared Memory</span>
+          <span id="batch-stats">Batches: 0 · Updates: 0</span>
+        </div>
+      </section>
+    </div>
+
+    <!-- Production Fallback Notice & Guidance -->
+    <section class="notice-box">
+      <div class="notice-icon">ℹ</div>
+      <div>
+        <strong>MythOS Production Web HMI Gateway Active.</strong>
+        This embedded single-page application is compiled into the <code>mythos-core</code> binary to provide an out-of-the-box SCADA dashboard, TagBus inspector, and REST/SSE diagnostics.
+        To mount a custom production build (e.g. React 19 / Vite workbench), set the <code>MYTHOS_STATIC_DIR=/path/to/dist</code> environment variable or configure <code>static_dir</code>.
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    MythOS SCADA Microkernel v0.1.0 · Autonomous Enterprise Runtime · Port 8080 · High-Performance HMI
+  </footer>
+
+  <script>
+    // Live Clock
+    function updateClock() {
+      const now = new Date();
+      document.getElementById('clock').textContent = now.toTimeString().split(' ')[0] + ' LOC';
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // SPA Client-Side Routing
+    function handleNavigation(path, push = true) {
+      if (push) {
+        window.history.pushState({}, '', path);
+      }
+      const links = document.querySelectorAll('.tab-link');
+      links.forEach(l => {
+        if (l.getAttribute('href') === path || (path !== '/' && l.getAttribute('href').startsWith(path))) {
+          l.classList.add('active');
+        } else {
+          l.classList.remove('active');
+        }
+      });
+
+      const header = document.getElementById('spa-view-header');
+      const title = document.getElementById('spa-view-title');
+      const desc = document.getElementById('spa-view-desc');
+      const mainGrid = document.getElementById('main-dashboard-grid');
+
+      if (path === '/' || path === '') {
+        header.style.display = 'none';
+        mainGrid.style.display = 'grid';
+      } else {
+        header.style.display = 'block';
+        const routeName = path.replace('/', '').toUpperCase();
+        title.textContent = routeName + ' View';
+        desc.textContent = 'Active Single-Page Application (SPA) client route: ' + path;
+      }
+    }
+
+    document.querySelectorAll('[data-spa="true"]').forEach(el => {
+      el.addEventListener('click', e => {
+        e.preventDefault();
+        const href = el.getAttribute('href');
+        handleNavigation(href, true);
+      });
+    });
+
+    window.addEventListener('popstate', () => {
+      handleNavigation(window.location.pathname, false);
+    });
+
+    // Initial navigation check
+    handleNavigation(window.location.pathname, false);
+
+    // Initial Health Check
+    async function checkHealth() {
+      try {
+        const res = await fetch('/api/v1/health');
+        if (res.ok) {
+          const data = await res.json();
+          document.getElementById('kernel-status').textContent = data.status || 'HEALTHY';
+        }
+      } catch (e) {
+        document.getElementById('kernel-status').textContent = 'OFFLINE';
+        document.getElementById('kernel-status').style.color = 'var(--alarm-critical)';
+      }
+    }
+    checkHealth();
+    setInterval(checkHealth, 5000);
+
+    // Tag Catalog & Live SSE Stream
+    const tagMap = new Map();
+    let totalBatches = 0;
+    let totalUpdates = 0;
+
+    async function loadTags() {
+      try {
+        const res = await fetch('/api/v1/tags');
+        if (res.ok) {
+          const tags = await res.json();
+          document.getElementById('tag-count').textContent = tags.length;
+          tags.forEach(t => {
+            tagMap.set(t.uri, {
+              slot_id: t.slot_id,
+              uri: t.uri,
+              value: 0.0,
+              quality: 'GOOD',
+              units: t.engineering_units || '',
+              updated: 'Pending'
+            });
+          });
+          renderTable();
+        }
+      } catch (e) {
+        console.warn('Failed to load initial tags:', e);
+      }
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById('tagbus-tbody');
+      if (tagMap.size === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:16px;">No tags registered yet. Use POST /api/v1/tags.</td></tr>';
+        return;
+      }
+      let html = '';
+      tagMap.forEach(tag => {
+        const qClass = tag.quality === 'GOOD' ? 'quality-good' : 'quality-bad';
+        const displayVal = typeof tag.value === 'number' ? tag.value.toFixed(2) : tag.value;
+        html += `<tr id="row-${tag.slot_id}">
+          <td style="font-weight:600">${tag.uri}</td>
+          <td>#${tag.slot_id}</td>
+          <td><strong>${displayVal}</strong> ${tag.units}</td>
+          <td class="${qClass}">${tag.quality}</td>
+          <td style="color:var(--text-muted)">${tag.updated}</td>
+        </tr>`;
+      });
+      tbody.innerHTML = html;
+    }
+
+    loadTags();
+
+    // Connect SSE Telemetry
+    let evtSource = null;
+    function connectSse() {
+      const pill = document.getElementById('sse-pill');
+      const dot = document.getElementById('sse-dot');
+      const label = document.getElementById('sse-label');
+
+      evtSource = new EventSource('/api/v1/telemetry/stream');
+
+      evtSource.onopen = () => {
+        dot.style.backgroundColor = 'var(--status-normal)';
+        pill.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+        label.textContent = 'SSE CONNECTED';
+      };
+
+      evtSource.addEventListener('tag_update', (e) => {
+        try {
+          const batch = JSON.parse(e.data);
+          totalBatches++;
+          if (batch.updates && batch.updates.length > 0) {
+            totalUpdates += batch.updates.length;
+            batch.updates.forEach(u => {
+              const existing = tagMap.get(u.uri) || {
+                slot_id: u.slot_id,
+                uri: u.uri,
+                units: ''
+              };
+              existing.value = u.value;
+              existing.quality = u.quality;
+              existing.updated = new Date(batch.timestamp_ms).toLocaleTimeString();
+              tagMap.set(u.uri, existing);
+
+              // Update Graphic if relevant
+              if (u.uri.includes('pressure') || u.uri.includes('PT101')) {
+                const pt = document.getElementById('pt101-readout');
+                const ptv = document.getElementById('pt101-val');
+                if (pt) pt.textContent = Number(u.value).toFixed(1) + ' b';
+                if (ptv) ptv.textContent = Number(u.value).toFixed(2) + ' bar';
+              }
+            });
+            renderTable();
+          }
+          document.getElementById('batch-stats').textContent = `Batches: ${totalBatches} · Updates: ${totalUpdates}`;
+        } catch (err) {
+          console.error('Error parsing SSE payload:', err);
+        }
+      });
+
+      evtSource.onerror = () => {
+        dot.style.backgroundColor = 'var(--alarm-major)';
+        pill.style.borderColor = 'rgba(234, 88, 12, 0.3)';
+        label.textContent = 'SSE RECONNECTING...';
+      };
+    }
+
+    connectSse();
+  </script>
+</body>
+</html>
