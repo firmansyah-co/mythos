@@ -1,0 +1,28 @@
+[package]
+name = "mythos-strucpp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Native STruC++ IEC 61131-3 soft-logic runtime engine, in-process FFI bridge, and real-time scheduler for MythOS"
+
+[lints]
+workspace = true
+
+[dependencies]
+mythos-pal.workspace = true
+mythos-shm.workspace = true
+mythos-core.workspace = true
+libloading.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+crc32fast.workspace = true
+libc.workspace = true
+cfg-if.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"

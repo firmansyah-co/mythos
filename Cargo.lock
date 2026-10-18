@@ -776,6 +776,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "mythos-strucpp"
+version = "0.1.0"
+dependencies = [
+ "cfg-if",
+ "crc32fast",
+ "libc",
+ "libloading",
+ "mythos-core",
+ "mythos-pal",
+ "mythos-shm",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

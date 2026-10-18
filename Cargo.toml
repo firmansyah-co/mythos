@@ -4,6 +4,7 @@ members = [
     "crates/mythos-pal",
     "crates/mythos-core",
     "crates/mythos-shm",
+    "crates/mythos-strucpp",
     "crates/mythos-plugin-sdk",
     "crates/mythos-mcp",
     "crates/mythos-mcp-macros",
@@ -25,6 +26,7 @@ warnings = "deny"
 mythos-pal = { path = "crates/mythos-pal" }
 mythos-shm = { path = "crates/mythos-shm" }
 mythos-core = { path = "crates/mythos-core" }
+mythos-strucpp = { path = "crates/mythos-strucpp" }
 mythos-plugin-sdk = { path = "crates/mythos-plugin-sdk" }
 mythos-mcp = { path = "crates/mythos-mcp" }
 mythos-mcp-macros = { path = "crates/mythos-mcp-macros" }
