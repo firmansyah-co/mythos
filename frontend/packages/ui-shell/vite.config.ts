@@ -11,6 +11,18 @@ export default defineConfig({
         replacement: path.resolve(__dirname, '../../plugins/ui-logic-editor/src/index.ts'),
       },
       {
+        find: '@mythos/ui-topology',
+        replacement: path.resolve(__dirname, '../../plugins/ui-topology/src/index.ts'),
+      },
+      {
+        find: '@mythos/ui-faceplate-lib',
+        replacement: path.resolve(__dirname, '../../plugins/ui-faceplate-lib/src/index.ts'),
+      },
+      {
+        find: '@mythos/ui-inspector',
+        replacement: path.resolve(__dirname, '../../plugins/ui-inspector/src/index.ts'),
+      },
+      {
         find: 'monaco-editor/esm/vs/editor/editor.api.js',
         replacement: 'monaco-editor',
       },

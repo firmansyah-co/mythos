@@ -19,7 +19,7 @@
     "./tokens.css": "./src/tokens.css"
   },
   "scripts": {
-    "build": "vite build && tsc --emitDeclarationOnly",
+    "build": "vite build && tsc --declaration --declarationDir dist --emitDeclarationOnly",
     "test": "vitest run"
   },
   "dependencies": {

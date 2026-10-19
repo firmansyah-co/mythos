@@ -78,6 +78,9 @@ importers:
 
   packages/ui-shell:
     dependencies:
+      '@mythos/ui-faceplate-lib':
+        specifier: workspace:*
+        version: link:../../plugins/ui-faceplate-lib
       '@mythos/ui-inspector':
         specifier: workspace:*
         version: link:../../plugins/ui-inspector

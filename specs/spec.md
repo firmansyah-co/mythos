@@ -397,6 +397,82 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 
 ---
 
+
+- **SYS-REQ-098 [Siemens TIA Portal "Portal View" Dual-Mode Workspace]**:
+  - **Dual-Mode Workspace Paradigms (Portal View vs Project View)**:
+    The application shall provide a bottom-left persistent mode switcher toggle (`[ 🌐 Portal View ]` <---> `[ 🎛️ Project View ]`):
+    - **Portal View (Task-Oriented Launchpad / Welcome Portal)**:
+      - Left Navigation Menu:
+        * `Start`: "Create new project" (name, path, author, comment calling `POST /api/v1/projects`), "Open existing project" (fetching real projects via `GET /api/v1/projects`), "Import package (.mythos-pkg)".
+        * `Devices & Networks`: "Configure a device", "Write to controller".
+        * `PLC Programming`: "Write PLC program", "Add new block".
+        * `Motion & Technology`: "Configure technology objects (axes, cams, PID)".
+        * `Visualization`: "Configure screens", "HMI templates".
+        * `Online & Diagnostics`: "Accessible devices (PROFINET DCP / Modbus sweep)".
+      - Seamless transition: Creating a project or clicking any workbench action loads the project and transitions immediately to Project View.
+    - **Project View (5-Zone Industrial Workbench)**:
+      - Zone 1: Top HUD Banner (38px) with cycle times and ISA-18.2 counters.
+      - Zone 2: Canonical Project Tree (240px - 360px) with clean hierarchical taxonomy.
+      - Zone 3: Main Engineering Canvas hosting tabbed editors in `@hexact/dockview-react`.
+      - Zone 4: Far-Right Collapsible Task Cards (fixed 384px layout token width).
+      - Zone 5: Context-Sensitive Bottom Inspector (180px - 320px).
+  - **Clean Empty Project Lifecycle (Zero Mock Data Guarantee)**:
+    - Zero phantom or hardcoded initial objects: no static "BottlingPlant_Line01", no phantom "Main [OB1]" or "FB_Motor" unless created by user or loaded from project.
+    - When project is empty:
+      * Project tree shows clean root: `[Project Name]` (or `(No Project Loaded)`).
+      * Under `Program Blocks`: shows `(No blocks created - click [+ Add new block])`.
+      * Under `HMI Screens`: shows `(No screens created - click [+ Add new screen])`.
+      * Central canvas displays a welcoming industrial empty state: *"Project is empty. Add a PLC block or HMI screen from the Project Tree to begin."*
+  - **Interactive Document Wiring & Context-Sensitive Selection (App.tsx -> Zone 2 -> Dockview -> Zone 4)**:
+    - Real dynamic tab router in Dockview:
+      * Logic Block -> dynamically opens or focuses tab with `@mythos/ui-logic-editor` (Monaco or visual canvas) and actual project source code.
+      * HMI Screen -> dynamically opens or focuses tab with HMI canvas and faceplate library.
+      * Devices & Networks -> dynamically opens Network View, Device View (Rack chassis), or Topology View with PROFINET DCP sweep trigger.
+    - Dynamic creation modals:
+      * `[+ Add new block]`: Prompt/modal for Block Type (OB, FB, FC, DB), Name, Language (ST, IL, LD, FBD, SFC), creating block in project storage / WAL and opening tab.
+      * `[+ Add new screen]`: Prompt/modal for Screen Name, creating screen in project storage and opening tab.
+    - Zone 4 Inspector (384px): Dynamically binds to actively selected tree node, logic block, or canvas element, displaying actual metadata, parameters, and tag addresses.
+
+- **SYS-REQ-099 [Universal IEC 61131-3 Logic IDE Parity - ST, LD, FBD, IL, SFC]**:
+  The engineering workbench shall provide complete IDE parity with OpenPLC Editor v4 and Siemens STEP 7 across all five IEC 61131-3 programmable controller programming languages:
+  - **Language 1: Structured Text (ST)**:
+    - Integrated Monaco editor with full language definition (`stLanguage.ts`).
+    - Syntax highlighting, case-insensitive keyword tokenization (`PROGRAM`, `END_PROGRAM`, `VAR`, `END_VAR`, `IF`, `THEN`, `ELSE`, `CASE`, `FOR`, `WHILE`).
+    - Bracket matching, multi-level auto-indentation, and parameter tooltips for IEC standard functions.
+    - Inline compiler error squiggles and diagnostics synchronized with backend STruC++ parser outputs.
+  - **Language 2: Instruction List (IL)**:
+    - Textual tabular editor with opcode highlighting (`LD`, `ST`, `AND`, `OR`, `ADD`, `SUB`, `JMP`, `CAL`, `RET`).
+    - Operator-modifier notation parsing (`ANDN`, `ORN`, `JMPC`, `CALCN`).
+    - Real-time accumulator simulation and step-by-step operand stack visualization.
+  - **Language 3: Graphical Ladder Diagram (LD)**:
+    - Deterministic SVG/Canvas dual power rail architecture (Left Energized Rail, Right Return Rail).
+    - Graphical element toolkit:
+      * Normally Open (`--[ ]--`) and Normally Closed (`--[/]--`) contacts.
+      * Positive (`--[P]--`) and Negative (`--[N]--`) edge detection contacts.
+      * Standard (`--( )--`), Set (`--(S)--`), and Reset (`--(R)--`) output coils.
+      * Parallel branch sub-networks and nested branch joins.
+      * Inline timer/counter block invocation (`TON`, `TOF`, `TP`, `CTU`, `CTD`).
+    - Live power-flow telemetry overlay: active energization paths render in neon green (`#22C55E`).
+  - **Language 4: Function Block Diagram (FBD)**:
+    - Modular 2D graphical network canvas based on xyflow / custom Canvas.
+    - Standard logic gate symbols (AND, OR, XOR, NOT) with expandable inputs.
+    - Mathematical, comparator, and conversion blocks with typed inputs (`IN1`, `IN2`) and outputs (`OUT`).
+    - Inversion / negation bubble toggles on input/output pins.
+  - **Language 5: Sequential Function Chart (SFC)**:
+    - State transition flowchart modeler for batch sequences conforming to IEC 61131-3 and ISA-88.
+    - Initial steps (double border), standard steps, transitions with boolean conditions, and directed links.
+    - Action blocks with execution qualifiers: `N` (Non-stored), `S` (Set / Stored), `R` (Reset), `P` (Pulse), `L` (Time Limited), `D` (Time Delayed).
+    - Simultaneous (parallel) and alternative branching and joining.
+  - **Variable Table Grid & Data Type (DUT/UDT) Editor**:
+    - Centralized POU variable declaration grid supporting variable classes (`VAR`, `VAR_INPUT`, `VAR_OUTPUT`, `VAR_IN_OUT`, `VAR_TEMP`, `VAR_EXTERNAL`).
+    - Global Variable Lists (`GVL`) mapped to external field tags (`external.*`) or internal shared memory (`internal.*`).
+    - User-Defined Data Types (`DUT/UDT`) editor supporting hierarchical structured types (`TYPE ... STRUCT ... END_STRUCT;`) and enumerations (`TYPE ... (EnumVal1, EnumVal2) ...;`).
+  - **Live Online Debugging, Power-Flow Animation & Variable Forcing (SYS-REQ-096 Compliant)**:
+    - Non-blocking online connection over Server-Sent Events (SSE) and WebSocket.
+    - Rung energization animation reflecting real-time boolean states from TagBus.
+    - Structured Text live inline value badges and watches.
+    - Variable forcing table allowing engineers to override physical inputs (`%IX`) and outputs (`%QX`) with prominent safety warnings and mandatory Merkle audit logging in strict adherence to SYS-REQ-096.
+
 ## 4. Non-Functional & Quality Requirements
 
 ### 4.1 Performance & Timing Bounds
@@ -473,6 +549,8 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 | **SYS-REQ-095** | Automated Universal Bootstrap & Multi-Channel CLI Distribution | Bootstrap & Channel Lifecycle Test | Validates bash and PowerShell bootstrap one-liners with `--channel` and `--version` flags; verifies embedded Web HMI on `:8080`, desktop launcher creation, systemd registration, `mythos channel switch`, `mythos versions --remote`, `mythos update --version`, and instant `mythos rollback` ($< 1.0\,\text{s}$). |
 | **SYS-REQ-096** | Explicit Per-Device Simulation Mode & Zero-Silent-Fallback | Hardware Disconnect Fault Test | Sever RS-485 / Ethernet connection during PhysicalHardware mode; verify immediate `BAD_COMM_FAILURE` alarm generation with zero synthetic fallback. Toggle ManualSimulation; verify slider injection unlocked, amber simulation indicators active, and audit entry recorded. |
 | **SYS-REQ-097** | Siemens TIA Portal Workspace & Project Tree Parity | Workspace Interaction & Navigation Test | Validates switching between Network, Device, and Topology views in Zone 3; verifies Zone 2 project tree taxonomy; confirms drag-and-drop from Zone 4 Task Cards (Instructions, Catalog, Libraries, Layout); verifies Zone 5 Context-Sensitive Bottom Inspector updates dynamically on node selection. |
+| **SYS-REQ-098** | Siemens TIA Portal "Portal View" Dual-Mode Workspace | End-to-End Workflow & Unit Test | Validates bottom-left Portal/Project switcher; verifies Portal View tabs (Start, Devices, PLC, Motion, HMI, Diagnostics); confirms empty project shows zero mock data; verifies onOpenDocument wiring into Dockview tabs and dynamic block/screen creation. |
+| **SYS-REQ-099** | Universal IEC 61131-3 Logic IDE Parity (ST, IL, LD, FBD, SFC) | Language Test Suite & Online Debugging Verification | Compiles and executes test programs across all 5 IEC languages; validates ladder power-flow energization animation with live SSE telemetry; verifies variable table DUT/UDT schema generation; confirms variable forcing overrides with audit ledger recording. |
 
 ---
 
