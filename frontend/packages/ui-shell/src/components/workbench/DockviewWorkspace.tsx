@@ -18,11 +18,22 @@ import { useHmiStore } from '../../stores/useHmiStore';
 import { Plus, Layers, FileCode2, Network } from 'lucide-react';
 
 // Panel 1: Monaco Logic Editor tab
-const MonacoLogicPanel: React.FC<IDockviewPanelProps<{ targetBlock?: string }>> = (props) => {
+const MonacoLogicPanel: React.FC<IDockviewPanelProps<{ targetBlock?: string; language?: string }>> = (props) => {
   const targetBlock = props.params?.targetBlock || 'MainTask';
+  const blockLang = props.params?.language;
+  const initialMode =
+    blockLang === 'LD'
+      ? 'LADDER'
+      : blockLang === 'IL'
+      ? 'IL'
+      : blockLang === 'FBD'
+      ? 'FBD'
+      : blockLang === 'SFC'
+      ? 'SFC'
+      : 'ST';
   return (
     <div className="w-full h-full">
-      <LogicEditorPlugin targetBlock={targetBlock} />
+      <LogicEditorPlugin targetBlock={targetBlock} initialMode={initialMode} />
     </div>
   );
 };

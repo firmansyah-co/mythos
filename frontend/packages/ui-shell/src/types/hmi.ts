@@ -8,7 +8,7 @@ export type WorkspaceMode = 'PORTAL' | 'PROJECT';
 
 export type LogicBlockType = 'OB' | 'FB' | 'FC' | 'DB';
 
-export type LogicBlockLanguage = 'ST' | 'LD';
+export type LogicBlockLanguage = 'ST' | 'IL' | 'LD' | 'FBD' | 'SFC';
 
 export interface LogicBlockDescriptor {
   id: string;

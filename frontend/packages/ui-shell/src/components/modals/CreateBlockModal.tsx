@@ -112,8 +112,11 @@ export const CreateBlockModal: React.FC<CreateBlockModalProps> = ({
                 data-testid="modal-block-language"
                 className="w-full px-2.5 py-1.5 bg-neutral-900 border border-neutral-700 rounded text-neutral-200 focus:outline-none focus:border-cyan-500"
               >
-                <option value="ST">Structured Text (ST - IEC 61131-3)</option>
+                <option value="ST">Structured Text (ST)</option>
+                <option value="IL">Instruction List (IL)</option>
                 <option value="LD">Ladder Diagram (LD)</option>
+                <option value="FBD">Function Block Diagram (FBD)</option>
+                <option value="SFC">Sequential Function Chart (SFC)</option>
               </select>
             </div>
           </div>
