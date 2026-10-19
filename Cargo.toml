@@ -36,6 +36,7 @@ mythos-mcp-macros = { path = "crates/mythos-mcp-macros" }
 # Concurrency and Async
 tokio = { version = "1.40", features = ["full"] }
 tokio-stream = "0.1"
+futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["codec"] }
 async-trait = "0.1"
 flume = "0.11"
@@ -49,6 +50,10 @@ tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
 # CLI & Packaging
 clap = { version = "4.6", features = ["derive"] }
 sha2 = "0.10"
+chacha20poly1305 = "0.10.1"
+rand = "0.8"
+ed25519-dalek = { version = "2.1", features = ["rand_core", "serde"] }
+hex = "0.4"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 tempfile = "3.10"
 
