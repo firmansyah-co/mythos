@@ -6,6 +6,7 @@
 
 pub mod alarm;
 pub mod api;
+pub mod auth;
 pub mod catalog;
 pub mod collab;
 pub mod device;
@@ -16,6 +17,7 @@ pub mod nvram;
 pub mod pal;
 pub mod plugin;
 pub mod recipe;
+pub mod recovery;
 pub mod sdui;
 pub mod storage;
 pub mod tag;
@@ -66,4 +68,10 @@ pub use recipe::{
     BatchExecutionInstance, BatchRunStatus, MasterRecipe, PackMlState, ParameterConstraint,
     ParameterValue, RecipeBusRegisters, RecipeLifecycleState, RecipeStep, RecipeSyncCoordinator,
     RecipeSyncError, StepTransitionCondition,
+};
+pub use recovery::*;
+
+pub use auth::{
+    scopes, AgentAuthToken, AgentClaims, AuditEntry, AuditIntegrityError, AuthError,
+    Ed25519TokenManager, MerkleAuditLedger,
 };

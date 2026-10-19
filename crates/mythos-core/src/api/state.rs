@@ -1,5 +1,7 @@
 //! Shared state for Axum API Gateway.
 
+use crate::api::mcp::McpSseTransport;
+use crate::auth::{Ed25519TokenManager, MerkleAuditLedger};
 use crate::collab::RoomManager;
 use crate::storage::ControllerStorage;
 use crate::tag::TagCatalog;
@@ -16,6 +18,9 @@ pub struct ApiState<S: PlatformShm + 'static = mythos_pal::DefaultShm> {
     pub shm_reader: Option<Arc<RwLock<ShmReaderHandle<S>>>>,
     pub static_dir: Option<PathBuf>,
     pub room_manager: Arc<RoomManager>,
+    pub mcp_transport: Arc<McpSseTransport>,
+    pub token_manager: Option<Arc<Ed25519TokenManager>>,
+    pub audit_ledger: Option<Arc<MerkleAuditLedger>>,
 }
 
 impl<S: PlatformShm + 'static> Clone for ApiState<S> {
@@ -26,6 +31,9 @@ impl<S: PlatformShm + 'static> Clone for ApiState<S> {
             shm_reader: self.shm_reader.clone(),
             static_dir: self.static_dir.clone(),
             room_manager: Arc::clone(&self.room_manager),
+            mcp_transport: Arc::clone(&self.mcp_transport),
+            token_manager: self.token_manager.clone(),
+            audit_ledger: self.audit_ledger.clone(),
         }
     }
 }
@@ -47,6 +55,9 @@ impl<S: PlatformShm + 'static> ApiState<S> {
             shm_reader: shm_reader.map(|r| Arc::new(RwLock::new(r))),
             static_dir,
             room_manager: Arc::new(RoomManager::new()),
+            mcp_transport: Arc::new(McpSseTransport::new()),
+            token_manager: None,
+            audit_ledger: None,
         }
     }
 
@@ -59,6 +70,18 @@ impl<S: PlatformShm + 'static> ApiState<S> {
     /// Configure custom RoomManager instance for CRDT collaboration.
     pub fn with_room_manager(mut self, room_manager: Arc<RoomManager>) -> Self {
         self.room_manager = room_manager;
+        self
+    }
+
+    /// Configure Ed25519 Token Manager for cryptographic AI token authentication.
+    pub fn with_token_manager(mut self, token_manager: Arc<Ed25519TokenManager>) -> Self {
+        self.token_manager = Some(token_manager);
+        self
+    }
+
+    /// Configure Merkle Audit Ledger for audit tracking.
+    pub fn with_audit_ledger(mut self, audit_ledger: Arc<MerkleAuditLedger>) -> Self {
+        self.audit_ledger = Some(audit_ledger);
         self
     }
 }

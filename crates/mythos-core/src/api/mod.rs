@@ -3,6 +3,7 @@
 //! Provides REST endpoints (`/api/v1/health`, `/api/v1/tags`, `/api/v1/projects`)
 //! and real-time SSE stream (`/api/v1/telemetry/stream`) with locked 100ms batch throttling.
 
+pub mod mcp;
 pub mod state;
 pub mod telemetry;
 pub mod web;
@@ -20,6 +21,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use tracing::info;
 
+pub use mcp::{mcp_message_handler, mcp_sse_handler, McpSseTransport};
 pub use state::ApiState;
 pub use telemetry::{telemetry_stream_handler, TagValueUpdate, TelemetryBatch};
 pub use web::{
@@ -79,6 +81,9 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
             "/api/v1/telemetry/stream",
             get(telemetry_stream_handler::<S>),
         )
+        // Model Context Protocol (MCP) Transports (TSK-501 / TSK-504)
+        .route("/api/v1/mcp/sse", get(mcp::mcp_sse_handler::<S>))
+        .route("/api/v1/mcp/message", post(mcp::mcp_message_handler::<S>))
         // Control Logic Deployment (TSK-302 / SYS-REQ-021)
         .route("/api/v1/control/deploy", post(control_deploy_handler::<S>))
         // CRDT Collaboration WebSocket Gateway (TSK-311)
