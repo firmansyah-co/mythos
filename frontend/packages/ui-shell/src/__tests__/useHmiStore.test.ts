@@ -19,8 +19,9 @@ describe('useHmiStore (TSK-308: 3-Stage Lifecycle & Screen Hierarchy)', () => {
       };
     });
 
-    // Reset store state
+    // Reset store state with sample project for legacy screen hierarchy tests
     const state = useHmiStore.getState();
+    state.loadSampleProject();
     state.enterEditMode();
   });
 

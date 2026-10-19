@@ -43,23 +43,13 @@ describe('UI Shell & HMI Lifecycle Comprehensive Verification (TSK-308 / SYS-REQ
       };
     });
 
-    // Reset Zustand store state to defaults
+    // Reset Zustand store state to sample project for UI shell baseline tests
+    useHmiStore.getState().loadSampleProject();
     useHmiStore.setState({
       lifecycleMode: 'EDIT',
       isRuntimeFullscreen: false,
       isHmiDirty: false,
-      activeScreenId: 'screen_01_plant_overview',
-      activeSubscreenId: null,
-      openTabs: [
-        {
-          tabId: 'screen_01_plant_overview',
-          screenId: 'screen_01_plant_overview',
-          title: 'Screen_01_PlantOverview',
-          isSubScreen: false,
-          isDirty: false,
-        },
-      ],
-      activeTabId: 'screen_01_plant_overview',
+      workspaceMode: 'PROJECT',
     });
   });
 

@@ -14,7 +14,7 @@
     }
   },
   "scripts": {
-    "build": "vite build && tsc --emitDeclarationOnly",
+    "build": "vite build && tsc --declaration --declarationDir dist --emitDeclarationOnly",
     "dev": "vite build --watch",
     "test": "vitest run"
   },

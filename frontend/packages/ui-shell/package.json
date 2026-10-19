@@ -24,6 +24,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@mythos/ui-faceplate-lib": "workspace:*",
     "@mythos/ui-inspector": "workspace:*",
     "@mythos/ui-logic-editor": "workspace:*",
     "@mythos/ui-topology": "workspace:*",

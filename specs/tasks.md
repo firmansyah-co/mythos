@@ -166,6 +166,34 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | **TSK-507** | Conduct End-to-End System Commissioning & Audit | Publication (`head-publication`), All Kadivs | Full test reports, operator handbook, SOP manuals | 100% test pass rate across all verification criteria in `specs/spec.md`. Board approval signed off. |
 
 ---
+---
+
+### Sprint 6: Siemens TIA Portal View Launchpad, Clean Empty Project Lifecycle & Full Dynamic Workbench Wiring
+- **Sprint Goal**: Deliver the dual-mode Siemens TIA Portal workspace with Portal View (Welcome Screen and Task Launchpad) and Project View (5-Zone Workbench), implement clean empty project initialization with zero hardcoded mocks, wire end-to-end interactive document opening into Dockview tabs, provide dynamic block and screen creation modals, and bind active selection context to the constant 384px inspector drawer.
+- **Duration**: Weeks 13 - 14
+- **Lead Division**: Software (`head-software`), Design (`head-design`)
+
+| Task ID | Task Description | Assigned Division | Deliverables & Code Artifacts | Acceptance Criteria |
+|---|---|---|---|---|
+| **TSK-601** | Siemens TIA Portal "Portal View" Welcome Screen & Bottom-Left Dual-Mode Switcher (`[ 🌐 Portal View ]` <---> `[ 🎛️ Project View ]`) | Software (`head-software`), Design (`head-design`) | `frontend/packages/ui-shell/src/components/portal/PortalView.tsx`, `frontend/packages/ui-shell/src/App.tsx`, `frontend/packages/ui-shell/src/components/portal/PortalNav.tsx` | Bottom-left persistent switcher toggles between Portal View and Project View instantly. Portal View presents 6 canonical navigation domains: Start, Devices & Networks, PLC Programming, Motion & Technology, Visualization, and Online & Diagnostics. Action triggers seamless contextual transition to Project View. |
+| **TSK-602** | Zero-Mock Clean Empty Project State & Lifecycle Manager (Create, Open, Import .mythos-pkg via `/api/v1/projects`) | Software (`head-software`) | `frontend/packages/ui-shell/src/stores/useProjectStore.ts`, `frontend/packages/ui-shell/src/components/workbench/Zone2ProjectTree.tsx`, `frontend/packages/ui-shell/src/components/portal/ProjectLifecycleModal.tsx` | Completely eliminates hardcoded mock projects and phantom blocks. Displays clean empty states in project tree and central canvas when no objects exist. REST API integration provides live project creation, opening, and `.mythos-pkg` archive import via `/api/v1/projects`. |
+| **TSK-603** | Full Project Tree Dynamic Wiring & Dynamic Block/Screen Creation | Software (`head-software`) | `frontend/packages/ui-shell/src/components/workbench/DockviewWorkspace.tsx`, `frontend/packages/ui-shell/src/components/modals/CreateBlockModal.tsx`, `frontend/packages/ui-shell/src/components/modals/CreateScreenModal.tsx` | Real interactive document router in Dockview opens and focuses tabs for ST logic blocks, HMI screens, and Devices/Topology views. Dynamic creation modals allow engineers to instantiate OB, FB, FC, and DB blocks, and HMI screens with immediate tree update and tab opening. |
+| **TSK-604** | Active Selection Context Binding to Constant 384px Inspector Drawer | Software (`head-software`), Design (`head-design`) | `frontend/packages/ui-shell/src/components/workbench/Zone4TaskCards.tsx`, `frontend/plugins/ui-inspector/src/InspectorDrawer.tsx` | Inspector drawer maintains strict 384px layout token width. Zone 4 and bottom inspector dynamically synchronize to the actively selected tree node, logic block, or canvas element, rendering real properties, tag bindings, and diagnostics without static mockups. |
+
+---
+
+### Sprint 7: Universal IEC 61131-3 Logic IDE Parity (OpenPLC Editor v4 Complete Replication)
+- **Sprint Goal**: Deliver complete IDE parity with OpenPLC Editor v4 and Siemens STEP 7 across all five IEC 61131-3 languages (ST, IL, LD, FBD, SFC), construct the variable table grid with user-defined data type (DUT/UDT) definitions, and implement live online debugging with power-flow animation and variable forcing.
+- **Duration**: Weeks 15 - 16
+- **Lead Division**: Software (`head-software`), Hardware (`head-hardware`), R&D (`head-rnd`)
+
+| Task ID | Task Description | Assigned Division | Deliverables & Code Artifacts | Acceptance Criteria |
+|---|---|---|---|---|
+| **TSK-701** | Monaco Multi-Language Textual Editor Suite (Structured Text ST & Instruction List IL) | Software (`head-software`) | `frontend/plugins/ui-logic-editor/src/MonacoStEditor.tsx`, `frontend/plugins/ui-logic-editor/src/ilLanguage.ts`, `frontend/plugins/ui-logic-editor/src/stLanguage.ts` | Monaco editor provides full syntax highlighting, keyword autocompletion, bracket matching, linting, and hover tooltips for Structured Text (ST) and Instruction List (IL). Integrates with backend compiler diagnostics. |
+| **TSK-702** | Full-Featured Graphical Ladder Diagram (LD) Canvas (Power rails, contacts, coils, branches, function blocks) | Software (`head-software`), Design (`head-design`) | `frontend/plugins/ui-logic-editor/src/LadderCanvas.tsx`, `frontend/plugins/ui-logic-editor/src/ladder/RungRenderer.tsx`, `frontend/plugins/ui-logic-editor/src/ladder/LadderElements.tsx` | Renders dual power rails, normally open (NO) and normally closed (NC) contacts, pulse transitions (P/N), standard/set/reset coils, parallel branch circuits, and inline function block invocations (TON, TOF, TP, CTU, CTD). Supports drag-and-drop from Zone 4 task cards. |
+| **TSK-703** | Function Block Diagram (FBD) & Sequential Function Chart (SFC) Visual Canvas | Software (`head-software`), Design (`head-design`) | `frontend/plugins/ui-logic-editor/src/fbd/FbdCanvas.tsx`, `frontend/plugins/ui-logic-editor/src/sfc/SfcCanvas.tsx` | FBD canvas renders modular interconnected logic gates and mathematical blocks with typed input/output pins and negation flags. SFC canvas renders initial/step states, directed links, transition conditions, and action qualifiers (N, S, R, P, L, D). |
+| **TSK-704** | Variable Table Grid & Data Type Editor (POU VAR table, GVL, DUT/UDT Structs/Enums) | Software (`head-software`) | `frontend/plugins/ui-logic-editor/src/variables/VariableTableGrid.tsx`, `frontend/plugins/ui-logic-editor/src/variables/DataTypeEditor.tsx` | Provides spreadsheet-style declaration grid for POU scoped variables (`VAR`, `VAR_INPUT`, `VAR_OUTPUT`, `VAR_IN_OUT`, `VAR_TEMP`), Global Variable Lists (`GVL`), and User-Defined Data Types (`DUT/UDT` structures and enumerations) with IEC memory addresses (`%IX`, `%QX`, `%MX`). |
+| **TSK-705** | Live Online Debugging, Power-Flow Animation & Variable Forcing (SYS-REQ-096 compliant) | Software (`head-software`), Hardware (`head-hardware`), R&D (`head-rnd`) | `frontend/plugins/ui-logic-editor/src/debug/OnlineDebugEngine.ts`, `frontend/plugins/ui-logic-editor/src/debug/PowerFlowOverlay.tsx` | Real-time telemetry stream animates LD power rails and rungs in vibrant green (`#22C55E`) when active. ST editor displays inline variable values. Variable force table enables manual override with audit logging in compliance with SYS-REQ-096 safety invariants. |
 
 ## 3. Milestones & Quality Gates
 
@@ -210,6 +238,22 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | GATE 5: AI Agent & Enterprise Production Sign-Off (End of Sprint 5)                               |
 | Criteria: MCP tools pass end-to-end AI control; .mythos-pkg restores replacement IPC in < 25 s.   |
 +---------------------------------------------------------------------------------------------------+
+                                                  |
+                                                  v
++---------------------------------------------------------------------------------------------------+
+| GATE 6: Siemens TIA Portal Workspace & Dynamic Lifecycle Sign-Off (End of Sprint 6)               |
+| Criteria: Dual-mode Portal/Project View switcher verified; clean zero-mock project lifecycle;      |
+|           dynamic Dockview tab wiring operational; dynamic block/screen creation validated;       |
+|           constant 384px inspector drawer context-sensitive binding active.                       |
++---------------------------------------------------------------------------------------------------+
+                                                  |
+                                                  v
++---------------------------------------------------------------------------------------------------+
+| GATE 7: Universal IEC 61131-3 Logic IDE & Online Debugging Sign-Off (End of Sprint 7)             |
+| Criteria: Full 5-language parity (ST, IL, LD, FBD, SFC) verified against OpenPLC Editor v4;       |
+|           Spreadsheet variable table & DUT/UDT editor validated; live power-flow animation and    |
+|           variable forcing operational with SYS-REQ-096 safety compliance.                        |
++---------------------------------------------------------------------------------------------------+
 ```
 
 ---
@@ -240,6 +284,10 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | **Faceplate Library Designer** | Responsible | Informed | **Accountable** | Informed | Responsible (Specs) | Approver |
 | **CRDT Real-Time Collaboration** | **Accountable** | Informed | Responsible | Informed | Responsible (Specs) | Approver |
 | **Disaster Recovery (.mythos-pkg)**| **Accountable** | Consulted | Informed | Informed | Responsible (Specs) | Approver |
+| **Portal View & Dynamic Lifecycle**| **Accountable** | Informed | Responsible | Informed | Responsible (Specs) | Approver |
+| **Universal IEC 61131-3 Logic IDE**| **Accountable** | Responsible | Responsible | Consulted | Responsible (Specs) | Approver |
+| **Variable Table Grid & UDT Editor**| **Accountable** | Consulted | Responsible | Informed | Responsible (Specs) | Approver |
+| **Online Logic Debugging & Forcing**| **Accountable** | Responsible | Responsible | Consulted | Responsible (Specs) | Approver |
 | **Master Documentation & SOP** | Consulted | Consulted | Consulted | Consulted | **Accountable** | Approver |
 
 ---
@@ -254,3 +302,5 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | **Sprint 3** | SYS-REQ-050, 051, 052, 053, 054, 055, 056, 057, 078, 079, 081, 082, 083, 084, 085, 090 | ADR-006, ADR-008, HMI-000, ARCH-005, ARCH-006 |
 | **Sprint 4** | SYS-REQ-060, 061, 062, 063, 064, 065, 066 | ADR-007 |
 | **Sprint 5** | SYS-REQ-067, 068, 070, 071, 072, 073 | ADR-005, ADR-007 |
+| **Sprint 6** | SYS-REQ-097, 098 | ADR-006, ADR-008, HMI-000, ARCH-005 |
+| **Sprint 7** | SYS-REQ-021, 023, 096, 099 | ADR-003, ADR-006, HMI-000, ARCH-005 |

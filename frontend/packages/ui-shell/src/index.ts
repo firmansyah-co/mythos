@@ -10,4 +10,7 @@ export * from './components/workbench/Zone4TaskCards';
 export * from './components/workbench/Zone5BottomConsole';
 export * from './components/banner/NonActuatingPreviewBanner';
 export * from './components/kiosk/ExitKioskDialog';
+export * from './components/portal/PortalView';
+export * from './components/modals/CreateBlockModal';
+export * from './components/modals/CreateScreenModal';
 export * from './App';

@@ -10,6 +10,15 @@
   "references": [
     {
       "path": "../../plugins/ui-logic-editor"
+    },
+    {
+      "path": "../../plugins/ui-topology"
+    },
+    {
+      "path": "../../plugins/ui-faceplate-lib"
+    },
+    {
+      "path": "../../plugins/ui-inspector"
     }
   ],
   "exclude": [
