@@ -2,6 +2,7 @@ import React from 'react';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import { useHmiStore } from '../stores/useHmiStore';
 import { PresenceAvatarStack } from './collab/PresenceAvatarStack';
+import { MythosLogo } from './icons/MythosLogo';
 
 export interface TopBarProps {
   onOpenExitDialog?: () => void;
@@ -25,15 +26,13 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenExitDialog, className = ''
         <div className="flex items-center gap-4">
           {/* Brand Logo / Badge */}
           <div className="flex items-center gap-2 pr-2 border-r border-neutral-800">
-            <div className="w-5 h-5 rounded bg-blue-600 flex items-center justify-center font-bold text-white text-xs tracking-tighter">
-              M
-            </div>
+            <MythosLogo size={20} className="shrink-0" />
             <span className="font-semibold text-xs text-white tracking-wide">
               MythOS <span className="text-[10px] text-cyan-400 font-normal">v0.3.0</span>
             </span>
           </div>
 
-          {/* Siemens TIA Portal Top Menus */}
+          {/* MythOS Workbench Navigation */}
           <nav className="flex items-center gap-1">
             {menuItems.map((item) => (
               <button

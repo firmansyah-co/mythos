@@ -155,7 +155,7 @@ describe('UI Shell & HMI Lifecycle Comprehensive Verification (TSK-308 / SYS-REQ
     });
   });
 
-  describe('3. TIA Portal Screen Hierarchy & Tab Operations', () => {
+  describe('3. Hierarchical Screen Navigation & Tab Operations', () => {
     it('manages hierarchical screen navigation and multi-document tab state', () => {
       const store = useHmiStore.getState();
       expect(store.screens.length).toBeGreaterThanOrEqual(2);
@@ -231,7 +231,7 @@ describe('UI Shell & HMI Lifecycle Comprehensive Verification (TSK-308 / SYS-REQ
       expect(html).toContain('KIOSK RUNTIME');
     });
 
-    it('renders Zone 2 Project Tree with Siemens TIA Portal taxonomy', () => {
+    it('renders Zone 2 Project Tree with industrial engineering taxonomy', () => {
       const html = renderClient(<Zone2ProjectTree />);
       expect(html).toContain('Project Tree');
       expect(html).toContain('SYS-REQ-097');
