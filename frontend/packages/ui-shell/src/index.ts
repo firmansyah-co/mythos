@@ -2,6 +2,7 @@ export * from './stores/useHmiStore';
 export * from './types/hmi';
 export * from './collab/useCollabStore';
 export { TopBar, type TopBarProps } from './components/TopBar';
+export { MythosLogo, type MythosLogoProps } from './components/icons/MythosLogo';
 export * from './components/collab/PresenceAvatarStack';
 export * from './components/workbench/Zone1TopNav';
 export * from './components/workbench/Zone2ProjectTree';

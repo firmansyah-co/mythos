@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useHmiStore } from '../../stores/useHmiStore';
 import { ProjectMetadata } from '../../types/hmi';
+import { MythosLogo } from '../icons/MythosLogo';
 
 export type PortalCategory =
   | 'START'
@@ -51,7 +52,7 @@ export const PortalView: React.FC<PortalViewProps> = ({
       name: 'BottlingPlant_Line01',
       version: '1.0.0',
       description: 'Automated High-Speed Bottling & Conveyor Subsystem',
-      author: 'Siemens/MythOS',
+      author: 'MythOS Systems',
     },
     {
       id: 'packaging_skid_02',
@@ -128,18 +129,16 @@ export const PortalView: React.FC<PortalViewProps> = ({
       className={`flex w-full h-full bg-[#0A0D12] text-neutral-200 select-none overflow-hidden ${className}`}
       data-testid="portal-view"
     >
-      {/* Left Navigation Launchpad (Siemens TIA Portal Menu) */}
+      {/* Left Navigation Launchpad (Workbench Launchpad Menu) */}
       <aside className="w-72 bg-[#0F141C] border-r border-neutral-800 flex flex-col justify-between flex-shrink-0">
         <div>
           {/* Portal Brand Header */}
           <div className="p-4 border-b border-neutral-800 bg-[#0A0D12]">
             <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded bg-blue-600 flex items-center justify-center font-bold text-white text-sm shadow-md">
-                M
-              </div>
+              <MythosLogo size={28} className="shrink-0 shadow-md" />
               <div>
                 <h1 className="text-sm font-bold text-white tracking-wide">Portal View</h1>
-                <p className="text-[10px] text-cyan-400 font-mono">Siemens TIA Portal Parity</p>
+                <p className="text-[10px] text-cyan-400 font-mono">Industrial Automation Suite</p>
               </div>
             </div>
           </div>

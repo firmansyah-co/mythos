@@ -1,5 +1,5 @@
 /**
- * MythOS HMI Types & Descriptors conforming to Siemens TIA Portal & ISA-101.
+ * MythOS HMI Types & Descriptors conforming to ISA-101 and industrial engineering standards.
  */
 
 export type HmiLifecycleMode = 'EDIT' | 'PREVIEW' | 'DEPLOY' | 'RUNTIME';
