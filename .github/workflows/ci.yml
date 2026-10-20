@@ -26,6 +26,9 @@ jobs:
       CARGO_HTTP_IP_RESOLVE: "ipv4"
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
+      RUSTC_WRAPPER: "/opt/hostedtoolcache/cargo/bin/sccache"
+      SCCACHE_DIR: "/opt/hostedtoolcache/sccache"
+      SCCACHE_CACHE_SIZE: "10G"
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -66,8 +69,9 @@ jobs:
 
       - name: Setup Cache Symlinks and Directories
         run: |
-          sudo mkdir -p /opt/hostedtoolcache/rustup /opt/hostedtoolcache/cargo/bin
-          sudo chown -R $(id -u):$(id -g) /opt/hostedtoolcache/rustup /opt/hostedtoolcache/cargo 2>/dev/null || true
+          sudo mkdir -p /opt/hostedtoolcache/rustup /opt/hostedtoolcache/cargo/bin /opt/hostedtoolcache/sccache
+          sudo chown -R $(id -u):$(id -g) /opt/hostedtoolcache/rustup /opt/hostedtoolcache/cargo /opt/hostedtoolcache/sccache 2>/dev/null || true
+          sudo chmod -R 777 /opt/hostedtoolcache/sccache 2>/dev/null || true
           if [ -d "/home/runner/.cargo/registry" ]; then
             ln -s /home/runner/.cargo/registry /opt/hostedtoolcache/cargo/registry 2>/dev/null || true
           fi
@@ -76,9 +80,26 @@ jobs:
           fi
           echo "/opt/hostedtoolcache/cargo/bin" >> $GITHUB_PATH
 
+      - name: Install & Start sccache Server
+        run: |
+          if [ ! -x "/opt/hostedtoolcache/cargo/bin/sccache" ]; then
+            echo "Installing sccache v0.8.2..."
+            curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.8.2/sccache-v0.8.2-x86_64-unknown-linux-musl.tar.gz -o /tmp/sccache.tar.gz
+            tar -xzf /tmp/sccache.tar.gz -C /tmp
+            mv /tmp/sccache-v0.8.2-x86_64-unknown-linux-musl/sccache /opt/hostedtoolcache/cargo/bin/sccache
+            chmod +x /opt/hostedtoolcache/cargo/bin/sccache
+            rm -rf /tmp/sccache*
+          else
+            echo "sccache already present in toolcache, skipping download."
+          fi
+          /opt/hostedtoolcache/cargo/bin/sccache --version
+          /opt/hostedtoolcache/cargo/bin/sccache --start-server || true
+          /opt/hostedtoolcache/cargo/bin/sccache --zero-stats || true
+
       - name: Install Rust Toolchain
         run: |
           export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
+          export RUSTC_WRAPPER="/opt/hostedtoolcache/cargo/bin/sccache"
           if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1 && rustup component list | grep -q "rustfmt.*(installed)" && rustup component list | grep -q "clippy.*(installed)"; then
             echo "Rust toolchain already present in cache, skipping re-download."
           else
@@ -125,3 +146,8 @@ jobs:
             source /opt/hostedtoolcache/cargo/env
           fi
           cargo bench -p mythos-shm --no-run
+
+      - name: Display sccache Statistics
+        if: always()
+        run: |
+          /opt/hostedtoolcache/cargo/bin/sccache --show-stats || true
