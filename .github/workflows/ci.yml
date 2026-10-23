@@ -155,6 +155,9 @@ jobs:
   frontend-tests:
     name: Frontend Web Workbench Test Suite & Lints
     runs-on: arc-runner-org
+    # Clean-tree build measured ~8.5 min (ui-logic-editor alone is ~6.5 min).
+    # Without this, a hang would run to GitHub's 6h default.
+    timeout-minutes: 30
     defaults:
       run:
         # frontend/ is the pnpm workspace root (pnpm-workspace.yaml + pnpm-lock.yaml live here).
@@ -192,6 +195,12 @@ jobs:
           path: ${{ steps.pnpm-store.outputs.path }}
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
           restore-keys: pnpm-store-${{ runner.os }}-
+
+      - name: Verify Toolchain Versions
+        run: |
+          # Proof in the run log that the pinned versions above are what actually ran.
+          node --version
+          pnpm --version
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
