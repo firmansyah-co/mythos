@@ -49,7 +49,7 @@ MythOS requires an enterprise-grade, deterministic, vendor-neutral network disco
 
 ### Key Architectural Commitments:
 
-1. **PROFINET DCP Engine (`crates/mythos-driver-api` / `mythos-net-dcp`)**:
+1. **PROFINET DCP Engine (`crates/mythos-driver-api` / `mythos-net-dcp`)**: *[Superseded by ADR-008: the driver SPI now lives in `crates/mythos-plugin-sdk`, and DCP discovery is delivered as `plugins/engines/engine-discovery-dcp`. Original text retained as decided.]*
    - Transmit DCP Identify Multicast frames to destination MAC `FF:FF:FF:FF:FF:FF` with EtherType `0x8892` and Frame ID `0xFEFD`.
    - Parse TLV blocks: Device Station Name, MAC Address, IP Suite, Device ID, and Runtime State (`RUN`, `STOP`, `FAULT`).
    - Implement DCP Set Service (`0xFEFC`) for remote "Blink Indicator LED" (Control Option `0x05`, Sub-Option `0x04`) and "Assign IP Address" (IP Option `0x01`, Sub-Option `0x01`).
