@@ -28,19 +28,22 @@ describe('UI Shell & HMI Lifecycle Comprehensive Verification (TSK-308 / SYS-REQ
     document.body.appendChild(container);
     root = createRoot(container);
 
-    global.fetch = vi.fn().mockImplementation(async (url: string) => {
-      if (url.includes('/api/v1/auth/verify-role')) {
-        return {
-          ok: false,
-          status: 401,
-          json: async () => ({ authorized: false }),
-        };
+    global.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/api/v1/projects/bottling_plant_line01/hmi/screens' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        return { ok: true, status: 201, json: async () => ({ id: 'screen_04_distillation', ...body, subscreens: [], canvasData: { title: body.name, components: [] } }) };
       }
-      return {
-        ok: false,
-        status: 404,
-        json: async () => ({}),
-      };
+      if (url === '/api/v1/projects/bottling_plant_line01/hmi/screens/screen_04_distillation/subscreens' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        return { ok: true, status: 201, json: async () => ({ id: 'sub_distillation_popup', ...body }) };
+      }
+      if (url === '/api/v1/projects/bottling_plant_line01/hmi/screens/screen_01_plant_overview/draft' && init?.method === 'PUT') {
+        return { ok: true, status: 204, json: async () => ({}) };
+      }
+      if (url === '/api/v1/projects/bottling_plant_line01/hmi/commit' && init?.method === 'POST') {
+        return { ok: true, status: 200, json: async () => ({}) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
     });
 
     // Reset Zustand store state to sample project for UI shell baseline tests
@@ -113,34 +116,17 @@ describe('UI Shell & HMI Lifecycle Comprehensive Verification (TSK-308 / SYS-REQ
       expect(useHmiStore.getState().lifecycleMode).toBe('RUNTIME');
     });
 
-    it('enforces IEC 62443 authorization challenge to exit kiosk', async () => {
+    it('exits runtime kiosk locally without calling a nonexistent authorization endpoint', async () => {
       await useHmiStore.getState().requestEnterRuntime();
       expect(useHmiStore.getState().isRuntimeFullscreen).toBe(true);
 
-      // Operator role cannot exit kiosk
-      const denied = await useHmiStore.getState().requestExitRuntime({
-        role: 'Operator',
-        password: 'any',
-      });
-      expect(denied).toBe(false);
-      expect(useHmiStore.getState().isRuntimeFullscreen).toBe(true);
-
-      // Engineer with invalid password cannot exit
-      const badPass = await useHmiStore.getState().requestExitRuntime({
-        role: 'Engineer',
-        password: 'wrong_password',
-      });
-      expect(badPass).toBe(false);
-      expect(useHmiStore.getState().isRuntimeFullscreen).toBe(true);
-
-      // Engineer with correct credentials exits kiosk back to EDIT
-      const granted = await useHmiStore.getState().requestExitRuntime({
-        role: 'Engineer',
-        password: 'admin123',
-      });
-      expect(granted).toBe(true);
+      const fetched = vi.mocked(global.fetch).mock.calls.length;
+      const exited = await useHmiStore.getState().requestExitRuntime();
+      expect(exited).toBe(true);
       expect(useHmiStore.getState().isRuntimeFullscreen).toBe(false);
       expect(useHmiStore.getState().lifecycleMode).toBe('EDIT');
+      // No credential transport is fabricated: exit makes no network call at all.
+      expect(vi.mocked(global.fetch).mock.calls.length).toBe(fetched);
     });
 
     it('renders ExitKioskDialog when isOpen is true', () => {
@@ -148,10 +134,11 @@ describe('UI Shell & HMI Lifecycle Comprehensive Verification (TSK-308 / SYS-REQ
       expect(closedHtml).toBe('');
 
       const openHtml = renderClient(<ExitKioskDialog isOpen={true} onClose={() => {}} />);
-      expect(openHtml).toContain('IEC 62443 KIOSK EXIT CHALLENGE');
-      expect(openHtml).toContain('Engineer');
-      expect(openHtml).toContain('Admin');
-      expect(openHtml).toContain('Authenticate &amp; Exit Kiosk');
+      expect(openHtml).toContain('EXIT RUNTIME KIOSK');
+      expect(openHtml).toContain('Type EXIT to confirm');
+      // The dialog must not advertise a credential gate the backend cannot enforce.
+      expect(openHtml).not.toContain('admin123');
+      expect(openHtml).not.toContain('IEC 62443 KIOSK EXIT CHALLENGE');
     });
   });
 

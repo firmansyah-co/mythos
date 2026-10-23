@@ -4,7 +4,6 @@ import {
   SubScreenDescriptor,
   HmiLifecycleMode,
   ScreenTab,
-  AuthCredentials,
   WorkspaceMode,
   LogicBlockDescriptor,
   LogicBlockType,
@@ -21,6 +20,7 @@ export interface HmiStoreState {
 
   // Clean Project State (TSK-602)
   currentProject: ProjectMetadata | null;
+  errorMessage: string | null;
   projectBlocks: LogicBlockDescriptor[];
 
   // Screen Hierarchy Registry (Zone 2 Tree)
@@ -59,7 +59,8 @@ export interface HmiStoreState {
     author?: string,
     description?: string,
     path?: string
-  ) => Promise<ProjectMetadata>;
+  ) => Promise<ProjectMetadata | null>;
+  clearError: () => void;
   openExistingProject: (projectId: string) => Promise<boolean>;
   resetToEmptyProject: () => void;
   loadSampleProject: () => void;
@@ -79,8 +80,8 @@ export interface HmiStoreState {
   openScreenTab: (screenId: string, subscreenId?: string) => void;
   closeScreenTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
-  addNewScreen: (name: string, isRoot?: boolean) => Promise<string>;
-  addNewSubScreen: (parentScreenId: string, name: string) => Promise<string>;
+  addNewScreen: (name: string, isRoot?: boolean) => Promise<string | null>;
+  addNewSubScreen: (parentScreenId: string, name: string) => Promise<string | null>;
 
   // Actions: Workbench Document Dispatch (TSK-603)
   openWorkbenchDocument: (
@@ -103,13 +104,14 @@ export interface HmiStoreState {
 
   // Actions: Dual-Buffer Persistence
   updateDraftCanvas: (screenId: string, canvasData: any) => void;
-  saveScreenDraft: (screenId: string) => Promise<void>;
+  saveScreenDraft: (screenId: string) => Promise<boolean>;
   commitHmiDraft: () => Promise<boolean>;
   discardHmiDraft: () => void;
 
   // Actions: Fullscreen Kiosk Handshake
   requestEnterRuntime: () => Promise<void>;
-  requestExitRuntime: (credentials: AuthCredentials) => Promise<boolean>;
+  /** Leaves runtime kiosk mode. Unauthenticated: no backend authorization endpoint exists yet. */
+  requestExitRuntime: () => Promise<boolean>;
 }
 
 export const SAMPLE_PROJECT_METADATA: ProjectMetadata = {
@@ -258,6 +260,7 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
   // Clean Empty State by default (TSK-602)
   workspaceMode: 'PORTAL',
   currentProject: null,
+  errorMessage: null,
   projectBlocks: [],
   screens: [],
   activeScreenId: null,
@@ -281,102 +284,93 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
 
   setCurrentProject: (project) => set({ currentProject: project }),
 
+  clearError: () => set({ errorMessage: null }),
+
   createNewProject: async (name, author = 'MythOS Engineer', description = '', path = '/projects') => {
     const projId = `proj_${name.toLowerCase().replace(/[^a-z0-9_-]/g, '_')}_${Date.now().toString().slice(-4)}`;
-    const metadata: ProjectMetadata = {
-      id: projId,
-      name,
-      version: '1.0.0',
-      author,
-      description,
-      path,
-      created_at_utc: new Date().toISOString(),
-      updated_at_utc: new Date().toISOString(),
-    };
+    set({ errorMessage: null });
 
     try {
       const res = await fetch('/api/v1/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: projId,
-          name,
-          description,
-          author,
-        }),
+        body: JSON.stringify({ id: projId, name, description, author }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        metadata.id = data.id || projId;
+      if (!res.ok) {
+        throw new Error(`Project creation failed (HTTP ${res.status})`);
       }
-    } catch {
-      // Local fallback
+
+      const data: ProjectMetadata = await res.json();
+      if (!data?.id || !data?.name) {
+        throw new Error('Project creation returned incomplete project data');
+      }
+
+      const metadata: ProjectMetadata = {
+        ...data,
+        author: data.author ?? author,
+        description: data.description ?? description,
+        path: data.path ?? path,
+      };
+      get().resetToEmptyProject();
+      set({
+        errorMessage: null,
+        currentProject: metadata,
+        projectBlocks: [],
+        screens: [],
+        openTabs: [],
+        activeTabId: null,
+        workbenchTabs: [],
+        activeWorkbenchTabId: null,
+        workspaceMode: 'PROJECT',
+        selectedContextItem: {
+          id: metadata.id,
+          name: metadata.name,
+          type: 'PROJECT',
+          metadata: { ...metadata },
+        },
+      });
+      return metadata;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Project creation failed';
+      set({ errorMessage: message });
+      return null;
     }
-
-    set({
-      currentProject: metadata,
-      projectBlocks: [],
-      screens: [],
-      openTabs: [],
-      activeTabId: null,
-      workbenchTabs: [],
-      activeWorkbenchTabId: null,
-      workspaceMode: 'PROJECT',
-      selectedContextItem: {
-        id: metadata.id,
-        name: metadata.name,
-        type: 'PROJECT',
-        metadata: { ...metadata },
-      },
-    });
-
-    return metadata;
   },
 
   openExistingProject: async (projectId: string) => {
+    set({ errorMessage: null });
     try {
-      const res = await fetch(`/api/v1/projects/${projectId}`);
-      if (res.ok) {
-        const data: ProjectMetadata = await res.json();
-        set({
-          currentProject: data,
-          workspaceMode: 'PROJECT',
-          selectedContextItem: {
-            id: data.id,
-            name: data.name,
-            type: 'PROJECT',
-            metadata: { ...data },
-          },
-        });
-        return true;
+      const res = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}`);
+      if (!res.ok) {
+        throw new Error(`Project could not be opened (HTTP ${res.status})`);
       }
-    } catch {
-      // Fallback
-    }
-
-    // Fallback if demo or local
-    if (projectId === 'bottling_plant_line01' || projectId === 'demo') {
-      get().loadSampleProject();
+      const data: ProjectMetadata = await res.json();
+      if (!data?.id || !data?.name) {
+        throw new Error('Project response was incomplete');
+      }
+      const screensResponse = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}/hmi/screens`);
+      if (!screensResponse.ok) throw new Error(`Project screens unavailable (HTTP ${screensResponse.status})`);
+      const screens: ScreenDescriptor[] = await screensResponse.json();
+      if (!Array.isArray(screens)) throw new Error('Project screens response was invalid');
+      get().resetToEmptyProject();
+      set({
+        errorMessage: null,
+        screens,
+        currentProject: data,
+        workspaceMode: 'PROJECT',
+        selectedContextItem: {
+          id: data.id,
+          name: data.name,
+          type: 'PROJECT',
+          metadata: { ...data },
+        },
+      });
       return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Project could not be opened';
+      set({ errorMessage: message });
+      return false;
     }
-
-    const fallback: ProjectMetadata = {
-      id: projectId,
-      name: projectId,
-      version: '1.0.0',
-      description: 'Loaded project',
-    };
-    set({
-      currentProject: fallback,
-      workspaceMode: 'PROJECT',
-      selectedContextItem: {
-        id: fallback.id,
-        name: fallback.name,
-        type: 'PROJECT',
-        metadata: { ...fallback },
-      },
-    });
-    return true;
   },
 
   resetToEmptyProject: () => {
@@ -394,11 +388,13 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
       draftScreens: new Map(),
       activeScreens: new Map(),
       isHmiDirty: false,
+      errorMessage: null,
     });
   },
 
   loadSampleProject: () => {
     set({
+      errorMessage: null,
       currentProject: SAMPLE_PROJECT_METADATA,
       projectBlocks: SAMPLE_PROJECT_BLOCKS,
       screens: SAMPLE_SCREENS,
@@ -565,74 +561,70 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
   },
 
   addNewScreen: async (name, isRoot = false) => {
-    let newScreen: ScreenDescriptor;
-
+    set({ errorMessage: null });
     try {
-      const res = await fetch('/api/v1/hmi/screens', {
+      const project = get().currentProject;
+      if (!project) throw new Error('Open a project before creating a screen');
+      const res = await fetch(`/api/v1/projects/${encodeURIComponent(project.id)}/hmi/screens`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, is_root: isRoot }),
       });
-      if (res.ok) {
-        newScreen = await res.json();
-      } else {
-        throw new Error('API screen creation failed');
+      if (!res.ok) {
+        throw new Error(`Screen creation failed (HTTP ${res.status})`);
       }
-    } catch {
-      const fallbackId = `screen_${Date.now()}`;
-      newScreen = {
-        id: fallbackId,
-        name,
-        is_root: isRoot,
-        subscreens: [],
-        canvasData: { title: name, components: [] },
-      };
+      const newScreen: ScreenDescriptor = await res.json();
+      if (!newScreen?.id || !newScreen?.name || !Array.isArray(newScreen.subscreens)) {
+        throw new Error('Screen creation returned incomplete screen data');
+      }
+
+      set((s) => ({ screens: [...s.screens, newScreen], errorMessage: null }));
+      get().openScreenTab(newScreen.id);
+      get().setSelectedContextItem({
+        id: newScreen.id,
+        name: newScreen.name,
+        type: 'HMI_SCREEN',
+        metadata: { is_root: newScreen.is_root },
+      });
+      return newScreen.id;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Screen creation failed';
+      set({ errorMessage: message });
+      return null;
     }
-
-    set((s) => ({ screens: [...s.screens, newScreen] }));
-    get().openScreenTab(newScreen.id);
-
-    // Set Inspector Context
-    get().setSelectedContextItem({
-      id: newScreen.id,
-      name: newScreen.name,
-      type: 'HMI_SCREEN',
-      metadata: { is_root: newScreen.is_root },
-    });
-
-    return newScreen.id;
   },
 
   addNewSubScreen: async (parentScreenId, name) => {
-    let newSub: SubScreenDescriptor;
-
+    set({ errorMessage: null });
     try {
-      const res = await fetch(`/api/v1/hmi/screens/${parentScreenId}/subscreens`, {
+      const project = get().currentProject;
+      if (!project) throw new Error('Open a project before creating a sub-screen');
+      const res = await fetch(`/api/v1/projects/${encodeURIComponent(project.id)}/hmi/screens/${encodeURIComponent(parentScreenId)}/subscreens`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, type: 'POPUP' }),
       });
-      if (res.ok) {
-        newSub = await res.json();
-      } else {
-        throw new Error('API subscreen creation failed');
+      if (!res.ok) {
+        throw new Error(`Sub-screen creation failed (HTTP ${res.status})`);
       }
-    } catch {
-      const fallbackSubId = `sub_${Date.now()}`;
-      newSub = {
-        id: fallbackSubId,
-        name,
-        type: 'POPUP',
-      };
-    }
+      const newSub: SubScreenDescriptor = await res.json();
+      if (!newSub?.id || !newSub?.name) {
+        throw new Error('Sub-screen creation returned incomplete data');
+      }
 
-    set((s) => ({
-      screens: s.screens.map((sc) =>
-        sc.id === parentScreenId ? { ...sc, subscreens: [...sc.subscreens, newSub] } : sc
-      ),
-    }));
-    get().openScreenTab(parentScreenId, newSub.id);
-    return newSub.id;
+      set((s) => ({
+        screens: s.screens.map((sc) =>
+          sc.id === parentScreenId ? { ...sc, subscreens: [...sc.subscreens, newSub] } : sc
+        ),
+        errorMessage: null,
+      }));
+      get().openScreenTab(parentScreenId, newSub.id);
+      return newSub.id;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Sub-screen creation failed';
+      set({ errorMessage: message });
+      return null;
+    }
   },
 
   openWorkbenchDocument: (docType, id, title, params = {}) => {
@@ -701,44 +693,55 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
 
   saveScreenDraft: async (screenId) => {
     const canvasData = get().draftScreens.get(screenId);
-    if (!canvasData) return;
+    if (!canvasData) return true;
+    set({ errorMessage: null });
 
     try {
-      await fetch(`/api/v1/hmi/screens/draft/${screenId}`, {
+      const project = get().currentProject;
+      if (!project) throw new Error('Open a project before saving a screen');
+      const res = await fetch(`/api/v1/projects/${encodeURIComponent(project.id)}/hmi/screens/${encodeURIComponent(screenId)}/draft`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(canvasData),
       });
-    } catch {
-      // Local state is preserved
+      if (!res.ok) {
+        throw new Error(`Screen draft save failed (HTTP ${res.status})`);
+      }
+      set((state) => ({ screens: state.screens.map((screen) => screen.id === screenId ? { ...screen, canvasData } : screen) }));
+      return true;
+    } catch (error) {
+      set({ errorMessage: error instanceof Error ? error.message : 'Screen draft save failed' });
+      return false;
     }
   },
 
   commitHmiDraft: async () => {
+    set({ errorMessage: null });
     try {
-      const res = await fetch('/api/v1/hmi/screens/commit', { method: 'POST' });
-      if (res.ok) {
-        const activeData = await res.json();
-        set({
-          activeScreens: new Map(Object.entries(activeData)),
-          isHmiDirty: false,
-          lifecycleMode: 'RUNTIME',
-        });
-        return true;
+      const project = get().currentProject;
+      if (!project) throw new Error('Open a project before committing HMI drafts');
+      for (const screenId of get().draftScreens.keys()) {
+        if (!await get().saveScreenDraft(screenId)) return false;
       }
-    } catch {
-      // Fallback local promote
+      const res = await fetch(`/api/v1/projects/${encodeURIComponent(project.id)}/hmi/commit`, { method: 'POST' });
+      if (!res.ok) {
+        throw new Error(`HMI draft commit failed (HTTP ${res.status})`);
+      }
+      const activeData = await res.json();
+      if (!activeData || typeof activeData !== 'object' || Array.isArray(activeData)) {
+        throw new Error('HMI draft commit returned invalid data');
+      }
+      set({
+        activeScreens: new Map(Object.entries(activeData)),
+        isHmiDirty: false,
+        lifecycleMode: 'RUNTIME',
+        errorMessage: null,
+      });
+      return true;
+    } catch (error) {
+      set({ errorMessage: error instanceof Error ? error.message : 'HMI draft commit failed' });
+      return false;
     }
-
-    const { draftScreens } = get();
-    const promoted = new Map();
-    draftScreens.forEach((v, k) => promoted.set(k, JSON.parse(JSON.stringify(v))));
-    set({
-      activeScreens: promoted,
-      isHmiDirty: false,
-      lifecycleMode: 'RUNTIME',
-    });
-    return true;
   },
 
   discardHmiDraft: () => {
@@ -759,42 +762,18 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
     set({ isRuntimeFullscreen: true, lifecycleMode: 'RUNTIME', runtimeAuthLock: true });
   },
 
-  requestExitRuntime: async (credentials) => {
-    try {
-      const res = await fetch('/api/v1/auth/verify-role', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(credentials),
-      });
-      if (res.ok) {
-        const auth = await res.json();
-        if (auth.authorized && (credentials.role === 'Engineer' || credentials.role === 'Admin')) {
-          if (typeof document !== 'undefined' && document.fullscreenElement) {
-            await document.exitFullscreen();
-          }
-          set({ isRuntimeFullscreen: false, runtimeAuthLock: false, lifecycleMode: 'EDIT' });
-          return true;
-        }
+  requestExitRuntime: async () => {
+    // IEC 62443 credential verification is not implemented on the backend, so this is an
+    // explicit local exit rather than a role check. ExitKioskDialog states this to the operator.
+    set({ errorMessage: null });
+    if (typeof document !== 'undefined' && document.fullscreenElement) {
+      try {
+        await document.exitFullscreen();
+      } catch (error) {
+        console.warn('[HMI Kiosk] Fullscreen exit suppressed or unsupported:', error);
       }
-    } catch {
-      // Fallback local verification
     }
-
-    if (
-      (credentials.role === 'Engineer' || credentials.role === 'Admin') &&
-      credentials.password === 'admin123'
-    ) {
-      if (typeof document !== 'undefined' && document.fullscreenElement) {
-        try {
-          await document.exitFullscreen();
-        } catch {
-          // ignore
-        }
-      }
-      set({ isRuntimeFullscreen: false, runtimeAuthLock: false, lifecycleMode: 'EDIT' });
-      return true;
-    }
-
-    return false;
+    set({ isRuntimeFullscreen: false, runtimeAuthLock: false, lifecycleMode: 'EDIT' });
+    return true;
   },
 }));

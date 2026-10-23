@@ -183,17 +183,17 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
         maxWidth: 384,
         flex: '0 0 384px',
       }}
-      className={`h-full bg-[#0F141C] border-l border-[#232B3B] flex flex-col z-30 shadow-2xl select-none font-sans overflow-hidden transition-all duration-200 ${className}`}
+      className={`h-full bg-[var(--bg-surface)] border-l border-[var(--bg-highlight)] flex flex-col z-30 shadow-2xl select-none font-sans overflow-hidden transition-all duration-200 ${className}`}
     >
       {/* 1. Header Bar: Device ID, Name & Close Button */}
-      <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-[#232B3B] bg-[#161E2E]">
+      <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-[var(--bg-highlight)] bg-[var(--bg-elevated)]">
         <div className="flex items-center gap-2 overflow-hidden">
-          <div className="p-1 rounded bg-[#0A0D12] border border-[#232B3B]">
+          <div className="p-1 rounded bg-[var(--bg-base)] border border-[var(--bg-highlight)]">
             <Cpu className="w-4 h-4 text-sky-400" />
           </div>
           <div className="truncate">
-            <h2 className="text-xs font-bold text-[#F7F8F8] truncate leading-tight">{deviceName}</h2>
-            <div className="flex items-center gap-1.5 text-[10px] text-[#8A8F98] font-mono">
+            <h2 className="text-xs font-bold text-[var(--text-primary)] truncate leading-tight">{deviceName}</h2>
+            <div className="flex items-center gap-1.5 text-[10px] text-[var(--text-secondary)] font-mono">
               <span className="text-sky-400">{deviceId}</span>
               <span>•</span>
               <span className="truncate">{deviceType}</span>
@@ -205,21 +205,21 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
           type="button"
           onClick={onClose}
           aria-label="Close Inspector Drawer"
-          className="p-1 rounded-md text-[#8A8F98] hover:text-white hover:bg-[#232B3B] transition-colors"
+          className="p-1 rounded-md text-[var(--text-secondary)] hover:text-white hover:bg-[var(--bg-highlight)] transition-colors"
         >
           <X className="w-4 h-4" />
         </button>
       </div>
 
       {/* 2. Standardized 4 Tabs Navigation Bar */}
-      <div className="grid grid-cols-4 border-b border-[#232B3B] bg-[#0A0D12]">
+      <div className="grid grid-cols-4 border-b border-[var(--bg-highlight)] bg-[var(--bg-base)]">
         <button
           type="button"
           onClick={() => setActiveTab('MANUAL_CONTROL')}
           className={`flex flex-col items-center justify-center py-2 text-[10px] font-medium transition-all ${
             activeTab === 'MANUAL_CONTROL'
-              ? 'text-sky-400 border-b-2 border-sky-400 bg-[#161E2E]'
-              : 'text-[#8A8F98] hover:text-[#D0D6E0] hover:bg-[#121824]'
+              ? 'text-sky-400 border-b-2 border-sky-400 bg-[var(--bg-elevated)]'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface)]'
           }`}
         >
           <Sliders className="w-3.5 h-3.5 mb-0.5" />
@@ -231,8 +231,8 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
           onClick={() => setActiveTab('INTERLOCK_MATRIX')}
           className={`flex flex-col items-center justify-center py-2 text-[10px] font-medium transition-all ${
             activeTab === 'INTERLOCK_MATRIX'
-              ? 'text-sky-400 border-b-2 border-sky-400 bg-[#161E2E]'
-              : 'text-[#8A8F98] hover:text-[#D0D6E0] hover:bg-[#121824]'
+              ? 'text-sky-400 border-b-2 border-sky-400 bg-[var(--bg-elevated)]'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface)]'
           }`}
         >
           <ShieldCheck className="w-3.5 h-3.5 mb-0.5" />
@@ -244,8 +244,8 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
           onClick={() => setActiveTab('MINI_TREND')}
           className={`flex flex-col items-center justify-center py-2 text-[10px] font-medium transition-all ${
             activeTab === 'MINI_TREND'
-              ? 'text-sky-400 border-b-2 border-sky-400 bg-[#161E2E]'
-              : 'text-[#8A8F98] hover:text-[#D0D6E0] hover:bg-[#121824]'
+              ? 'text-sky-400 border-b-2 border-sky-400 bg-[var(--bg-elevated)]'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface)]'
           }`}
         >
           <TrendingUp className="w-3.5 h-3.5 mb-0.5" />
@@ -257,8 +257,8 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
           onClick={() => setActiveTab('MAINTENANCE')}
           className={`flex flex-col items-center justify-center py-2 text-[10px] font-medium transition-all ${
             activeTab === 'MAINTENANCE'
-              ? 'text-sky-400 border-b-2 border-sky-400 bg-[#161E2E]'
-              : 'text-[#8A8F98] hover:text-[#D0D6E0] hover:bg-[#121824]'
+              ? 'text-sky-400 border-b-2 border-sky-400 bg-[var(--bg-elevated)]'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface)]'
           }`}
         >
           <Wrench className="w-3.5 h-3.5 mb-0.5" />
@@ -272,9 +272,9 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
         {activeTab === 'MANUAL_CONTROL' && (
           <div className="space-y-3">
             {/* Auto / Manual Mode Pill Bar */}
-            <div className="flex items-center justify-between p-2 rounded-lg bg-[#161E2E] border border-[#232B3B]">
+            <div className="flex items-center justify-between p-2 rounded-lg bg-[var(--bg-elevated)] border border-[var(--bg-highlight)]">
               <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-[#D0D6E0]">Control Mode</span>
+                <span className="text-xs font-semibold text-[var(--text-primary)]">Control Mode</span>
                 <span
                   className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold ${
                     ctrl.isAutoMode
@@ -288,7 +288,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
               <button
                 type="button"
                 onClick={handleToggleAuto}
-                className="px-2.5 py-1 rounded bg-[#232B3B] hover:bg-sky-600 text-white text-[11px] font-medium transition-colors"
+                className="px-2.5 py-1 rounded bg-[var(--bg-highlight)] hover:bg-sky-600 text-white text-[11px] font-medium transition-colors"
               >
                 Switch to {ctrl.isAutoMode ? 'Manual' : 'Auto'}
               </button>
@@ -297,18 +297,18 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
             {/* Modular 2-Column Grid (184px x 96px half-width cards) */}
             <div className="grid grid-cols-2 gap-2">
               {/* Half-width Card 1: Process Value (PV) */}
-              <div className="w-[172px] h-[88px] p-2.5 rounded-lg bg-[#161E2E] border border-[#232B3B] flex flex-col justify-between">
-                <div className="flex items-center justify-between text-[10px] font-mono uppercase text-[#8A8F98]">
+              <div className="w-[172px] h-[88px] p-2.5 rounded-lg bg-[var(--bg-elevated)] border border-[var(--bg-highlight)] flex flex-col justify-between">
+                <div className="flex items-center justify-between text-[10px] font-mono uppercase text-[var(--text-secondary)]">
                   <span>Process Value</span>
                   <Activity className="w-3 h-3 text-emerald-400" />
                 </div>
                 <div className="flex items-baseline gap-1">
-                  <span className="text-2xl font-bold font-mono text-[#F7F8F8]">
+                  <span className="text-2xl font-bold font-mono text-[var(--text-primary)]">
                     {ctrl.processValue.toFixed(1)}
                   </span>
-                  <span className="text-xs font-mono text-[#8A8F98]">{ctrl.engineeringUnit}</span>
+                  <span className="text-xs font-mono text-[var(--text-secondary)]">{ctrl.engineeringUnit}</span>
                 </div>
-                <div className="w-full bg-[#0A0D12] h-1.5 rounded-full overflow-hidden">
+                <div className="w-full bg-[var(--bg-base)] h-1.5 rounded-full overflow-hidden">
                   <div
                     className="bg-emerald-400 h-full rounded-full transition-all duration-300"
                     style={{ width: `${Math.min(100, Math.max(0, ctrl.processValue))}%` }}
@@ -317,8 +317,8 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
               </div>
 
               {/* Half-width Card 2: Output Power */}
-              <div className="w-[172px] h-[88px] p-2.5 rounded-lg bg-[#161E2E] border border-[#232B3B] flex flex-col justify-between">
-                <div className="flex items-center justify-between text-[10px] font-mono uppercase text-[#8A8F98]">
+              <div className="w-[172px] h-[88px] p-2.5 rounded-lg bg-[var(--bg-elevated)] border border-[var(--bg-highlight)] flex flex-col justify-between">
+                <div className="flex items-center justify-between text-[10px] font-mono uppercase text-[var(--text-secondary)]">
                   <span>VFD Output</span>
                   <span className="text-[9px] font-mono text-sky-400">4-20mA</span>
                 </div>
@@ -326,9 +326,9 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
                   <span className="text-2xl font-bold font-mono text-sky-400">
                     {ctrl.outputPowerPct.toFixed(1)}
                   </span>
-                  <span className="text-xs font-mono text-[#8A8F98]">%</span>
+                  <span className="text-xs font-mono text-[var(--text-secondary)]">%</span>
                 </div>
-                <div className="w-full bg-[#0A0D12] h-1.5 rounded-full overflow-hidden">
+                <div className="w-full bg-[var(--bg-base)] h-1.5 rounded-full overflow-hidden">
                   <div
                     className="bg-sky-400 h-full rounded-full transition-all duration-300"
                     style={{ width: `${ctrl.outputPowerPct}%` }}
@@ -338,9 +338,9 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
             </div>
 
             {/* Setpoint (SP) Slider Card (Full-width 360px x 96px) */}
-            <div className="p-3 rounded-lg bg-[#161E2E] border border-[#232B3B] space-y-2">
+            <div className="p-3 rounded-lg bg-[var(--bg-elevated)] border border-[var(--bg-highlight)] space-y-2">
               <div className="flex items-center justify-between text-xs font-medium">
-                <span className="text-[#D0D6E0]">Target Setpoint (SP)</span>
+                <span className="text-[var(--text-primary)]">Target Setpoint (SP)</span>
                 <span className="font-mono text-amber-400 font-bold">
                   {ctrl.setpoint.toFixed(1)} {ctrl.engineeringUnit}
                 </span>
@@ -353,9 +353,9 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
                 disabled={ctrl.isAutoMode}
                 value={ctrl.setpoint}
                 onChange={(e) => handleSetpointSlider(parseFloat(e.target.value))}
-                className="w-full h-2 bg-[#0A0D12] rounded-lg appearance-none cursor-pointer accent-sky-400 disabled:opacity-40"
+                className="w-full h-2 bg-[var(--bg-base)] rounded-lg appearance-none cursor-pointer accent-sky-400 disabled:opacity-40"
               />
-              <div className="flex justify-between text-[10px] text-[#8A8F98] font-mono">
+              <div className="flex justify-between text-[10px] text-[var(--text-secondary)] font-mono">
                 <span>{ctrl.minSetpoint} {ctrl.engineeringUnit}</span>
                 <span>50%</span>
                 <span>{ctrl.maxSetpoint} {ctrl.engineeringUnit}</span>
@@ -384,7 +384,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
                 className={`h-[48px] rounded-lg border font-mono font-bold text-xs flex items-center justify-center gap-1.5 transition-all active:scale-95 ${
                   jogFwdActive
                     ? 'bg-emerald-600 border-emerald-400 text-white shadow-[0_0_12px_rgba(16,185,129,0.5)]'
-                    : 'bg-[#161E2E] border-[#232B3B] text-emerald-400 hover:border-emerald-500/50 disabled:opacity-40'
+                    : 'bg-[var(--bg-elevated)] border-[var(--bg-highlight)] text-emerald-400 hover:border-emerald-500/50 disabled:opacity-40'
                 }`}
               >
                 <RotateCw className={`w-4 h-4 ${jogFwdActive ? 'animate-spin' : ''}`} />
@@ -411,7 +411,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
                 className={`h-[48px] rounded-lg border font-mono font-bold text-xs flex items-center justify-center gap-1.5 transition-all active:scale-95 ${
                   jogRevActive
                     ? 'bg-amber-600 border-amber-400 text-white shadow-[0_0_12px_rgba(245,158,11,0.5)]'
-                    : 'bg-[#161E2E] border-[#232B3B] text-amber-400 hover:border-amber-500/50 disabled:opacity-40'
+                    : 'bg-[var(--bg-elevated)] border-[var(--bg-highlight)] text-amber-400 hover:border-amber-500/50 disabled:opacity-40'
                 }`}
               >
                 <RotateCcw className={`w-4 h-4 ${jogRevActive ? 'animate-spin' : ''}`} />
@@ -424,7 +424,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
         {/* TAB 2: INTERLOCK MATRIX CHECKLIST */}
         {activeTab === 'INTERLOCK_MATRIX' && (
           <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs font-medium text-[#8A8F98] pb-1 border-b border-[#232B3B]">
+            <div className="flex items-center justify-between text-xs font-medium text-[var(--text-secondary)] pb-1 border-b border-[var(--bg-highlight)]">
               <span>Permissive Safety Logic Matrix</span>
               <span className="font-mono text-[10px]">IEC 62443 / SIL-3</span>
             </div>
@@ -438,7 +438,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
                   key={item.id}
                   className={`p-2.5 rounded-lg border transition-all ${
                     isSatisfied
-                      ? 'bg-[#161E2E] border-[#232B3B]'
+                      ? 'bg-[var(--bg-elevated)] border-[var(--bg-highlight)]'
                       : isBypassed
                       ? 'bg-amber-950/30 border-amber-600/40'
                       : 'bg-rose-950/40 border-rose-600/50'
@@ -455,7 +455,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
                       )}
                       <span
                         className={`text-xs font-semibold ${
-                          isSatisfied ? 'text-[#F7F8F8]' : isBypassed ? 'text-amber-300' : 'text-rose-300'
+                          isSatisfied ? 'text-[var(--text-primary)]' : isBypassed ? 'text-amber-300' : 'text-rose-300'
                         }`}
                       >
                         {item.name}
@@ -483,7 +483,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
                     {item.expression}
                   </div>
                   {item.description && (
-                    <div className="text-[10px] text-[#8A8F98] mt-0.5 pl-5">
+                    <div className="text-[10px] text-[var(--text-secondary)] mt-0.5 pl-5">
                       {item.description}
                     </div>
                   )}
@@ -508,9 +508,9 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
         {/* TAB 3: MINI TREND (60-SECOND SPARKLINE PV vs SP) */}
         {activeTab === 'MINI_TREND' && (
           <div className="space-y-3">
-            <div className="p-3 rounded-lg bg-[#161E2E] border border-[#232B3B]">
+            <div className="p-3 rounded-lg bg-[var(--bg-elevated)] border border-[var(--bg-highlight)]">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-[#D0D6E0]">
+                <span className="text-xs font-semibold text-[var(--text-primary)]">
                   60s Real-Time PV vs SP
                 </span>
                 <div className="flex items-center gap-3 text-[10px] font-mono">
@@ -524,12 +524,12 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
               </div>
 
               {/* Sparkline Canvas Area */}
-              <div className="w-full bg-[#0A0D12] rounded border border-[#232B3B] p-2 relative overflow-hidden">
+              <div className="w-full bg-[var(--bg-base)] rounded border border-[var(--bg-highlight)] p-2 relative overflow-hidden">
                 <svg width={svgWidth} height={svgHeight} className="overflow-visible">
                   {/* Grid Lines */}
-                  <line x1="0" y1="20" x2={svgWidth} y2="20" stroke="#1F2937" strokeDasharray="2,2" />
-                  <line x1="0" y1={svgHeight / 2} x2={svgWidth} y2={svgHeight / 2} stroke="#1F2937" strokeDasharray="2,2" />
-                  <line x1="0" y1={svgHeight - 20} x2={svgWidth} y2={svgHeight - 20} stroke="#1F2937" strokeDasharray="2,2" />
+                  <line x1="0" y1="20" x2={svgWidth} y2="20" stroke="var(--border-subtle)" strokeDasharray="2,2" />
+                  <line x1="0" y1={svgHeight / 2} x2={svgWidth} y2={svgHeight / 2} stroke="var(--border-subtle)" strokeDasharray="2,2" />
+                  <line x1="0" y1={svgHeight - 20} x2={svgWidth} y2={svgHeight - 20} stroke="var(--border-subtle)" strokeDasharray="2,2" />
 
                   {/* Setpoint (SP) Reference Line */}
                   <line
@@ -537,7 +537,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
                     y1={spY}
                     x2={svgWidth}
                     y2={spY}
-                    stroke="#F59E0B"
+                    stroke="var(--collab-amber)"
                     strokeWidth="1.5"
                     strokeDasharray="4,3"
                   />
@@ -545,7 +545,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
                   {/* Process Value (PV) Sparkline Curve */}
                   <polyline
                     fill="none"
-                    stroke="#10B981"
+                    stroke="var(--collab-emerald)"
                     strokeWidth="2"
                     strokeLinecap="round"
                     strokeLinejoin="round"
@@ -553,7 +553,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
                   />
                 </svg>
 
-                <div className="flex justify-between text-[9px] font-mono text-[#62666D] mt-1.5">
+                <div className="flex justify-between text-[9px] font-mono text-[var(--text-muted)] mt-1.5">
                   <span>-60 sec</span>
                   <span>-30 sec</span>
                   <span>0 sec (Now)</span>
@@ -563,16 +563,16 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
 
             {/* Quick KPI stats under trend */}
             <div className="grid grid-cols-2 gap-2">
-              <div className="p-2 rounded bg-[#161E2E] border border-[#232B3B]">
-                <div className="text-[10px] text-[#8A8F98] font-mono">Loop Error (SP - PV)</div>
+              <div className="p-2 rounded bg-[var(--bg-elevated)] border border-[var(--bg-highlight)]">
+                <div className="text-[10px] text-[var(--text-secondary)] font-mono">Loop Error (SP - PV)</div>
                 <div className="text-base font-mono font-bold text-sky-400">
                   {(ctrl.setpoint - ctrl.processValue).toFixed(2)} {ctrl.engineeringUnit}
                 </div>
               </div>
 
-              <div className="p-2 rounded bg-[#161E2E] border border-[#232B3B]">
-                <div className="text-[10px] text-[#8A8F98] font-mono">Sample Rate</div>
-                <div className="text-base font-mono font-bold text-[#F7F8F8]">100 ms (10 Hz)</div>
+              <div className="p-2 rounded bg-[var(--bg-elevated)] border border-[var(--bg-highlight)]">
+                <div className="text-[10px] text-[var(--text-secondary)] font-mono">Sample Rate</div>
+                <div className="text-base font-mono font-bold text-[var(--text-primary)]">100 ms (10 Hz)</div>
               </div>
             </div>
           </div>
@@ -582,12 +582,12 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
         {activeTab === 'MAINTENANCE' && (
           <div className="space-y-2.5">
             {/* Odometer Hours Card */}
-            <div className="p-3 rounded-lg bg-[#161E2E] border border-[#232B3B] flex items-center justify-between">
+            <div className="p-3 rounded-lg bg-[var(--bg-elevated)] border border-[var(--bg-highlight)] flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Clock className="w-5 h-5 text-sky-400" />
                 <div>
-                  <div className="text-xs font-semibold text-[#F7F8F8]">Total Operating Hours</div>
-                  <div className="text-[10px] text-[#8A8F98]">Non-volatile EEPROM accumulator</div>
+                  <div className="text-xs font-semibold text-[var(--text-primary)]">Total Operating Hours</div>
+                  <div className="text-[10px] text-[var(--text-secondary)]">Non-volatile EEPROM accumulator</div>
                 </div>
               </div>
               <div className="text-xl font-bold font-mono text-sky-400">
@@ -596,41 +596,41 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
             </div>
 
             {/* DCP & Hardware Spec Attributes */}
-            <div className="p-3 rounded-lg bg-[#161E2E] border border-[#232B3B] space-y-2 text-xs">
-              <div className="flex items-center justify-between border-b border-[#232B3B] pb-1.5">
-                <span className="text-[#8A8F98] flex items-center gap-1.5">
+            <div className="p-3 rounded-lg bg-[var(--bg-elevated)] border border-[var(--bg-highlight)] space-y-2 text-xs">
+              <div className="flex items-center justify-between border-b border-[var(--bg-highlight)] pb-1.5">
+                <span className="text-[var(--text-secondary)] flex items-center gap-1.5">
                   <Radio className="w-3.5 h-3.5 text-emerald-400" /> DCP MAC Address
                 </span>
-                <span className="font-mono text-[#F7F8F8] font-medium">{maint.dcpMacAddress}</span>
+                <span className="font-mono text-[var(--text-primary)] font-medium">{maint.dcpMacAddress}</span>
               </div>
 
-              <div className="flex items-center justify-between border-b border-[#232B3B] pb-1.5">
-                <span className="text-[#8A8F98]">Serial Number</span>
-                <span className="font-mono text-[#D0D6E0]">{maint.serialNumber}</span>
+              <div className="flex items-center justify-between border-b border-[var(--bg-highlight)] pb-1.5">
+                <span className="text-[var(--text-secondary)]">Serial Number</span>
+                <span className="font-mono text-[var(--text-primary)]">{maint.serialNumber}</span>
               </div>
 
-              <div className="flex items-center justify-between border-b border-[#232B3B] pb-1.5">
-                <span className="text-[#8A8F98]">Firmware Build</span>
+              <div className="flex items-center justify-between border-b border-[var(--bg-highlight)] pb-1.5">
+                <span className="text-[var(--text-secondary)]">Firmware Build</span>
                 <span className="font-mono text-sky-400">{maint.firmwareVersion}</span>
               </div>
 
-              <div className="flex items-center justify-between border-b border-[#232B3B] pb-1.5">
-                <span className="text-[#8A8F98] flex items-center gap-1.5">
+              <div className="flex items-center justify-between border-b border-[var(--bg-highlight)] pb-1.5">
+                <span className="text-[var(--text-secondary)] flex items-center gap-1.5">
                   <Calendar className="w-3.5 h-3.5 text-amber-400" /> Last Calibration
                 </span>
-                <span className="font-mono text-[#D0D6E0]">{maint.lastCalibrationDate}</span>
+                <span className="font-mono text-[var(--text-primary)]">{maint.lastCalibrationDate}</span>
               </div>
 
-              <div className="flex items-center justify-between border-b border-[#232B3B] pb-1.5">
-                <span className="text-[#8A8F98]">Next Due Date</span>
+              <div className="flex items-center justify-between border-b border-[var(--bg-highlight)] pb-1.5">
+                <span className="text-[var(--text-secondary)]">Next Due Date</span>
                 <span className="font-mono text-emerald-400 font-semibold">
                   {maint.nextCalibrationDate}
                 </span>
               </div>
 
               <div className="flex items-center justify-between">
-                <span className="text-[#8A8F98]">Total Starts / Inrush Cycles</span>
-                <span className="font-mono text-[#F7F8F8] font-bold">
+                <span className="text-[var(--text-secondary)]">Total Starts / Inrush Cycles</span>
+                <span className="font-mono text-[var(--text-primary)] font-bold">
                   {maint.totalStarts.toLocaleString()}
                 </span>
               </div>

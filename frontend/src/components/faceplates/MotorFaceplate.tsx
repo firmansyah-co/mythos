@@ -60,9 +60,9 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
 
   // Status color determination adhering strictly to ISA-101
   const getSymbolFill = () => {
-    if (tripped) return 'var(--alarm-critical, #DC2626)';
-    if (running) return 'var(--isa101-pump-running, #0284C7)';
-    return 'var(--isa101-pump-stopped, #475569)';
+    if (tripped) return 'var(--alarm-critical)';
+    if (running) return 'var(--isa101-pump-running)';
+    return 'var(--isa101-pump-stopped)';
   };
 
   // Tier 1: ISA-101 P&ID Vector Symbol
@@ -123,10 +123,10 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
       className={`flex flex-col w-80 bg-slate-900/95 border border-slate-700/80 rounded-lg p-3 shadow-xl backdrop-blur-sm text-slate-100 ${className}`}
       style={{
         borderTop: tripped
-          ? '3px solid var(--alarm-critical, #DC2626)'
+          ? '3px solid var(--alarm-critical)'
           : running
-          ? '3px solid var(--isa101-pump-running, #0284C7)'
-          : '3px solid var(--border-default, #334155)',
+          ? '3px solid var(--isa101-pump-running)'
+          : '3px solid var(--border-default)',
       }}
     >
       {/* Header */}

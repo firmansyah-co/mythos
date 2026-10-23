@@ -89,7 +89,7 @@ export const DeployControlBar: React.FC<DeployControlBarProps> = ({
 
   return (
     <div
-      className={`flex items-center justify-between px-3 py-1.5 bg-[#0F141C] border-b border-neutral-800 text-xs ${className}`}
+      className={`flex items-center justify-between px-3 py-1.5 bg-[var(--bg-surface)] border-b border-neutral-800 text-xs ${className}`}
     >
       <div className="flex items-center gap-2">
         <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-neutral-900 border border-neutral-800 font-mono text-[11px] text-neutral-400">

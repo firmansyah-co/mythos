@@ -170,9 +170,9 @@ const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: string; ti
   };
 
   return (
-    <div className="w-full h-full flex flex-col bg-[#0A0D12] text-neutral-200 select-none overflow-hidden">
+    <div className="w-full h-full flex flex-col bg-[var(--bg-base)] text-neutral-200 select-none overflow-hidden">
       {/* Canvas Top Bar */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#0F141C] border-b border-neutral-800 text-xs">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--bg-surface)] border-b border-neutral-800 text-xs">
         <div className="flex items-center gap-2">
           <span className="font-semibold text-neutral-300">{title}</span>
           <span className="text-[10px] font-mono text-neutral-500">[{screenId}]</span>
@@ -206,7 +206,7 @@ const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: string; ti
           }}
           data-testid="isa101-empty-canvas"
         >
-          <div className="max-w-md w-full bg-[#0F141C] border border-neutral-800 rounded-xl p-8 text-center shadow-2xl space-y-4">
+          <div className="max-w-md w-full bg-[var(--bg-surface)] border border-neutral-800 rounded-xl p-8 text-center shadow-2xl space-y-4">
             <div className="w-12 h-12 rounded-xl bg-blue-600/20 border border-blue-500/40 text-cyan-400 mx-auto flex items-center justify-center shadow-inner">
               <Layers className="w-6 h-6 text-cyan-400" />
             </div>
@@ -377,7 +377,7 @@ const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: string; ti
                 <div
                   key={compId}
                   onClick={(e) => handleComponentClick(comp, e)}
-                  className="p-4 bg-[#0F141C] border border-neutral-800 hover:border-cyan-500 rounded-lg cursor-pointer transition-all"
+                  className="p-4 bg-[var(--bg-surface)] border border-neutral-800 hover:border-cyan-500 rounded-lg cursor-pointer transition-all"
                 >
                   <div className="text-[10px] font-mono text-cyan-400">{tag}</div>
                   <div className="text-xs font-semibold text-white mt-1">{label}</div>
@@ -390,7 +390,7 @@ const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: string; ti
       )}
 
       {/* Canvas Bottom Status Bar */}
-      <div className="flex items-center justify-between px-3 py-1 bg-[#0F141C] border-t border-neutral-800 text-[11px] text-neutral-500 font-mono">
+      <div className="flex items-center justify-between px-3 py-1 bg-[var(--bg-surface)] border-t border-neutral-800 text-[11px] text-neutral-500 font-mono">
         <span>TagBus Status: <strong className="text-emerald-400 font-mono">ACTIVE (100ms)</strong></span>
         <span>Components: <strong className="text-cyan-400 font-mono">{components.length}</strong></span>
         <span>Uncommitted Draft WAL: <strong className="text-amber-400 font-mono">0 deltas</strong></span>
@@ -468,7 +468,7 @@ const NetworkTopologyPanel: React.FC<IDockviewPanelProps<{ title?: string }>> = 
   );
 
   return (
-    <div className="w-full h-full flex flex-col bg-[#0A0D12] text-neutral-200 overflow-hidden select-none">
+    <div className="w-full h-full flex flex-col bg-[var(--bg-base)] text-neutral-200 overflow-hidden select-none">
       <NetworkCanvas
         className="w-full h-full"
         onSelectStation={handleSelectStation}
@@ -601,7 +601,7 @@ export const DockviewWorkspace: React.FC<DockviewWorkspaceProps> = ({
 
   return (
     <div
-      className={`w-full h-full bg-[#0A0D12] overflow-hidden relative ${className}`}
+      className={`w-full h-full bg-[var(--bg-base)] overflow-hidden relative ${className}`}
       data-testid="dockview-workspace-host"
     >
       <DockviewReact
@@ -617,10 +617,10 @@ export const DockviewWorkspace: React.FC<DockviewWorkspaceProps> = ({
       {/* Authentic Industrial Welcoming Empty State (TSK-602) */}
       {isWorkspaceEmpty && (
         <div
-          className="absolute inset-0 z-20 flex flex-col items-center justify-center p-8 bg-[#0A0D12]/95 backdrop-blur-xs select-none pointer-events-auto"
+          className="absolute inset-0 z-20 flex flex-col items-center justify-center p-8 bg-[var(--bg-base)]/95 backdrop-blur-xs select-none pointer-events-auto"
           data-testid="dockview-empty-state"
         >
-          <div className="max-w-md w-full bg-[#0F141C] border border-neutral-800 rounded-xl p-8 text-center shadow-2xl space-y-5">
+          <div className="max-w-md w-full bg-[var(--bg-surface)] border border-neutral-800 rounded-xl p-8 text-center shadow-2xl space-y-5">
             <div className="w-12 h-12 rounded-xl bg-blue-600/20 border border-blue-500/40 text-cyan-400 mx-auto flex items-center justify-center shadow-inner">
               <FileCode2 className="w-6 h-6 text-cyan-400" />
             </div>

@@ -49,9 +49,9 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
 
   // State color determination adhering to ISA-101
   const getValveColor = () => {
-    if (transitFault) return 'var(--alarm-major, #EA580C)';
-    if (openLimit) return 'var(--isa101-valve-open, #94A3B8)';
-    return 'var(--isa101-valve-closed, #475569)';
+    if (transitFault) return 'var(--alarm-major)';
+    if (openLimit) return 'var(--isa101-valve-open)';
+    return 'var(--isa101-valve-closed)';
   };
 
   // Tier 1: Vector P&ID Symbol
@@ -120,10 +120,10 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
       className={`flex flex-col w-80 bg-slate-900/95 border border-slate-700/80 rounded-lg p-3 shadow-xl backdrop-blur-sm text-slate-100 ${className}`}
       style={{
         borderTop: transitFault
-          ? '3px solid var(--alarm-major, #EA580C)'
+          ? '3px solid var(--alarm-major)'
           : openLimit
-          ? '3px solid var(--isa101-valve-open, #94A3B8)'
-          : '3px solid var(--border-default, #334155)',
+          ? '3px solid var(--isa101-valve-open)'
+          : '3px solid var(--border-default)',
       }}
     >
       {/* Header */}

@@ -22,12 +22,12 @@ describe('Sprint 6: Interactive Workbench Panels & Wiring Verification', () => {
     document.body.appendChild(container);
     root = createRoot(container);
 
-    global.fetch = vi.fn().mockImplementation(async () => {
-      return {
-        ok: false,
-        status: 404,
-        json: async () => ({}),
-      };
+    global.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/api/v1/projects/bottling_plant_line01/hmi/screens' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        return { ok: true, status: 201, json: async () => ({ id: 'screen_empty_test', ...body, subscreens: [], canvasData: { title: body.name, components: [] } }) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
     });
 
     useHmiStore.getState().resetToEmptyProject();

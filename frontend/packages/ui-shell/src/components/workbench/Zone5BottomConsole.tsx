@@ -22,13 +22,13 @@ export const Zone5BottomConsole: React.FC<Zone5BottomConsoleProps> = ({
 
   return (
     <div
-      className={`w-full bg-[#0F141C] border-t border-neutral-800 text-neutral-300 text-xs select-none flex flex-col ${
+      className={`w-full bg-[var(--bg-surface)] border-t border-neutral-800 text-neutral-300 text-xs select-none flex flex-col ${
         isCollapsed ? 'h-7' : 'h-48'
       } ${className}`}
       data-testid="zone5-bottom-console"
     >
       {/* Tab Header Strip */}
-      <div className="flex items-center justify-between px-3 bg-[#0A0D12] border-b border-neutral-800 h-7 text-[11px]">
+      <div className="flex items-center justify-between px-3 bg-[var(--bg-base)] border-b border-neutral-800 h-7 text-[11px]">
         <div className="flex items-center gap-1">
           <button
             onClick={() => setActiveTab('ALARMS')}
@@ -82,7 +82,7 @@ export const Zone5BottomConsole: React.FC<Zone5BottomConsoleProps> = ({
 
       {/* Content Area */}
       {!isCollapsed && (
-        <div className="flex-1 p-3 overflow-y-auto font-mono text-[11px] space-y-1 bg-[#0A0D12]">
+        <div className="flex-1 p-3 overflow-y-auto font-mono text-[11px] space-y-1 bg-[var(--bg-base)]">
           {activeTab === 'ALARMS' && (
             <div className="space-y-1.5">
               <div className="p-2 rounded bg-rose-950/40 border border-rose-800/60 text-rose-300 flex items-center justify-between">

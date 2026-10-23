@@ -5,29 +5,17 @@ import { INDUSTRIAL_CATALOG } from '../src/catalogData';
 import { Position } from '@xyflow/react';
 
 describe('A* Orthogonal Bus Cable Routing & Visual Tokens (TSK-303)', () => {
-  it('enforces exact industrial color codes for PROFINET, Modbus, Backbone, Safety, IO-Link', () => {
-    // PROFINET / Modbus TCP: Green (#16A34A)
-    expect(PROTOCOL_COLORS.PROFINET.stroke).toBe('#16A34A');
-    expect(PROTOCOL_COLORS.MODBUS_TCP.stroke).toBe('#16A34A');
-
-    // RS-485 Modbus RTU / PROFIBUS: Blue (#0284C7)
-    expect(PROTOCOL_COLORS.MODBUS_RTU.stroke).toBe('#0284C7');
-    expect(PROTOCOL_COLORS.PROFIBUS_DP.stroke).toBe('#0284C7');
-
-    // CANopen: Amber (#CA8A04)
-    expect(PROTOCOL_COLORS.CANOPEN.stroke).toBe('#CA8A04');
-
-    // Ethernet Backbone: Slate Blue / Sky Blue (#38BDF8)
-    expect(PROTOCOL_COLORS.ETHERNET_BACKBONE.stroke).toBe('#38BDF8');
-
-    // Safety Loop / SIL-3 STO: Crimson Red (#DC2626)
-    expect(PROTOCOL_COLORS.SAFETY_PROFISAFE.stroke).toBe('#DC2626');
-
-    // IO-Link: Purple (#9333EA)
-    expect(PROTOCOL_COLORS.IOLINK.stroke).toBe('#9333EA');
-
-    // Offline / Severed link
-    expect(OFFLINE_BUS_COLOR.stroke).toBe('#475569');
+  it('maps each bus protocol to its semantic color token', () => {
+    // Bus strokes reference tokens so the dual-theme stylesheet owns the literals.
+    expect(PROTOCOL_COLORS.PROFINET.stroke).toBe('var(--bus-ethernet)');
+    expect(PROTOCOL_COLORS.MODBUS_TCP.stroke).toBe('var(--bus-ethernet)');
+    expect(PROTOCOL_COLORS.MODBUS_RTU.stroke).toBe('var(--bus-serial)');
+    expect(PROTOCOL_COLORS.PROFIBUS_DP.stroke).toBe('var(--bus-serial)');
+    expect(PROTOCOL_COLORS.CANOPEN.stroke).toBe('var(--bus-can)');
+    expect(PROTOCOL_COLORS.ETHERNET_BACKBONE.stroke).toBe('var(--bus-backbone)');
+    expect(PROTOCOL_COLORS.SAFETY_PROFISAFE.stroke).toBe('var(--bus-safety)');
+    expect(PROTOCOL_COLORS.IOLINK.stroke).toBe('var(--bus-io-link)');
+    expect(OFFLINE_BUS_COLOR.stroke).toBe('var(--bus-offline)');
   });
 
   it('computes orthogonal bus paths with fillets between ports', () => {

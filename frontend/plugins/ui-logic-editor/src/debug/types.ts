@@ -2,7 +2,7 @@
  * Online Debugging & Variable Forcing Types (SYS-REQ-096 Parity).
  */
 
-export type DebugConnectionState = 'DISCONNECTED' | 'CONNECTING' | 'ONLINE' | 'SIMULATING' | 'FAULT';
+export type DebugConnectionState = 'DISCONNECTED' | 'CONNECTING' | 'ONLINE' | 'FAULT';
 
 export interface TelemetryFrame {
   timestampMs: number;

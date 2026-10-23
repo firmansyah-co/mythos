@@ -24,7 +24,7 @@ describe('useCollabStore (TSK-311 CRDT Collaboration)', () => {
     expect(state.connected).toBe(false);
     expect(state.currentUser).toBeDefined();
     expect(state.currentUser.name).toMatch(/^Engineer-\d+/);
-    expect(state.currentUser.color).toMatch(/^#[0-9A-Fa-f]{6}$/);
+    expect(state.currentUser.color).toMatch(/^var\(--collab-[a-z]+\)$/);
     expect(state.peers).toEqual([]);
     expect(state.doc).toBeNull();
     expect(state.provider).toBeNull();

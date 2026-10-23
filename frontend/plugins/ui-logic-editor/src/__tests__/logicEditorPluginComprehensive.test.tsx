@@ -103,50 +103,38 @@ describe('TSK-701..705: LogicEditorPlugin Comprehensive Integration Suite', () =
   });
 
   describe('2. Online Debug Mode & Power-Flow Toggle', () => {
-    it('toggles online debug mode with start and stop controls', () => {
+    it('reports FAULT instead of simulated power flow when no live transport exists', () => {
       renderClient(<LogicEditorPlugin targetBlock="MainTask" />);
 
       const debugBtn = container.querySelector('[data-testid="debug-toggle-btn"]') as HTMLButtonElement;
       expect(debugBtn).toBeTruthy();
       expect(debugBtn.textContent).toContain('Online Debug');
 
-      // Toggle Debug On
       flushSync(() => {
         debugBtn.click();
       });
 
-      expect(container.innerHTML).toContain('Stop Debug');
-      expect(container.innerHTML).toContain('ONLINE POWER-FLOW');
-
-      // Toggle Debug Off
-      flushSync(() => {
-        debugBtn.click();
-      });
-
-      expect(container.innerHTML).toContain('Online Debug');
+      // No fabricated process image: the failure is visible and no online overlay appears.
+      expect(container.innerHTML).toContain('FAULT: no live telemetry');
+      expect(container.querySelector('[data-testid="power-flow-overlay"]')).toBeNull();
+      expect(container.innerHTML).not.toContain('ONLINE POWER-FLOW');
     });
 
-    it('opens Variable Forcing Deck modal when forced variable trigger is clicked in online debug mode', () => {
+    it('offers a retry by leaving the debug toggle available after a transport fault', () => {
       renderClient(<LogicEditorPlugin targetBlock="MainTask" />);
 
-      // Enable online debug first
       const debugBtn = container.querySelector('[data-testid="debug-toggle-btn"]') as HTMLButtonElement;
       flushSync(() => {
         debugBtn.click();
       });
+      expect(container.innerHTML).toContain('FAULT: no live telemetry');
+      expect(debugBtn.textContent).toContain('Online Debug');
 
-      // Now PowerFlowOverlay is rendered with the force deck button
-      const overlayBtn = container.querySelector('[data-testid="power-flow-overlay"] button') as HTMLButtonElement;
-      expect(overlayBtn).toBeTruthy();
-      expect(overlayBtn.textContent).toContain('Forced:');
-
-      // Click to open modal
+      // Clicking again retries the live connection rather than pretending to stop a session.
       flushSync(() => {
-        overlayBtn.click();
+        debugBtn.click();
       });
-
-      expect(container.innerHTML).toContain('PLC Variable Force Deck');
-      expect(container.innerHTML).toContain('SYS-REQ-096 SAFETY LOCK');
+      expect(container.innerHTML).toContain('FAULT: no live telemetry');
     });
   });
 

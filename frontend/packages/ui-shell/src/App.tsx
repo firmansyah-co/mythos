@@ -19,6 +19,8 @@ export const App: React.FC = () => {
   const addProjectBlock = useHmiStore((s) => s.addProjectBlock);
   const addNewScreen = useHmiStore((s) => s.addNewScreen);
   const openWorkbenchDocument = useHmiStore((s) => s.openWorkbenchDocument);
+  const errorMessage = useHmiStore((s) => s.errorMessage);
+  const clearError = useHmiStore((s) => s.clearError);
 
   const [isExitKioskOpen, setIsExitKioskOpen] = useState(false);
   const [isZone4Collapsed, setIsZone4Collapsed] = useState(false);
@@ -54,13 +56,30 @@ export const App: React.FC = () => {
 
   const handleCreateScreen = async (name: string, isRoot: boolean) => {
     const screenId = await addNewScreen(name, isRoot);
-    handleOpenDocument('screen', screenId, name, { screenId, title: name });
+    if (screenId) {
+      handleOpenDocument('screen', screenId, name, { screenId, title: name });
+      return true;
+    }
+    return false;
   };
 
   return (
-    <div className="flex flex-col w-screen h-screen overflow-hidden bg-[#0A0D12] text-neutral-200">
+    <div className="flex flex-col w-screen h-screen overflow-hidden bg-[var(--bg-base)] text-neutral-200">
       {/* Non-Actuating Preview Mode Warning Banner (TSK-308) */}
       <NonActuatingPreviewBanner />
+
+      {errorMessage && (
+        <div
+          role="alert"
+          data-testid="hmi-error"
+          className="fixed top-2 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-3 border border-rose-700 bg-rose-950 px-4 py-2 text-xs text-rose-100 shadow-lg"
+        >
+          <span>{errorMessage}</span>
+          <button type="button" onClick={clearError} className="font-semibold text-rose-300 hover:text-white">
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* IEC 62443 Password Challenge Gate (TSK-310) */}
       <ExitKioskDialog
@@ -135,7 +154,7 @@ export const App: React.FC = () => {
       {/* Persistent Bottom-Left Mode Switcher Toggle: Portal View <--> Project View (TSK-601) */}
       {!isRuntimeFullscreen && (
         <div
-          className="fixed bottom-2 left-2 z-40 flex items-center bg-[#0F141C] border border-neutral-700/80 rounded-md p-0.5 shadow-2xl select-none"
+          className="fixed bottom-2 left-2 z-40 flex items-center bg-[var(--bg-surface)] border border-neutral-700/80 rounded-md p-0.5 shadow-2xl select-none"
           data-testid="workspace-mode-switcher"
         >
           <button

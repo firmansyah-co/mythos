@@ -20,7 +20,7 @@ describe('MythosLogo Component & Official Branding', () => {
     expect(html).toContain('width="48"');
     expect(html).toContain('height="48"');
     expect(html).toContain('rx="28"');
-    expect(html).toContain('stroke="#1e293b"');
+    expect(html).toContain('stroke="var(--border-subtle)"');
   });
 
   it('renders TopBar with official MythosLogo instead of mock letter box', () => {

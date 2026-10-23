@@ -24,6 +24,24 @@
   --text-muted: #64748B;
   --text-inverse: #020617;
 
+  /* Non-process interaction and collaboration accents */
+  --brand-orange: #F97316;
+  --brand-flame-light: #FB923C;
+  --brand-flame-mid: #F97316;
+  --brand-flame-deep: #EA580C;
+  --brand-cyan-deep: #0284C7;
+  --brand-cyan-light: #38BDF8;
+  --brand-shadow: #0F172A;
+  --brand-shadow-deep: #080B11;
+  --collab-blue: #3B82F6;
+  --collab-emerald: #10B981;
+  --collab-amber: #F59E0B;
+  --collab-red: #EF4444;
+  --collab-purple: #8B5CF6;
+  --collab-pink: #EC4899;
+  --collab-cyan: #06B6D4;
+  --collab-teal: #14B8A6;
+
   /* ISA-101 Process Elements (Dark) */
   --isa101-process-vessel: #334155;
   --isa101-pipe-inactive: #475569;
@@ -43,6 +61,7 @@
 
   /* Industrial Bus Link Colors (Dark) */
   --bus-ethernet: #16A34A;
+  --bus-backbone: #38BDF8;
   --bus-serial: #0284C7;
   --bus-can: #CA8A04;
   --bus-safety: #DC2626;
@@ -135,6 +154,7 @@
 
   /* Industrial Bus Link Colors (Light) */
   --bus-ethernet: #15803D;
+  --bus-backbone: #0284C7;
   --bus-serial: #0369A1;
   --bus-can: #B45309;
   --bus-safety: #DC2626;

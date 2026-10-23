@@ -54,12 +54,12 @@ export const PresenceAvatarStack: React.FC<PresenceAvatarStackProps> = ({ classN
       <div className="flex -space-x-1.5 overflow-hidden py-0.5">
         {peers.slice(0, 5).map((peer: CollabPeer) => {
           const initials = getInitials(peer.user?.name || '');
-          const color = peer.user?.color || '#3B82F6';
+          const color = peer.user?.color || 'var(--collab-blue)';
 
           return (
             <div
               key={peer.clientId}
-              className="relative inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold text-white shadow-sm ring-2 ring-[#0A0D12] transition-transform hover:scale-110 hover:z-10 cursor-pointer"
+              className="relative inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold text-white shadow-sm ring-2 ring-[var(--bg-base)] transition-transform hover:scale-110 hover:z-10 cursor-pointer"
               style={{ backgroundColor: color }}
               title={`${peer.user?.name || 'Peer'} (${peer.activeTab || 'Idle'})`}
               data-testid={`peer-avatar-${peer.clientId}`}
@@ -79,7 +79,7 @@ export const PresenceAvatarStack: React.FC<PresenceAvatarStackProps> = ({ classN
 
         {peers.length > 5 && (
           <div
-            className="inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold bg-neutral-800 text-neutral-300 ring-2 ring-[#0A0D12]"
+            className="inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold bg-neutral-800 text-neutral-300 ring-2 ring-[var(--bg-base)]"
             data-testid="peer-avatar-overflow"
           >
             +{peers.length - 5}
@@ -90,7 +90,7 @@ export const PresenceAvatarStack: React.FC<PresenceAvatarStackProps> = ({ classN
       {/* Hover Tooltip showing details */}
       {showTooltip && (
         <div
-          className="absolute top-full right-0 mt-2 z-50 w-64 p-2.5 rounded-md bg-[#131924] border border-neutral-700 shadow-2xl text-xs text-neutral-200 pointer-events-none"
+          className="absolute top-full right-0 mt-2 z-50 w-64 p-2.5 rounded-md bg-[var(--bg-surface)] border border-neutral-700 shadow-2xl text-xs text-neutral-200 pointer-events-none"
           data-testid="presence-tooltip"
         >
           <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-neutral-800 font-semibold text-[11px] text-neutral-400">
@@ -115,7 +115,7 @@ export const PresenceAvatarStack: React.FC<PresenceAvatarStackProps> = ({ classN
                   <div className="flex items-center gap-2 min-w-0">
                     <div
                       className="w-3 h-3 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: peer.user?.color || '#3B82F6' }}
+                      style={{ backgroundColor: peer.user?.color || 'var(--collab-blue)' }}
                     />
                     <span className="truncate font-medium text-neutral-200">
                       {peer.user?.name || `Client ${peer.clientId}`}

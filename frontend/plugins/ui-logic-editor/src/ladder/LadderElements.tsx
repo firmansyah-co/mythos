@@ -50,11 +50,11 @@ export const ContactElementView: React.FC<{
   };
 
   const wireColor = isEnergized
-    ? 'text-[#22C55E] drop-shadow-[0_0_8px_rgba(34,197,94,0.8)]'
+    ? 'text-[var(--bus-ethernet)] drop-shadow-[0_0_8px_rgba(34,197,94,0.8)]'
     : 'text-neutral-400';
 
   const borderColor = isEnergized
-    ? 'border-[#22C55E] bg-[#22C55E]/10'
+    ? 'border-[var(--bus-ethernet)] bg-[var(--bus-ethernet)]/10'
     : 'border-neutral-700 bg-neutral-900 group-hover:border-cyan-500';
 
   return (
@@ -133,11 +133,11 @@ export const CoilElementView: React.FC<{
   };
 
   const wireColor = isEnergized
-    ? 'text-[#22C55E] drop-shadow-[0_0_8px_rgba(34,197,94,0.8)]'
+    ? 'text-[var(--bus-ethernet)] drop-shadow-[0_0_8px_rgba(34,197,94,0.8)]'
     : 'text-emerald-400';
 
   const borderColor = isEnergized
-    ? 'border-[#22C55E] bg-[#22C55E]/15'
+    ? 'border-[var(--bus-ethernet)] bg-[var(--bus-ethernet)]/15'
     : 'border-neutral-700 bg-neutral-900 group-hover:border-emerald-500';
 
   return (
@@ -186,15 +186,15 @@ export const FunctionBlockElementView: React.FC<{
 
   return (
     <div
-      className={`mx-3 my-1 flex flex-col bg-[#141B26] border rounded shadow-md min-w-[140px] text-xs font-mono relative group ${
+      className={`mx-3 my-1 flex flex-col bg-[var(--bg-surface)] border rounded shadow-md min-w-[140px] text-xs font-mono relative group ${
         isEnergized
-          ? 'border-[#22C55E] shadow-[0_0_12px_rgba(34,197,94,0.3)]'
+          ? 'border-[var(--bus-ethernet)] shadow-[0_0_12px_rgba(34,197,94,0.3)]'
           : 'border-cyan-800/80 hover:border-cyan-500'
       }`}
       data-testid={`ladder-block-${element.id}`}
     >
       {/* Block Header */}
-      <div className="bg-[#1B2433] px-2.5 py-1 border-b border-neutral-700/80 flex items-center justify-between text-[11px]">
+      <div className="bg-[var(--bg-surface)] px-2.5 py-1 border-b border-neutral-700/80 flex items-center justify-between text-[11px]">
         <span className="font-bold text-cyan-300">{element.blockType}</span>
         <span className="text-neutral-400 text-[10px]">{element.instanceName}</span>
       </div>

@@ -36,7 +36,7 @@ export const Zone4TaskCards: React.FC<Zone4TaskCardsProps> = ({
   if (isCollapsed) {
     return (
       <div
-        className={`w-9 bg-[#0F141C] border-l border-neutral-800 flex flex-col items-center py-2 select-none ${className}`}
+        className={`w-9 bg-[var(--bg-surface)] border-l border-neutral-800 flex flex-col items-center py-2 select-none ${className}`}
       >
         <button
           onClick={onToggleCollapse}
@@ -69,11 +69,11 @@ export const Zone4TaskCards: React.FC<Zone4TaskCardsProps> = ({
 
   return (
     <div
-      className={`w-96 flex flex-col bg-[#0F141C] border-l border-neutral-800 text-neutral-300 text-xs select-none ${className}`}
+      className={`w-96 flex flex-col bg-[var(--bg-surface)] border-l border-neutral-800 text-neutral-300 text-xs select-none ${className}`}
       data-testid="zone4-task-cards"
     >
       {/* Header & Tabs */}
-      <div className="flex items-center justify-between px-2 bg-[#0A0D12] border-b border-neutral-800 h-9">
+      <div className="flex items-center justify-between px-2 bg-[var(--bg-base)] border-b border-neutral-800 h-9">
         <div className="flex items-center gap-1 overflow-x-auto">
           <button
             onClick={() => {

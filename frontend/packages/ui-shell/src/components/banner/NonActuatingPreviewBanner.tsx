@@ -21,8 +21,8 @@ export const NonActuatingPreviewBanner: React.FC<NonActuatingPreviewBannerProps>
       data-testid="preview-mode-banner"
       className={`w-full flex items-center justify-between px-4 py-1.5 shadow-md border-b text-white font-mono text-xs z-50 select-none ${className}`}
       style={{
-        backgroundColor: '#0284C7', // Tailwind sky-600 / #0284C7
-        borderColor: '#0369A1',     // Tailwind sky-700 / #0369A1
+        backgroundColor: 'var(--bus-serial)', // Tailwind sky-600 / var(--bus-serial)
+        borderColor: 'var(--bus-serial)',     // Tailwind sky-700 / var(--bus-serial)
       }}
     >
       <div className="flex items-center gap-2.5">

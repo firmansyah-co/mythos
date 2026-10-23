@@ -42,22 +42,22 @@ export const MythosLogo: React.FC<MythosLogoProps> = ({
         {/* Background Radial Glow */}
         {showBackground && (
           <radialGradient id={bgGlowId} cx="50%" cy="50%" r="70%">
-            <stop offset="0%" stopColor="#0f172a" />
-            <stop offset="100%" stopColor="#080b11" />
+            <stop offset="0%" stopColor="var(--brand-shadow)" />
+            <stop offset="100%" stopColor="var(--brand-shadow-deep)" />
           </radialGradient>
         )}
 
         {/* Logo Gradient: Electric Amber to Vivid Rust */}
         <linearGradient id={gradPrimaryId} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#fb923c" />
-          <stop offset="50%" stopColor="#f97316" />
-          <stop offset="100%" stopColor="#ea580c" />
+          <stop offset="0%" stopColor="var(--brand-flame-light)" />
+          <stop offset="50%" stopColor="var(--brand-flame-mid)" />
+          <stop offset="100%" stopColor="var(--brand-flame-deep)" />
         </linearGradient>
 
         {/* Logo Gradient: Cyan Pulse Accent */}
         <linearGradient id={gradSecondaryId} x1="0%" y1="100%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#0284c7" />
-          <stop offset="100%" stopColor="#38bdf8" />
+          <stop offset="0%" stopColor="var(--brand-cyan-deep)" />
+          <stop offset="100%" stopColor="var(--brand-cyan-light)" />
         </linearGradient>
 
         {/* Soft Ambient Glow Filter */}
@@ -77,12 +77,12 @@ export const MythosLogo: React.FC<MythosLogoProps> = ({
             height="128"
             rx="28"
             fill={`url(#${bgGlowId})`}
-            stroke="#1e293b"
+            stroke="var(--border-subtle)"
             strokeWidth="2"
           />
 
           {/* Subtle Blueprint Grid Pattern */}
-          <g opacity="0.06" stroke="#94a3b8" strokeWidth="1">
+          <g opacity="0.06" stroke="var(--text-secondary)" strokeWidth="1">
             <path d="M 0 32 L 128 32 M 0 64 L 128 64 M 0 96 L 128 96" />
             <path d="M 32 0 L 32 128 M 64 0 L 64 128 M 96 0 L 96 128" />
           </g>
@@ -98,7 +98,7 @@ export const MythosLogo: React.FC<MythosLogoProps> = ({
               cx="0"
               cy="0"
               r="42"
-              fill="#f97316"
+              fill="var(--brand-orange)"
               opacity="0.12"
               filter={`url(#${coreGlowId})`}
             />
@@ -106,7 +106,7 @@ export const MythosLogo: React.FC<MythosLogoProps> = ({
               cx="0"
               cy="0"
               r="24"
-              fill="#38bdf8"
+              fill="var(--border-focus)"
               opacity="0.10"
               filter={`url(#${coreGlowId})`}
             />
@@ -135,7 +135,7 @@ export const MythosLogo: React.FC<MythosLogoProps> = ({
           />
           <path
             d="M 50 24 L 64 38 L 50 52 L 36 38 Z"
-            fill="#ffffff"
+            fill="var(--text-primary)"
             opacity="0.95"
           />
         </g>

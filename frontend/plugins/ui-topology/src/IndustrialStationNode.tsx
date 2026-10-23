@@ -81,23 +81,23 @@ export const IndustrialStationNode: React.FC<NodeProps> = ({ data, selected }) =
 
   return (
     <div
-      className={`relative min-w-[240px] max-w-[280px] rounded-lg border bg-[#0F141C] shadow-xl transition-all duration-150 select-none ${
+      className={`relative min-w-[240px] max-w-[280px] rounded-lg border bg-[var(--bg-surface)] shadow-xl transition-all duration-150 select-none ${
         selected
           ? 'border-sky-500 shadow-[0_0_15px_rgba(14,165,233,0.35)] ring-1 ring-sky-500/50'
-          : 'border-[#232B3B] hover:border-[#38455D]'
+          : 'border-[var(--bg-highlight)] hover:border-[var(--bg-highlight)]'
       }`}
     >
       {/* Station Header Bar */}
-      <div className="flex items-center justify-between border-b border-[#232B3B] bg-[#161E2E] px-3 py-2 rounded-t-lg">
+      <div className="flex items-center justify-between border-b border-[var(--bg-highlight)] bg-[var(--bg-elevated)] px-3 py-2 rounded-t-lg">
         <div className="flex items-center gap-2 overflow-hidden">
-          <div className="p-1 rounded bg-[#0A0D12] border border-[#232B3B]">
+          <div className="p-1 rounded bg-[var(--bg-base)] border border-[var(--bg-highlight)]">
             {getStationIcon(station.stationType)}
           </div>
           <div className="flex flex-col truncate">
-            <span className="text-xs font-semibold text-[#F7F8F8] truncate" title={station.stationName}>
+            <span className="text-xs font-semibold text-[var(--text-primary)] truncate" title={station.stationName}>
               {station.stationName}
             </span>
-            <span className="text-[10px] text-[#8A8F98] font-mono truncate">
+            <span className="text-[10px] text-[var(--text-secondary)] font-mono truncate">
               {station.ipAddress || station.articleNumber || station.stationType}
             </span>
           </div>
@@ -107,9 +107,9 @@ export const IndustrialStationNode: React.FC<NodeProps> = ({ data, selected }) =
 
       {/* Modular Chassis Slices Mini Preview (if PLC_RACK or REMOTE_IO) */}
       {station.slots && station.slots.length > 0 && (
-        <div className="p-2.5 border-b border-[#232B3B] bg-[#0A0D12]/50">
+        <div className="p-2.5 border-b border-[var(--bg-highlight)] bg-[var(--bg-base)]/50">
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[10px] font-mono uppercase text-[#8A8F98]">
+            <span className="text-[10px] font-mono uppercase text-[var(--text-secondary)]">
               Chassis (Rack {station.rackNumber})
             </span>
             <span className="text-[10px] font-mono text-sky-400">
@@ -118,7 +118,7 @@ export const IndustrialStationNode: React.FC<NodeProps> = ({ data, selected }) =
           </div>
 
           {/* Slices Rail */}
-          <div className="flex gap-1 overflow-x-auto py-1 px-1 bg-[#121824] rounded border border-[#1E2638]">
+          <div className="flex gap-1 overflow-x-auto py-1 px-1 bg-[var(--bg-surface)] rounded border border-[var(--bg-surface)]">
             {station.slots.slice(0, 8).map((slot) => {
               const categoryColor =
                 slot.moduleCategory === 'POWER'
@@ -147,7 +147,7 @@ export const IndustrialStationNode: React.FC<NodeProps> = ({ data, selected }) =
               );
             })}
             {station.slots.length > 8 && (
-              <div className="flex items-center justify-center min-w-[20px] h-[34px] rounded bg-[#161E2E] border border-[#232B3B] text-[8px] text-[#8A8F98] font-mono">
+              <div className="flex items-center justify-center min-w-[20px] h-[34px] rounded bg-[var(--bg-elevated)] border border-[var(--bg-highlight)] text-[8px] text-[var(--text-secondary)] font-mono">
                 +{station.slots.length - 8}
               </div>
             )}
@@ -158,22 +158,22 @@ export const IndustrialStationNode: React.FC<NodeProps> = ({ data, selected }) =
       {/* Network Ports / Terminal Section */}
       <div className="p-2.5">
         <div className="flex items-center justify-between mb-1.5">
-          <span className="text-[10px] font-mono uppercase text-[#8A8F98]">
+          <span className="text-[10px] font-mono uppercase text-[var(--text-secondary)]">
             Industrial Ports
           </span>
-          <span className="text-[9px] text-[#62666D] font-mono">
+          <span className="text-[9px] text-[var(--text-muted)] font-mono">
             {ports.length} Connected
           </span>
         </div>
 
         {ports.length === 0 ? (
-          <div className="text-[10px] text-[#62666D] italic py-1 text-center">
+          <div className="text-[10px] text-[var(--text-muted)] italic py-1 text-center">
             No physical ports configured
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-1.5">
             {ports.map((port, idx) => {
-              const protoColor = PROTOCOL_COLORS[port.protocol]?.stroke || '#16A34A';
+              const protoColor = PROTOCOL_COLORS[port.protocol]?.stroke || 'var(--bus-ethernet)';
               const isEven = idx % 2 === 0;
 
               return (
@@ -183,14 +183,14 @@ export const IndustrialStationNode: React.FC<NodeProps> = ({ data, selected }) =
                     e.stopPropagation();
                     nodeData.onPortClick?.(port);
                   }}
-                  className="relative flex items-center justify-between px-2 py-1 rounded bg-[#161E2E] border border-[#232B3B] hover:border-[#38455D] text-[10px] font-mono cursor-pointer transition-colors"
+                  className="relative flex items-center justify-between px-2 py-1 rounded bg-[var(--bg-elevated)] border border-[var(--bg-highlight)] hover:border-[var(--bg-highlight)] text-[10px] font-mono cursor-pointer transition-colors"
                 >
                   <div className="flex items-center gap-1.5 truncate">
                     <span
                       className="w-2 h-2 rounded-full inline-block shrink-0"
                       style={{ backgroundColor: protoColor }}
                     />
-                    <span className="truncate text-[#D0D6E0]">{port.name}</span>
+                    <span className="truncate text-[var(--text-primary)]">{port.name}</span>
                   </div>
                   <span
                     className={`text-[8px] px-1 rounded ${
@@ -213,7 +213,7 @@ export const IndustrialStationNode: React.FC<NodeProps> = ({ data, selected }) =
                         width: 8,
                         height: 8,
                         left: -5,
-                        borderColor: '#0F141C',
+                        borderColor: 'var(--bg-surface)',
                         borderWidth: 2,
                       }}
                     />
@@ -227,7 +227,7 @@ export const IndustrialStationNode: React.FC<NodeProps> = ({ data, selected }) =
                         width: 8,
                         height: 8,
                         right: -5,
-                        borderColor: '#0F141C',
+                        borderColor: 'var(--bg-surface)',
                         borderWidth: 2,
                       }}
                     />
@@ -246,13 +246,13 @@ export const IndustrialStationNode: React.FC<NodeProps> = ({ data, selected }) =
             type="target"
             position={Position.Left}
             id="in"
-            style={{ background: '#16A34A', width: 8, height: 8 }}
+            style={{ background: 'var(--bus-ethernet)', width: 8, height: 8 }}
           />
           <Handle
             type="source"
             position={Position.Right}
             id="out"
-            style={{ background: '#16A34A', width: 8, height: 8 }}
+            style={{ background: 'var(--bus-ethernet)', width: 8, height: 8 }}
           />
         </>
       )}
