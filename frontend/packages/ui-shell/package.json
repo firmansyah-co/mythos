@@ -1,0 +1,58 @@
+{
+  "name": "@mythos/ui-shell",
+  "version": "0.1.0",
+  "description": "Dockview 5-Zone Workbench Shell & HMI Lifecycle for MythOS",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./stores/*": {
+      "types": "./dist/stores/*.d.ts",
+      "import": "./dist/stores/*.js"
+    }
+  },
+  "scripts": {
+    "build": "vite build && tsc --build",
+    "dev": "vite",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@mythos/ui-faceplate-lib": "workspace:*",
+    "@mythos/ui-inspector": "workspace:*",
+    "@mythos/ui-logic-editor": "workspace:*",
+    "@mythos/ui-topology": "workspace:*",
+    "clsx": "^2.1.1",
+    "dockview-react": "^8.6.0",
+    "lucide-react": "^1.59.0",
+    "tailwind-merge": "^3.0.0",
+    "y-monaco": "^0.1.6",
+    "y-protocols": "^1.0.7",
+    "y-websocket": "^3.1.0",
+    "yjs": "^13.6.33",
+    "zustand": "^5.0.3"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.6.3",
+    "vite": "^6.1.0",
+    "vitest": "^3.0.5"
+  }
+}

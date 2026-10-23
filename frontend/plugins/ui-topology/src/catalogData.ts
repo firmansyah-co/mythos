@@ -1,0 +1,106 @@
+import { IndustrialCatalogItem } from './types';
+
+export const INDUSTRIAL_CATALOG: IndustrialCatalogItem[] = [
+  {
+    id: 'cat-s7-1515',
+    name: 'Siemens S7-1515-2 PN',
+    articleNumber: '6ES7515-2AM02-0AB0',
+    stationType: 'PLC_RACK',
+    defaultProtocol: 'PROFINET',
+    category: 'Controllers',
+    description: 'Central Controller with 2 PROFINET ports and integrated web server',
+    defaultPorts: [
+      {
+        id: 'x1-p1',
+        name: 'X1 P1',
+        protocol: 'PROFINET',
+        connectorType: 'RJ45',
+        linkStatus: 'UP',
+      },
+      {
+        id: 'x1-p2',
+        name: 'X1 P2',
+        protocol: 'PROFINET',
+        connectorType: 'RJ45',
+        linkStatus: 'DOWN',
+      },
+    ],
+  },
+  {
+    id: 'cat-et200sp',
+    name: 'ET 200SP Interface IM 155-6',
+    articleNumber: '6ES7155-6AU01-0BN0',
+    stationType: 'REMOTE_IO',
+    defaultProtocol: 'PROFINET',
+    category: 'Distributed I/O',
+    description: 'Scalable distributed I/O station for discrete & analog modules',
+    defaultPorts: [
+      {
+        id: 'et-p1',
+        name: 'X1 P1',
+        protocol: 'PROFINET',
+        connectorType: 'RJ45',
+        linkStatus: 'UP',
+      },
+      {
+        id: 'et-p2',
+        name: 'X1 P2',
+        protocol: 'PROFINET',
+        connectorType: 'RJ45',
+        linkStatus: 'UP',
+      },
+    ],
+  },
+  {
+    id: 'cat-scalance-xc208',
+    name: 'SCALANCE XC208 Switch',
+    articleNumber: '6GK5208-0BA00-2AC2',
+    stationType: 'SWITCH',
+    defaultProtocol: 'ETHERNET_BACKBONE',
+    category: 'Switches',
+    description: 'Managed Industrial Layer 2 Switch with 8x 10/100 Mbps RJ45 ports',
+    defaultPorts: [
+      { id: 'sw-p1', name: 'Port 1', protocol: 'PROFINET', connectorType: 'RJ45', linkStatus: 'UP' },
+      { id: 'sw-p2', name: 'Port 2', protocol: 'PROFINET', connectorType: 'RJ45', linkStatus: 'UP' },
+      { id: 'sw-p3', name: 'Port 3', protocol: 'ETHERNET_BACKBONE', connectorType: 'RJ45', linkStatus: 'UP' },
+      { id: 'sw-p4', name: 'Port 4', protocol: 'ETHERNET_BACKBONE', connectorType: 'RJ45', linkStatus: 'DOWN' },
+    ],
+  },
+  {
+    id: 'cat-vfd-g120',
+    name: 'Sinamics G120 VFD',
+    articleNumber: '6SL3210-1PE21-8UL0',
+    stationType: 'VFD_DRIVE',
+    defaultProtocol: 'PROFINET',
+    category: 'Drives',
+    description: 'Variable Frequency Inverter with integrated STO and PROFINET',
+    defaultPorts: [
+      { id: 'vfd-p1', name: 'X1 P1', protocol: 'PROFINET', connectorType: 'RJ45', linkStatus: 'UP' },
+      { id: 'vfd-p2', name: 'X1 P2', protocol: 'SAFETY_PROFISAFE', connectorType: 'RJ45', linkStatus: 'UP' },
+    ],
+  },
+  {
+    id: 'cat-flow-ft101',
+    name: 'Coriolis Flowmeter FT-101',
+    articleNumber: '7ME6920-1AA30-1AA0',
+    stationType: 'FIELD_INSTRUMENT',
+    defaultProtocol: 'MODBUS_RTU',
+    category: 'Field Instruments',
+    description: 'High-precision mass flow and density transmitter over RS-485',
+    defaultPorts: [
+      { id: 'flow-p1', name: 'COM 1', protocol: 'MODBUS_RTU', connectorType: 'TERMINAL_BLOCK', linkStatus: 'UP' },
+    ],
+  },
+  {
+    id: 'cat-iolink-sensor',
+    name: 'Photoelectric Sensor PE-200',
+    articleNumber: '3RG4012-3AG01',
+    stationType: 'FIELD_INSTRUMENT',
+    defaultProtocol: 'IOLINK',
+    category: 'Field Instruments',
+    description: 'Laser distance & presence sensor with IO-Link v1.1',
+    defaultPorts: [
+      { id: 'pe-p1', name: 'Port 1', protocol: 'IOLINK', connectorType: 'M12_A_CODED', linkStatus: 'UP' },
+    ],
+  },
+];

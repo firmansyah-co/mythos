@@ -1,0 +1,31 @@
+# Git and version control
+.git
+.github
+.gitignore
+
+# Rust build artifacts
+target/
+**/*.rs.bk
+Cargo.lock.backup
+
+# Node / Frontend build artifacts
+node_modules/
+frontend/**/node_modules/
+frontend/**/dist/
+frontend/**/.turbo/
+.pnpm-store/
+
+# Transient & OS artifacts
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.wal
+*.dat
+/tmp/
+.vscode/
+.idea/
+
+# Local data volumes
+/var/lib/mythos/
+mythos_production_data/

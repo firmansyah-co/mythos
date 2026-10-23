@@ -10,7 +10,7 @@ Industrial control systems require high-reliability alarm management, determinis
 3. High write amplification and flash memory exhaustion caused by dumping raw uncompressed time-series data to SQLite or flat JSON files.
 4. Protracted hardware recovery procedures taking multiple hours of manual configuration when an on-site IPC fails.
 
-MythOS is engineered in Pure Rust to establish an enterprise-grade, deterministic microkernel platform integrating OpenPLC Runtime v4. We must define the architectural decisions and standards for process governance, alarms, recipes, historization, and system restoration.
+MythOS is engineered in Pure Rust to establish an enterprise-grade, deterministic microkernel platform integrating the Native STruC++ Runtime Engine. We must define the architectural decisions and standards for process governance, alarms, recipes, historization, and system restoration.
 
 ---
 
@@ -33,7 +33,7 @@ MythOS is engineered in Pure Rust to establish an enterprise-grade, deterministi
 
 ### 2. ISA-88 Recipe Synchronization
 - Recipes are decoupled into **Formula** (bounded engineering parameters) and **Procedure** (sequential step transitions mapped to PackML states).
-- Synchronization between the SCADA layer and OpenPLC Runtime v4 executes over the lock-free TagBus (`/dev/shm/mythos_tagbus`) using an atomic 4-phase handshake protocol (`external.Recipe.*`).
+- Synchronization between the SCADA layer and Native STruC++ Engine executes over the lock-free TagBus (`/dev/shm/mythos_tagbus`) using an atomic 4-phase handshake protocol (`external.Recipe.*`).
 - Every recipe transfer includes a SHA-256 parameter digest verified by the PLC prior to arming execution. Parameter mutations while a phase is in PackML `Execute` state are strictly rejected.
 
 ### 3. Embedded Historian & Compression Strategy
@@ -50,7 +50,7 @@ MythOS is engineered in Pure Rust to establish an enterprise-grade, deterministi
 
 ### 5. Disaster Recovery (`.mythos-pkg`)
 - Complete IPC system configuration is packaged into an encrypted single-file container (`.mythos-pkg`) using ChaCha20-Poly1305 or AES-256-GCM authenticated encryption.
-- The package bundles OpenPLC Structured Text source, pre-compiled `.so` binary, hardware I/O maps, tag catalogs, master recipes, and credentials.
+- The package bundles STruC++ Structured Text source, pre-compiled `.so` binary, hardware I/O maps, tag catalogs, master recipes, and credentials.
 - A hot-restore workflow achieves bare-metal restoration on replacement IPC hardware in $\le 25\,\text{seconds}$, verified by SHA-256 manifest checks and automated TagBus spin-up.
 
 ---

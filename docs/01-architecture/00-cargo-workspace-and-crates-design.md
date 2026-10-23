@@ -1,16 +1,17 @@
 # MythOS Senior Programmer Design: Cargo Workspace and Crate Architecture
 
 - **Document Identifier**: MYTHOS-ARCH-000
-- **Version**: 1.0.0
+- **Version**: 1.1.0
 - **Author**: Neo (VP Software & Infrastructure)
 - **Status**: APPROVED / SPECIFICATION
 - **Language**: ASD-STE100 Technical English
+- **Change Authority**: ADR-008 (Universal Plugin Harness), revision recorded in Section 8.
 
 ---
 
 ## 1. Executive Summary
 
-MythOS is an industrial-grade Supervisory Control and Data Acquisition (SCADA) and soft-logic runtime written in pure Rust. MythOS integrates the OpenPLC Runtime v4 execution engine, provides sub-millisecond lock-free shared memory tag distribution, hosts an isolated protocol driver SPI, and exposes a native Model Context Protocol (MCP) server for autonomous AI agent inspection and control.
+MythOS is an industrial-grade Supervisory Control and Data Acquisition (SCADA) and soft-logic runtime written in pure Rust. MythOS integrates the embedded Native STruC++ Runtime Engine (`crates/mythos-strucpp`), provides sub-millisecond lock-free shared memory tag distribution, hosts an isolated protocol driver SPI, and exposes a native Model Context Protocol (MCP) server for autonomous AI agent inspection and control.
 
 To guarantee hard fault isolation, zero circular dependencies, fast incremental compilation, and deterministic memory safety, the codebase is structured as a modular Cargo Workspace.
 
@@ -25,20 +26,20 @@ To guarantee hard fault isolation, zero circular dependencies, fast incremental 
 resolver = "2"
 members = [
     # Hardened Microkernel Core & SDK
+    "crates/mythos-pal",
     "crates/mythos-core",
     "crates/mythos-shm",
+    "crates/mythos-strucpp",
     "crates/mythos-plugin-sdk",
     "crates/mythos-mcp",
     "crates/mythos-mcp-macros",
+    "crates/mythos-cli",
 
     # Universal Backend Plugins ("Everything is a Plugin")
     "plugins/drivers/driver-modbus",
-    "plugins/drivers/driver-mqtt",
-    "plugins/engines/engine-strucpp",
-    "plugins/engines/engine-alarms",
-    "plugins/engines/engine-recipes",
-    "plugins/engines/engine-historian",
-    "plugins/engines/engine-discovery-dcp",
+
+    # Desktop Shell
+    "src-tauri",
 ]
 
 [workspace.package]
@@ -46,7 +47,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.82.0"
 authors = ["adrianaryaputra <adrian@firmansyah.co>"]
-license = "Proprietary"
+license = "MPL-2.0"
 
 [workspace.dependencies]
 # Concurrency and Async
@@ -95,29 +96,36 @@ crc32fast = "1.4"
            ┌────────────────────────┼────────────────────────┐
            ▼                        ▼                        ▼
 ┌────────────────────┐   ┌────────────────────┐   ┌────────────────────┐
-│   mythos-openplc   │   │     mythos-mcp     │   │ drivers/driver-*   │
-│  (OpenPLC Bridge)  │   │   (MCP AI Server)  │   │ (Modbus, MQTT, ..) │
-└──────────┬─────────┘   └──────────┬─────────┘   └──────────┬─────────┘
-           │                        │                        │
-           │                        ▼                        │
-           │             ┌────────────────────┐              │
-           │             │ mythos-mcp-macros  │              │
-           │             └────────────────────┘              │
-           │                        │                        │
-           └────────────────────────┼────────────────────────┘
+│   mythos-strucpp   │   │     mythos-mcp     │   │  mythos-plugin-sdk │
+│ (Native STruC++)   │   │   (MCP AI Server)  │   │ (Plugin & Driver)  │
+└──────────┬─────────┘   └──────────┬─────────┘   └────────────────────┘
+           │                        │                     leaf crate
+           │                        ▼
+           │             ┌────────────────────┐
+           │             │ mythos-mcp-macros  │
+           │             └────────────────────┘
+           │                        │
+           └────────────────────────┤
                                     │
            ┌────────────────────────┴────────────────────────┐
            ▼                                                 ▼
 ┌────────────────────┐                             ┌────────────────────┐
-│     mythos-shm     │                             │ mythos-driver-api  │
-│ (Triple-Buffer Bus)│                             │  (Driver SPI & CTX)│
-└────────────────────┘                             └────────────────────┘
+│     mythos-shm     │                             │     mythos-pal     │
+│ (Triple-Buffer Bus)│                             │ (OS Abstraction)   │
+└──────────┬─────────┘                             └────────────────────┘
+           │                                                 ▲
+           └─────────────────────────────────────────────────┘
 ```
 
+Universal plugins depend on the SDK only. `plugins/drivers/driver-modbus` declares
+`mythos-plugin-sdk` and no kernel crate. The `mythos-cli` lifecycle binary depends on
+`mythos-core` and `mythos-plugin-sdk`. The `src-tauri` desktop shell depends on `mythos-core`,
+`mythos-pal`, and `mythos-shm`.
+
 ### 3.1 Crate Dependency Rules
-1. **Zero Downward Pollution**: `mythos-shm` and `mythos-driver-api` are bottom-tier leaf crates. They depend only on standard library and minimal zero-cost dependencies (`bytemuck`, `serde`, `thiserror`). They never depend on `mythos-core`.
-2. **Driver Isolation**: Specific protocol drivers (`drivers/driver-modbus`, `drivers/driver-mqtt`) depend solely on `mythos-driver-api` and `mythos-shm`. Drivers never depend on each other or on `mythos-core`.
-3. **OpenPLC Isolation**: `mythos-openplc` interacts with the rest of the system strictly through `mythos-shm` memory maps and `mythos-driver-api` event abstractions.
+1. **Zero Downward Pollution**: `mythos-shm`, `mythos-pal`, and `mythos-plugin-sdk` are bottom-tier leaf crates. `mythos-plugin-sdk` and `mythos-pal` depend only on standard library and minimal zero-cost dependencies (`bytemuck`, `serde`, `thiserror`, `libc`, `memmap2`). They never depend on `mythos-core`.
+2. **Driver Isolation**: Specific protocol drivers (`plugins/drivers/driver-modbus`, `plugins/drivers/driver-mqtt`) depend solely on `mythos-plugin-sdk`. Drivers never depend on each other or on `mythos-core`. The SDK exposes the `PluginContext` capability handle in place of a kernel-provided driver context type.
+3. **STruC++ Engine Isolation**: `crates/mythos-strucpp` interacts with the rest of the system strictly through `mythos-shm` memory maps and `mythos-pal` platform traits without external PLC daemons.
 
 ---
 
@@ -133,17 +141,20 @@ crc32fast = "1.4"
   * `ShmReader`: Unprivileged, read-only consumer client mapping the bus into user space.
   * `RingBuffer`: Lock-free single-producer multi-consumer diagnostic and event stream buffer.
 
-### 4.2 `mythos-driver-api` (Driver Service Provider Interface)
-- **Role**: Contract definitions for isolated industrial communication drivers.
+### 4.2 `mythos-plugin-sdk` (Universal Plugin Contract & Driver SPI)
+- **Role**: Single contract crate for every MythOS extension. It defines the universal plugin lifecycle and the protocol driver SPI. All error types are `PluginError`.
 - **Core Abstractions**:
-  * `trait ProtocolDriver`: Asynchronous lifecycle interface (`init`, `start`, `stop`, `health_check`).
-  * `trait DriverConfigValidator`: Schema validator for opaque JSON driver configurations.
-  * `struct DriverContext`: Host runtime interface exposing logger, SHM write token, and diagnostics channel.
-  * `enum DriverEvent`: State change notifications, connection lifecycle events, and telemetry counters.
-  * `enum DriverError`: Structured, recoverable vs non-recoverable protocol errors.
+  * `trait MythosPlugin: Send + Sync`: Universal plugin lifecycle. Methods are `metadata`, `init`, `start`, `tick`, `stop`, and `health_check`.
+  * `trait ProtocolDriver: MythosPlugin`: Driver SPI. Methods are `validate_config(&self, &JsonValue)`, `poll_cycle(&mut self, &PluginContext) -> Result<u32, PluginError>`, and `write_tag(&mut self, &PluginContext, tag_uri, value)`.
+  * `trait Plugin: MythosPlugin`: Blanket-implemented trait alias for backward compatibility.
+  * `struct PluginContext`: Host runtime interface carrying `plugin_id`, `allowed_capabilities`, and `working_directory`. Methods are `has_capability` and `check_capability`.
+  * `enum PluginError`: Structured lifecycle, configuration, capability, timeout, tag, and communication errors.
+  * `enum PluginType`, `enum HealthStatus`, `struct PluginHealthReport`, `struct PluginMetadata`: Plugin classification, health reporting, and manifest identity.
 
-### 4.3 `mythos-openplc` (OpenPLC Runtime v4 FFI Engine)
-- **Role**: Structured Text compilation pipeline and dynamic FFI runtime execution harness based on OpenPLC Runtime v4 STruC++ architecture.
+Opaque JSON configuration validation is a responsibility of `ProtocolDriver::validate_config`. The SDK defines no separate validator trait.
+
+### 4.3 `crates/mythos-strucpp` (Native STruC++ Runtime Engine)
+- **Role**: Structured Text compilation pipeline and dynamic in-process runtime execution harness based on the STruC++ architecture, executing soft-logic without external PLC daemons.
 - **Core Abstractions**:
   * `CompilerPipeline`: Automates compilation of IEC 61131-3 Structured Text to C++17 via STruC++ (`strucpp compile`), generating `generated.cpp`, `generated.hpp`, `generated_debug.cpp`, and `debug-map.json`, compiled to a dynamic shared object (`.so`) with Clang/G++.
   * `DynamicRuntimeLoader`: Safe dynamic library loader (`libloading::Library`) resolving the C-linkage configuration entrypoint (`strucpp_get_config`), lock plumbing (`strucpp_set_locks`), and hierarchical debug exports (`strucpp_debug_*`), enabling atomic hot-reloading during cyclic dead-time.
@@ -164,29 +175,46 @@ crc32fast = "1.4"
 ### 4.5 `mythos-core` (Microkernel Host Daemon)
 - **Role**: Process supervisor, actor coordinator, configuration engine, and REST/WebSocket edge interface.
 - **Core Abstractions**:
-  * `KernelSupervisor`: Spawns and monitors driver worker threads, OpenPLC real-time host, and MCP server.
+  * `KernelSupervisor`: Spawns and monitors driver worker threads, Native STruC++ real-time host, and MCP server.
   * `TagRegistry`: Semantic namespace resolver mapping `external.<namespace>.<device>.<variable>` string URIs to numeric SHM slot indices.
   * `NvramWalEngine`: Persistence engine writing `RETAIN` and `PERSISTENT` tags to `/var/lib/mythos/nvram.dat`.
   * `ApiGateway`: Axum-based HTTP/WebSocket server exposing telemetry and Server-Driven UI (SDUI) contracts.
 
-### 4.6 `drivers/driver-modbus` (Modbus TCP/RTU Protocol Driver)
-- **Role**: Industrial Modbus protocol client implementing `ProtocolDriver`.
+### 4.6 `plugins/drivers/driver-modbus` (Modbus TCP/RTU Protocol Driver)
+- **Role**: Industrial Modbus protocol client implementing `ProtocolDriver` from `mythos-plugin-sdk`.
+- **Crate Dependencies**: `mythos-plugin-sdk` only. The driver never depends on `mythos-core`, `mythos-shm`, or another driver.
 - **Features**:
   * Modbus TCP over tokio socket channels with keep-alive and auto-reconnect.
   * Modbus RTU over RS-485 serial ports (`tokio-serial`) with inter-frame silent interval enforcement.
   * Cyclic polling scheduler with batch register aggregation (Function Codes 01, 02, 03, 04).
-  * Direct SHM tag writing without kernel context switches.
+  * Tag publication requested through the `tagbus:write` capability; the host performs the SHM write.
 
-### 4.7 `drivers/driver-mqtt` (MQTT / Sparkplug B Edge Driver)
+### 4.7 `plugins/drivers/driver-mqtt` (MQTT / Sparkplug B Edge Driver — Planned)
+- **Status**: Directory scaffolded with a `.gitkeep` placeholder. No crate manifest exists yet, so the workspace does not build it.
 - **Role**: Cloud and edge broker synchronizer.
 - **Features**:
   * MQTT v3.1.1 / v5.0 client backed by `rumqttc`.
   * Sparkplug B protocol payload decoding and encoding (Google Protocol Buffers).
   * Store-and-forward SQLite buffer during broker connection dropouts.
 
+Add `plugins/drivers/driver-mqtt` to `workspace.members` when its crate manifest lands.
+
+### 4.8 `mythos-pal` (Platform Abstraction Layer)
+- **Role**: Operating-system agnosticism. Every OS-specific call is hidden behind compile-time `#[cfg(target_os = "...")]` branches and safe Rust traits.
+- **Crate Dependencies**: Standard library, `libc`, `memmap2`, `cfg-if`, `libloading`, `crc32fast`, `thiserror`. Leaf crate.
+- **Core Abstractions**: Platform error type (`error`), dynamic library loading (`library`), OS scheduling and affinity (`scheduler`), shared-memory primitives (`shm`), and the unified platform traits (`traits`).
+- **Consumers**: `mythos-shm`, `mythos-core`, `mythos-strucpp`, and `mythos-mcp`.
+
+### 4.9 `mythos-cli` (Lifecycle, Plugin, and Distribution Toolchain)
+- **Role**: Operator-facing binary named `mythos`. It manages releases, plugin lifecycle commands, update channels, and rollback.
+- **Crate Dependencies**: `mythos-core`, `mythos-plugin-sdk`, `clap`.
+- **Core Modules**: `channel` (release channels), `config`, `plugin_cmd`, `rollback`, `update`, and `versions`.
+
 ---
 
 ## 5. Unified Error Hierarchy (`mythos-core::error`)
+
+> **Implementation note (2026-10-23)**: The aggregating `MythosError` type and the `mythos-core::error` module below are a design target, not current code. Error types currently live per crate: `ShmError` in `crates/mythos-shm/src/error.rs`, `StrucppError` in `crates/mythos-strucpp/src/error.rs`, `McpError` in `crates/mythos-mcp/src/lib.rs`, `NvramError` in `crates/mythos-core/src/nvram.rs`, and `PluginError` in `crates/mythos-plugin-sdk/src/lib.rs`. `DriverError` is superseded by `PluginError`. Do not write code against `MythosError` until the aggregation module lands.
 
 ```rust
 use thiserror::Error;
@@ -203,8 +231,8 @@ pub enum MythosError {
         source: DriverError,
     },
 
-    #[error("OpenPLC runtime error: {0}")]
-    OpenPlcError(#[from] OpenPlcError),
+    #[error("Native STruC++ runtime error: {0}")]
+    StrucppError(#[from] StrucppError),
 
     #[error("MCP protocol error: {0}")]
     McpError(#[from] McpError),
@@ -259,7 +287,7 @@ pub enum DriverError {
 }
 
 #[derive(Error, Debug)]
-pub enum OpenPlcError {
+pub enum StrucppError {
     #[error("Structured Text STruC++ compilation failed: {0}")]
     CompilationFailed(String),
 
@@ -328,8 +356,34 @@ pub enum NvramError {
 
 1. **Send + Sync Bounds**: All inter-thread message payloads and shared driver contexts implement `Send + Sync + 'static`.
 2. **Zero Dynamic Allocation in Hard Real-Time Loops**:
-   - The OpenPLC execution loop and the SHM cyclic update loops pre-allocate all buffers during initialization.
+   - The Native STruC++ execution loop and the SHM cyclic update loops pre-allocate all buffers during initialization.
    - Zero `Vec` resizing, zero `String` formatting, and zero `Box::new` calls occur during the cyclic scanning window.
 3. **Panic Containment**:
    - Protocol drivers and MCP tool calls execute within caught unwinding boundaries (`std::panic::catch_unwind`).
    - A driver panic isolates the faulty driver actor, triggers a clean diagnostic log, and restarts the driver via exponential backoff without crashing `mythos-core`.
+
+---
+
+## 7. Legacy Name Cross-Reference
+
+Earlier revisions of this suite, and ADRs dated before 2026-10-14, use the names in the left column. Use the right column in new code and new documents. ADRs keep their original wording plus a superseded-by note, because an ADR records what was decided at the time.
+
+| Legacy name | Current name | Current location | Notes |
+|---|---|---|---|
+| `crates/mythos-driver-api` | `crates/mythos-plugin-sdk` | `Cargo.toml` members | The driver SPI became part of the universal plugin SDK under ADR-008. |
+| `drivers/driver-modbus` | `plugins/drivers/driver-modbus` | workspace member | Plugin code lives under `plugins/`. |
+| `drivers/driver-mqtt` | `plugins/drivers/driver-mqtt` | scaffold only (`.gitkeep`) | Not a workspace member until its manifest lands. |
+| `mythos-net-dcp` | `plugins/engines/engine-discovery-dcp` | scaffold only (`.gitkeep`) | Planned DCP discovery engine. |
+| `struct DriverContext` | `struct PluginContext` | `crates/mythos-plugin-sdk/src/lib.rs` | Capability-based context. It carries no logger, SHM writer, or event channel. |
+| `enum DriverError` | `enum PluginError` | `crates/mythos-plugin-sdk/src/lib.rs` | |
+| `struct DriverHealthReport`, `enum DriverStatus` | `struct PluginHealthReport`, `enum HealthStatus` | `crates/mythos-plugin-sdk/src/lib.rs` | `HealthStatus` adds `Unhealthy` and `Stopped` and drops `Faulted`. |
+| `trait DriverConfigValidator` | *(none)* | — | This trait never existed in code. Configuration validation is `ProtocolDriver::validate_config`. It is deleted from Section 4.2, not renamed. |
+
+---
+
+## 8. Revision History
+
+| Version | Date | Author | Change |
+|---|---|---|---|
+| 1.0.0 | — | Neo (VP Software & Infrastructure) | Initial approved specification. |
+| 1.1.0 | 2026-10-23 | Scribe (VP Publication & Documentation) | ADR-008 propagation. Corrected workspace members and crate/plugin paths. Replaced the fictional driver-api contract list with the real `mythos-plugin-sdk` contracts. Added Sections 4.8 and 4.9 for `mythos-pal` and `mythos-cli`. Flagged Section 5 as a design target. Added Section 7 cross-reference. |

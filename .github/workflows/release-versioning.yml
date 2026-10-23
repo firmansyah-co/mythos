@@ -1,0 +1,101 @@
+name: Release Versioning & Changelog Generation
+
+on:
+  push:
+    branches:
+      - dev
+      - rc
+      - release
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - closed
+    branches:
+      - dev
+      - rc
+      - release
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  version-and-changelog:
+    name: Compute SemVer & Generate Changelog
+    runs-on: arc-runner-org
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Target Version / Tag
+        id: vars
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            REF_BASE="$LAST_TAG"
+            BASE_VERSION="${LAST_TAG#v}"
+          else
+            REF_BASE=$(git rev-list --max-parents=0 HEAD)
+            BASE_VERSION="0.1.0"
+          fi
+
+          DELTA=$(git rev-list --count "${REF_BASE}..HEAD")
+
+          EVENT_NAME="${{ github.event_name }}"
+          BASE_REF="${{ github.base_ref }}"
+          REF_NAME="${{ github.ref_name }}"
+
+          if [ "$EVENT_NAME" = "push" ] && [[ "${{ github.ref }}" =~ ^refs/tags/v ]]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            PR_NUM="${{ github.event.pull_request.number }}"
+            if [ "$BASE_REF" = "rc" ]; then
+              TAG_NAME="v${BASE_VERSION}-rc.${DELTA}+pr${PR_NUM}"
+            elif [ "$BASE_REF" = "release" ]; then
+              TAG_NAME="v${BASE_VERSION}+pr${PR_NUM}"
+            else
+              TAG_NAME="v${BASE_VERSION}-dev.${DELTA}+pr${PR_NUM}"
+            fi
+          elif [ "$EVENT_NAME" = "push" ]; then
+            if [ "$REF_NAME" = "rc" ]; then
+              TAG_NAME="v${BASE_VERSION}-rc.${DELTA}"
+            elif [ "$REF_NAME" = "release" ]; then
+              TAG_NAME="v${BASE_VERSION}"
+            else
+              TAG_NAME="v${BASE_VERSION}-dev.${DELTA}"
+            fi
+          else
+            TAG_NAME="v${BASE_VERSION}-dev.${DELTA}"
+          fi
+
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Determined SemVer tag: ${TAG_NAME}"
+          echo "Delta from ${REF_BASE}: ${DELTA}"
+
+      - name: Install Prebuilt git-cliff
+        run: |
+          mkdir -p /tmp/bin
+          curl -sL https://github.com/orhun/git-cliff/releases/download/v2.14.2/git-cliff-2.14.2-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /tmp/bin --strip-components=1
+          echo "/tmp/bin" >> $GITHUB_PATH
+
+      - name: Generate Changelog using git-cliff
+        run: |
+          /tmp/bin/git-cliff --config cliff.toml --tag ${{ steps.vars.outputs.tag_name }} --output CHANGELOG.md
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref_name == 'release')
+        with:
+          tag_name: ${{ steps.vars.outputs.tag_name }}
+          name: Release ${{ steps.vars.outputs.tag_name }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: ${{ startsWith(steps.vars.outputs.tag_name, 'v') && contains(steps.vars.outputs.tag_name, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

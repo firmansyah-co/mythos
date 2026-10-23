@@ -1,0 +1,172 @@
+/**
+ * MythOS High-Performance SCADA Design Tokens (W3C DTCG Format)
+ * Standards: ANSI/ISA-101.01-2015, ANSI/ISA-18.2-2016, ISO 9241-110, WCAG 2.1 AAA
+ */
+
+:root,
+[data-theme='dark'] {
+  /* Dark Obsidian Mode (Base & Surfaces) */
+  --bg-base: #0A0D12;
+  --bg-surface: #0F141C;
+  --bg-card: #161D29;
+  --bg-elevated: #161E2E;
+  --bg-muted: #1E293B;
+  --bg-highlight: #334155;
+
+  /* Borders */
+  --border-subtle: #1E293B;
+  --border-default: #334155;
+  --border-focus: #38BDF8;
+
+  /* Typography Colors */
+  --text-primary: #F8FAFC;
+  --text-secondary: #94A3B8;
+  --text-muted: #64748B;
+  --text-inverse: #020617;
+
+  /* Non-process interaction and collaboration accents */
+  --brand-orange: #F97316;
+  --brand-flame-light: #FB923C;
+  --brand-flame-mid: #F97316;
+  --brand-flame-deep: #EA580C;
+  --brand-cyan-deep: #0284C7;
+  --brand-cyan-light: #38BDF8;
+  --brand-shadow: #0F172A;
+  --brand-shadow-deep: #080B11;
+  --collab-blue: #3B82F6;
+  --collab-emerald: #10B981;
+  --collab-amber: #F59E0B;
+  --collab-red: #EF4444;
+  --collab-purple: #8B5CF6;
+  --collab-pink: #EC4899;
+  --collab-cyan: #06B6D4;
+  --collab-teal: #14B8A6;
+
+  /* ISA-101 Process Elements (Dark) */
+  --isa101-process-vessel: #334155;
+  --isa101-pipe-inactive: #475569;
+  --isa101-pipe-active: #64748B;
+  --isa101-valve-closed: #475569;
+  --isa101-valve-open: #94A3B8;
+  --isa101-pump-running: #0284C7;
+  --isa101-pump-stopped: #475569;
+
+  /* ISA-18.2 Semantic Alarm Colors (Dark) */
+  --alarm-critical: #DC2626;
+  --alarm-major: #EA580C;
+  --alarm-minor: #CA8A04;
+  --alarm-diagnostic: #2563EB;
+  --alarm-normal: #475569;
+  --alarm-shelved: #78716C;
+
+  /* Industrial Bus Link Colors (Dark) */
+  --bus-ethernet: #16A34A;
+  --bus-backbone: #38BDF8;
+  --bus-serial: #0284C7;
+  --bus-can: #CA8A04;
+  --bus-safety: #DC2626;
+  --bus-io-link: #9333EA;
+  --bus-offline: #475569;
+
+  /* Spatial & Layout Metrics (Adrian Box-Model Invariants) */
+  --hud-height: 38px;
+  --activity-bar-width: 48px;
+  --status-bar-height: 24px;
+  --inspector-width: 384px;
+  --inspector-fixed-width: 384px;
+  --primary-explorer-min-width: 240px;
+  --primary-explorer-max-width: 480px;
+  --primary-explorer-default-width: 280px;
+  --console-min-height: 160px;
+  --console-default-height: 220px;
+  --grid-snap: 16px;
+  --grid-snap-8: 8px;
+  --grid-snap-16: 16px;
+  --canvas-standard-width: 1920px;
+  --canvas-standard-height: 1080px;
+  --canvas-4k-max-width: 3840px;
+  --canvas-4k-max-height: 2160px;
+
+  /* Radius */
+  --radius-none: 0px;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+
+  /* Typography */
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Roboto Mono', ui-monospace, monospace;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-size-micro: 10px;
+  --font-size-caption: 11px;
+  --font-size-body: 13px;
+  --font-size-header-sm: 14px;
+  --font-size-header-md: 16px;
+  --font-size-header-lg: 20px;
+  --font-size-telemetry-display: 28px;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* Animations */
+  --anim-alarm-flash: 1000ms cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --anim-drawer-slide: 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  --anim-telemetry-pulse: 300ms ease-out;
+}
+
+[data-theme='light'],
+.theme-light {
+  /* Engineering Clean Slate Mode (Light / Day Shift) */
+  --bg-base: #F8FAFC;
+  --bg-surface: #FFFFFF;
+  --bg-card: #F1F5F9;
+  --bg-elevated: #F1F5F9;
+  --bg-muted: #E2E8F0;
+  --bg-highlight: #CBD5E1;
+
+  /* Borders */
+  --border-subtle: #E2E8F0;
+  --border-default: #CBD5E1;
+  --border-focus: #0284C7;
+
+  /* Typography Colors */
+  --text-primary: #0F172A;
+  --text-secondary: #475569;
+  --text-muted: #64748B;
+  --text-inverse: #FFFFFF;
+
+  /* ISA-101 Process Elements (Light) */
+  --isa101-process-vessel: #E2E8F0;
+  --isa101-pipe-inactive: #CBD5E1;
+  --isa101-pipe-active: #94A3B8;
+  --isa101-valve-closed: #94A3B8;
+  --isa101-valve-open: #475569;
+  --isa101-pump-running: #0284C7;
+  --isa101-pump-stopped: #94A3B8;
+
+  /* ISA-18.2 Semantic Alarm Colors (Light) */
+  --alarm-critical: #DC2626;
+  --alarm-major: #D97706;
+  --alarm-minor: #CA8A04;
+  --alarm-diagnostic: #2563EB;
+  --alarm-normal: #64748B;
+  --alarm-shelved: #94A3B8;
+
+  /* Industrial Bus Link Colors (Light) */
+  --bus-ethernet: #15803D;
+  --bus-backbone: #0284C7;
+  --bus-serial: #0369A1;
+  --bus-can: #B45309;
+  --bus-safety: #DC2626;
+  --bus-io-link: #7E22CE;
+  --bus-offline: #64748B;
+}
+
+@keyframes isaAlarmFlash {
+  0%, 100% { opacity: 1; filter: drop-shadow(0 0 6px var(--alarm-critical)); }
+  50% { opacity: 0.35; filter: none; }
+}
+
+.isa-alarm-flash {
+  animation: isaAlarmFlash 1000ms cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

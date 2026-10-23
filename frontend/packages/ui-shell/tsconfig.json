@@ -1,0 +1,28 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "references": [
+    {
+      "path": "../../plugins/ui-logic-editor"
+    },
+    {
+      "path": "../../plugins/ui-topology"
+    },
+    {
+      "path": "../../plugins/ui-faceplate-lib"
+    },
+    {
+      "path": "../../plugins/ui-inspector"
+    }
+  ],
+  "exclude": [
+    "src/__tests__/**/*",
+    "dist"
+  ]
+}

@@ -1,0 +1,38 @@
+name: Branch Protection & Flow Policy
+
+on:
+  pull_request:
+    branches:
+      - release
+      - rc
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate-branch-flow:
+    name: Verify Source and Target Branch Policy
+    runs-on: arc-runner-org
+    steps:
+      - name: Evaluate Branch Flow Constraints
+        run: |
+          TARGET_BRANCH="${{ github.base_ref }}"
+          SOURCE_BRANCH="${{ github.head_ref }}"
+          echo "Evaluating PR from source '${SOURCE_BRANCH}' into target '${TARGET_BRANCH}'"
+
+          if [ "${TARGET_BRANCH}" = "release" ]; then
+            if [ "${SOURCE_BRANCH}" != "rc" ]; then
+              echo "::error::Policy Violation: Pull requests targeting 'release' must originate strictly from 'rc'. Received: '${SOURCE_BRANCH}'"
+              exit 1
+            fi
+            echo "Branch flow validation passed: '${SOURCE_BRANCH}' -> '${TARGET_BRANCH}'."
+          elif [ "${TARGET_BRANCH}" = "rc" ]; then
+            if [ "${SOURCE_BRANCH}" != "dev" ]; then
+              echo "::error::Policy Violation: Pull requests targeting 'rc' must originate strictly from 'dev'. Received: '${SOURCE_BRANCH}'"
+              exit 1
+            fi
+            echo "Branch flow validation passed: '${SOURCE_BRANCH}' -> '${TARGET_BRANCH}'."
+          else
+            echo "Branch flow check not required for target '${TARGET_BRANCH}'."
+          fi

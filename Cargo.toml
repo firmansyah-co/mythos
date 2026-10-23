@@ -1,0 +1,88 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mythos-pal",
+    "crates/mythos-core",
+    "crates/mythos-shm",
+    "crates/mythos-strucpp",
+    "crates/mythos-plugin-sdk",
+    "crates/mythos-mcp",
+    "crates/mythos-mcp-macros",
+    "crates/mythos-cli",
+    "plugins/drivers/driver-modbus",
+    "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82.0"
+authors = ["adrianaryaputra <adrian@firmansyah.co>"]
+license = "MPL-2.0"
+
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.dependencies]
+# Internal Workspace Crates
+mythos-pal = { path = "crates/mythos-pal" }
+mythos-shm = { path = "crates/mythos-shm" }
+mythos-core = { path = "crates/mythos-core" }
+mythos-strucpp = { path = "crates/mythos-strucpp" }
+mythos-plugin-sdk = { path = "crates/mythos-plugin-sdk" }
+mythos-mcp = { path = "crates/mythos-mcp" }
+mythos-mcp-macros = { path = "crates/mythos-mcp-macros" }
+
+# Concurrency and Async
+tokio = { version = "1.40", features = ["full"] }
+tokio-stream = "0.1"
+futures-util = "0.3"
+tokio-util = { version = "0.7", features = ["codec"] }
+async-trait = "0.1"
+flume = "0.11"
+parking_lot = "0.12"
+
+# Web, Networking and API Gateway
+axum = { version = "0.7", features = ["macros", "ws"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
+
+# CLI & Packaging
+clap = { version = "4.6", features = ["derive"] }
+sha2 = "0.10"
+chacha20poly1305 = "0.10.1"
+rand = "0.8"
+ed25519-dalek = { version = "2.1", features = ["rand_core", "serde"] }
+hex = "0.4"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+tempfile = "3.10"
+
+# Serialization, CRDT and Collaboration
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bytemuck = { version = "1.18", features = ["derive"] }
+schemars = "0.8"
+specta = "2.0"
+ts-rs = "10.0"
+yrs = { version = "0.21", features = ["sync"] }
+
+# Logging and Diagnostics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "1.0"
+
+# Low-level and Systems
+libc = "0.2"
+memmap2 = "0.9"
+libloading = "0.8"
+crc32fast = "1.4"
+cfg-if = "1.0"
+
+# Time-Series Historian & Parquet
+arrow = { version = "54.3", default-features = false, features = ["csv", "ipc", "json"] }
+parquet = { version = "54.3", default-features = false, features = ["arrow", "zstd"] }
+
+# Proc-macro
+syn = { version = "2.0", features = ["full"] }
+quote = "1.0"
+proc-macro2 = "1.0"

@@ -226,9 +226,57 @@ MythOS is architected as an **independent Cargo Workspace** and **modular plugin
 
 <br>
 
-## <img src="https://api.iconify.design/lucide/download.svg?color=%2338BDF8" width="20" height="20">&nbsp; Universal Multi-Platform Installation
+## <img src="https://api.iconify.design/lucide/download.svg?color=%2338BDF8" width="20" height="20">&nbsp; Universal Multi-Platform Installation & Quick Start
 
-MythOS is completely **OS-Agnostic**. Installing MythOS on Windows, macOS, Linux, or Docker is as effortless as installing any modern consumer software:
+MythOS is completely **OS-Agnostic**. You can install and run MythOS across Linux, macOS, and Windows with a single command. Every package bundles the microkernel daemon and the embedded Web HMI Studio (served locally on `http://localhost:8080`).
+
+### 1. Automated Universal Bootstrap
+
+Install MythOS instantly via the official distribution endpoint (`https://get.mythos.firmansyah.co`):
+
+```bash
+# Linux & macOS (Universal Bash Installer)
+curl -fsSL https://get.mythos.firmansyah.co | bash
+
+# Install specific release channel (release, rc, dev) or pin version
+curl -fsSL https://get.mythos.firmansyah.co | bash -s -- --channel rc --version 1.2.0-rc.1
+```
+
+```powershell
+# Windows 10 / 11 (Universal PowerShell Installer)
+irm https://get.mythos.firmansyah.co/win | iex
+
+# Install specific channel or pin version
+& ([scriptblock]::Create((irm https://get.mythos.firmansyah.co/win))) -Channel rc -Version 1.2.0-rc.1
+```
+
+> **Embedded Web Studio & Launcher:** Every installation automatically registers native application launchers (macOS `/Applications/MythOS.app`, Windows Start Menu & Desktop shortcuts, Linux `.desktop` entries). Access the engineering studio immediately at **`http://localhost:8080`**.
+
+---
+
+### 2. Built-in CLI Lifecycle Management (`mythos`)
+
+The bundled `mythos` command-line utility manages channels, updates, and instant rollbacks:
+
+```bash
+# Display active channel or switch channel (release, rc, dev)
+mythos channel
+mythos channel switch rc
+
+# Query available remote versions from CDN
+mythos versions --remote
+
+# Update to latest version in current channel or pin specific SemVer
+mythos update
+mythos update --version 1.2.0
+
+# Instant deterministic rollback to previous cached binary (< 1.0 s)
+mythos rollback
+```
+
+---
+
+### 3. Distribution Packages by Platform
 
 <table width="100%">
   <thead>
@@ -250,7 +298,8 @@ MythOS is completely **OS-Agnostic**. Installing MythOS on Windows, macOS, Linux
         </a>
       </td>
       <td>
-        <strong>1-Click Graphical Installer</strong>: Download and run <code>MythOS-Setup-x64.exe</code>. Bundles the standalone microkernel daemon, embedded web studio, and pre-packaged C++ compilers with zero manual prerequisites.
+        <strong>PowerShell One-Liner or 1-Click GUI</strong>:<br>
+        <code>irm https://get.mythos.firmansyah.co/win | iex</code> or run <code>MythOS-Setup-x64.exe</code>. Bundles microkernel daemon, embedded web studio, and pre-packaged C++ compilers.
       </td>
     </tr>
     <tr>
@@ -264,7 +313,8 @@ MythOS is completely **OS-Agnostic**. Installing MythOS on Windows, macOS, Linux
         </a>
       </td>
       <td>
-        <strong>Drag-and-Drop DMG</strong>: Open <code>MythOS-Universal.dmg</code> and drag to <code>/Applications</code>. Native Apple Silicon (M1/M2/M3/M4) &amp; Intel Universal 2 binary with native Cocoa WebViews and Apple notarization.
+        <strong>Bash One-Liner or Drag-and-Drop DMG</strong>:<br>
+        <code>curl -fsSL https://get.mythos.firmansyah.co | bash</code> or open <code>MythOS-Universal.dmg</code>. Native Apple Silicon &amp; Intel Universal 2 binary with native WebViews and Apple notarization.
       </td>
     </tr>
     <tr>
@@ -278,7 +328,8 @@ MythOS is completely **OS-Agnostic**. Installing MythOS on Windows, macOS, Linux
         </a>
       </td>
       <td>
-        <strong>Portable Zero-Install</strong>: <code>chmod +x MythOS-x86_64.AppImage &amp;&amp; ./MythOS-x86_64.AppImage</code>. Runs on any distribution (Ubuntu, Debian, Fedora, Arch). Also available as native <code>.deb</code> and <code>.rpm</code> packages.
+        <strong>Bash One-Liner or Universal AppImage</strong>:<br>
+        <code>curl -fsSL https://get.mythos.firmansyah.co | bash</code> or run <code>MythOS-x86_64.AppImage</code>. Native <code>.deb</code>, <code>.rpm</code>, and AUR packages also available.
       </td>
     </tr>
     <tr>
@@ -306,14 +357,13 @@ MythOS is completely **OS-Agnostic**. Installing MythOS on Windows, macOS, Linux
       </td>
       <td>
         <strong>Single-Command Automated Bootstrap</strong> (Raspberry Pi 4/5, CM4, Advantech, Siemens IPC):<br>
-        <code>curl -fsSL https://get.mythos.firmansyah.co | sudo bash</code> (Auto-detects CPU, provisions systemd service).
+        <code>curl -fsSL https://get.mythos.firmansyah.co | sudo bash</code> (Auto-detects CPU, provisions systemd service and real-time capabilities).
       </td>
     </tr>
   </tbody>
 </table>
 
 <br>
-
 ### Development from Source
 Ensure your build environment meets the following requirements:
 * **Operating System:** Linux (Ubuntu 22.04+, Debian 12+, Arch Linux) with POSIX shared memory enabled (`/dev/shm`). macOS and Windows are supported for offline HMI design and testing.

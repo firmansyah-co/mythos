@@ -21,7 +21,7 @@ In legacy SCADA systems, project files are either stored in proprietary opaque b
 MythOS establishes an **Open, Transparent, and Robust Storage Architecture**:
 - **Primary Source of Truth on Target Controller**: The industrial controller (such as an Industrial PC or Raspberry Pi Compute Module 4 mounted inside the control cabinet) hosts the primary project filesystem under `/var/lib/mythos/projects/`. The controller boots independently, executes soft-logic 24/7, and serves HMI/API clients without requiring a connected engineering laptop.
 - **Multi-Project Repository and Active Symlink**: The controller can store multiple independent projects simultaneously. Exactly one project is designated `ACTIVE` at runtime via an atomic filesystem symlink (`/var/lib/mythos/projects/active`). Draft projects can be loaded, modified, and validated concurrently in memory without disturbing the active control cycle.
-- **Bumpless Hot-Swap (< 50ms Dead-Time)**: Switching the active project executes an atomic symlink swap and OpenPLC dynamic library hot-swap during cyclic dead-time in less than 50 ms.
+- **Bumpless Hot-Swap (< 50ms Dead-Time)**: Switching the active project executes an atomic symlink swap and Native STruC++ dynamic library hot-swap during cyclic dead-time in less than 50 ms.
 - **Atomic Debounced Autosave with WAL Protection**: Client modifications commit immediately to an append-only Write-Ahead Log (`project.wal`), followed by debounced atomic file replacement using temporary files and POSIX `rename`. This guarantees zero data loss and prevents partial file corruption.
 - **Bidirectional Client Synchronization & 1-Click Export**: Engineering laptops can operate in offline mode and perform differential Git-style synchronizations (`push`/`pull`) or export/import self-contained, encrypted `.mythos-pkg` archives.
 
@@ -48,7 +48,7 @@ On the target controller, the root data directory is `/var/lib/mythos/`:
 │       ├── tasks.draft.json           -- Staged IEC task definitions under active configuration
 │       ├── project.wal                -- Write-Ahead Log for active editor deltas
 │       ├── logic/
-│       │   ├── active/                -- Committed soft-logic executed by OpenPLC runtime
+│       │   ├── active/                -- Committed soft-logic executed by Native STruC++ runtime
 │       │   │   ├── main.st            -- Active IEC 61131-3 Structured Text primary source
 │       │   │   ├── udt_definitions.st -- Active User-Defined Data Types (UDT) declarations
 │       │   │   ├── function_blocks/   -- Active Function Block sources (*.st)
@@ -56,7 +56,7 @@ On the target controller, the root data directory is `/var/lib/mythos/`:
 │       │   │       ├── generated.cpp  -- STruC++ emitted C++17 translation
 │       │   │       ├── generated.hpp  -- STruC++ emitted class definitions
 │       │   │       ├── debug-map.json -- Hierarchical symbol debug address map
-│       │   │       └── libopenplc_prog.so -- Currently executing dynamic shared object library
+│       │   │       └── libstrucpp_prog.so -- Currently executing dynamic shared object library
 │       │   └── draft/                 -- Staged soft-logic sandbox under engineering edit
 │       │       ├── main.st            -- Staged IEC 61131-3 Structured Text
 │       │       ├── udt_definitions.st -- Staged UDT declarations
@@ -65,7 +65,7 @@ On the target controller, the root data directory is `/var/lib/mythos/`:
 │       │           ├── generated.cpp
 │       │           ├── generated.hpp
 │       │           ├── debug-map.json
-│       │           └── libopenplc_prog.so.staged -- Compiled staging binary ready for commit
+│       │           └── libstrucpp_prog.so.staged -- Compiled staging binary ready for commit
 │       ├── screens/
 │       │   ├── active/                -- Production HMI screens rendered on operator terminals
 │       │   │   ├── scr_bottling_overview/
@@ -174,7 +174,7 @@ Filesystem mutations follow ACID transactional properties on Linux filesystems (
               │ STruC++ Compiled Binary                                  │ Monaco ST Editor
               ▼                                                          ▼
 +──────────────────────────+                                  +─────────────────────+
-|  OpenPLC Runtime Engine  |                                  | Multi-User Collab   |
+|  Native STruC++ Engine   |                                  | Multi-User Collab   |
 |  Lock-Free TagBus SHM    |                                  | Session Room (CRDT) |
 |  24/7 Field Execution    |                                  | Offline Validation  |
 +──────────────────────────+                                  +─────────────────────+
@@ -187,7 +187,7 @@ Filesystem mutations follow ACID transactional properties on Linux filesystems (
 The controller is completely autonomous:
 1. On system boot, the `mythos-core` daemon inspects `/var/lib/mythos/projects/active`.
 2. It resolves the canonical project path, loads `project.json`, initializes drivers, and attaches `/dev/shm/mythos_tagbus`.
-3. It loads `logic/build/libopenplc_prog.so` and begins the cyclic real-time execution loop.
+3. It loads `logic/build/libstrucpp_prog.so` and begins the cyclic real-time execution loop.
 4. If an engineer disconnects their laptop or loses network connectivity, the controller continues uninhibited plant control.
 
 ### 3.2 Secondary Client Sync (Push/Pull/Export)
@@ -767,7 +767,7 @@ When an engineer clicks **[Export Project Package]** or invokes `GET /api/v1/pro
 | ├── project.json                   -- Project configuration & topology  |
 | ├── logic/                                                              |
 | │   ├── main.st                    -- Structured Text source code       |
-| │   └── build/libopenplc_prog.so   -- Pre-compiled executable library   |
+| │   └── build/libstrucpp_prog.so   -- Pre-compiled executable library   |
 | ├── screens/                       -- All screen JSON definitions       |
 | ├── subcanvases/                   -- Reusable component definitions    |
 | ├── recipes/                       -- ISA-88 recipe files               |

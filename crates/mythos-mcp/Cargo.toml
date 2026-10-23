@@ -1,0 +1,39 @@
+[package]
+name = "mythos-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Native Model Context Protocol (MCP) server for MythOS SCADA and soft-logic runtime"
+
+[lints]
+workspace = true
+
+[dependencies]
+mythos-pal.workspace = true
+mythos-shm.workspace = true
+mythos-core.workspace = true
+mythos-strucpp.workspace = true
+mythos-mcp-macros.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tokio-stream.workspace = true
+futures-util.workspace = true
+tokio-util = { workspace = true, features = ["codec"] }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+axum = { workspace = true, optional = true }
+tower.workspace = true
+tower-http = { workspace = true, optional = true }
+
+[features]
+default = ["sse"]
+sse = ["dep:axum", "dep:tower-http"]
+
+[dev-dependencies]
+tempfile.workspace = true

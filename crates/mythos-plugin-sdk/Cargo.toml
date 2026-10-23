@@ -1,0 +1,19 @@
+[package]
+name = "mythos-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Universal Plugin SDK and Extensibility Interfaces for MythOS"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

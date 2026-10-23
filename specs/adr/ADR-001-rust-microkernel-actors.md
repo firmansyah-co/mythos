@@ -45,7 +45,7 @@ MythOS requires an architectural foundation that delivers:
    - *Pros*: Fast concurrency with goroutines; built-in networking.
    - *Cons*: Non-deterministic Garbage Collection pauses (1-10 ms stop-the-world); high memory overhead per service; serialization overhead of gRPC/Protobuf over local sockets.
 3. **Option 3: Pure Rust Microkernel Actor Architecture with Tokio and POSIX Real-Time Threads** (Selected)
-   - *Pros*: Zero-cost abstractions; compile-time borrow checker guarantees zero data races; memory safety without GC pauses; clean separation between async Tokio tasks (networking/MCP) and dedicated `SCHED_FIFO` OS threads (OpenPLC logic).
+   - *Pros*: Zero-cost abstractions; compile-time borrow checker guarantees zero data races; memory safety without GC pauses; clean separation between async Tokio tasks (networking/MCP) and dedicated `SCHED_FIFO` OS threads (Native STruC++ soft-logic).
 
 ---
 
@@ -71,4 +71,4 @@ MythOS requires an architectural foundation that delivers:
 
 ### 5.2 Negative Consequences
 - **Strict Borrow Checker Discipline**: Requires strict lifetime and type management across asynchronous boundaries.
-- **C/C++ FFI Boundaries**: Integrating OpenPLC requires maintaining explicit `extern "C"` bindings.
+- **C/C++ FFI Boundaries**: Integrating the Native STruC++ Engine requires maintaining explicit `extern "C"` bindings.

@@ -52,7 +52,7 @@ The API architecture enforces four fundamental constraints:
          Read / Write |                      Subscriber   |                             Hot-Reload   |
                       ▼                                   ▼                                          ▼
 +------------------------------------+   +------------------------------------+   +------------------+
-|       LOCK-FREE TAG BUS            |   |   ISA-18.2 ALARM & RECIPE ENGINE   |   |  OPENPLC V4 FFI  |
+|       LOCK-FREE TAG BUS            |   |   ISA-18.2 ALARM & RECIPE ENGINE   |   |  NATIVE STRUCPP  |
 |   /dev/shm/mythos_tagbus (POSIX)   |   |   Deterministic Real-Time Workers  |   |  STruC++ Hot-Swap|
 +------------------------------------+   +------------------------------------+   +------------------+
 ```
@@ -159,7 +159,7 @@ The base path for all REST interfaces is `/api/v1`.
 The target controller acts as the primary repository of all plant automation projects. Multiple project configurations exist on disk concurrently under `/var/lib/mythos/projects/<project_id>/`.
 
 ### 4.1 Project Status States
-- `ACTIVE`: The project currently executed by the OpenPLC soft-logic engine and driver SPI. Exactly one project is `ACTIVE` at any time. Symlinked at `/var/lib/mythos/projects/active`.
+- `ACTIVE`: The project currently executed by the Native STruC++ soft-logic engine and driver SPI. Exactly one project is `ACTIVE` at any time. Symlinked at `/var/lib/mythos/projects/active`.
 - `LOADED_DRAFT`: A project opened in memory by one or more engineering clients for editing and validation. Runs collaborative CRDT rooms and syntax verification without affecting the `ACTIVE` control loop.
 - `IDLE_DRAFT`: A project stored on disk, not currently opened in memory.
 
@@ -218,7 +218,7 @@ Transitions a draft project to `ACTIVE`.
 2. Validates that hardware pin mappings and driver bus configs match physical I/O constraints.
 3. Flushes current debounced autosave deltas to disk.
 4. Waits for the PLC cyclic dead-time window.
-5. Performs atomic pointer swap of the OpenPLC `ConfigurationInstance` and rebinds `/dev/shm/mythos_tagbus`.
+5. Performs atomic pointer swap of the Native STruC++ `ConfigurationInstance` and rebinds `/dev/shm/mythos_tagbus`.
 6. Updates `/var/lib/mythos/projects/active` atomic symlink to point to the newly activated directory.
 7. Total dead-time jitter is measured and guaranteed to remain strictly below 50 ms.
 
@@ -246,7 +246,7 @@ Transitions a draft project to `ACTIVE`.
 ## 5. Telemetry SSE Stream (`GET /api/v1/telemetry/stream`)
 
 ### 5.1 Rate Limiting Contract (100ms / 10 Hz Batched Ticks)
-Process values inside the pure Rust microkernel are polled from field hardware and OpenPLC shared memory at 10 ms to 50 ms cycles.
+Process values inside the pure Rust microkernel are polled from field hardware and Native STruC++ shared memory at 10 ms to 50 ms cycles.
 
 However, streaming updates at raw 50 Hz or 100 Hz directly to web browsers causes massive DOM thrashing, garbage collection pauses, and client UI freeze. 
 
@@ -299,7 +299,7 @@ data: {"timestamp":1729005000200,"subsystem":"control","dirty_files":["tasks.dra
 
 id: 1729005000250-00132
 event: DRAFT_COMMITTED
-data: {"timestamp":1729005000250,"subsystem":"control","commit_hash":"sha256-a1b2c3d4e5f6...","promoted_files":["tasks.active.json","logic/active/build/libopenplc_prog.so"],"swap_dead_time_ms":12.4}
+data: {"timestamp":1729005000250,"subsystem":"control","commit_hash":"sha256-a1b2c3d4e5f6...","promoted_files":["tasks.active.json","logic/active/build/libstrucpp_prog.so"],"swap_dead_time_ms":12.4}
 
 id: 1729005000280-00133
 event: DRAFT_DISCARDED
@@ -490,7 +490,7 @@ Under this model:
 |                       MYTHOS RUNTIME & GATEWAY ENGINE                       |
 |                                                                             |
 |   - Promotes screens/draft/ -> screens/active/                              |
-|   - OpenPLC pthreads update via cycle dead-time hot-swap (< 50ms)           |
+|   - Native STruC++ threads update via cycle dead-time hot-swap (< 50ms)     |
 |   - Broadcasts SSE: HMI_LAYOUT_UPDATED / FACEPLATE_PROPAGATED               |
 +──────────────────────────────────────┬──────────────────────────────────────+
                                        │
@@ -592,7 +592,7 @@ Reverts all uncommitted logic and task scheduler staging files back to match the
 ```
 
 #### 10.1.4 Commit Staging Draft to Runtime (`POST /api/v1/control/draft/commit`)
-Validates draft task configurations, compiles Structured Text through STruC++, creates the updated shared library (`libopenplc_prog.so`), and executes an atomic hot-swap at scan dead-time.
+Validates draft task configurations, compiles Structured Text through STruC++, creates the updated shared library (`libstrucpp_prog.so`), and executes an atomic hot-swap at scan dead-time.
 
 - **Request**: `POST /api/v1/control/draft/commit`
 ```json

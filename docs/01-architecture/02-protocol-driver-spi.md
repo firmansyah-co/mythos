@@ -1,10 +1,12 @@
 # MythOS Architecture Specification: Protocol Driver SPI
 
 - **Document Identifier**: MYTHOS-ARCH-002
-- **Version**: 1.1.0
+- **Version**: 1.2.0
 - **Author**: Neo (VP Software & Infrastructure)
-- **Status**: APPROVED / SPECIFICATION
+- **Status**: APPROVED / SPECIFICATION — PARTIAL REWRITE PENDING
 - **Language**: ASD-STE100 Technical English
+
+> **Drift warning (2026-10-23)**: Section 3 is corrected against the current SDK (`crates/mythos-plugin-sdk/src/lib.rs`) after ADR-008. Sections 4 through 7 still describe the retired `mythos-driver-api` contract: `DriverError`, `DriverContext`, `driver_id`, and `DiscoveryCapableDriver` do not exist in code. Verify each contract against the SDK before you use it. A full rewrite of Sections 4 to 7 is pending.
 
 ---
 
@@ -57,110 +59,107 @@ Furthermore, this specification defines the **Universal Protocol Auto-Discovery 
 
 ---
 
-## 3. Rust Trait Contracts (`mythos-driver-api`)
+## 3. Rust Trait Contracts (`mythos-plugin-sdk`)
 
-### 3.1 Core Driver Trait (`ProtocolDriver`)
+The driver SPI is defined once, in `crates/mythos-plugin-sdk/src/lib.rs`. A driver implements the universal plugin lifecycle plus the driver-specific methods. The SDK exports no separate configuration-validator trait; validation is a method on `ProtocolDriver`.
+
+### 3.1 Universal Plugin Lifecycle (`MythosPlugin`)
 
 ```rust
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
-use std::time::Duration;
-use crate::error::DriverError;
-use crate::context::DriverContext;
+use mythos_plugin_sdk::{
+    PluginContext, PluginError, PluginHealthReport, PluginMetadata,
+};
 
 #[async_trait]
-pub trait ProtocolDriver: Send + Sync + 'static {
-    /// Return the unique canonical identifier of the driver (e.g., "driver-modbus")
-    fn driver_id(&self) -> &'static str;
+pub trait MythosPlugin: Send + Sync {
+    /// Return the plugin manifest: id, name, version, author, type, and capabilities.
+    fn metadata(&self) -> PluginMetadata;
 
-    /// Return the driver semantic version (e.g., "1.0.0")
-    fn version(&self) -> &'static str;
+    /// Initialize plugin state and validate dependencies before starting.
+    async fn init(&mut self, ctx: &PluginContext) -> Result<(), PluginError>;
 
-    /// Return the JSON Schema string validating the driver's configuration parameters
-    fn config_schema(&self) -> &'static str;
+    /// Apply runtime configuration and commence background tasks.
+    async fn start(&mut self, ctx: &PluginContext, config: &JsonValue) -> Result<(), PluginError>;
 
-    /// Validate and apply opaque JSON configuration before network allocation.
-    /// Returns DriverError::ConfigValidationFailed if payload does not match schema.
-    async fn configure(
-        &mut self,
-        ctx: &DriverContext,
-        config: JsonValue,
-    ) -> Result<(), DriverError>;
+    /// Optional cyclic tick hook invoked by the microkernel host scheduler.
+    async fn tick(&mut self, ctx: &PluginContext, delta_ms: u32) -> Result<(), PluginError> {
+        Ok(())
+    }
 
-    /// Start the communication loop and cyclic polling.
-    async fn start(&mut self, ctx: &mut DriverContext) -> Result<(), DriverError>;
+    /// Terminate execution tasks and release resources gracefully.
+    async fn stop(&mut self, ctx: &PluginContext) -> Result<(), PluginError>;
 
-    /// Gracefully terminate communication, flush buffers, and close sockets/ports.
-    async fn stop(&mut self, ctx: &mut DriverContext) -> Result<(), DriverError>;
+    /// Check operational health and report diagnostic status.
+    async fn health_check(&self) -> Result<PluginHealthReport, PluginError>;
+}
+```
 
-    /// Execute active health diagnostics. Invoked periodically by the Microkernel Supervisor.
-    async fn health_check(&self) -> DriverHealthReport;
+### 3.2 Protocol Driver SPI (`ProtocolDriver`)
 
-    /// Handle tag write request directed to this driver from the Microkernel or MCP.
+```rust
+#[async_trait]
+pub trait ProtocolDriver: MythosPlugin {
+    /// Parse and validate the driver-specific JSON configuration schema.
+    fn validate_config(&self, config: &JsonValue) -> Result<(), PluginError>;
+
+    /// Execute one bounded I/O polling cycle against configured target devices.
+    /// Returns the number of field tags successfully ingested or updated.
+    async fn poll_cycle(&mut self, ctx: &PluginContext) -> Result<u32, PluginError>;
+
+    /// Write an output value to a field device target tag.
     async fn write_tag(
         &mut self,
-        tag_id: u32,
-        value: crate::TagValueRaw,
-    ) -> Result<(), DriverError>;
+        ctx: &PluginContext,
+        tag_uri: &str,
+        value: &JsonValue,
+    ) -> Result<(), PluginError>;
 }
 ```
 
-### 3.2 Driver Health and Diagnostics
+### 3.3 Driver Health and Diagnostics
 
 ```rust
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct DriverHealthReport {
-    pub status: DriverStatus,
-    pub latency_us: u64,
-    pub total_polls: u64,
-    pub failed_polls: u64,
-    pub consecutive_errors: u32,
-    pub last_frame_time_ns: u64,
-    pub diagnostic_message: Option<String>,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginHealthReport {
+    pub status: HealthStatus,
+    pub message: String,
+    pub timestamp_ms: u64,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum DriverStatus {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum HealthStatus {
     Healthy,
     Degraded,
-    Faulted,
+    Unhealthy,
+    Stopped,
 }
 ```
 
-### 3.3 Driver Context (`DriverContext`)
+### 3.4 Plugin Context (`PluginContext`)
 
-The `DriverContext` provides controlled access to kernel services without granting raw filesystem or unsafe process privileges:
+`PluginContext` is the only host handle a driver receives. It carries no logger, SHM writer, or event channel. The host grants capability strings, and the driver checks them before using a privileged resource:
 
 ```rust
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use mythos_shm::ShmWriterHandle;
-
-pub struct DriverContext {
-    pub instance_id: String,
-    pub logger: tracing::Span,
-    pub shm_writer: ShmWriterHandle,
-    pub event_sender: mpsc::Sender<DriverLifecycleEvent>,
+#[derive(Debug, Clone)]
+pub struct PluginContext {
+    pub plugin_id: String,
+    pub allowed_capabilities: Arc<HashSet<String>>,
+    pub working_directory: String,
 }
 
-impl DriverContext {
-    /// Atomically write a tag value and quality into the pre-allocated SHM slot
-    #[inline(always)]
-    pub fn publish_tag(
-        &mut self,
-        tag_id: u32,
-        value: mythos_shm::TagValueRaw,
-        quality: mythos_shm::QualityCode,
-    ) -> Result<(), mythos_shm::ShmError> {
-        self.shm_writer.update_tag(tag_id, value, quality)
-    }
+impl PluginContext {
+    /// Return true when the capability scope is permitted for this plugin.
+    pub fn has_capability(&self, capability: &str) -> bool;
 
-    /// Emit an asynchronous diagnostic event to the Microkernel telemetry bus
-    pub async fn emit_event(&self, event: DriverLifecycleEvent) {
-        let _ = self.event_sender.send(event).await;
-    }
+    /// Return PluginError::CapabilityViolation when the scope is missing.
+    pub fn check_capability(&self, capability: &str) -> Result<(), PluginError>;
 }
 ```
+
+A driver that publishes field values declares the `tagbus:write` capability in its manifest and calls `ctx.check_capability("tagbus:write")` during `init`, `start`, and each poll cycle. The host performs the shared-memory write. Drivers do not link `mythos-shm` directly.
 
 ---
 
@@ -322,7 +321,7 @@ pub async fn run_supervised_driver<D: ProtocolDriver>(
 ```
 
 ### 5.2 Key Isolation Rules
-1. **No Shared Locks**: A driver must never acquire a mutex or lock held by another driver or by the OpenPLC real-time loop.
+1. **No Shared Locks**: A driver must never acquire a mutex or lock held by another driver or by the Native STruC++ real-time loop.
 2. **Dedicated Channel**: Driver communication with the kernel uses bounded MPSC channels (`tokio::sync::mpsc`). When a channel is full, excess telemetry events drop cleanly without blocking the network loop.
 3. **Dedicated Shm Slice**: Drivers receive handles to only the tag slot IDs defined in their validated configuration. A driver cannot overwrite memory owned by another driver.
 ---

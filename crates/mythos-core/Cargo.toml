@@ -1,0 +1,47 @@
+[package]
+name = "mythos-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Microkernel Host Daemon, Actor Supervisor and Service Coordinator for MythOS"
+
+[lints]
+workspace = true
+
+[dependencies]
+mythos-pal.workspace = true
+mythos-shm.workspace = true
+mythos-plugin-sdk.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tokio-stream.workspace = true
+tokio-util = { workspace = true, features = ["codec"] }
+libc = { workspace = true }
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+crc32fast.workspace = true
+bytemuck.workspace = true
+sha2.workspace = true
+zip.workspace = true
+chacha20poly1305.workspace = true
+rand.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+axum.workspace = true
+tower = { workspace = true, features = ["util"] }
+tower-http.workspace = true
+ts-rs = { workspace = true, features = ["serde-json-impl", "no-serde-warnings"] }
+
+yrs = { workspace = true }
+parquet.workspace = true
+arrow.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"
+tokio-tungstenite = "0.24"
+futures-util = "0.3"

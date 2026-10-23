@@ -27,7 +27,7 @@ We must decide the architectural framework to transform MythOS into a pure zero-
 
 - **Extensibility & Community Ecosystem**: Allow external developers, OEMs, and community contributors to publish and install plugins without recompiling or altering the core microkernel.
 - **Zero-Domain Hardened Microkernel**: The core kernel must only host the lock-free TagBus (`/dev/shm/mythos_tagbus`), dynamic plugin lifecycle supervisor, capability-based security barrier, and unified MCP aggregator.
-- **Universal Application**: The plugin contract must uniformly govern first-party built-in features (OpenPLC, Alarms, Recipes, Historian, DCP Discovery, Modbus, MQTT) and third-party extensions.
+- **Universal Application**: The plugin contract must uniformly govern first-party built-in features (Native STruC++, Alarms, Recipes, Historian, DCP Discovery, Modbus, MQTT) and third-party extensions.
 - **Modular Frontend GUI Architecture**: The frontend must function as a modular plugin host shell (similar to VSCode Extension Host or Eclipse RCP) where canvases, editors, faceplates, inspectors, and alarm bars mount as independent UI plugins.
 - **Hard Real-Time Fault Isolation**: A buggy, panicking, or malicious plugin must never corrupt the shared memory bus or crash the cyclic IEC 61131-3 logic execution.
 - **Autonomous AI Self-Registration**: Every plugin must automatically contribute its domain-specific tools into the native Model Context Protocol (MCP) server.
@@ -37,7 +37,7 @@ We must decide the architectural framework to transform MythOS into a pure zero-
 ## 3. Considered Options
 
 ### Option 1: Monolithic Modular Crates with Compile-Time Cargo Feature Flags
-- *Mechanism*: Features and drivers are separate Cargo crates statically linked into `mythos-core` using Cargo feature flags (`--features "modbus,openplc,alarms"`).
+- *Mechanism*: Features and drivers are separate Cargo crates statically linked into `mythos-core` using Cargo feature flags (`--features "modbus,strucpp,alarms"`).
 - *Pros*: Maximum compile-time optimization; zero dynamic dispatch overhead.
 - *Cons*: Violates the core mandate. Third parties cannot distribute pre-compiled binary plugins. Adding a driver requires full codebase recompilation. Zero runtime hot-reloading.
 
@@ -72,7 +72,7 @@ The kernel is stripped of all domain-specific logic. It contains solely:
 
 #### 4.1.2 First-Party Built-In Features as Standard Plugins
 All core features are converted to standalone first-party plugins that strictly adhere to the universal plugin contract:
-- `plugin-openplc`: OpenPLC Runtime v4 soft-logic execution engine and STruC++ compiler bridge.
+- `plugin-strucpp`: Native STruC++ soft-logic execution engine and compiler bridge.
 - `plugin-alarms`: ANSI/ISA-18.2 alarm lifecycle state machine and flood suppression.
 - `plugin-recipes`: ANSI/ISA-88 batch recipe coordinator and PackML sequencer.
 - `plugin-historian`: Boxcar-SDC compression engine and Apache Parquet columnar archiver.

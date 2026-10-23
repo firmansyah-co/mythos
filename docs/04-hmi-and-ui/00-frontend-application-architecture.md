@@ -1,9 +1,10 @@
 # MythOS HMI & UI Specification: Frontend Application Architecture
 
 - **Document Identifier**: MYTHOS-HMI-000
-- **Version**: 2.1.0
-- **Author**: Neo (VP Software & Infrastructure) & Adrian (Board of Commissioners Directive)
+- **Version**: 3.0.0
+- **Author**: Neo (VP Software & Infrastructure), Iris (VP Design & Visual Architecture) & Adrian (Board of Commissioners Directive)
 - **Status**: APPROVED / SPECIFICATION
+- **Standard Reference**: Siemens TIA Portal Parity (SYS-REQ-097), ANSI/ISA-101.01, ISO 9241-110, IEC 61131-3, W3C DTCG
 - **Language**: ASD-STE100 Technical English
 
 ---
@@ -15,7 +16,7 @@ This specification defines the frontend software architecture, component hierarc
 The frontend application executes as a high-performance Single Page Application (SPA) built on **React 19**, **Vite 6**, and **TypeScript 5.6+**. It renders inside standard Chromium-based industrial touch panels, multi-monitor control room workstations, and field engineering laptops.
 
 The frontend architecture enforces eight core engineering principles:
-1. **Pure Dumb Presentation Layer**: The frontend performs zero mathematical process modeling, zero business logic calculations, and zero raw hardware register manipulation. The Rust microkernel and OpenPLC runtime act as the absolute Single Source of Truth (SSOT). The UI strictly renders schemas and dispatches structured user intent.
+1. **Pure Dumb Presentation Layer**: The frontend performs zero mathematical process modeling, zero business logic calculations, and zero raw hardware register manipulation. The Rust microkernel and Native STruC++ runtime act as the absolute Single Source of Truth (SSOT). The UI strictly renders schemas and dispatches structured user intent.
 2. **Dockview Multi-Zone Industrial Shell**: The entire workspace utilizes `@hexact/dockview-react` to host a deterministic 5-Zone layout accommodating multi-screen workflows, docking panels, floating diagnostic drawers, and tabbed document editors.
 3. **Throttled Real-Time Telemetry (100ms / 10 Hz Sliding Window)**: Server-Sent Events (SSE) stream process values into a dedicated Zustand store. Tag updates are buffered and applied at 100 ms intervals, preventing browser DOM thrashing while preserving smooth visual indicators.
 4. **Integrated In-Canvas PLC Logic Editor**: There is no file upload form. IEC 61131-3 Structured Text (Monaco) and Ladder Diagram canvases reside directly inside the workbench. Clicking **[Deploy / Hot-Reload to Controller]** dispatches source code directly to the backend compilation pipeline (`POST /api/v1/control/deploy`), triggering zero-downtime hot-reloading in under 50 ms.
@@ -54,17 +55,33 @@ frontend/
     │   ├── workbench/                 -- 5-Zone layout shell and dockview panel containers
     │   │   ├── Zone1TopHud.tsx        -- Plant status HUD, active project switcher, avatars
     │   │   ├── Zone1StatusBar.tsx     -- Bottom 24px operational status bar, cycle time, mode badge
-    │   │   ├── Zone2Explorer.tsx      -- Hierarchical project tree, screens, faceplate library
-    │   │   ├── Zone3MainCanvas.tsx    -- Tabbed document host (P&ID, Logic, Topology, Screens)
-    │   │   ├── Zone4Inspector.tsx     -- Modular drag-and-drop property inspector deck (384px)
-    │   │   └── Zone5Console.tsx       -- Alarms table, compiler output, packet sniffer
+    │   │   ├── Zone2Explorer.tsx      -- Hierarchical TIA Portal project tree, devices, screens
+    │   │   ├── Zone3MainCanvas.tsx    -- Tabbed document host (3 Hardware views, Logic, HMI)
+    │   │   ├── Zone4TaskCardsDock.tsx -- Far-Right Collapsible Task Cards dock (384px)
+    │   │   └── Zone5BottomInspector.tsx -- Context-sensitive bottom properties & inspector
+    │   ├── devices-networks/          -- Siemens TIA Portal 3 Canonical Hardware Views
+    │   │   ├── DevicesNetworksCanvas.tsx -- Zone 3 host for Network, Device, and Topology views
+    │   │   ├── NetworkView.tsx        -- Interconnected fieldbus topology (PROFINET, Modbus)
+    │   │   ├── DeviceView.tsx         -- Slot-by-slot modular chassis rack inspector (Rack 0)
+    │   │   ├── TopologyView.tsx       -- Port-to-port physical cabling & LLDP neighborhood
+    │   │   └── TerminalPinoutStrip.tsx -- Module terminal pin inspection and %I/%Q mapping
+    │   ├── task-cards/                -- Zone 4 Far-Right Collapsible Task Cards (384px)
+    │   │   ├── InstructionsCard.tsx   -- Standard IEC 61131-3 logic operations palette
+    │   │   ├── HardwareCatalogCard.tsx -- Searchable tree of OEM modules, sensors, and drives
+    │   │   ├── LibrariesCard.tsx      -- Project Library (Master Types) and Global Libraries
+    │   │   └── LayoutWidgetsCard.tsx  -- iOS-style 2-column modular widgets & P&ID symbols
+    │   ├── bottom-inspector/          -- Zone 5 Context-Sensitive Bottom Properties & Inspector
+    │   │   ├── PropertiesGeneralTab.tsx -- Element metadata, author, version, and comments
+    │   │   ├── PropertiesIoAddressesTab.tsx -- %I/%Q bounds, process image, tag channel table
+    │   │   ├── PropertiesDiagnosticsTab.tsx -- Live hardware status, CRC packet counters, log
+    │   │   ├── PropertiesAlarmsTab.tsx -- ISA-18.2 active alarm banner and setpoint thresholds
+    │   │   └── CompilerConsoleTab.tsx  -- STruC++ build logs and hot-reload status
     │   ├── hmi-screens/               -- TIA Portal style HMI screens & sub-screens
     │   │   ├── ScreenHierarchyTree.tsx -- Zone 2 nested tree for screens and subscreens
     │   │   ├── ScreenCanvasHost.tsx   -- Zone 3 tab host for FHD/4K screen drafting & preview
     │   │   ├── SubScreenModal.tsx     -- Contextual popup sub-screen floating wrapper
     │   │   ├── ScreenLifecycleBar.tsx -- Staging control bar (Edit, Preview, Deploy buttons)
-    │   │   └── CommitDiffModal.tsx    -- Visual diff summary and pre-flight validation modal
-    │   ├── faceplate-designer/        -- TIA Portal style Faceplate Master Type authoring
+    │   │   └── CommitDiffModal.tsx    -- Visual diff summary and pre-flight validation modal    │   ├── faceplate-designer/        -- TIA Portal style Faceplate Master Type authoring
     │   │   ├── FaceplateMasterDesigner.tsx -- Master Zone 3 canvas for component type design
     │   │   ├── UdtInterfaceEditor.tsx -- Formal UDT property binding matrix (no concrete tags)
     │   │   ├── views/                 -- 4 persona authoring canvases for master faceplate
@@ -964,13 +981,13 @@ export const MonacoStEditor: React.FC<MonacoStEditorProps> = ({
 
 ---
 
-## 6. Integrated In-Canvas PLC Logic Editor
+## 6. Universal IEC 61131-3 Logic IDE Parity (OpenPLC Editor v4 Complete Replication)
 
-The MythOS logic editor is **100% integrated into Zone 3 of the workbench**. It eliminates external compilation tools or manual `.st` file uploads.
+The MythOS logic editor is **100% integrated into Zone 3 of the workbench**. It eliminates external compilation tools or manual `.st` file uploads. It achieves complete functional parity with **OpenPLC Editor v4** and **Siemens STEP 7** across all five IEC 61131-3 programming languages.
 
 ```
 +───────────────────────────────────────────────────────────────────────────────────+
-| Zone 3 Tab: [main.st (Integrated Monaco Editor)]                   [Deploy to PLC] |
+| Zone 3 Tab: [main.st (Monaco ST Editor)]                           [Deploy to PLC] |
 +───────────────────────────────────────────────────────────────────────────────────+
 | 01 | PROGRAM MainBottlingControl                                                  |
 | 02 |   VAR                                                                        |
@@ -989,12 +1006,50 @@ The MythOS logic editor is **100% integrated into Zone 3 of the workbench**. It 
 | Zone 5 Output Console:                                                            |
 | [14:22:01] POST /api/v1/control/deploy dispatched.                                |
 | [14:22:01] STruC++ compiler: generated.cpp produced (0 warnings).                 |
-| [14:22:02] libopenplc_program_v5.so hot-swapped during 410us scan dead-time.      |
+| [14:22:02] libstrucpp_program_v5.so hot-swapped during 410us scan dead-time.      |
 | [14:22:02] Hot-reload SUCCESSFUL. Production control loop unaffected.             |
 +───────────────────────────────────────────────────────────────────────────────────+
 ```
 
-### 6.1 Deploy Action Bar Component (`DeployControlBar.tsx`)
+### 6.1 The 5-Language IEC 61131-3 Matrix
+
+MythOS provides dedicated editor engines tailored to each of the 5 standard languages defined by IEC 61131-3:
+
+| Language | Paradigm | Editor Implementation | Key Capabilities & Verification Features |
+|---|---|---|---|
+| **Structured Text (ST)** | Textual (High-Level) | Monaco Editor (`MonacoStEditor.tsx`) | Case-insensitive tokenization, bracket matching, nested control flow (`IF`, `CASE`, `FOR`, `WHILE`), backend STruC++ diagnostic squiggles, inline value watches. |
+| **Instruction List (IL)** | Textual (Low-Level Assembler) | Monaco / Custom IL Parser (`ilLanguage.ts`) | Accumulator-based instructions (`LD`, `ST`, `AND`, `OR`, `ADD`, `SUB`, `JMP`, `CAL`, `RET`), modifier notation (`ANDN`, `JMPC`), step-by-step operand stack view. |
+| **Ladder Diagram (LD)** | Graphical (Relay Logic) | SVG Canvas (`LadderCanvas.tsx`) | Left/right power rails, NO/NC contacts, pulse transitions (P/N), standard/set/reset coils, parallel branch loops, inline IEC timers/counters (`TON`, `TOF`, `CTU`). Live green energization animation. |
+| **Function Block Diagram (FBD)** | Graphical (Signal Flow) | xyflow Node Canvas (`FbdCanvas.tsx`) | Interconnected logic gates (AND, OR, XOR, NOT), arithmetic blocks, typed input/output pins, inversion negation bubbles, signal routing. |
+| **Sequential Function Chart (SFC)** | Graphical (State Machine) | xyflow State Graph (`SfcCanvas.tsx`) | Initial steps (double border), normal steps, boolean transition guards, action qualifiers (`N`, `S`, `R`, `P`, `L`, `D`), parallel divergence/convergence. |
+
+### 6.2 Variable Table Grid & DUT/UDT Data Type Editor
+
+Variables are managed centrally through a high-performance grid table and type hierarchy editor:
+1. **POU Scoped Variable Tables**:
+   - Tabular declaration of `VAR`, `VAR_INPUT`, `VAR_OUTPUT`, `VAR_IN_OUT`, `VAR_TEMP`, and `VAR_EXTERNAL`.
+   - Grid columns: Name, Class, IEC Data Type (`BOOL`, `INT`, `DINT`, `REAL`, `TIME`, `STRING`, UDT), Direct Fieldbus Address (`%IX0.0`, `%QX0.1`, `%MW100`), Initial Value, and Operational Comment.
+2. **Global Variable Lists (GVL)**:
+   - System-wide shared memory tags bound directly to `external.*` hardware channels or `internal.*` virtual flags.
+3. **User-Defined Data Types (DUT / UDT)**:
+   - **Structures (`STRUCT ... END_STRUCT`)**: Composite data types with nested fields and byte alignment guarantees matching Native STruC++ C-struct layouts.
+   - **Enumerations (`ENUM`)**: Named integer state constants used by state machines and recipe steps.
+
+### 6.3 Live Online Debugging, Power-Flow Animation & Variable Forcing (SYS-REQ-096 Compliant)
+
+The logic IDE provides deterministic online observability and manual test injection without external JTAG or vendor dongles:
+1. **Power-Flow Animation (LD)**:
+   - Energized rungs, contacts, and energized coils glow in neon green (`#22C55E`). De-energized elements remain muted slate (`#475569`).
+   - Telemetry synchronizes via 100ms SSE streams from the POSIX shared memory TagBus.
+2. **Inline Value Hover & Pin Watches (ST, IL, FBD, SFC)**:
+   - Hovering over any variable identifier in Monaco displays a live tooltip showing current runtime value, data type, and change frequency.
+   - Active SFC steps highlight with an animated amber pulsing border (`#F59E0B`).
+3. **Variable Forcing Table & Safety Interlocks**:
+   - Field engineers can force physical inputs (`%IX`) or outputs (`%QX`) to boolean or analog constants for loop-testing.
+   - **SYS-REQ-096 Safety Invariant**: Forcing is strictly prohibited in pure `PhysicalHardware` mode without activating `ManualSimulation` or explicit safety authorization.
+   - Any force action triggers a prominent top-level orange warning banner and records a permanent, cryptographically signed audit entry in the Merkle-chained JSONL ledger.
+
+### 6.4 Deploy Action Bar Component (`DeployControlBar.tsx`)
 
 ```typescript
 // frontend/src/features/logic-editor/DeployControlBar.tsx
@@ -1043,7 +1098,7 @@ export const DeployControlBar: React.FC<DeployControlBarProps> = ({ getStSource 
     <div className="flex items-center justify-between px-4 py-2 bg-neutral-900 border-b border-neutral-700">
       <div className="flex items-center space-x-2">
         <span className="text-xs font-semibold text-neutral-400">RUNTIME TARGET:</span>
-        <span className="text-xs font-mono text-emerald-400">OpenPLC v4 (SCHED_FIFO Core 1)</span>
+        <span className="text-xs font-mono text-emerald-400">Native STruC++ (SCHED_FIFO Core 1)</span>
       </div>
 
       <div className="flex items-center space-x-4">
@@ -1131,13 +1186,101 @@ export function useDebouncedAutosave(
 
 ---
 
-## 8. Dockview 5-Zone Workbench Shell Integration
+## 8. Dockview 5-Zone Workbench Shell Integration (Siemens TIA Portal Parity)
 
-The root workbench shell (`WorkbenchShell.tsx`) coordinates the 5 display zones using `@hexact/dockview-react`:
+The engineering workbench shell provides dual-mode workspace paradigms directly mirroring **Siemens TIA Portal**:
+1. **Portal View**: Task-oriented welcome launchpad for rapid project lifecycle management, guided commissioning, and device onboarding.
+2. **Project View**: The canonical 5-zone industrial engineering workbench powered by `@hexact/dockview-react`.
+
+### 8.1 Bottom-Left Dual-Mode Workspace Switcher
+
+The workbench enforces a persistent bottom-left mode toggle button:
+`[ 🌐 Portal View ]` <---> `[ 🎛️ Project View ]`
+
+- Clicking `[ 🌐 Portal View ]` minimizes or background-preserves the 5-zone workbench tabs and displays the task launchpad.
+- Clicking `[ 🎛️ Project View ]` (or selecting any task action such as "Open Editor", "Configure Device", or opening a project) immediately returns the user to the 5-zone dockview workbench.
+
+```
++───────────────────────────────────────────────────────────────────────────────────────────────+
+| [ 🌐 Portal View ]  │  MythOS Controller v1.4.0  │  Cycle: 412µs  │  Alarms: 0 Act / 0 Unack  |
++───────────────────────────────────────────────────────────────────────────────────────────────+
+```
+
+### 8.2 Portal View Architecture & Task Navigation Domains
+
+Portal View acts as an intuitive, task-oriented entry point. It groups all automation tasks into 6 canonical navigation domains:
+
+```
++───────────────────────────────────────────────────────────────────────────────────────────────+
+| MYTHOS PORTAL VIEW (Task-Oriented Launchpad)                                                  |
++───────────────────────────────────────────────────────────────────────────────────────────────+
+| [ Start ]               │ START ACTIONS:                                                      |
+|   Devices & Networks    │   • Create new project (Name, Author, Storage Path, Description)    |
+|   PLC Programming       │   • Open existing project (Local storage / WAL / REST catalog)      |
+|   Motion & Technology   │   • Import project archive (.mythos-pkg encrypted container)        |
+|   Visualization         │                                                                     |
+|   Online & Diagnostics  │ RECENT PROJECTS:                                                    |
+|                         │   [Bottling_Plant_Line01]  /var/mythos/projects/line01  (Modified)  |
+|                         │   [Packaging_Cell_B]       /var/mythos/projects/pack_b  (Active)    |
++─────────────────────────┴─────────────────────────────────────────────────────────────────────+
+| [ 🎛️ Project View ] (Click to return to 5-Zone Workbench)                                     |
++───────────────────────────────────────────────────────────────────────────────────────────────+
+```
+
+The 6 Portal View domains:
+1. **Start**:
+   - "Create new project": Modal prompt for project name, author, comment, and root path. Dispatches `POST /api/v1/projects`.
+   - "Open existing project": Queries available projects via `GET /api/v1/projects` with real-time selection.
+   - "Import package": Securely unpacks and verifies `.mythos-pkg` archives.
+2. **Devices & Networks**:
+   - "Configure a device": Shortcut to Device View chassis slots.
+   - "Write to controller": Hot-swaps compiled logic to the target runtime.
+3. **PLC Programming**:
+   - "Write PLC program": Opens the primary logic block editor tab.
+   - "Add new block": Triggers the dynamic block creation modal (OB, FB, FC, DB).
+4. **Motion & Technology**:
+   - "Configure technology objects": Configures servo axes, electronic cams, and closed-loop PID controllers.
+5. **Visualization**:
+   - "Configure screens": Direct access to HMI screen designer and master templates.
+   - "HMI templates": Master faceplate and vector symbol library.
+6. **Online & Diagnostics**:
+   - "Accessible devices": Initiates Layer 2 DCP discovery sweep and Modbus scanning.
+   - "Diagnostics buffer": Live system alarms, cycle jitter, and hardware status.
+
+### 8.3 Clean Empty Project Lifecycle & Zero Hardcoded Mock Guarantee
+
+MythOS strictly enforces a **Zero Mock Data Guarantee**:
+- No phantom projects (such as hardcoded "BottlingPlant_Line01") are populated on initial load.
+- If no project is open or created:
+  * Project tree displays `(No Project Loaded)` or a clean project root.
+  * `Program Blocks` displays `(No blocks created - click [+ Add new block])`.
+  * `HMI Screens` displays `(No screens created - click [+ Add new screen])`.
+  * The central canvas displays a welcoming industrial empty state:
+    *"Project is empty. Add a PLC block or HMI screen from the Project Tree to begin."*
+- When an engineer creates a block or screen, it persists immediately to target storage and WAL, dynamically updating the Project Tree and auto-opening the editor tab.
+
+### 8.4 Project View: The 5-Zone Industrial Workbench Shell
+
+When in Project View, the root workbench shell (`WorkbenchShell.tsx`) coordinates the 5 display zones using `@hexact/dockview-react`:
+- **Zone 1 (Top HUD Banner - 38px)**: Real-time system health, controller cycle time, active user presence, and global ISA-18.2 alarm counters.
+- **Zone 1.1 (Industrial Status Bar - 24px)**: Microkernel engine status, communication gateway telemetry, and clock.
+- **Zone 2 (Primary Project Explorer - 240px to 360px)**: Canonical project tree taxonomy containing Devices & Networks, Controller Soft-Logic, and Visualization.
+- **Zone 3 (Main Engineering Canvas - 100% Flex)**: Multi-document tab host running the 3 Canonical Hardware Views (Network View, Device View, Topology View), ST/IL/LD/FBD/SFC logic editors, and HMI screen designers.
+- **Zone 4 (Far-Right Collapsible Task Cards - Fixed 384px)**: Vertical collapsible task card tabs (`Instructions`, `Hardware Catalog`, `Libraries`, `Layout & Widgets`).
+- **Zone 5 (Context-Sensitive Bottom Properties & Inspector - 180px to 320px)**: Contextual tab deck (`General`, `IO Addresses / Variables`, `Diagnostics`, `Alarms`) dynamically synchronized to the active element selected in Zone 3.
+
+### 8.5 Interactive Document Wiring & Context-Sensitive Selection Router
+
+The shell coordinates document opening across zones via `onOpenDocument(doc: DocumentDescriptor)`:
+- Opening an ST block instantiates a Monaco ST editor tab.
+- Opening an LD block instantiates a Ladder Diagram canvas tab.
+- Opening an HMI screen instantiates the HMI canvas tab.
+- Opening Devices & Networks instantiates the corresponding hardware view (Network, Device, or Topology).
+- Clicking any node in Zone 2 or element in Zone 3 immediately broadcasts the selection context to the **Zone 4 Far-Right Inspector Drawer (fixed 384px)** and **Zone 5 Bottom Properties Deck**, showing true runtime tags, addresses, and parameters.
 
 ```typescript
-// frontend/src/features/workbench/WorkbenchShell.tsx
-import React, { useRef } from 'react';
+// frontend/packages/ui-shell/src/components/workbench/WorkbenchShell.tsx
+import React, { useState } from 'react';
 import { DockviewReact, DockviewReadyEvent } from 'dockview-react';
 import 'dockview-react/dist/styles/dockview.css';
 
@@ -1145,8 +1288,9 @@ import { Zone1TopHud } from './Zone1TopHud';
 import { Zone1StatusBar } from './Zone1StatusBar';
 import { Zone2Explorer } from './Zone2Explorer';
 import { Zone3MainCanvas } from './Zone3MainCanvas';
-import { Zone4Inspector } from './Zone4Inspector';
-import { Zone5Console } from './Zone5Console';
+import { Zone4TaskCardsDock } from './Zone4TaskCardsDock';
+import { Zone5BottomInspector } from './Zone5BottomInspector';
+import { PortalView } from '../portal/PortalView';
 import { useSseTelemetry } from '../../hooks/useSseTelemetry';
 import { useHmiStore } from '../../stores/useHmiStore';
 import { RuntimeKioskShell } from '../runtime-kiosk/RuntimeKioskShell';
@@ -1156,10 +1300,20 @@ export const WorkbenchShell: React.FC = () => {
   useSseTelemetry();
 
   const isRuntimeFullscreen = useHmiStore((s) => s.isRuntimeFullscreen);
+  const [workspaceMode, setWorkspaceMode] = useState<'portal' | 'project'>('project');
 
   // If in WinCC-style fullscreen industrial kiosk mode, suppress all IDE chrome
   if (isRuntimeFullscreen) {
     return <RuntimeKioskShell />;
+  }
+
+  // If user toggles to Siemens Portal View (Welcome / Task Launchpad)
+  if (workspaceMode === 'portal') {
+    return (
+      <PortalView
+        onSwitchToProjectView={() => setWorkspaceMode('project')}
+      />
+    );
   }
 
   const onDockviewReady = (event: DockviewReadyEvent) => {
@@ -1168,14 +1322,14 @@ export const WorkbenchShell: React.FC = () => {
     // Register dockview panel components
     api.registerPanel('explorer', Zone2Explorer);
     api.registerPanel('main_canvas', Zone3MainCanvas);
-    api.registerPanel('inspector', Zone4Inspector);
-    api.registerPanel('console', Zone5Console);
+    api.registerPanel('task_cards', Zone4TaskCardsDock);
+    api.registerPanel('bottom_inspector', Zone5BottomInspector);
 
-    // Build default industrial layout
+    // Build canonical TIA Portal industrial layout
     api.addPanel({ id: 'zone2_explorer', component: 'explorer', position: { direction: 'left' } });
     api.addPanel({ id: 'zone3_canvas', component: 'main_canvas', position: { direction: 'right' } });
-    api.addPanel({ id: 'zone4_inspector', component: 'inspector', position: { direction: 'right' } });
-    api.addPanel({ id: 'zone5_console', component: 'console', position: { direction: 'below' } });
+    api.addPanel({ id: 'zone4_task_cards', component: 'task_cards', position: { direction: 'right' } });
+    api.addPanel({ id: 'zone5_inspector', component: 'bottom_inspector', position: { direction: 'below' } });
   };
 
   return (
@@ -1184,12 +1338,21 @@ export const WorkbenchShell: React.FC = () => {
       <Zone1TopHud />
 
       {/* Main Workspace Host (Zones 2, 3, 4, 5 managed by Dockview) */}
-      <div className="flex-1 relative w-full h-full">
+      <div className="flex-1 relative w-full h-full min-h-0">
         <DockviewReact onReady={onDockviewReady} className="dockview-theme-dark w-full h-full" />
       </div>
 
-      {/* Zone 1.1: Industrial Status Bar (24px) */}
-      <Zone1StatusBar />
+      {/* Bottom Switcher Ribbon (24px) */}
+      <div className="flex items-center justify-between px-3 h-6 bg-neutral-900 border-t border-neutral-800 text-[11px]">
+        <button
+          onClick={() => setWorkspaceMode('portal')}
+          className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-600 text-white font-medium"
+        >
+          <span>🌐</span>
+          <span>Portal View</span>
+        </button>
+        <Zone1StatusBar />
+      </div>
     </div>
   );
 };
@@ -1197,44 +1360,61 @@ export const WorkbenchShell: React.FC = () => {
 
 ---
 
-## 9. TIA Portal Style Screen Hierarchy & Faceplate Library (Zone 2 Primary Explorer)
+## 9. Siemens TIA Portal Canonical Project Tree Taxonomy (Zone 2 Primary Explorer)
 
-Zone 2 Primary Explorer hosts the hierarchical tree separating plant-level operational screens from the master reusable component catalog:
+Zone 2 Primary Explorer hosts the standardized hierarchical project tree taxonomy defined in **SYS-REQ-097**, mirroring Siemens TIA Portal structure:
 
 ```
 +───────────────────────────────────────────────────────────────────────────+
-| ZONE 2: PRIMARY EXPLORER                                                  |
+| ZONE 2: PRIMARY PROJECT EXPLORER (240px - 360px Resizable)                |
 +───────────────────────────────────────────────────────────────────────────+
 | ▼ Project: BottlingPlant_Line01                                           |
-|   ├── ⚙️ Hardware Racks & Fieldbus (PROFINET)                             |
-|   ├── 📜 PLC Logic Blocks (MainBottling.st)                               |
-|   │                                                                       |
-|   ▼ 🖥️ HMI Screens (Plant Operational Screens)                            |
-|     ├── [➕ Add New Screen]                                               |
-|     ├── [🖥️ Screen_01_PlantOverview] (Root Main Screen)                  |
-|     ├── [🖥️ Screen_02_BoilerSystem]                                      |
-|     │     ▼ Sub-Screens / Popup Windows                                   |
-|     │       ├── [➕ Add Sub-Screen]                                       |
-|     │       ├── [📑 SubScreen_FeedPumpSkid]                               |
-|     │       └── [📑 SubScreen_BurnerLoop]                                 |
-|     └── [🖥️ Screen_03_OperatorDeck]                                       |
-|                                                                           |
-|   ▼ 📦 Faceplate Library (Master Reusable Component Types)  <-- DESIGN    |
-|     ├── [➕ Create New Faceplate Type]                                    |
-|     ├── 📦 FP_Motor_VFD (Master Pump / VFD Motor)                         |
-|     ├── 📦 FP_Pneumatic_Valve (Master Discrete Valve)                     |
-|     └── 📦 FP_Analog_Transmitter (Master 4-20mA Sensor)                   |
+|   ▼ Devices & Networks                                                    |
+|     ├── 🌐 Network View (Fieldbus overview & subnet mapping)              |
+|     ├── 🎛️ Device View (Chassis rack & slot configuration)                |
+|     └── 🔌 Topology View (Physical port-to-port cable wiring)             |
+|   ▼ Controller [MythOS Soft-Logic / STruC++]                              |
+|     ├── ⚙️ Device configuration & Network interfaces                      |
+|     ├── 🩺 Online & Diagnostics (Live CPU cycle time, buffer usage)       |
+|     ▼ 📜 Program Blocks                                                   |
+|       ├── [➕ Add new block: OB / FB / FC / DB]                           |
+|       ├── Main [OB1] (Cyclic main task execution)                         |
+|       ├── FastInterrupt [OB35] (10ms periodic interrupt task)             |
+|       └── Function Blocks & Data Blocks (FB_Motor, DB_PlantParameters)    |
+|     ▼ 🏷️ PLC Tags                                                         |
+|       ├── Show all tags (Flat search table)                               |
+|       └── Tag Tables (external.* physical vs internal.* logic variables)  |
+|     ▼ 🧱 PLC Data Types (UDTs - User Defined Data Types)                  |
+|     └── 👁️ Watch and Force Tables (Online variable forcing deck)          |
+|   ▼ Visualization [MythOS Web HMI / WinCC Kiosk]                          |
+|     ▼ 🖥️ HMI Screens (Plant Operational Screens)                          |
+|       ├── [➕ Add new screen]                                             |
+|       ├── Screen_01_PlantOverview (Main process dashboard)               |
+|       └── Screen_02_BoilerArea (with nested Sub-Screens)                  |
+|     ▼ 📑 Screen Management (Templates, Pop-up screens, Slide-in drawers)  |
+|     ▼ 📦 Faceplate Types (Project Library Master Component Templates)     |
+|     ├── 🚨 HMI Tags & Alarm Management (ISA-18.2 Annunciator Matrix)      |
+|     └── 🧪 Recipes (ISA-88 Batch Execution Engine)                        |
 +───────────────────────────────────────────────────────────────────────────+
 ```
 
 ### 9.1 Multi-Tab Workspace Navigation in Zone 3
-- **Double-Click on Screen or Sub-Screen**: Opens a dedicated tab in Zone 3 (`ScreenCanvasHost.tsx`). Tab handles allow engineers to switch seamlessly between `[🖥️ Screen_01_PlantOverview]`, `[📑 SubScreen_FeedPumpSkid]`, and `[main.st]`.
+- **Double-Click on Network View, Device View, or Topology View**: Opens the dedicated **Devices & Networks** multi-mode canvas in Zone 3 (`DevicesNetworksCanvas.tsx`).
+- **Double-Click on Program Blocks (`OB1`, `FB_Motor`)**: Opens the **Monaco IEC 61131-3 Logic Editor** tab in Zone 3.
+- **Double-Click on HMI Screen or Sub-Screen**: Opens the **HMI Screen Designer / Preview Canvas** tab in Zone 3 (`ScreenCanvasHost.tsx`).
 - **Double-Click on Faceplate Library Type**: Opens the dedicated **Faceplate Master Designer** tab (`FaceplateMasterDesigner.tsx`) in Zone 3.
 
----
+### 9.2 Zone 4 Far-Right Task Cards Integration
+When working in Zone 3, Zone 4 presents contextually relevant task cards:
+- In **Logic Editor**: The `Instructions` task card displays standard IEC 61131-3 operators (Bit logic, Timers, Counters, Math).
+- In **Devices & Networks**: The `Hardware Catalog` task card displays modular racks, I/O slices, communication adapters, and drives for direct drag-and-drop into chassis racks.
+- In **HMI Screen Designer**: The `Layout & Widgets` and `Libraries` task cards display P&ID symbols, modular widgets, and master faceplate types.
 
-## 10. Faceplate Master Designer & Global Version Propagation Engine
-
+### 9.3 Zone 5 Context-Sensitive Bottom Properties Synchronization
+Selecting any element in Zone 3 drives Zone 5 with zero latency:
+- Selecting an I/O module in **Device View** reveals its hardware start/end addresses (`%I10.0..%I11.7`), channel inversion bits, and diagnostics buffer.
+- Selecting a logic block in **Program Blocks** reveals its author, version, cycle allocation, and local tag declarations.
+- Selecting an HMI graphic object reveals its W3C DTCG styling tokens, dynamic alarm bindings, and coordinate geometry.
 The Faceplate Master Designer decouples graphic component engineering from specific field device tags.
 
 ```
@@ -1318,7 +1498,7 @@ To guarantee 100% operational safety on active industrial lines, the frontend st
   * Simulates exactly how the operator will experience the screen without deploying to production.
   * Screen-to-screen navigation buttons, subscreen popups, and drawer expansions execute realistically.
   * Widget animations (e.g. spinning agitators, color transitions on simulated sensor trips) are active.
-  * **Strict Isolation Contract**: Actuator write commands are intercepted by the client sandbox. Zero hardware register write requests are dispatched to OpenPLC or fieldbus drivers.
+  * **Strict Isolation Contract**: Actuator write commands are intercepted by the client sandbox. Zero hardware register write requests are dispatched to the Native STruC++ Engine or fieldbus drivers.
 
 ### 11.3 Stage 3: Runtime View (Live Production Release)
 - **Visual Badge**: Green badge in Zone 1 Top HUD: `[🟢 RUNTIME MODE — LIVE COMMITTED]`.

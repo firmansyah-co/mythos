@@ -24,7 +24,7 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 |  [ SPRINT 0 ]  Core Foundations, SHM TagBus, Driver SPI & Universal Plugin SDK Harness      |
 |         |                                                                                     |
 |         v                                                                                     |
-|  [ SPRINT 1 ]  OpenPLC Runtime v4 C-ABI Bridge, STruC++ Compiler Pipeline & Logic Execution   |
+|  [ SPRINT 1 ]  Native STruC++ Runtime Engine & In-Canvas Logic Compilation                    |
 |         |                                                                                     |
 |         v                                                                                     |
 |  [ SPRINT 2 ]  Layer 2 PROFINET DCP Discovery, Hardware Catalog & Dynamic Plugin Packaging    |
@@ -67,21 +67,21 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 
 ---
 
-### Sprint 1: OpenPLC Runtime v4 C-ABI Bridge & Logic Compilation
-- **Sprint Goal**: Embed OpenPLC Runtime v4 via an `extern "C"` Foreign Function Interface, establish the STruC++ compiler pipeline with in-canvas deploy, and verify cyclic execution with real-time Linux priority.
+### Sprint 1: Native STruC++ Runtime Engine & In-Canvas Logic Compilation
+- **Sprint Goal**: Embed the Native STruC++ Runtime Engine via an `extern "C"` Foreign Function Interface, establish the STruC++ compiler pipeline with in-canvas deploy, and verify cyclic execution with real-time Linux priority without external PLC daemons.
 - **Duration**: Weeks 3 - 4
 - **Lead Division**: Software (`head-software`), Hardware (`head-hardware`)
 
 | Task ID | Task Description | Assigned Division | Deliverables & Code Artifacts | Acceptance Criteria |
 |---|---|---|---|---|
-| **TSK-101** | Construct OpenPLC v4 FFI C-ABI Wrapper | Software (`head-software`) | `crates/mythos-openplc/src/ffi.rs`, `glue.c`, `glue.h` | Safe Rust wrapper exposing runtime initialization, cycle step, and memory buffer pointers. |
-| **TSK-102** | Build STruC++ Compiler Engine & In-Canvas Deploy | Software (`head-software`) | `crates/mythos-openplc/src/compiler.rs`, `deploy.rs` | Compiles `.st` logic into native `.so` dynamic libraries using `strucpp compile` directly on the target controller via `POST /api/v1/control/deploy`. Manual file uploads eliminated. |
-| **TSK-103** | Implement Real-Time Linux Scan Thread Scheduling | Hardware (`head-hardware`), Software (`head-software`) | `crates/mythos-openplc/src/runtime.rs` | Attaches scan loop to `SCHED_FIFO` with real-time priority 80. Scan jitter within $\pm 100\,\mu\text{s}$. |
-| **TSK-104** | Develop Dynamic Hot-Reload Subsystem | Software (`head-software`) | `crates/mythos-openplc/src/hot_reload.rs` | Dynamic library swap using `dlopen()` completed in $< 50\,\text{ms}$ at end-of-scan boundary without zeroing outputs. |
-| **TSK-105** | Integrate TagBus Bidirectional Memory Synchronization | Software (`head-software`) | `crates/mythos-openplc/src/sync.rs` | Copies inputs into OpenPLC `%IX` memory and extracts outputs from `%QX` memory into `/dev/shm/mythos_tagbus` per scan cycle. |
-| **TSK-106** | Create IEC 61131-3 Standard Test Program Suite | Hardware (`head-hardware`) | `crates/mythos-openplc/tests/programs/` | Automated test suites for Timer (TON), Counter (CTU), and State Machine logic verify expected execution. |
-| **TSK-107** | Implement Task Scheduler Staging Isolation | Software (`head-software`) | `crates/mythos-openplc/src/scheduler.rs` | Decouples draft task configuration edits from the running `SCHED_FIFO` loop until atomic project activation. |
-| **TSK-108** | Implement Tag Quality Alarm Propagation & Simulation Input Gating | Software (`head-software`) | `crates/mythos-openplc/src/quality_gate.rs`, `sync.rs` | Enforces `BAD_COMM_FAILURE` (0x0008/0x0018) quality latching on physical field communication loss (SYS-REQ-096). Restricts TagBus manual slider injection and direct variable forcing strictly to devices configured in `ManualSimulation` mode. |
+| **TSK-101** | Native STruC++ C-ABI Bridge & Symbol Loader | Software (`head-software`) | `crates/mythos-strucpp/src/ffi.rs`, `symbol.rs`, `glue.h` | Safe Rust wrapper exposing native runtime initialization, cycle step, and memory buffer pointers without external PLC daemons. |
+| **TSK-102** | STruC++ Compiler Engine & In-Canvas Deploy | Software (`head-software`) | `crates/mythos-strucpp/src/compiler.rs`, `deploy.rs` | Compiles `.st` logic into native C++17 `.so` dynamic libraries using `strucpp compile` directly on the target controller via `POST /api/v1/control/deploy`. Manual file uploads eliminated. |
+| **TSK-103** | Native Cyclic Scheduling & Real-Time Linux Scan Thread | Hardware (`head-hardware`), Software (`head-software`) | `crates/mythos-strucpp/src/runtime.rs` | Attaches cyclic scan loop to `SCHED_FIFO` with real-time priority 80. Scan jitter within $\pm 100\,\mu\text{s}$. |
+| **TSK-104** | Dynamic Hot-Reload Subsystem | Software (`head-software`) | `crates/mythos-strucpp/src/hot_reload.rs` | Dynamic library swap using `libloading` completed in $< 50\,\text{ms}$ at end-of-scan boundary without zeroing outputs. |
+| **TSK-105** | TagBus Bidirectional Memory Synchronization | Software (`head-software`) | `crates/mythos-strucpp/src/sync.rs` | Copies inputs into STruC++ `%IX` memory and extracts outputs from `%QX` memory into `/dev/shm/mythos_tagbus` per scan cycle. |
+| **TSK-106** | IEC 61131-3 Standard Test Program Suite | Hardware (`head-hardware`) | `crates/mythos-strucpp/tests/programs/` | Automated test suites for Timer (TON), Counter (CTU), and State Machine logic verify expected execution. |
+| **TSK-107** | Task Scheduler Staging Isolation | Software (`head-software`) | `crates/mythos-strucpp/src/scheduler.rs` | Decouples draft task configuration edits from the running `SCHED_FIFO` loop until atomic project activation. |
+| **TSK-108** | Tag Quality Alarm Propagation & Simulation Input Gating | Software (`head-software`) | `crates/mythos-strucpp/src/quality_gate.rs`, `sync.rs` | Enforces `BAD_COMM_FAILURE` (0x0008/0x0018) quality latching on physical field communication loss (SYS-REQ-096). Restricts TagBus manual slider injection and direct variable forcing strictly to devices configured in `ManualSimulation` mode. |
 
 ---
 
@@ -102,7 +102,10 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | **TSK-208** | Universal Protocol Discovery Engine & Trait Implementation | Software (`head-software`) | `crates/mythos-core/src/discovery/engine.rs`, `traits.rs` | Implements `ProtocolDiscoverer` async trait. Coordinates Guided Discovery and Blind Bus Sweep. Supports cancellation tokens and enforces fast probe ($\le 1.0\,	ext{s}$) timeout bounds. |
 | **TSK-209** | Device Catalog Fingerprinting & Modbus Heuristic Sweep | Hardware (`head-hardware`) | `crates/mythos-core/src/discovery/modbus_sweep.rs`, `crates/mythos-core/src/catalog/fingerprint.rs` | Sweeps baud rates (9600 to 115200), parity, and slave IDs (1 to 247). Matches response registers against catalog signatures. Completes guided sweep in $\le 4.0\,\text{s}$. |
 | **TSK-210** | Network View Guided Discovery UI & Bus Scanner Progress Modal | Design (`head-design`) | `frontend/src/features/discovery/DiscoveryModal.tsx`, `BusScannerProgress.tsx` | Dark Obsidian modal displays scan progress, live discovered devices, and cancellation button. Complies with ISA-101 contrast and box-model invariants. |
-| **TSK-211** | Plugin Packaging, CLI Installer & Dynamic Host Manager | Software (`head-software`) | `crates/mythos-core/src/plugin/`, `crates/mythos-cli/src/plugin.rs` | Builds single-file `.mythos-plugin` packager, capability verifier, and dynamic hot-reload engine without process restarts. |
+| **TSK-211** | Plugin Packaging, CLI Toolchain & Dynamic Host Manager | Software (`head-software`) | `crates/mythos-core/src/plugin/`, `crates/mythos-cli/src/plugin.rs` | Builds single-file `.mythos-plugin` packager, capability verifier, and dynamic hot-reload engine without process restarts. |
+| **TSK-212** | Universal Bootstrap Scripts (POSIX Bash & Windows PowerShell) | Software (`head-software`), Publication (`head-publication`) | `scripts/install.sh`, `scripts/install.ps1` | Develops one-line bootstrap scripts for `https://get.mythos.firmansyah.co`. Supports `--channel <release|rc|dev>` and `--version <semver>` flags, environment variables, OS/arch detection (`x86_64`, `aarch64`, `armv7l`), SHA-256 verification, and systemd service configuration. |
+| **TSK-213** | Multi-Channel CLI Lifecycle Management & Instant Rollback | Software (`head-software`) | `crates/mythos-cli/src/channel.rs`, `update.rs`, `rollback.rs` | Implements `mythos channel [switch <channel>]`, `mythos versions --remote`, `mythos update [--version <semver>]`, and sub-second (`< 1.0 s`) atomic binary rollback via cached versions. |
+| **TSK-214** | Web HMI Asset Embedding & Desktop Launcher Registration | Software (`head-software`), Design (`head-design`) | `crates/mythos-server/src/web/`, `scripts/register-launcher.sh` | Embeds production Web HMI static assets into the daemon microkernel binary (served on `http://localhost:8080`). Automatically registers macOS `.app`, Windows shortcuts, and Linux `.desktop` entries during installation. |
 
 ---
 
@@ -163,6 +166,34 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | **TSK-507** | Conduct End-to-End System Commissioning & Audit | Publication (`head-publication`), All Kadivs | Full test reports, operator handbook, SOP manuals | 100% test pass rate across all verification criteria in `specs/spec.md`. Board approval signed off. |
 
 ---
+---
+
+### Sprint 6: Siemens TIA Portal View Launchpad, Clean Empty Project Lifecycle & Full Dynamic Workbench Wiring
+- **Sprint Goal**: Deliver the dual-mode Siemens TIA Portal workspace with Portal View (Welcome Screen and Task Launchpad) and Project View (5-Zone Workbench), implement clean empty project initialization with zero hardcoded mocks, wire end-to-end interactive document opening into Dockview tabs, provide dynamic block and screen creation modals, and bind active selection context to the constant 384px inspector drawer.
+- **Duration**: Weeks 13 - 14
+- **Lead Division**: Software (`head-software`), Design (`head-design`)
+
+| Task ID | Task Description | Assigned Division | Deliverables & Code Artifacts | Acceptance Criteria |
+|---|---|---|---|---|
+| **TSK-601** | Siemens TIA Portal "Portal View" Welcome Screen & Bottom-Left Dual-Mode Switcher (`[ 🌐 Portal View ]` <---> `[ 🎛️ Project View ]`) | Software (`head-software`), Design (`head-design`) | `frontend/packages/ui-shell/src/components/portal/PortalView.tsx`, `frontend/packages/ui-shell/src/App.tsx`, `frontend/packages/ui-shell/src/components/portal/PortalNav.tsx` | Bottom-left persistent switcher toggles between Portal View and Project View instantly. Portal View presents 6 canonical navigation domains: Start, Devices & Networks, PLC Programming, Motion & Technology, Visualization, and Online & Diagnostics. Action triggers seamless contextual transition to Project View. |
+| **TSK-602** | Zero-Mock Clean Empty Project State & Lifecycle Manager (Create, Open, Import .mythos-pkg via `/api/v1/projects`) | Software (`head-software`) | `frontend/packages/ui-shell/src/stores/useProjectStore.ts`, `frontend/packages/ui-shell/src/components/workbench/Zone2ProjectTree.tsx`, `frontend/packages/ui-shell/src/components/portal/ProjectLifecycleModal.tsx` | Completely eliminates hardcoded mock projects and phantom blocks. Displays clean empty states in project tree and central canvas when no objects exist. REST API integration provides live project creation, opening, and `.mythos-pkg` archive import via `/api/v1/projects`. |
+| **TSK-603** | Full Project Tree Dynamic Wiring & Dynamic Block/Screen Creation | Software (`head-software`) | `frontend/packages/ui-shell/src/components/workbench/DockviewWorkspace.tsx`, `frontend/packages/ui-shell/src/components/modals/CreateBlockModal.tsx`, `frontend/packages/ui-shell/src/components/modals/CreateScreenModal.tsx` | Real interactive document router in Dockview opens and focuses tabs for ST logic blocks, HMI screens, and Devices/Topology views. Dynamic creation modals allow engineers to instantiate OB, FB, FC, and DB blocks, and HMI screens with immediate tree update and tab opening. |
+| **TSK-604** | Active Selection Context Binding to Constant 384px Inspector Drawer | Software (`head-software`), Design (`head-design`) | `frontend/packages/ui-shell/src/components/workbench/Zone4TaskCards.tsx`, `frontend/plugins/ui-inspector/src/InspectorDrawer.tsx` | Inspector drawer maintains strict 384px layout token width. Zone 4 and bottom inspector dynamically synchronize to the actively selected tree node, logic block, or canvas element, rendering real properties, tag bindings, and diagnostics without static mockups. |
+
+---
+
+### Sprint 7: Universal IEC 61131-3 Logic IDE Parity (OpenPLC Editor v4 Complete Replication)
+- **Sprint Goal**: Deliver complete IDE parity with OpenPLC Editor v4 and Siemens STEP 7 across all five IEC 61131-3 languages (ST, IL, LD, FBD, SFC), construct the variable table grid with user-defined data type (DUT/UDT) definitions, and implement live online debugging with power-flow animation and variable forcing.
+- **Duration**: Weeks 15 - 16
+- **Lead Division**: Software (`head-software`), Hardware (`head-hardware`), R&D (`head-rnd`)
+
+| Task ID | Task Description | Assigned Division | Deliverables & Code Artifacts | Acceptance Criteria |
+|---|---|---|---|---|
+| **TSK-701** | Monaco Multi-Language Textual Editor Suite (Structured Text ST & Instruction List IL) | Software (`head-software`) | `frontend/plugins/ui-logic-editor/src/MonacoStEditor.tsx`, `frontend/plugins/ui-logic-editor/src/ilLanguage.ts`, `frontend/plugins/ui-logic-editor/src/stLanguage.ts` | Monaco editor provides full syntax highlighting, keyword autocompletion, bracket matching, linting, and hover tooltips for Structured Text (ST) and Instruction List (IL). Integrates with backend compiler diagnostics. |
+| **TSK-702** | Full-Featured Graphical Ladder Diagram (LD) Canvas (Power rails, contacts, coils, branches, function blocks) | Software (`head-software`), Design (`head-design`) | `frontend/plugins/ui-logic-editor/src/LadderCanvas.tsx`, `frontend/plugins/ui-logic-editor/src/ladder/RungRenderer.tsx`, `frontend/plugins/ui-logic-editor/src/ladder/LadderElements.tsx` | Renders dual power rails, normally open (NO) and normally closed (NC) contacts, pulse transitions (P/N), standard/set/reset coils, parallel branch circuits, and inline function block invocations (TON, TOF, TP, CTU, CTD). Supports drag-and-drop from Zone 4 task cards. |
+| **TSK-703** | Function Block Diagram (FBD) & Sequential Function Chart (SFC) Visual Canvas | Software (`head-software`), Design (`head-design`) | `frontend/plugins/ui-logic-editor/src/fbd/FbdCanvas.tsx`, `frontend/plugins/ui-logic-editor/src/sfc/SfcCanvas.tsx` | FBD canvas renders modular interconnected logic gates and mathematical blocks with typed input/output pins and negation flags. SFC canvas renders initial/step states, directed links, transition conditions, and action qualifiers (N, S, R, P, L, D). |
+| **TSK-704** | Variable Table Grid & Data Type Editor (POU VAR table, GVL, DUT/UDT Structs/Enums) | Software (`head-software`) | `frontend/plugins/ui-logic-editor/src/variables/VariableTableGrid.tsx`, `frontend/plugins/ui-logic-editor/src/variables/DataTypeEditor.tsx` | Provides spreadsheet-style declaration grid for POU scoped variables (`VAR`, `VAR_INPUT`, `VAR_OUTPUT`, `VAR_IN_OUT`, `VAR_TEMP`), Global Variable Lists (`GVL`), and User-Defined Data Types (`DUT/UDT` structures and enumerations) with IEC memory addresses (`%IX`, `%QX`, `%MX`). |
+| **TSK-705** | Live Online Debugging, Power-Flow Animation & Variable Forcing (SYS-REQ-096 compliant) | Software (`head-software`), Hardware (`head-hardware`), R&D (`head-rnd`) | `frontend/plugins/ui-logic-editor/src/debug/OnlineDebugEngine.ts`, `frontend/plugins/ui-logic-editor/src/debug/PowerFlowOverlay.tsx` | Real-time telemetry stream animates LD power rails and rungs in vibrant green (`#22C55E`) when active. ST editor displays inline variable values. Variable force table enables manual override with audit logging in compliance with SYS-REQ-096 safety invariants. |
 
 ## 3. Milestones & Quality Gates
 
@@ -176,15 +207,16 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
                                                   v
 +---------------------------------------------------------------------------------------------------+
 | GATE 1: Logic Engine & Control Loop Sign-Off (End of Sprint 1)                                    |
-| Criteria: OpenPLC v4 compiles ST logic via STruC++; in-canvas POST /deploy hot-reloads < 50 ms;   |
+| Criteria: Native STruC++ compiles ST logic via STruC++; in-canvas POST /deploy hot-reloads < 50 ms;|
 |           Linux real-time thread runs with < 100 us jitter bounds; scheduler staging isolated.    |
 +---------------------------------------------------------------------------------------------------+
                                                   |
                                                   v
 +---------------------------------------------------------------------------------------------------+
-| GATE 2: Discovery, Catalog & Plugin Packaging Sign-Off (End of Sprint 2)                          |
+| GATE 2: Discovery, Catalog, Distribution & Plugin Packaging Sign-Off (End of Sprint 2)            |
 | Criteria: Layer 2 DCP identifies unassigned devices; golden reference device packages ingested;  |
-|           universal sweep runs <= 4.0 s; .mythos-plugin packager & dynamic hot-reload verified.   |
+|           universal sweep runs <= 4.0 s; .mythos-plugin packager & dynamic hot-reload verified;   |
+|           universal bootstrap scripts, multi-channel CLI, and instant rollback validated.          |
 +---------------------------------------------------------------------------------------------------+
                                                   |
                                                   v
@@ -206,6 +238,22 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | GATE 5: AI Agent & Enterprise Production Sign-Off (End of Sprint 5)                               |
 | Criteria: MCP tools pass end-to-end AI control; .mythos-pkg restores replacement IPC in < 25 s.   |
 +---------------------------------------------------------------------------------------------------+
+                                                  |
+                                                  v
++---------------------------------------------------------------------------------------------------+
+| GATE 6: Siemens TIA Portal Workspace & Dynamic Lifecycle Sign-Off (End of Sprint 6)               |
+| Criteria: Dual-mode Portal/Project View switcher verified; clean zero-mock project lifecycle;      |
+|           dynamic Dockview tab wiring operational; dynamic block/screen creation validated;       |
+|           constant 384px inspector drawer context-sensitive binding active.                       |
++---------------------------------------------------------------------------------------------------+
+                                                  |
+                                                  v
++---------------------------------------------------------------------------------------------------+
+| GATE 7: Universal IEC 61131-3 Logic IDE & Online Debugging Sign-Off (End of Sprint 7)             |
+| Criteria: Full 5-language parity (ST, IL, LD, FBD, SFC) verified against OpenPLC Editor v4;       |
+|           Spreadsheet variable table & DUT/UDT editor validated; live power-flow animation and    |
+|           variable forcing operational with SYS-REQ-096 safety compliance.                        |
++---------------------------------------------------------------------------------------------------+
 ```
 
 ---
@@ -216,7 +264,7 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 |---|---|---|---|---|---|---|
 | **Cargo Workspace & Microkernel** | **Accountable** | Consulted | Informed | Consulted | Responsible (Specs) | Approver |
 | **SHM Lock-Free TagBus** | **Accountable** | Consulted | Informed | Consulted | Responsible (Specs) | Approver |
-| **OpenPLC v4 Runtime Bridge** | **Accountable** | Responsible | Informed | Informed | Responsible (Specs) | Approver |
+| **Native STruC++ Runtime Engine** | **Accountable** | Responsible | Informed | Informed | Responsible (Specs) | Approver |
 | **Layer 2 DCP Discovery** | Responsible | **Accountable** | Informed | Informed | Responsible (Specs) | Approver |
 | **Universal Protocol Auto-Discovery** | **Accountable** | Responsible | Responsible | Informed | Responsible (Specs) | Approver |
 | **Device Catalog Packages** | Consulted | **Accountable** | Informed | Informed | Responsible (Specs) | Approver |
@@ -228,6 +276,7 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | **Native MCP AI Subsystem** | **Accountable** | Informed | Informed | Consulted | Responsible (Specs) | Approver |
 | **Universal Plugin Harness & SDK** | **Accountable** | Consulted | Responsible | Consulted | Responsible (Specs) | Approver |
 | **Plugin Dynamic Host & Packaging** | **Accountable** | Consulted | Informed | Consulted | Responsible (Specs) | Approver |
+| **Universal Bootstrap & Multi-Channel CLI** | **Accountable** | Consulted | Consulted | Informed | Responsible (Specs) | Approver |
 | **Modular Frontend Plugin Shell** | Responsible | Informed | **Accountable** | Informed | Responsible (Specs) | Approver |
 | **Target Controller Storage & WAL**| **Accountable** | Consulted | Informed | Informed | Responsible (Specs) | Approver |
 | **In-Canvas Logic IDE & Deploy** | **Accountable** | Responsible | Responsible | Informed | Responsible (Specs) | Approver |
@@ -235,6 +284,10 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | **Faceplate Library Designer** | Responsible | Informed | **Accountable** | Informed | Responsible (Specs) | Approver |
 | **CRDT Real-Time Collaboration** | **Accountable** | Informed | Responsible | Informed | Responsible (Specs) | Approver |
 | **Disaster Recovery (.mythos-pkg)**| **Accountable** | Consulted | Informed | Informed | Responsible (Specs) | Approver |
+| **Portal View & Dynamic Lifecycle**| **Accountable** | Informed | Responsible | Informed | Responsible (Specs) | Approver |
+| **Universal IEC 61131-3 Logic IDE**| **Accountable** | Responsible | Responsible | Consulted | Responsible (Specs) | Approver |
+| **Variable Table Grid & UDT Editor**| **Accountable** | Consulted | Responsible | Informed | Responsible (Specs) | Approver |
+| **Online Logic Debugging & Forcing**| **Accountable** | Responsible | Responsible | Consulted | Responsible (Specs) | Approver |
 | **Master Documentation & SOP** | Consulted | Consulted | Consulted | Consulted | **Accountable** | Approver |
 
 ---
@@ -245,7 +298,9 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 |---|---|---|
 | **Sprint 0** | SYS-REQ-001, 002, 003, 004, 005, 010, 011, 012, 013, 016, 017, 018, 019, 030, 031, 032, 033, 034, 075, 076, 077, 086, 087 | ADR-001, ADR-002, ADR-008, ARCH-005, ARCH-006, DATA-004 |
 | **Sprint 1** | SYS-REQ-020, 021, 022, 023, 024, 025, 080, 096 | ADR-003, ARCH-005, ARCH-002, DATA-003 |
-| **Sprint 2** | SYS-REQ-040, 041, 042, 043, 044, 045, 074, 088, 089, 096 | ADR-004, ADR-008, ARCH-006, ARCH-002, HMI-000 |
+| **Sprint 2** | SYS-REQ-040, 041, 042, 043, 044, 045, 074, 088, 089, 095, 096 | ADR-004, ADR-008, ARCH-006, ARCH-002, ARCH-008, HMI-000 |
 | **Sprint 3** | SYS-REQ-050, 051, 052, 053, 054, 055, 056, 057, 078, 079, 081, 082, 083, 084, 085, 090 | ADR-006, ADR-008, HMI-000, ARCH-005, ARCH-006 |
 | **Sprint 4** | SYS-REQ-060, 061, 062, 063, 064, 065, 066 | ADR-007 |
 | **Sprint 5** | SYS-REQ-067, 068, 070, 071, 072, 073 | ADR-005, ADR-007 |
+| **Sprint 6** | SYS-REQ-097, 098 | ADR-006, ADR-008, HMI-000, ARCH-005 |
+| **Sprint 7** | SYS-REQ-021, 023, 096, 099 | ADR-003, ADR-006, HMI-000, ARCH-005 |
