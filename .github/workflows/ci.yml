@@ -164,20 +164,34 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          # Pinned: frontend/package.json has no packageManager field, so a bare
-          # action-setup would fail. This matches the version that generated pnpm-lock.yaml.
-          version: 12.14.0
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           # Pinned: no .nvmrc and no engines field. Vite 6 needs >=18; @types/node is ^22.
+          # MUST run before pnpm is installed: arc-runner-org is self-hosted and has no
+          # node on PATH, so pnpm/action-setup's self-installer dies with
+          # "sh: 1: node: not found". For the same reason `cache: pnpm` cannot be used
+          # here (setup-node shells out to a pnpm that does not exist yet).
           node-version: '22'
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install pnpm
+        run: |
+          # Pinned: frontend/package.json has no packageManager field, so nothing would
+          # otherwise select a version. This matches the version that generated pnpm-lock.yaml.
+          npm install --global pnpm@12.14.0
+          pnpm --version
+
+      - name: Resolve pnpm Store Path
+        id: pnpm-store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm Store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-${{ runner.os }}-
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
