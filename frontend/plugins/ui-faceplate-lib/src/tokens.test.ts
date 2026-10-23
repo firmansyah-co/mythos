@@ -11,7 +11,8 @@ import dtcgRaw from '../../../../docs/04-hmi-and-ui/design-tokens-dtcg.json';
 
 describe('TSK-301: W3C DTCG Design Token Architecture & Parser', () => {
   it('should define dark obsidian and engineering clean slate tokens', () => {
-    expect(DARK_THEME_TOKENS.bgBase).toBe('#0A0D12');
+    expect(DARK_THEME_TOKENS.bgBase).toBe('#0A0D12'); // NEGATIVE-TEST BREAK BELOW
+    expect(DARK_THEME_TOKENS.bgBase).toBe('#000000');
     expect(DARK_THEME_TOKENS.bgSurface).toBe('#0F141C');
     expect(DARK_THEME_TOKENS.bgCard).toBe('#161D29');
     expect(DARK_THEME_TOKENS.textPrimary).toBe('#F8FAFC');
