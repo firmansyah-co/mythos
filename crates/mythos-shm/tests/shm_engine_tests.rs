@@ -201,21 +201,26 @@ fn test_concurrent_writer_and_readers() {
 ///
 /// **Which profile measures it.** The acceptance assertion runs **only in a release build**
 /// (`#[cfg(not(debug_assertions))]`). `publish_write` and `acquire_read` are `#[inline(always)]`
-/// CAS loops, and a debug build does not optimise them: measured on an otherwise idle
-/// i9-11980HK, debug best-batch is ~84 ns while release best-batch is ~19 ns. Asserting 50 ns
-/// against a debug build therefore fails before any CI contention exists. CI runs the assertion
-/// through `cargo test --release -p mythos-shm` (see `.github/workflows/ci.yml`), so the
-/// optimised number is the one that certifies the criterion.
+/// CAS loops, and a debug build does not optimise them: on this host debug best-batch is ~84 ns
+/// while release best-batch is ~19 ns, i.e. debug is ~1.6-4x slower across every interleaved
+/// comparison taken. Asserting 50 ns against a debug build is measuring the wrong build.
+/// CI runs the assertion through the `cargo test --release -p mythos-shm` step in
+/// `.github/workflows/ci.yml`, so the optimised number is the one that certifies the criterion.
 ///
 /// **Which statistic.** The gate is the **best (minimum) batch** of 20 batches x 10,000
 /// iterations, not the mean and not p99. Measured distributions:
 ///
 /// | profile | host load | best batch | p50 | p99 |
 /// |---------|-----------|-----------|-----|-----|
-/// | release | idle | 19.4 ns | 20.2 ns | 20.7 ns |
-/// | release | 16 busy cores | 31.8-35.5 ns | 34-36.8 ns | 73.6-116.9 ns |
-/// | debug | idle | 83.7 ns | 87.9 ns | 212.9 ns |
-/// | debug | 16 busy cores | 82.0-86.5 ns | 132-181 ns | 190-253 ns |
+/// | release | no load added by me | 18.6-20.4 ns | 18.7-20.4 ns | 19.6-21.2 ns |
+/// | release | + 16 busy cores | 32.8-35.5 ns | 33.5-36.7 ns | 114-120 ns |
+/// | debug | no load added by me | 82.0-86.5 ns | 88-97 ns | 191-781 ns |
+/// | debug | + 16 busy cores | 82.0-86.5 ns | 132-181 ns | 190-253 ns |
+///
+/// "No load added by me" is deliberate wording: this host was **never** genuinely idle while
+/// these numbers were taken, because the CI runner and the agent fleet share it (see below).
+/// The load-controlled rows are the reliable comparison, because both arms faced the same
+/// background load. Do not read the first and third rows as idle-machine figures.
 ///
 /// The distribution is **not** bimodal, but its *tail* is entirely contention: p99 triples
 /// under load while the best batch moves by ~60% and stays under the bound. Gating on p99
@@ -231,6 +236,28 @@ fn test_concurrent_writer_and_readers() {
 /// **Debug smoke check.** `test_atomic_swap_latency_smoke_debug` runs instead under debug with a
 /// deliberately loose bound. It is a smoke check that the buffer still works at all - it is NOT
 /// the acceptance criterion and must never be treated as one.
+///
+/// # The CI runner is the same host as the agent fleet
+///
+/// This is the fact that makes every number above hard to read, and nobody had written it down.
+/// The `arc-runner-org` runner is not a remote box: `Runner.Listener` processes run locally and
+/// CI competes for the **same cores** as the agent fleet's own `rustc` / `cc1plus` / `vitest` /
+/// `node` builds. Observed on this host (16 cores): load average 27 / 109 / 84 with ~22 build
+/// processes live, and 3 local `Runner.Listener` processes.
+///
+/// Consequences for anyone reading a failure:
+/// - A wall-clock latency assertion on this host measures **the fleet's build load as much as the
+///   algorithm**. That is why a single-sample assertion here was never going to be reliable, and
+///   why a docs-only PR could fail this check.
+/// - `debug_assertions` aside, "fast on my machine" and "fast in CI" are not the same claim here,
+///   because CI *is* another process on the same machine.
+/// - This fix does **not** make the 50 ns criterion enforced. It makes the required check stop
+///   certifying the criterion with an unoptimised, single-sample measurement. Enforcing it is the
+///   separate p99 work (`TSK-010`), and even that needs a dedicated runner or a stated caveat to be
+///   trustworthy on this host.
+/// - Residual risk that remains after this fix: a sufficiently loaded host can push even the best
+///   batch over the bound. Min-over-batches is robust, not immune. If that starts happening, the
+///   answer is a dedicated runner, not a looser bound.
 const LATENCY_BATCHES: usize = 20;
 const LATENCY_ITERATIONS_PER_BATCH: usize = 10_000;
 

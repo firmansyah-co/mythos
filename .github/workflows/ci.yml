@@ -151,6 +151,21 @@ jobs:
           fi
           cargo test --workspace --verbose
 
+      # TSK-002's "< 50 ns atomic swap" target is a property of the OPTIMISED algorithm:
+      # publish_write/acquire_read are #[inline(always)] CAS loops, and an unoptimised build
+      # measures ~84 ns on this hardware versus ~19 ns release. The debug run above therefore
+      # only smoke-checks the hot path; the acceptance assertion is gated on this release run.
+      # See the header of crates/mythos-shm/tests/shm_engine_tests.rs for the measurement regime,
+      # the recorded distributions, and the fact that this runner shares its cores with the
+      # agent fleet.
+      - name: Run SHM Atomic Swap Latency Gate (release)
+        run: |
+          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
+          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
+            source /opt/hostedtoolcache/cargo/env
+          fi
+          cargo test --release -p mythos-shm --test shm_engine_tests -- --nocapture
+
       - name: Run SHM Micro-Benchmark Check
         run: |
           export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
