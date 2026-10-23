@@ -96,7 +96,6 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
             "/api/v1/projects/:id/hmi/commit",
             post(screens::commit::<S>),
         )
-        // Project-scoped master faceplate types and instances (TSK-309)
         // Project-scoped DUT/UDT registry (logic editor data types)
         .route(
             "/api/v1/projects/:id/datatypes",

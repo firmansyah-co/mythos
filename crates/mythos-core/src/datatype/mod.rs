@@ -137,9 +137,68 @@ fn validate_token(kind: &str, value: &str) -> Result<(), DataTypeError> {
     Ok(())
 }
 
+/// IEC 61131-3 elementary types a STRUCT member or ALIAS base may name.
+///
+/// Kept in step with `ELEMENTARY_DATA_TYPES` in
+/// `frontend/plugins/ui-logic-editor/src/variables/types.ts`, which is what the editor's dropdown
+/// will offer. A member naming anything outside this set and outside the project's own defined
+/// types is unresolvable, so it is rejected rather than stored.
+pub const IEC_ELEMENTARY_TYPES: &[&str] = &[
+    "BOOL",
+    "BYTE",
+    "WORD",
+    "DWORD",
+    "LWORD",
+    "SINT",
+    "INT",
+    "DINT",
+    "LINT",
+    "USINT",
+    "UINT",
+    "UDINT",
+    "ULINT",
+    "REAL",
+    "LREAL",
+    "TIME",
+    "DATE",
+    "TIME_OF_DAY",
+    "DATE_AND_TIME",
+    "STRING",
+    "WSTRING",
+];
+
+/// Reject a type reference that names neither an IEC elementary type nor a type defined in this
+/// project.
+///
+/// Without this, a registry entry can point at a type that does not exist — the same defect class
+/// as the hardcoded samples this registry replaces, one level down: the editor would offer a
+/// dropdown of types whose members reference nothing.
+fn validate_type_reference(
+    owner: &str,
+    field: &str,
+    referenced: &str,
+    project_types: &BTreeSet<String>,
+) -> Result<(), DataTypeError> {
+    let name = referenced.trim();
+    if IEC_ELEMENTARY_TYPES.contains(&name) || project_types.contains(name) {
+        return Ok(());
+    }
+    Err(DataTypeError::Invalid(format!(
+        "{owner} {field} '{name}' is not a known type: it is not an IEC elementary type and no \
+         data type with that name is defined in this project"
+    )))
+}
+
 /// Validate a UDT definition. Kind-specific structure is enforced here so an entry cannot be
 /// stored in a state no consumer can use.
-pub fn validate_definition(def: &UdtDefinition) -> Result<(), DataTypeError> {
+///
+/// `project_types` is the set of type names *other than this one* defined in the project, so a
+/// STRUCT member may reference a sibling type but not the type being defined (no self-reference),
+/// and never a name that resolves to nothing.
+pub fn validate_definition(
+    def: &UdtDefinition,
+    project_types: &BTreeSet<String>,
+) -> Result<(), DataTypeError> {
     if def.name.trim().is_empty() {
         return Err(DataTypeError::Invalid("data type name is required".into()));
     }
@@ -173,6 +232,12 @@ pub fn validate_definition(def: &UdtDefinition) -> Result<(), DataTypeError> {
                         def.name, member.name
                     )));
                 }
+                validate_type_reference(
+                    &format!("STRUCT '{}' member '{}'", def.name, member.name),
+                    "data type",
+                    &member.data_type,
+                    project_types,
+                )?;
             }
             if !def.enum_constants.is_empty() {
                 return Err(DataTypeError::Invalid(format!(
@@ -224,6 +289,12 @@ pub fn validate_definition(def: &UdtDefinition) -> Result<(), DataTypeError> {
                     def.name
                 )));
             }
+            validate_type_reference(
+                &format!("ALIAS '{}'", def.name),
+                "base type",
+                base,
+                project_types,
+            )?;
         }
     }
     Ok(())
@@ -278,7 +349,6 @@ impl DataTypeStore {
 
     /// Create a draft entry. The id is generated and the version assigned server-side.
     pub fn create_type(&self, definition: UdtDefinition) -> Result<DataTypeEntry, DataTypeError> {
-        validate_definition(&definition)?;
         let id = format!("dut_{:032x}", rand::random::<u128>());
         let entry = DataTypeEntry {
             id: id.clone(),
@@ -286,23 +356,51 @@ impl DataTypeStore {
             definition,
         };
 
-        // A project must not end up with two types sharing a name: the logic editor's pickers
-        // address them by name, so a duplicate would be ambiguous.
+        // Names must be unique across BOTH stages, not just among drafts. A released type whose
+        // draft was deleted is still resolvable by id and still owns its name; checking drafts
+        // alone let a new draft shadow it, so the picker showed one "DUT_Motor" while two
+        // existed. That is the ambiguity this rule exists to prevent, reachable through the
+        // public API.
+        self.require_name_available(&entry.definition.name, &id)?;
+
+        // Type references may name an IEC primitive or a type defined in this project.
+        let project_types = self.type_names_excluding(&id)?;
+        validate_definition(&entry.definition, &project_types)?;
+
         let mut drafts = self.draft_types()?;
-        if let Some(existing) = drafts.iter().find(|t| {
-            t.id != id
-                && t.definition
-                    .name
-                    .eq_ignore_ascii_case(&entry.definition.name)
-        }) {
+        drafts.push(entry.clone());
+        self.write_draft(&drafts)?;
+        Ok(entry)
+    }
+
+    /// Reject a name already used by a different type in either stage.
+    fn require_name_available(&self, name: &str, own_id: &str) -> Result<(), DataTypeError> {
+        let mut candidates = self.draft_types()?;
+        candidates.extend(self.active_versions()?);
+        if let Some(existing) = candidates
+            .iter()
+            .find(|t| t.id != own_id && t.definition.name.eq_ignore_ascii_case(name))
+        {
             return Err(DataTypeError::Invalid(format!(
                 "a data type named '{}' already exists in this project (id {})",
                 existing.definition.name, existing.id
             )));
         }
-        drafts.push(entry.clone());
-        self.write_draft(&drafts)?;
-        Ok(entry)
+        Ok(())
+    }
+
+    /// Names of every type in the project except `own_id`, for reference validation.
+    ///
+    /// Excluding the type itself rejects self-reference, which would otherwise be storable and
+    /// unresolvable (a STRUCT containing itself has no finite layout).
+    fn type_names_excluding(&self, own_id: &str) -> Result<BTreeSet<String>, DataTypeError> {
+        let mut entries = self.draft_types()?;
+        entries.extend(self.active_versions()?);
+        Ok(entries
+            .into_iter()
+            .filter(|t| t.id != own_id)
+            .map(|t| t.definition.name)
+            .collect())
     }
 
     /// Replace the draft entry's definition.
@@ -311,22 +409,16 @@ impl DataTypeStore {
         id: &str,
         definition: UdtDefinition,
     ) -> Result<DataTypeEntry, DataTypeError> {
-        validate_definition(&definition)?;
         let mut drafts = self.draft_types()?;
         let index = drafts
             .iter()
             .position(|t| t.id == id)
             .ok_or_else(|| DataTypeError::NotFound(id.to_owned()))?;
 
-        if let Some(other) = drafts
-            .iter()
-            .find(|t| t.id != id && t.definition.name.eq_ignore_ascii_case(&definition.name))
-        {
-            return Err(DataTypeError::Invalid(format!(
-                "a data type named '{}' already exists in this project (id {})",
-                other.definition.name, other.id
-            )));
-        }
+        // Same rule as create: a released-only type still owns its name.
+        self.require_name_available(&definition.name, id)?;
+        let project_types = self.type_names_excluding(id)?;
+        validate_definition(&definition, &project_types)?;
 
         let next_version = match self.active_type(id)? {
             Some(active) => active.version + 1,
@@ -350,9 +442,9 @@ impl DataTypeStore {
             .find(|t| t.id == id)
             .cloned()
             .ok_or_else(|| DataTypeError::NotFound(id.to_owned()))?;
-        validate_definition(&draft.definition)?;
-
         let mut published = self.active_versions()?;
+        let project_types = self.type_names_excluding(id)?;
+        validate_definition(&draft.definition, &project_types)?;
         let next_version = published
             .iter()
             .filter(|t| t.id == id)

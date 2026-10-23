@@ -369,3 +369,196 @@ async fn deleting_a_draft_keeps_released_versions_resolvable() {
         "the released version is retained, so anything binding to it still resolves"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Review findings: name ambiguity across stages, and unresolvable type references
+// ---------------------------------------------------------------------------
+
+/// B: a released type that has no draft can be shadowed by a new draft with the same name.
+///
+/// The released version stays resolvable by id but disappears from the list, so the picker shows
+/// one `DUT_Motor` while two exist — the exact ambiguity the duplicate-name rule is supposed to
+/// prevent. Reachable entirely through the public API.
+#[tokio::test]
+async fn a_released_type_cannot_be_shadowed_by_a_new_draft_with_the_same_name() {
+    let (_dir, storage) = seeded();
+    let app = build_app(&storage);
+
+    let (status, created) = call(&app, "POST", &base(), bottle_struct()).await;
+    assert_eq!(status, StatusCode::CREATED, "create failed: {created}");
+    let released_id = created["id"].as_str().unwrap().to_owned();
+    call(
+        &app,
+        "POST",
+        &format!("{}/{released_id}/release", base()),
+        Value::Null,
+    )
+    .await;
+    let (status, _) = call(
+        &app,
+        "DELETE",
+        &format!("{}/{released_id}", base()),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // A second type with the same name must be refused: the released one still exists and is
+    // still resolvable, so accepting this would create two types named DUT_BottleSpec.
+    let (status, error) = call(&app, "POST", &base(), bottle_struct()).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a released type still owns its name even when its draft is gone: {error}"
+    );
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("already exists in this project"),
+        "error must explain the clash: {error}"
+    );
+
+    // And the released version is still reachable by id, which is why the name is still taken.
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("{}/{released_id}", base()),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// B (the other half): renaming a draft must not collide with a released-only type either.
+#[tokio::test]
+async fn saving_a_draft_cannot_take_a_name_owned_by_a_released_type() {
+    let (_dir, storage) = seeded();
+    let app = build_app(&storage);
+
+    let (_, first) = call(&app, "POST", &base(), bottle_struct()).await;
+    let first_id = first["id"].as_str().unwrap().to_owned();
+    call(
+        &app,
+        "POST",
+        &format!("{}/{first_id}/release", base()),
+        Value::Null,
+    )
+    .await;
+    call(
+        &app,
+        "DELETE",
+        &format!("{}/{first_id}", base()),
+        Value::Null,
+    )
+    .await;
+
+    // A second, differently-named type, then rename it onto the released name.
+    let mut other = bottle_struct();
+    other["name"] = json!("DUT_Other");
+    let (_, second) = call(&app, "POST", &base(), other).await;
+    let second_id = second["id"].as_str().unwrap().to_owned();
+
+    let (status, error) = call(
+        &app,
+        "PUT",
+        &format!("{}/{second_id}/draft", base()),
+        bottle_struct(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "renaming onto a released type's name must be refused: {error}"
+    );
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("already exists in this project"));
+}
+
+/// A: a STRUCT member naming a type that does not exist must be rejected.
+#[tokio::test]
+async fn struct_members_must_reference_a_known_type() {
+    let (_dir, storage) = seeded();
+    let app = build_app(&storage);
+
+    let mut bad = bottle_struct();
+    bad["members"] = json!([{"name": "Height", "dataType": "NOT_A_REAL_TYPE"}]);
+    let (status, error) = call(&app, "POST", &base(), bad).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "unknown type accepted: {error}"
+    );
+    assert!(
+        error["error"].as_str().unwrap().contains("NOT_A_REAL_TYPE"),
+        "error must name the offender: {error}"
+    );
+
+    // A reference to a project type that does not exist is equally unresolvable.
+    let mut dangling = bottle_struct();
+    dangling["members"] = json!([{"name": "Spec", "dataType": "DUT_DoesNotExist"}]);
+    let (status, error) = call(&app, "POST", &base(), dangling).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("DUT_DoesNotExist"));
+
+    // A project type that DOES exist is a legal member type.
+    let mut motor = bottle_struct();
+    motor["name"] = json!("DUT_Motor");
+    motor["members"] = json!([{"name": "Speed", "dataType": "REAL"}]);
+    let (status, created) = call(&app, "POST", &base(), motor).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "primitive member rejected: {created}"
+    );
+
+    let mut machine = bottle_struct();
+    machine["name"] = json!("DUT_Machine");
+    machine["members"] = json!([{"name": "Motor", "dataType": "DUT_Motor"}]);
+    let (status, created) = call(&app, "POST", &base(), machine).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "a reference to an existing project type must be legal: {created}"
+    );
+}
+
+/// A: an ALIAS base type must also resolve.
+#[tokio::test]
+async fn alias_base_type_must_resolve() {
+    let (_dir, storage) = seeded();
+    let app = build_app(&storage);
+
+    let (status, error) = call(
+        &app,
+        "POST",
+        &base(),
+        json!({"name": "DUT_Speed", "kind": "ALIAS", "baseType": "ALSO_NOT_A_TYPE"}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "unknown base type accepted: {error}"
+    );
+    assert!(error["error"].as_str().unwrap().contains("ALSO_NOT_A_TYPE"));
+
+    // A primitive base type is legal.
+    let (status, created) = call(
+        &app,
+        "POST",
+        &base(),
+        json!({"name": "DUT_Speed", "kind": "ALIAS", "baseType": "REAL"}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "primitive base rejected: {created}"
+    );
+}
