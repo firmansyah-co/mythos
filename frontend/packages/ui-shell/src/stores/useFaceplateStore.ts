@@ -46,7 +46,16 @@ export interface FaceplateStoreState {
 
   /** UDT names already declared by a master type in this project (for the binding picker). */
   knownUdtNames: () => string[];
+
+  /**
+   * Re-read the library when the daemon announces a faceplate release on the existing
+   * telemetry stream. Returns an unsubscribe function; a no-op when EventSource is absent.
+   */
+  watchPropagation: () => () => void;
 }
+
+/** One subscription per panel host; the designer is the only caller. */
+let propagation: EventSource | null = null;
 
 /** Coalesce concurrent loads so the tree and Zone 4 do not race on mount. */
 let inFlight: { projectId: string; promise: Promise<boolean> } | null = null;
@@ -221,4 +230,22 @@ export const useFaceplateStore = create<FaceplateStoreState>((set, get) => ({
     const names = get().types.map((type) => type.udt?.name).filter(Boolean);
     return Array.from(new Set(names));
   },
+
+  watchPropagation: () => {
+    if (typeof EventSource === 'undefined') return () => {};
+    if (propagation) return () => stopPropagation();
+
+    propagation = new EventSource('/api/v1/telemetry/stream');
+    // Instances resolve against the master at read time, so the honest reaction to a release is a
+    // re-read, never a local version bump.
+    propagation.addEventListener('FACEPLATE_PROPAGATED', () => {
+      void get().refresh();
+    });
+    return () => stopPropagation();
+  },
 }));
+
+function stopPropagation() {
+  propagation?.close();
+  propagation = null;
+}
