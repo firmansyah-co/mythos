@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useHmiStore } from '../../stores/useHmiStore';
 import { useFaceplateStore } from '../../stores/useFaceplateStore';
+import { versionLabel } from '../../types/faceplate';
 import { InspectorDrawer } from '@mythos/ui-inspector';
 
 export interface Zone4TaskCardsProps {
@@ -315,11 +316,11 @@ export const Zone4TaskCards: React.FC<Zone4TaskCardsProps> = ({
                           id: type.id,
                           name: type.name,
                           type: 'FACEPLATE',
-                          udtArchetype: type.udt.name,
+                          udtArchetype: type.udtName,
                           metadata: {
                             typeId: type.id,
-                            version: type.version,
-                            activeVersion: type.activeVersion ?? null,
+                            activeVersion: type.activeVersion,
+                            instanceCount: type.instanceCount,
                             hasDraft: type.hasDraft ?? false,
                           },
                         })
@@ -328,12 +329,14 @@ export const Zone4TaskCards: React.FC<Zone4TaskCardsProps> = ({
                     >
                       <div className="font-mono text-cyan-400">
                         {type.name}{' '}
-                        <span className="text-neutral-500">(v{type.version})</span>
+                        <span className="text-neutral-500">
+                          ({versionLabel(type.activeVersion)})
+                        </span>
                         {type.hasDraft && <span className="ml-1 text-[9px] text-amber-400">draft</span>}
                       </div>
                       <div className="text-[11px] text-neutral-400">
-                        UDT {type.udt.name} · {type.views.length} view
-                        {type.views.length === 1 ? '' : 's'}
+                        UDT {type.udtName} · {type.instanceCount} instance
+                        {type.instanceCount === 1 ? '' : 's'}
                       </div>
                     </button>
                   ))}

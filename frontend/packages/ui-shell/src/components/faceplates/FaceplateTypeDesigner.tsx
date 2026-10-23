@@ -4,13 +4,15 @@ import { STANDARD_UDT_MAPPINGS } from '@mythos/ui-faceplate-lib';
 import { useHmiStore } from '../../stores/useHmiStore';
 import { useFaceplateStore } from '../../stores/useFaceplateStore';
 import {
-  FaceplateAccess,
+  BindingAccess,
   FaceplateType,
+  FaceplateTypeSummary,
   FaceplateView,
   FaceplateViewKind,
-  ResolvedFaceplateInstance,
+  ResolvedInstance,
   UdtDefinition,
   UdtKind,
+  versionLabel,
 } from '../../types/faceplate';
 
 export interface FaceplateTypeDesignerProps {
@@ -33,65 +35,73 @@ const UDT_KINDS: UdtKind[] = ['STRUCT', 'ENUM', 'ALIAS'];
  * UDT signature tables, so the designer never invents a binding target.
  */
 const FACEPLATE_KEYS: string[] = Array.from(
-  new Set(
-    Object.values(STANDARD_UDT_MAPPINGS)
-      .flat()
-      .map((mapping) => mapping.faceplateKey)
-  )
+  new Set(Object.values(STANDARD_UDT_MAPPINGS).flat().map((mapping) => mapping.faceplateKey))
 ).sort();
 
 const emptyUdt = (): UdtDefinition => ({
   name: '',
   kind: 'STRUCT',
   members: [{ name: '', dataType: 'BOOL' }],
+  enumConstants: [],
+  baseType: null,
 });
 
-/** The eleven elementary IEC types the inline UDT members may use. */
-const UDT_DATA_TYPES = ['BOOL', 'INT', 'DINT', 'REAL', 'TIME', 'STRING', 'WORD', 'DWORD', 'BYTE', 'LREAL', 'UDINT'];
+/** The elementary IEC types an inline UDT member may use. */
+const UDT_DATA_TYPES = [
+  'BOOL',
+  'INT',
+  'DINT',
+  'REAL',
+  'TIME',
+  'STRING',
+  'WORD',
+  'DWORD',
+  'BYTE',
+  'LREAL',
+  'UDINT',
+];
 
 /**
- * Renders one instance purely from the payload the daemon resolved against the
- * master at read time. An instance holds no views of its own, which is what makes
- * a master release propagate without touching instances.
+ * Renders one instance purely from the payload the daemon resolved against the master at read
+ * time. An instance holds no views of its own, which is what lets a release propagate without
+ * touching instances.
  */
-export const FaceplateInstanceCard: React.FC<{ instance: ResolvedFaceplateInstance }> = ({
-  instance,
-}) => {
-  const warnings = instance.warnings ?? [];
+export const FaceplateInstanceCard: React.FC<{ instance: ResolvedInstance }> = ({ instance }) => {
+  const masterMissing = instance.views === null || instance.udt === null;
 
   return (
     <div
-      className="p-2.5 rounded bg-neutral-900/80 border border-neutral-800 space-y-1.5"
+      className="space-y-1.5 rounded border border-neutral-800 bg-neutral-900/80 p-2.5"
       data-testid="faceplate-instance-card"
       data-instance-id={instance.id}
       data-resolved-version={instance.resolvedVersion ?? 'unavailable'}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-cyan-400 text-[11px] truncate">{instance.name}</span>
+        <span className="truncate font-mono text-[11px] text-cyan-400">{instance.name}</span>
         <span className="flex items-center gap-1">
           {instance.frozen && (
             <span
               data-testid="instance-frozen-badge"
               className="flex items-center gap-0.5 rounded bg-sky-950 px-1 py-0.5 text-[9px] font-semibold text-sky-300"
-              title={`Frozen at v${instance.typeVersion}; follows that version until unfrozen`}
+              title={`Frozen at ${versionLabel(instance.typeVersion)}; follows that version until unfrozen`}
             >
-              <Snowflake className="w-2.5 h-2.5" /> FROZEN
+              <Snowflake className="h-2.5 w-2.5" /> FROZEN
             </span>
           )}
-          <span className="text-[10px] font-mono text-neutral-500">
-            {instance.resolvedVersion ? `v${instance.resolvedVersion}` : 'version unavailable'}
+          <span className="font-mono text-[10px] text-neutral-500">
+            {versionLabel(instance.resolvedVersion)}
           </span>
         </span>
       </div>
 
-      {instance.views === null || instance.udt === null ? (
+      {masterMissing ? (
         <div className="text-[11px] text-rose-400" data-testid="instance-master-unavailable">
           Master faceplate data is unavailable for this instance. Nothing is rendered rather than
-          substituting a substitute faceplate.
+          substituting a replacement faceplate.
         </div>
       ) : (
         <div className="space-y-1">
-          {instance.views.map((view) => (
+          {instance.views!.map((view) => (
             <div key={view.kind} className="text-[10px] text-neutral-400">
               <span className="text-neutral-500">{view.kind}</span>
               {view.bindings.length === 0 ? (
@@ -118,9 +128,11 @@ export const FaceplateInstanceCard: React.FC<{ instance: ResolvedFaceplateInstan
         )}
       </div>
 
-      {warnings.map((warning) => (
+      {/* The daemon's own warnings, verbatim: a frozen version missing from history, a draft
+          fallback, and so on. An empty array renders nothing rather than a reassuring guess. */}
+      {instance.warnings.map((warning) => (
         <div key={warning} className="flex items-start gap-1 text-[10px] text-amber-400">
-          <AlertTriangle className="mt-0.5 w-2.5 h-2.5 shrink-0" />
+          <AlertTriangle className="mt-0.5 h-2.5 w-2.5 shrink-0" />
           <span>{warning}</span>
         </div>
       ))}
@@ -168,10 +180,7 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
     }));
 
   const addView = (kind: FaceplateViewKind) =>
-    setDraft((current) => ({
-      ...current,
-      views: [...current.views, { kind, bindings: [] }],
-    }));
+    setDraft((current) => ({ ...current, views: [...current.views, { kind, bindings: [] }] }));
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-[var(--bg-base)] text-neutral-300">
@@ -179,10 +188,7 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
         <div className="flex items-center gap-2">
           <Boxes className="h-4 w-4 text-teal-400" />
           <span className="text-xs font-semibold text-white">{type.name}</span>
-          <span className="font-mono text-[10px] text-neutral-500">
-            v{type.version}
-            {type.activeVersion ? ` (active v${type.activeVersion})` : ' (draft only)'}
-          </span>
+          <span className="font-mono text-[10px] text-neutral-500">{versionLabel(type.version)}</span>
           {dirty && (
             <span className="rounded bg-amber-950 px-1.5 py-0.5 text-[9px] font-semibold text-amber-300">
               UNSAVED
@@ -218,8 +224,8 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
           >
             <div className="flex items-center justify-between">
               <span className="text-emerald-400">
-                Released v{lastRelease.version}. {lastRelease.instancesAffected} instance
-                {lastRelease.instancesAffected === 1 ? '' : 's'} now resolve against it.
+                Released {versionLabel(lastRelease.version)}. {lastRelease.instancesAffected}{' '}
+                instance{lastRelease.instancesAffected === 1 ? '' : 's'} now resolve against it.
               </span>
               <button type="button" onClick={dismissRelease} className="text-neutral-500 hover:text-white">
                 Dismiss
@@ -228,16 +234,16 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
             {lastRelease.strandedInstances.length > 0 && (
               <div className="mt-1 text-amber-400" data-testid="stranded-instances">
                 {lastRelease.strandedInstances.length} instance
-                {lastRelease.strandedInstances.length === 1 ? '' : 's'} stayed frozen:{' '}
+                {lastRelease.strandedInstances.length === 1 ? '' : 's'} stayed frozen and were not
+                upgraded:{' '}
                 {lastRelease.strandedInstances
-                  .map((instance) => `${instance.name} (v${instance.typeVersion})`)
+                  .map((instance) => `${instance.name} (${versionLabel(instance.typeVersion)})`)
                   .join(', ')}
               </div>
             )}
           </div>
         )}
 
-        {/* Identity */}
         <section className="space-y-2">
           <h3 className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
             Master Type Identity
@@ -251,13 +257,12 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
                 onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
               />
             </Field>
-            <Field label="Version (set by release)">
-              <input className={inputClass} value={draft.version} readOnly />
+            <Field label="Version (assigned by release)">
+              <input className={inputClass} value={versionLabel(draft.version)} readOnly />
             </Field>
           </div>
         </section>
 
-        {/* UDT binding */}
         <section className="space-y-2" data-testid="udt-binding-section">
           <h3 className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
             UDT Binding
@@ -354,7 +359,7 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
             <Field label="Enum constants (comma separated)">
               <input
                 className={inputClass}
-                value={(draft.udt.enumConstants ?? []).join(', ')}
+                value={draft.udt.enumConstants.join(', ')}
                 onChange={(event) =>
                   patchUdt({
                     enumConstants: event.target.value
@@ -368,7 +373,6 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
           )}
         </section>
 
-        {/* Views */}
         <section className="space-y-2">
           <div className="flex items-center justify-between">
             <h3 className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
@@ -395,7 +399,10 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
             </div>
           ) : (
             draft.views.map((view, viewIndex) => (
-              <div key={`${view.kind}-${viewIndex}`} className="rounded border border-neutral-800 bg-neutral-900/60 p-2 space-y-1">
+              <div
+                key={`${view.kind}-${viewIndex}`}
+                className="space-y-1 rounded border border-neutral-800 bg-neutral-900/60 p-2"
+              >
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-semibold text-neutral-200">{view.kind}</span>
                   <button
@@ -465,7 +472,7 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
                           ...view,
                           bindings: view.bindings.map((existing, i) =>
                             i === bindingIndex
-                              ? { ...existing, access: event.target.value as FaceplateAccess }
+                              ? { ...existing, access: event.target.value as BindingAccess }
                               : existing
                           ),
                         })
@@ -499,7 +506,7 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
                       ...view,
                       bindings: [
                         ...view.bindings,
-                        { faceplateKey: '', udtProperty: '', access: 'READ_ONLY' },
+                        { faceplateKey: '', udtProperty: '', access: 'READ_ONLY', unit: null },
                       ],
                     })
                   }
@@ -517,7 +524,6 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
           )}
         </section>
 
-        {/* Instances */}
         <section className="space-y-2" data-testid="faceplate-instances-section">
           <h3 className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
             Instances
@@ -554,7 +560,12 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
                   <FaceplateInstanceCard instance={instance} />
                   <button
                     type="button"
-                    onClick={() => void setInstancePin(instance.id, instance.frozen ? null : Number(instance.resolvedVersion))}
+                    onClick={() =>
+                      void setInstancePin(
+                        instance.id,
+                        instance.frozen ? null : instance.resolvedVersion
+                      )
+                    }
                     className="flex items-center gap-1 text-[10px] text-neutral-500 hover:text-sky-300"
                   >
                     <RotateCcw className="h-2.5 w-2.5" />
@@ -606,9 +617,7 @@ const NewTypeForm: React.FC = () => {
 
         <div className="space-y-1">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] uppercase tracking-wider text-neutral-500">
-              UDT members
-            </span>
+            <span className="text-[10px] uppercase tracking-wider text-neutral-500">UDT members</span>
             <button
               type="button"
               onClick={() => setUdt({ ...udt, members: [...udt.members, { name: '', dataType: 'BOOL' }] })}
@@ -706,7 +715,7 @@ const LibraryOverview: React.FC<{ typeId?: string }> = ({ typeId }) => {
         </div>
       ) : (
         <ul className="space-y-1">
-          {types.map((type) => (
+          {types.map((type: FaceplateTypeSummary) => (
             <li
               key={type.id}
               className={`rounded border px-2 py-1 text-[11px] ${
@@ -714,8 +723,8 @@ const LibraryOverview: React.FC<{ typeId?: string }> = ({ typeId }) => {
               }`}
             >
               <span className="font-mono text-cyan-400">{type.name}</span>{' '}
-              <span className="text-neutral-500">v{type.version}</span>{' '}
-              <span className="text-neutral-500">· UDT {type.udt.name}</span>
+              <span className="text-neutral-500">{versionLabel(type.activeVersion)}</span>{' '}
+              <span className="text-neutral-500">· UDT {type.udtName}</span>
               {type.hasDraft && <span className="ml-1 text-amber-400">· draft</span>}
             </li>
           ))}
@@ -728,9 +737,9 @@ const LibraryOverview: React.FC<{ typeId?: string }> = ({ typeId }) => {
 /**
  * Zone 3 master faceplate type designer (TSK-309 part A).
  *
- * Every value shown comes from the project-scoped faceplate routes. With no types
- * defined the panel shows an empty state; it never presents a sample type, and it
- * never renders an instance from anything but the daemon-resolved master.
+ * Every value shown comes from the project-scoped faceplate routes and the ts-rs generated
+ * shapes. With no types defined the panel shows an empty state; it never presents a sample
+ * type, and it never renders an instance from anything but the daemon-resolved master.
  */
 export const FaceplateTypeDesigner: React.FC<FaceplateTypeDesignerProps> = ({
   typeId,
@@ -739,7 +748,11 @@ export const FaceplateTypeDesigner: React.FC<FaceplateTypeDesignerProps> = ({
   const types = useFaceplateStore((s) => s.types);
   const status = useFaceplateStore((s) => s.status);
   const loadedProjectId = useFaceplateStore((s) => s.projectId);
+  const openType = useFaceplateStore((s) => s.openType);
+  const openTypeStatus = useFaceplateStore((s) => s.openTypeStatus);
+  const openTypeError = useFaceplateStore((s) => s.openTypeError);
   const load = useFaceplateStore((s) => s.load);
+  const loadType = useFaceplateStore((s) => s.loadType);
   const currentProject = useHmiStore((s) => s.currentProject);
   const currentProjectId = currentProject?.id ?? null;
 
@@ -752,7 +765,19 @@ export const FaceplateTypeDesigner: React.FC<FaceplateTypeDesignerProps> = ({
     }
   }, [currentProjectId, loadedProjectId, load]);
 
-  const activeType = useMemo(
+  // The tree carries summaries; the designer edits the full authored definition.
+  useEffect(() => {
+    if (currentProjectId && typeId && typeId !== 'new') void loadType(typeId);
+  }, [currentProjectId, typeId, loadType]);
+
+  // A release elsewhere (another station, a script) arrives on the telemetry stream; re-read
+  // rather than guessing which instances moved.
+  useEffect(() => {
+    if (!currentProjectId) return undefined;
+    return useFaceplateStore.getState().watchPropagation();
+  }, [currentProjectId]);
+
+  const summary = useMemo(
     () => (typeId ? types.find((type) => type.id === typeId || type.name === typeId) : undefined),
     [types, typeId]
   );
@@ -766,12 +791,36 @@ export const FaceplateTypeDesigner: React.FC<FaceplateTypeDesignerProps> = ({
     );
   } else if (typeId === 'new') {
     body = <NewTypeForm />;
-  } else if (status !== 'READY') {
+  } else if (!typeId) {
     body = <LibraryOverview typeId={typeId} />;
-  } else if (!typeId || !activeType) {
-    body = <LibraryOverview typeId={typeId} />;
+  } else if (openTypeStatus === 'ERROR') {
+    body = (
+      <div className="space-y-2 p-4 text-[11px]">
+        <div className="text-rose-400" data-testid="faceplate-type-error">
+          {openTypeError}
+        </div>
+        <button
+          type="button"
+          onClick={() => void loadType(typeId)}
+          className="rounded border border-neutral-700 px-2 py-1 text-neutral-200 hover:border-cyan-600"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  } else if (!summary) {
+    // The id came from a panel param but the project does not list it: say so, do not invent it.
+    body = (
+      <div className="p-4 text-[11px] text-neutral-500" data-testid="faceplate-type-missing">
+        {status === 'LOADING' || status === 'IDLE'
+          ? 'Loading faceplate types…'
+          : `This project has no faceplate type "${typeId}".`}
+      </div>
+    );
+  } else if (!openType || openTypeStatus !== 'READY') {
+    body = <div className="p-4 text-[11px] text-neutral-400">Loading faceplate type…</div>;
   } else {
-    body = <TypeEditor key={`${activeType.id}:${activeType.version}`} type={activeType} />;
+    body = <TypeEditor key={`${openType.id}:${JSON.stringify(openType.views)}`} type={openType} />;
   }
 
   return (
