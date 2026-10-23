@@ -35,6 +35,18 @@ jobs:
 
       - name: Install Build Tools & Linker
         run: |
+          # Serialize every apt run. All jobs on this self-hosted runner share the
+          # persistent cache at /opt/hostedtoolcache/apt, and concurrent runs raced it:
+          # one left a stale archives/lock and every later run died with
+          # "E: Could not get lock ... It is held by process 0" (exit 100).
+          sudo mkdir -p /opt/hostedtoolcache/apt
+          exec 9>/opt/hostedtoolcache/apt/.mythos-apt.lock
+          flock 9
+
+          # Only now that we hold the serialization lock is it safe to clear stale
+          # locks: removing them outside it could corrupt an apt run that holds one.
+          sudo rm -f /opt/hostedtoolcache/apt/archives/lock /opt/hostedtoolcache/apt/lists/lock
+
           # Disable docker-clean so downloaded .deb packages are preserved
           sudo rm -f /etc/apt/apt.conf.d/docker-clean 2>/dev/null || true
 
