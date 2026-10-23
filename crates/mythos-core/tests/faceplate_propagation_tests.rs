@@ -62,11 +62,27 @@ fn type_body(id: &str, keys: &[&str]) -> Value {
 }
 
 fn build_app(storage: &Arc<ControllerStorage>) -> Router {
+    build_app_with_catalog(storage, Arc::new(RwLock::new(TagCatalog::new())))
+}
+
+/// Build a router around a caller-held tag catalog, so a test can register tags and have the
+/// router's existence check see them (the catalog is shared state, not per-router).
+fn build_app_with_catalog(
+    storage: &Arc<ControllerStorage>,
+    catalog: Arc<RwLock<TagCatalog>>,
+) -> Router {
     create_router(ApiState::<mythos_pal::MemoryShm>::new(
         storage.clone(),
-        Arc::new(RwLock::new(TagCatalog::new())),
+        catalog,
         None,
     ))
+}
+
+/// Register one tag in a catalog the caller already handed to `build_app_with_catalog`.
+async fn register_tag(catalog: &Arc<RwLock<TagCatalog>>, uri: &str) {
+    let mut guard = catalog.write().await;
+    let meta = mythos_core::tag::TagMetadata::new(uri, 7).expect("test tag URI must be valid");
+    guard.register(meta).expect("test tag must register");
 }
 
 fn seeded() -> (tempfile::TempDir, Arc<ControllerStorage>) {
@@ -447,7 +463,8 @@ async fn binding_to_an_undeclared_udt_member_is_rejected_with_the_offender_named
 #[tokio::test]
 async fn instance_bindings_are_validated_against_the_master_and_the_tag_namespace() {
     let (_dir, storage) = seeded();
-    let app = build_app(&storage);
+    let catalog = Arc::new(RwLock::new(TagCatalog::new()));
+    let app = build_app_with_catalog(&storage, catalog.clone());
     save_draft(&app, "fp_motor", type_body("fp_motor", &["running"])).await;
     release(&app, "fp_motor").await;
 
@@ -479,7 +496,34 @@ async fn instance_bindings_are_validated_against_the_master_and_the_tag_namespac
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(error["error"].as_str().unwrap().contains("tagUri"));
 
-    // A declared key with a valid absolute URI is accepted.
+    // A well-formed URI naming a tag nobody registered is rejected too: grammar alone would
+    // let a binding look configured while pointing at nothing.
+    let (status, error) = call(
+        &app,
+        "POST",
+        &instances_base(),
+        json!({
+            "name": "P101",
+            "typeId": "fp_motor",
+            "bindings": [{"faceplateKey": "running", "tagUri": "external.boiler.p999.b_running"}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an unregistered tag must be rejected: {error}"
+    );
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("not registered in the tag catalog"),
+        "error must say the tag is not registered: {error}"
+    );
+
+    // A declared key pointing at a registered tag is accepted.
+    register_tag(&catalog, "external.boiler.p101.b_running").await;
     let (status, created) = call(
         &app,
         "POST",
@@ -609,4 +653,252 @@ async fn created_type_starts_as_draft_only_with_no_invented_bindings() {
     assert_eq!(summary["hasDraft"], true);
     assert_eq!(summary["instanceCount"], 0);
     assert_eq!(summary["udtName"], "FB_Motor_VFD");
+}
+
+// ---------------------------------------------------------------------------
+// Review fixes F2 / F3 / F4
+// ---------------------------------------------------------------------------
+
+/// F2a: an instance must not be able to save a binding the version it RENDERS does not declare.
+///
+/// The draft is ahead of the active master here, so validating against the draft (the old
+/// behaviour) accepted a key that the rendered v1 never had.
+#[tokio::test]
+async fn a_following_instance_cannot_bind_a_draft_only_key_it_would_not_render() {
+    let (_dir, storage) = seeded();
+    let app = build_app(&storage);
+
+    save_draft(&app, "fp_motor", type_body("fp_motor", &["running"])).await;
+    release(&app, "fp_motor").await;
+    // Draft gains a key the released v1 does not have.
+    save_draft(
+        &app,
+        "fp_motor",
+        type_body("fp_motor", &["running", "actualSpeed"]),
+    )
+    .await;
+
+    let (status, error) = call(
+        &app,
+        "POST",
+        &instances_base(),
+        json!({
+            "name": "P101",
+            "typeId": "fp_motor",
+            "bindings": [{"faceplateKey": "actualSpeed", "tagUri": ""}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a following instance renders v1, which does not declare actualSpeed: {error}"
+    );
+    assert!(error["error"].as_str().unwrap().contains("actualSpeed"));
+
+    // After release, the same binding is valid because the instance now renders v2.
+    release(&app, "fp_motor").await;
+    let (status, created) = call(
+        &app,
+        "POST",
+        &instances_base(),
+        json!({
+            "name": "P101",
+            "typeId": "fp_motor",
+            "bindings": [{"faceplateKey": "actualSpeed", "tagUri": ""}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "after release the key is declared by the rendered master: {created}"
+    );
+}
+
+/// F2b: a frozen instance stays editable against its own version after the active master drops
+/// a key it declares.
+#[tokio::test]
+async fn a_frozen_instance_stays_editable_against_its_pinned_version() {
+    let (_dir, storage) = seeded();
+    let app = build_app(&storage);
+
+    save_draft(
+        &app,
+        "fp_motor",
+        type_body("fp_motor", &["running", "actualSpeed"]),
+    )
+    .await;
+    release(&app, "fp_motor").await; // v1 declares running + actualSpeed
+
+    let frozen = place_instance(&app, "P102", "fp_motor").await;
+    let frozen_id = frozen["id"].as_str().unwrap();
+    let (status, _) = call(
+        &app,
+        "PUT",
+        &format!("{}/{}", instances_base(), frozen_id),
+        json!({"typeVersion": 1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // v2 drops actualSpeed, so the active master no longer declares the frozen key.
+    save_draft(&app, "fp_motor", type_body("fp_motor", &["running"])).await;
+    release(&app, "fp_motor").await;
+
+    // The frozen instance renders v1, which does declare actualSpeed, so editing it is legal.
+    let (status, updated) = call(
+        &app,
+        "PUT",
+        &format!("{}/{}", instances_base(), frozen_id),
+        json!({"bindings": [
+            {"faceplateKey": "running", "tagUri": ""},
+            {"faceplateKey": "actualSpeed", "tagUri": ""}
+        ]}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a frozen instance must stay editable against the version it renders: {updated}"
+    );
+
+    // And it still renders v1 with no false "not declared" warning.
+    let resolved = resolved(&app).await;
+    let inst = resolved.iter().find(|i| i["id"] == frozen_id).unwrap();
+    assert_eq!(inst["resolvedVersion"], 1);
+    assert_eq!(view_keys(inst).len(), 2);
+    let not_declared: Vec<&str> = inst["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap())
+        .filter(|w| w.contains("is not declared by master"))
+        .collect();
+    assert!(
+        not_declared.is_empty(),
+        "no spurious undeclared warning expected: {not_declared:?}"
+    );
+}
+
+/// F3: the production read path does not render an unreleased type's draft; it reports the
+/// shortfall. Only an explicit `stage=draft` returns the draft.
+#[tokio::test]
+async fn active_stage_refuses_to_render_an_unreleased_draft() {
+    let (_dir, storage) = seeded();
+    let app = build_app(&storage);
+
+    save_draft(&app, "fp_motor", type_body("fp_motor", &["running"])).await;
+    // Instance placed against a draft-only type (allowed: designers must build before release).
+    let created = call(
+        &app,
+        "POST",
+        &instances_base(),
+        json!({"name": "P101", "typeId": "fp_motor", "bindings": []}),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::CREATED);
+
+    // Default (production) read: no master data, and it says why.
+    let (_, body) = call(&app, "GET", &instances_base(), Value::Null).await;
+    let inst = &body["instances"][0];
+    assert_eq!(inst["udt"], Value::Null, "must not render the draft");
+    assert_eq!(inst["views"], Value::Null, "must not render the draft");
+    assert_eq!(inst["resolvedVersion"], Value::Null);
+    let warning = inst["warnings"][0].as_str().unwrap();
+    assert!(
+        warning.contains("never been released") && warning.contains("stage=draft"),
+        "warning must explain the refusal and the remedy: {warning}"
+    );
+
+    // The designer asks explicitly and gets the draft, labelled as unreleased.
+    let (_, draft_body) = call(
+        &app,
+        "GET",
+        &format!("{}?stage=draft", instances_base()),
+        Value::Null,
+    )
+    .await;
+    let draft_inst = &draft_body["instances"][0];
+    assert!(!draft_inst["views"].is_null(), "stage=draft must render");
+    assert_eq!(draft_inst["resolvedVersion"], 0);
+    assert!(draft_inst["warnings"][0]
+        .as_str()
+        .unwrap()
+        .contains("not released"));
+
+    // An unknown stage is an error, not a silent default.
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("{}?stage=production", instances_base()),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// F4: a frozen instance whose pinned version is no longer retained reports missing master data
+/// explicitly rather than substituting a definition.
+#[tokio::test]
+async fn a_frozen_version_missing_from_history_reports_master_data_unavailable() {
+    let (_dir, storage) = seeded();
+    let app = build_app(&storage);
+
+    save_draft(&app, "fp_motor", type_body("fp_motor", &["running"])).await;
+    release(&app, "fp_motor").await; // v1
+    let frozen = place_instance(&app, "P102", "fp_motor").await;
+    let frozen_id = frozen["id"].as_str().unwrap();
+    call(
+        &app,
+        "PUT",
+        &format!("{}/{}", instances_base(), frozen_id),
+        json!({"typeVersion": 1}),
+    )
+    .await;
+
+    // Simulate history loss: v1 is no longer retained in the active store.
+    let active_path = storage
+        .project_dir(PROJECT)
+        .join("faceplates/active/types.json");
+    let bytes = std::fs::read(&active_path).unwrap();
+    let mut versions: Vec<Value> = serde_json::from_slice(&bytes).unwrap();
+    versions.clear();
+    std::fs::write(&active_path, serde_json::to_vec(&versions).unwrap()).unwrap();
+
+    for stage in ["active", "draft"] {
+        let (status, body) = call(
+            &app,
+            "GET",
+            &format!("{}?stage={stage}", instances_base()),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let inst = &body["instances"][0];
+        assert_eq!(inst["udt"], Value::Null, "stage={stage}: no substitute UDT");
+        assert_eq!(
+            inst["views"],
+            Value::Null,
+            "stage={stage}: no substitute views"
+        );
+        assert_eq!(
+            inst["resolvedVersion"],
+            Value::Null,
+            "stage={stage}: no invented version"
+        );
+        assert!(inst["frozen"].as_bool().unwrap());
+        let warnings: Vec<&str> = inst["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap())
+            .collect();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("v1 is missing") && w.contains("master data unavailable")),
+            "stage={stage}: must name the missing version: {warnings:?}"
+        );
+    }
 }

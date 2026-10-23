@@ -3,8 +3,8 @@
 use super::ApiState;
 use crate::faceplate::{
     release_event_payload, FaceplateError, FaceplateInstance, FaceplateReleaseResult,
-    FaceplateStore, FaceplateType, FaceplateTypeSummary, InstanceBinding, ResolvedInstance,
-    UdtDefinition,
+    FaceplateStore, FaceplateType, FaceplateTypeSummary, InstanceBinding, ReadStage,
+    ResolvedInstance, UdtDefinition,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -58,6 +58,25 @@ fn store<S: PlatformShm>(state: &ApiState<S>, project: &str) -> Result<Faceplate
 #[derive(Deserialize)]
 pub struct ViewQuery {
     view: Option<String>,
+}
+
+/// `?stage=active|draft` for the resolved instance read, defaulting to the production path.
+///
+/// Parsed through [`ReadStage`]'s own `FromStr` rather than serde, so the query spelling is the
+/// lower-case one the contract documents and an unknown value is a 400 instead of a silent
+/// fallback to the default.
+#[derive(Deserialize)]
+pub struct StageQuery {
+    stage: Option<String>,
+}
+
+impl StageQuery {
+    fn read_stage(&self) -> Result<ReadStage, ApiError> {
+        match &self.stage {
+            Some(raw) => raw.parse().map_err(map_error),
+            None => Ok(ReadStage::default()),
+        }
+    }
 }
 
 /// `POST /api/v1/projects/:id/faceplates/types` body.
@@ -183,16 +202,26 @@ pub async fn release<S: PlatformShm + 'static>(
 }
 
 /// List instances resolved against their master at read time.
+///
+/// `?stage=active` (the default) is the production read path: an unfrozen instance resolves the
+/// released master only. `?stage=draft` returns the authored definition, for the designer. A
+/// frozen instance renders its pinned version at either stage.
 pub async fn list_instances<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
     Path(project): Path<String>,
+    Query(query): Query<StageQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let store = store(&state, &project)?;
-    let instances: Vec<ResolvedInstance> = store.resolve_instances().map_err(map_error)?;
+    let stage = query.read_stage()?;
+    let instances: Vec<ResolvedInstance> = store.resolve_instances(stage).map_err(map_error)?;
     Ok(Json(json!({ "instances": instances })))
 }
 
 /// Place a new instance. Nothing is copied from the master, so a later release applies here.
+///
+/// Every non-empty `tagUri` is checked for existence in the live tag catalog, not just for
+/// grammar: a commissioning binding that points at a tag nobody registered looks configured and
+/// is not, which is the same defect class as a fabricated value.
 pub async fn create_instance<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
     Path(project): Path<String>,
@@ -200,6 +229,7 @@ pub async fn create_instance<S: PlatformShm + 'static>(
 ) -> Result<(StatusCode, Json<FaceplateInstance>), ApiError> {
     let _guard = FACEPLATE_WRITES.lock().await;
     let store = store(&state, &project)?;
+    require_registered_tags(&state, &payload.bindings).await?;
     let created = store
         .create_instance(
             payload.name,
@@ -219,8 +249,38 @@ pub async fn update_instance<S: PlatformShm + 'static>(
 ) -> Result<Json<FaceplateInstance>, ApiError> {
     let _guard = FACEPLATE_WRITES.lock().await;
     let store = store(&state, &project)?;
+    if let Some(bindings) = &payload.bindings {
+        require_registered_tags(&state, bindings).await?;
+    }
     let updated = store
         .update_instance(&instance, payload.type_version, payload.bindings)
         .map_err(map_error)?;
     Ok(Json(updated))
+}
+
+/// Reject any binding whose `tagUri` is not registered in the live tag catalog.
+///
+/// Grammar validation already happened in the store; this is the existence half. An empty
+/// `tagUri` means "unassigned" and is allowed. All unknown tags are reported at once so a
+/// client fixing a screen gets one complete list rather than one error per attempt.
+async fn require_registered_tags<S: PlatformShm + 'static>(
+    state: &ApiState<S>,
+    bindings: &[InstanceBinding],
+) -> Result<(), ApiError> {
+    let catalog = state.tag_catalog.read().await;
+    let unknown: Vec<&str> = bindings
+        .iter()
+        .map(|b| b.tag_uri.trim())
+        .filter(|uri| !uri.is_empty() && catalog.get_by_uri(uri).is_none())
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(failure(
+        StatusCode::BAD_REQUEST,
+        format!(
+            "tagUri(s) not registered in the tag catalog: {unknown:?}. Register the tag or leave \
+             tagUri empty to save the binding as unassigned."
+        ),
+    ))
 }

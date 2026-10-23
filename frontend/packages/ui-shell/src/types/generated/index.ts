@@ -24,3 +24,4 @@ export * from './FaceplateInstance';
 export * from './StrandedInstance';
 export * from './FaceplateReleaseResult';
 export * from './ResolvedInstance';
+export * from './ReadStage';

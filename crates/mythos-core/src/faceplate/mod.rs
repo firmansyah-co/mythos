@@ -570,6 +570,10 @@ impl FaceplateStore {
 
     /// Place a new instance. The master is validated for existence; nothing is copied from
     /// it, so a later release changes what this instance renders.
+    ///
+    /// Bindings are validated against the definition the instance will actually **render** (see
+    /// [`FaceplateStore::master_for_validation`]), never against an unrelated stage, so a save
+    /// cannot be accepted under one definition and rejected on read under another.
     pub fn create_instance(
         &self,
         name: String,
@@ -580,14 +584,7 @@ impl FaceplateStore {
         if name.trim().is_empty() {
             return Err(FaceplateError::Invalid("instance name is required".into()));
         }
-        let master = self.read_type(&type_id, "draft")?;
-        if let Some(v) = type_version {
-            self.active_version(&type_id, v)?.ok_or_else(|| {
-                FaceplateError::Invalid(format!(
-                    "instance cannot freeze to version {v} of type '{type_id}': that version is not published"
-                ))
-            })?;
-        }
+        let master = self.master_for_validation(&type_id, type_version)?;
         validate_instance_bindings(&master, &bindings)?;
 
         let mut instances = self.instances()?;
@@ -616,7 +613,14 @@ impl FaceplateStore {
             .position(|i| i.id == id)
             .ok_or_else(|| FaceplateError::InstanceNotFound(id.to_owned()))?;
         let type_id = instances[index].type_id.clone();
-        let master = self.read_type(&type_id, "draft")?;
+
+        // The version the instance renders after this update: its new freeze, if provided,
+        // otherwise its existing freeze, otherwise the active master.
+        let effective_freeze = match type_version {
+            Some(new) => new,
+            None => instances[index].type_version,
+        };
+        let master = self.master_for_validation(&type_id, effective_freeze)?;
 
         if let Some(freeze) = type_version {
             if let Some(v) = freeze {
@@ -637,11 +641,46 @@ impl FaceplateStore {
         Ok(updated)
     }
 
+    /// The master definition an instance's bindings must be validated against: the version the
+    /// instance will actually render.
+    ///
+    /// - Frozen at `v`: the published `v`. Validating against anything else would let a frozen
+    ///   instance be edited against a definition it cannot render, or vice versa.
+    /// - Following (no freeze): the highest published version. If the type has never been
+    ///   released, fall back to the draft — there is no other definition, and the designer must
+    ///   be able to build before release (the read path then reports it as unreleased).
+    pub fn master_for_validation(
+        &self,
+        type_id: &str,
+        type_version: Option<u32>,
+    ) -> Result<FaceplateType, FaceplateError> {
+        match type_version {
+            Some(v) => self.active_version(type_id, v)?.ok_or_else(|| {
+                FaceplateError::Invalid(format!(
+                    "instance freezes type '{type_id}' to version {v}, which is not published"
+                ))
+            }),
+            None => match self.active_type(type_id)? {
+                Some(active) => Ok(active),
+                None => self
+                    .draft_types()?
+                    .into_iter()
+                    .find(|t| t.id == type_id)
+                    .ok_or_else(|| FaceplateError::TypeNotFound(type_id.to_owned())),
+            },
+        }
+    }
+
     /// Resolve every instance against its master at read time.
     ///
     /// This is the propagation path: instances carry no copy of the master, so a released
-    /// version takes effect here immediately.
-    pub fn resolve_instances(&self) -> Result<Vec<ResolvedInstance>, FaceplateError> {
+    /// version takes effect here immediately. `stage` selects which definition a following
+    /// (unfrozen) instance renders; a frozen instance always renders its pinned published
+    /// version regardless of stage.
+    pub fn resolve_instances(
+        &self,
+        stage: ReadStage,
+    ) -> Result<Vec<ResolvedInstance>, FaceplateError> {
         let instances = self.instances()?;
         let active = self.active_versions()?;
         let drafts = self.draft_types()?;
@@ -649,68 +688,25 @@ impl FaceplateStore {
         Ok(instances
             .into_iter()
             .map(|inst| {
-                let mut warnings = Vec::new();
-                let active_for_type = active
-                    .iter()
-                    .filter(|t| t.id == inst.type_id)
-                    .max_by_key(|t| t.version);
-                let draft_for_type = drafts.iter().find(|t| t.id == inst.type_id);
+                let mut resolution =
+                    self.resolve_master(&inst.type_id, inst.type_version, stage, &active, &drafts);
 
-                let (master, resolved_version): (Option<&FaceplateType>, Option<u32>) =
-                    match inst.type_version {
-                        Some(frozen_at) => {
-                            let pinned = active
-                                .iter()
-                                .find(|t| t.id == inst.type_id && t.version == frozen_at);
-                            if let Some(active_latest) = active_for_type {
-                                if active_latest.version > frozen_at {
-                                    warnings.push(format!(
-                                        "frozen at v{frozen_at}; active is v{}",
-                                        active_latest.version
-                                    ));
-                                }
-                            }
-                            match pinned {
-                                Some(t) => (Some(t), Some(t.version)),
-                                None => {
-                                    warnings.push(format!(
-                                        "master definition for type '{}' v{frozen_at} is missing; master data unavailable",
-                                        inst.type_id
-                                    ));
-                                    (None, None)
-                                }
-                            }
-                        }
-                        None => match active_for_type {
-                            Some(t) => (Some(t), Some(t.version)),
-                            None => match draft_for_type {
-                                Some(t) => {
-                                    warnings.push(format!(
-                                        "type '{}' is not released; rendering draft. Release it to make this instance production-safe",
-                                        inst.type_id
-                                    ));
-                                    (Some(t), Some(t.version))
-                                }
-                                None => {
-                                    warnings.push(format!(
-                                        "faceplate type '{}' does not exist; master data unavailable",
-                                        inst.type_id
-                                    ));
-                                    (None, None)
-                                }
-                            },
-                        },
-                    };
-
-                if let Some(master) = master {
+                // A stale binding is reported rather than silently dropped: the master can drop
+                // a key after the instance was saved, so this is the only place it is visible.
+                if let Some(master) = resolution.master {
                     let declared = declared_keys(master);
                     for binding in &inst.bindings {
                         if !declared.contains(binding.faceplate_key.as_str()) {
-                            warnings.push(format!(
+                            let mut warning = format!(
                                 "binding '{}' is not declared by master v{}",
-                                binding.faceplate_key,
-                                master.version
-                            ));
+                                binding.faceplate_key, master.version
+                            );
+                            if inst.type_version.is_none() {
+                                warning.push_str(
+                                    " (stale binding: the active master has dropped this key)",
+                                );
+                            }
+                            resolution.warnings.push(warning);
                         }
                     }
                 }
@@ -720,16 +716,153 @@ impl FaceplateStore {
                     name: inst.name,
                     type_id: inst.type_id,
                     type_version: inst.type_version,
-                    resolved_version,
+                    resolved_version: resolution.resolved_version,
                     frozen: inst.type_version.is_some(),
-                    udt: master.map(|m| m.udt.clone()),
-                    views: master.map(|m| m.views.clone()),
+                    udt: resolution.master.map(|m| m.udt.clone()),
+                    views: resolution.master.map(|m| m.views.clone()),
                     bindings: inst.bindings,
-                    warnings,
+                    warnings: resolution.warnings,
                 }
             })
             .collect())
     }
+
+    /// Pick the master definition one instance renders, and explain any shortfall in `warnings`.
+    ///
+    /// A frozen instance renders its pinned published version at every stage — that is what
+    /// freezing means, and it is what makes a frozen instance's bindings stable. A following
+    /// instance renders according to `stage`.
+    fn resolve_master<'a>(
+        &self,
+        type_id: &str,
+        type_version: Option<u32>,
+        stage: ReadStage,
+        active: &'a [FaceplateType],
+        drafts: &'a [FaceplateType],
+    ) -> MasterResolution<'a> {
+        let mut warnings = Vec::new();
+        let active_for_type = active
+            .iter()
+            .filter(|t| t.id == type_id)
+            .max_by_key(|t| t.version);
+        let draft_for_type = drafts.iter().find(|t| t.id == type_id);
+
+        if let Some(frozen_at) = type_version {
+            let pinned = active
+                .iter()
+                .find(|t| t.id == type_id && t.version == frozen_at);
+            if let Some(active_latest) = active_for_type {
+                if active_latest.version > frozen_at {
+                    warnings.push(format!(
+                        "frozen at v{frozen_at}; active is v{}",
+                        active_latest.version
+                    ));
+                }
+            }
+            return match pinned {
+                Some(t) => MasterResolution {
+                    master: Some(t),
+                    resolved_version: Some(t.version),
+                    warnings,
+                },
+                None => {
+                    warnings.push(format!(
+                        "master definition for type '{type_id}' v{frozen_at} is missing; master data unavailable"
+                    ));
+                    MasterResolution {
+                        master: None,
+                        resolved_version: None,
+                        warnings,
+                    }
+                }
+            };
+        }
+
+        match stage {
+            ReadStage::Active => match active_for_type {
+                Some(t) => MasterResolution {
+                    master: Some(t),
+                    resolved_version: Some(t.version),
+                    warnings,
+                },
+                // An unreleased type has no production definition. Rendering the draft here
+                // would put uncommitted work on the operator path, which is the whole reason
+                // draft and active are separate, so it is refused and reported instead.
+                None => {
+                    warnings.push(match draft_for_type {
+                        Some(_) => format!(
+                            "type '{type_id}' has never been released; no active definition. Request stage=draft to render the draft"
+                        ),
+                        None => format!("faceplate type '{type_id}' does not exist; master data unavailable"),
+                    });
+                    MasterResolution {
+                        master: None,
+                        resolved_version: None,
+                        warnings,
+                    }
+                }
+            },
+            ReadStage::Draft => match draft_for_type {
+                Some(t) => {
+                    if active_for_type.is_none() {
+                        warnings.push(format!(
+                            "type '{type_id}' is not released; rendering draft v{}. Release it to make this instance production-safe",
+                            t.version
+                        ));
+                    }
+                    MasterResolution {
+                        master: Some(t),
+                        resolved_version: Some(t.version),
+                        warnings,
+                    }
+                }
+                None => {
+                    warnings.push(format!(
+                        "faceplate type '{type_id}' has no draft definition; master data unavailable"
+                    ));
+                    MasterResolution {
+                        master: None,
+                        resolved_version: None,
+                        warnings,
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// Which definition an unfrozen instance renders.
+///
+/// Defaults to [`ReadStage::Active`]: the production read path must never render uncommitted
+/// draft work. A designer explicitly asks for `draft`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ReadStage {
+    #[default]
+    Active,
+    Draft,
+}
+
+impl std::str::FromStr for ReadStage {
+    type Err = FaceplateError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "active" => Ok(Self::Active),
+            "draft" => Ok(Self::Draft),
+            other => Err(FaceplateError::Invalid(format!(
+                "unknown stage '{other}'; expected 'active' or 'draft'"
+            ))),
+        }
+    }
+}
+
+/// Result of picking the master for one instance.
+struct MasterResolution<'a> {
+    master: Option<&'a FaceplateType>,
+    resolved_version: Option<u32>,
+    warnings: Vec<String>,
 }
 
 /// An instance binding must target a key its master declares, and a valid absolute tag URI.
