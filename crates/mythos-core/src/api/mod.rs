@@ -4,8 +4,8 @@
 //! and real-time SSE stream (`/api/v1/telemetry/stream`) with locked 100ms batch throttling.
 
 pub mod mcp;
-pub mod state;
 mod screens;
+pub mod state;
 pub mod telemetry;
 pub mod web;
 
@@ -78,10 +78,22 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
             post(activate_project_handler::<S>),
         )
         // Project-scoped persisted HMI drafts
-        .route("/api/v1/projects/:id/hmi/screens", get(screens::list::<S>).post(screens::create::<S>))
-        .route("/api/v1/projects/:id/hmi/screens/:screen/subscreens", post(screens::create_subscreen::<S>))
-        .route("/api/v1/projects/:id/hmi/screens/:screen/draft", axum::routing::put(screens::save_draft::<S>))
-        .route("/api/v1/projects/:id/hmi/commit", post(screens::commit::<S>))
+        .route(
+            "/api/v1/projects/:id/hmi/screens",
+            get(screens::list::<S>).post(screens::create::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/hmi/screens/:screen/subscreens",
+            post(screens::create_subscreen::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/hmi/screens/:screen/draft",
+            axum::routing::put(screens::save_draft::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/hmi/commit",
+            post(screens::commit::<S>),
+        )
         // Telemetry Stream (100ms batched SSE)
         .route(
             "/api/v1/telemetry/stream",
