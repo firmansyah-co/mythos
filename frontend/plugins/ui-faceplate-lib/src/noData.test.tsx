@@ -300,6 +300,100 @@ describe('SYS-REQ-096: faceplates never fabricate process values', () => {
     });
   });
 
+  describe('live path: values present but state/config absent', () => {
+    // The quality gate suppresses everything when quality is not GOOD, so it cannot show whether a
+    // parameter default fabricates a value. These render with quality='GOOD' and omit the state and
+    // configuration props entirely — the only shape in which a default becomes visible.
+
+    it('Motor with GOOD quality and no operatingMode does not assert AUTO', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(MotorFaceplate, {
+          tag: 'MTR-910',
+          label: 'Live motor with no reported mode',
+          quality: 'GOOD',
+          running: true,
+          tripped: false,
+          actualSpeed: 1450,
+          speedSetpoint: 1500,
+          tier: 2,
+        })
+      ));
+      expect(html).not.toContain('AUTO');
+      expect(html).not.toContain('MANUAL');
+      expect(html).not.toContain('CASCADE');
+      expect(html).not.toContain('data-testid="motor-mode"');
+    });
+
+    it('Valve with GOOD quality and no operatingMode does not assert AUTO', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(ValveFaceplate, {
+          tag: 'XV-910',
+          label: 'Live valve with no reported mode',
+          quality: 'GOOD',
+          openLimit: true,
+          closedLimit: false,
+          transitFault: false,
+          positionPercent: 100,
+          tier: 2,
+        })
+      ));
+      expect(html).not.toContain('AUTO');
+      expect(html).not.toContain('MANUAL');
+      expect(html).not.toContain('data-testid="valve-mode"');
+    });
+
+    it('PID with GOOD quality and no operatingMode does not assert AUTO', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(PidControllerFaceplate, {
+          tag: 'TIC-910',
+          label: 'Live loop with no reported mode',
+          quality: 'GOOD',
+          pv: 82.5,
+          sp: 80.0,
+          cv: 45.2,
+          tier: 2,
+        })
+      ));
+      expect(html).not.toContain('AUTO');
+      expect(html).not.toContain('MANUAL');
+      expect(html).not.toContain('CASCADE');
+      expect(html).not.toContain('data-testid="pid-mode-badge"');
+    });
+
+    it('Transmitter with GOOD quality and no transmitterType shows no type chip', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(AnalogTransmitterFaceplate, {
+          tag: 'PT-910',
+          label: 'Live transmitter with no stored type',
+          quality: 'GOOD',
+          pv: 6.84,
+          unit: 'bar',
+          tier: 2,
+        })
+      ));
+      expect(html).not.toContain('PRESSURE');
+      expect(html).not.toContain('TEMPERATURE');
+      expect(html).not.toContain('data-testid="transmitter-type"');
+    });
+
+    it('Motor with GOOD quality and no maxSpeed prints no invented speed span', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(MotorFaceplate, {
+          tag: 'MTR-911',
+          label: 'Live motor with no stored range',
+          quality: 'GOOD',
+          running: true,
+          tripped: false,
+          actualSpeed: 1450,
+          speedSetpoint: 1500,
+          tier: 3,
+        })
+      ));
+      expect(html).not.toContain('1500 RPM)');
+      expect(html).not.toContain('Speed Target (0 - 1500');
+    });
+  });
+
   describe('live telemetry still renders normally', () => {
     it('Motor with GOOD quality renders its real values', () => {
       const html = normalizeHtml(renderToString(
