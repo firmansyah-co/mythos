@@ -200,27 +200,34 @@ fn test_concurrent_writer_and_readers() {
 /// this file does not loosen it.
 ///
 /// **Which profile measures it.** The acceptance assertion runs **only in a release build**
-/// (`#[cfg(not(debug_assertions))]`). `publish_write` and `acquire_read` are `#[inline(always)]`
-/// CAS loops, and a debug build does not optimise them: on this host debug best-batch is ~84 ns
-/// while release best-batch is ~19 ns, i.e. debug is ~1.6-4x slower across every interleaved
-/// comparison taken. Asserting 50 ns against a debug build is measuring the wrong build.
-/// CI runs the assertion through the `cargo test --release -p mythos-shm` step in
-/// `.github/workflows/ci.yml`, so the optimised number is the one that certifies the criterion.
+/// (`#[cfg(not(debug_assertions))]`), and CI runs it through the
+/// `cargo test --release -p mythos-shm` step in `.github/workflows/ci.yml`.
+///
+/// The reason is **headroom and variance under load, not that debug cannot meet the bound.** At a
+/// genuinely idle load average of 1.2 on 16 cores, an unoptimised debug build measures 26.4-32.5 ns
+/// and *does* pass 50 ns. What changes the choice is the margin: release is ~17-20 ns at the same
+/// idle, roughly 3x headroom instead of ~1.6x, and release degrades far more gracefully when the
+/// host is loaded (see the table). Certifying a nanosecond budget with the smaller margin is what
+/// made this check fragile, not the debug profile by itself.
 ///
 /// **Which statistic.** The gate is the **best (minimum) batch** of 20 batches x 10,000
 /// iterations, not the mean and not p99. Measured distributions:
 ///
-/// | profile | host load | best batch | p50 | p99 |
-/// |---------|-----------|-----------|-----|-----|
-/// | release | no load added by me | 18.6-20.4 ns | 18.7-20.4 ns | 19.6-21.2 ns |
-/// | release | + 16 busy cores | 32.8-35.5 ns | 33.5-36.7 ns | 114-120 ns |
-/// | debug | no load added by me | 82.0-86.5 ns | 88-97 ns | 191-781 ns |
-/// | debug | + 16 busy cores | 82.0-86.5 ns | 132-181 ns | 190-253 ns |
+/// | profile | host load (1-min avg) | best batch | p50 | p99 |
+/// |---------|----------------------|-----------|-----|-----|
+/// | release | 1.2, genuinely idle | 17.2-20.0 ns | 17.2-20.0 ns | ~20 ns |
+/// | debug | 1.2, genuinely idle | **26.4-32.5 ns** | 27-32 ns | ~32 ns |
+/// | release | fleet running, no load added by me | 18.6-20.4 ns | 18.7-20.4 ns | 19.6-21.2 ns |
+/// | release | fleet running, + 16 busy cores | 32.8-35.5 ns | 33.5-36.7 ns | 114-120 ns |
+/// | debug | fleet running, no load added by me | 74.9-86.9 ns | 88-97 ns | 191-781 ns |
+/// | debug | fleet running, + 16 busy cores | 82.0-86.5 ns | 132-181 ns | 190-253 ns |
 ///
-/// "No load added by me" is deliberate wording: this host was **never** genuinely idle while
-/// these numbers were taken, because the CI runner and the agent fleet share it (see below).
-/// The load-controlled rows are the reliable comparison, because both arms faced the same
-/// background load. Do not read the first and third rows as idle-machine figures.
+/// Read the load column, not just the profile column. The two idle rows were taken in a single
+/// genuinely quiet window (load 1.2); everything below them was taken while the fleet was building.
+/// "Fleet running, no load added by me" means exactly that: no load *I* created, on top of whatever
+/// the fleet was already doing. The debug figure in that row is roughly 3x the true-idle debug
+/// figure, which is the whole story of this test's history - a load-sensitive measurement on a
+/// host shared with a build fleet.
 ///
 /// The distribution is **not** bimodal, but its *tail* is entirely contention: p99 triples
 /// under load while the best batch moves by ~60% and stays under the bound. Gating on p99
@@ -231,11 +238,14 @@ fn test_concurrent_writer_and_readers() {
 ///
 /// **Regression sensitivity.** A per-operation regression applies to every batch, so the
 /// minimum catches it: injecting 10 `spin_loop` hints per publish moves the release best batch
-/// from ~24 ns to ~466 ns idle and from ~35 ns to ~595 ns under load (~20x separation).
+/// from ~24 ns to ~466 ns on a loaded host and from ~35 ns to ~595 ns under heavier load
+/// (~20x separation in both cases).
 ///
 /// **Debug smoke check.** `test_atomic_swap_latency_smoke_debug` runs instead under debug with a
 /// deliberately loose bound. It is a smoke check that the buffer still works at all - it is NOT
-/// the acceptance criterion and must never be treated as one.
+/// the acceptance criterion and must never be treated as one. Note that debug *can* meet 50 ns at
+/// true idle (26-32 ns); the loose bound exists because this host is usually loaded, where the same
+/// binary measures 75-87 ns, and a smoke check must not fail on that.
 ///
 /// # The CI runner is the same host as the agent fleet
 ///
@@ -252,9 +262,12 @@ fn test_concurrent_writer_and_readers() {
 /// - `debug_assertions` aside, "fast on my machine" and "fast in CI" are not the same claim here,
 ///   because CI *is* another process on the same machine.
 /// - This fix does **not** make the 50 ns criterion enforced. It makes the required check stop
-///   certifying the criterion with an unoptimised, single-sample measurement. Enforcing it is the
-///   separate p99 work (`TSK-010`), and even that needs a dedicated runner or a stated caveat to be
-///   trustworthy on this host.
+///   certifying the criterion with a single wall-clock sample taken under an unpredictable load.
+///   Enforcing it is the separate p99 work (`TSK-010`), and even that needs a dedicated runner or a
+///   stated caveat to be trustworthy on this host.
+/// - The load is **bursty, not constant**: the same host measured load 1.2 (genuinely idle) and
+///   load 216 in the same day. A check whose pass/fail depends on when it happens to run is unsound
+///   regardless of which profile it uses. That is the actual defect this fix removes.
 /// - Residual risk that remains after this fix: a sufficiently loaded host can push even the best
 ///   batch over the bound. Min-over-batches is robust, not immune. If that starts happening, the
 ///   answer is a dedicated runner, not a looser bound.
@@ -319,19 +332,19 @@ fn test_atomic_swap_latency_under_50ns() {
 
 /// Debug-profile smoke check. Not the acceptance criterion - see the header.
 ///
-/// The bound is loose on purpose: unoptimised CAS loops measure ~84 ns per operation even on an
-/// idle host, so a tight bound here would fail for reasons unrelated to correctness. It exists
-/// to catch a gross breakage (a lock, a syscall, an allocation) on the debug path that CI runs
-/// for the rest of the suite.
+/// The bound is loose on purpose. Debug measures 26-32 ns at true idle but 75-87 ns when the fleet
+/// is building, and this host is usually building, so a tight bound here would fail for reasons
+/// unrelated to correctness. It exists to catch a gross breakage (a lock, a syscall, an
+/// allocation) on the debug path that CI runs for the rest of the suite.
 #[cfg(debug_assertions)]
 #[test]
 fn test_atomic_swap_latency_smoke_debug() {
     let best = best_batch_ns_per_op();
     assert!(
         best < 250.0,
-        "Debug smoke check failed: best batch {best:.2} ns. Optimised builds measure ~19 ns and \
-         unoptimised ~84 ns, so this indicates a real regression (e.g. a lock or syscall on the \
-         hot path), not merely the debug profile. The acceptance criterion is the release-only \
-         test_atomic_swap_latency_under_50ns."
+        "Debug smoke check failed: best batch {best:.2} ns. Release measures ~17-20 ns and debug \
+         ~26-87 ns depending on host load, so this indicates a real regression (e.g. a lock or \
+         syscall on the hot path), not merely the debug profile or contention. The acceptance \
+         criterion is the release-only test_atomic_swap_latency_under_50ns."
     );
 }
