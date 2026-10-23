@@ -178,6 +178,11 @@ jobs:
           node-version: '22'
 
       - name: Install pnpm
+        env:
+          # The shared /home/runner/.npm cache on this self-hosted runner has
+          # root-owned entries (EACCES). Scope npm's cache to the job instead of
+          # touching runner-wide state.
+          npm_config_cache: ${{ runner.temp }}/npm-cache
         run: |
           # Pinned: frontend/package.json has no packageManager field, so nothing would
           # otherwise select a version. This matches the version that generated pnpm-lock.yaml.
