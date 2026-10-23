@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useHmiStore } from '../../stores/useHmiStore';
 import { useFaceplateStore } from '../../stores/useFaceplateStore';
+import { versionLabel } from '../../types/faceplate';
 import { LogicBlockDescriptor } from '../../types/hmi';
 
 export interface Zone2ProjectTreeProps {
@@ -507,11 +508,11 @@ export const Zone2ProjectTree: React.FC<Zone2ProjectTreeProps> = ({
                                   id: type.id,
                                   name: type.name,
                                   type: 'FACEPLATE',
-                                  udtArchetype: type.udt.name,
+                                  udtArchetype: type.udtName,
                                   metadata: {
                                     typeId: type.id,
-                                    version: type.version,
-                                    activeVersion: type.activeVersion ?? null,
+                                    activeVersion: type.activeVersion,
+                                    instanceCount: type.instanceCount,
                                     hasDraft: type.hasDraft ?? false,
                                   },
                                 });
@@ -520,7 +521,9 @@ export const Zone2ProjectTree: React.FC<Zone2ProjectTreeProps> = ({
                             >
                               <span className="truncate">
                                 {type.name}{' '}
-                                <span className="text-neutral-600">(v{type.version})</span>
+                                <span className="text-neutral-600">
+                                  ({versionLabel(type.activeVersion)})
+                                </span>
                               </span>
                               {type.hasDraft && (
                                 <span className="text-[9px] text-amber-400">draft</span>

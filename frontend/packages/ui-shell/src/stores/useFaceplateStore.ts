@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   createFaceplateInstance as apiCreateInstance,
   createFaceplateType as apiCreateType,
+  getFaceplateType,
   listFaceplateInstances,
   listFaceplateTypes,
   releaseFaceplateType,
@@ -12,7 +13,8 @@ import {
   FaceplateInstance,
   FaceplateReleaseResult,
   FaceplateType,
-  ResolvedFaceplateInstance,
+  FaceplateTypeSummary,
+  ResolvedInstance,
   UdtDefinition,
 } from '../types/faceplate';
 
@@ -24,9 +26,15 @@ export interface FaceplateStoreState {
   status: FaceplateLoadStatus;
   errorMessage: string | null;
 
-  types: FaceplateType[];
+  /** Tree summaries, read from the draft stage. */
+  types: FaceplateTypeSummary[];
   /** Instances exactly as the daemon resolved them against their masters at read time. */
-  instances: ResolvedFaceplateInstance[];
+  instances: ResolvedInstance[];
+
+  /** Full authored definition of the type open in the designer, when one is open. */
+  openType: FaceplateType | null;
+  openTypeStatus: FaceplateLoadStatus;
+  openTypeError: string | null;
 
   /** The last release outcome, shown by the designer until dismissed. */
   lastRelease: FaceplateReleaseResult | null;
@@ -36,7 +44,9 @@ export interface FaceplateStoreState {
   clearError: () => void;
   reset: () => void;
   dismissRelease: () => void;
+  closeType: () => void;
 
+  loadType: (typeId: string) => Promise<FaceplateType | null>;
   createType: (input: { name: string; udt: UdtDefinition }) => Promise<FaceplateType | null>;
   saveDraft: (type: FaceplateType) => Promise<boolean>;
   release: (typeId: string) => Promise<FaceplateReleaseResult | null>;
@@ -44,21 +54,14 @@ export interface FaceplateStoreState {
   createInstance: (input: { name: string; typeId: string }) => Promise<FaceplateInstance | null>;
   setInstancePin: (instanceId: string, typeVersion: number | null) => Promise<boolean>;
 
-  /** UDT names already declared by a master type in this project (for the binding picker). */
-  knownUdtNames: () => string[];
-
-  /**
-   * Re-read the library when the daemon announces a faceplate release on the existing
-   * telemetry stream. Returns an unsubscribe function; a no-op when EventSource is absent.
-   */
+  /** Re-read the library when the daemon announces a faceplate release on the telemetry stream. */
   watchPropagation: () => () => void;
 }
 
-/** One subscription per panel host; the designer is the only caller. */
-let propagation: EventSource | null = null;
-
-/** Coalesce concurrent loads so the tree and Zone 4 do not race on mount. */
+/** Coalesce concurrent loads so the tree, Zone 4 and the designer do not race on mount. */
 let inFlight: { projectId: string; promise: Promise<boolean> } | null = null;
+/** One telemetry subscription for the whole shell. */
+let propagation: EventSource | null = null;
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -67,8 +70,11 @@ function message(error: unknown): string {
 const EMPTY = {
   status: 'IDLE' as FaceplateLoadStatus,
   errorMessage: null,
-  types: [] as FaceplateType[],
-  instances: [] as ResolvedFaceplateInstance[],
+  types: [] as FaceplateTypeSummary[],
+  instances: [] as ResolvedInstance[],
+  openType: null,
+  openTypeStatus: 'IDLE' as FaceplateLoadStatus,
+  openTypeError: null,
   lastRelease: null,
 };
 
@@ -80,14 +86,22 @@ export const useFaceplateStore = create<FaceplateStoreState>((set, get) => ({
     if (!projectId) return false;
     if (inFlight && inFlight.projectId === projectId) return inFlight.promise;
 
-    // Never show one project's library while another one loads.
-    const switched = get().projectId !== projectId;
-    set({
-      projectId,
-      status: 'LOADING',
-      errorMessage: null,
-      ...(switched ? { types: [], instances: [], lastRelease: null } : {}),
-    });
+    // A different project's library must not stay on screen while this one loads.
+    if (get().projectId !== projectId) {
+      set({
+        projectId,
+        status: 'LOADING',
+        errorMessage: null,
+        types: [],
+        instances: [],
+        openType: null,
+        openTypeStatus: 'IDLE',
+        openTypeError: null,
+        lastRelease: null,
+      });
+    } else {
+      set({ projectId, status: 'LOADING', errorMessage: null });
+    }
 
     const promise = (async () => {
       try {
@@ -101,6 +115,7 @@ export const useFaceplateStore = create<FaceplateStoreState>((set, get) => ({
         return true;
       } catch (error) {
         if (get().projectId !== projectId) return false;
+        // An unavailable library is reported as such; it is never rendered as an empty project.
         set({
           status: 'ERROR',
           types: [],
@@ -120,8 +135,6 @@ export const useFaceplateStore = create<FaceplateStoreState>((set, get) => ({
   refresh: async () => {
     const projectId = get().projectId;
     if (!projectId) return false;
-    // Reuse the in-flight load if there is one; otherwise issue a real read. `load` short-circuits
-    // on a matching in-flight request, so this never silently keeps stale rows.
     return get().load(projectId);
   },
 
@@ -129,10 +142,32 @@ export const useFaceplateStore = create<FaceplateStoreState>((set, get) => ({
 
   reset: () => {
     inFlight = null;
+    stopPropagation();
     set({ projectId: null, ...EMPTY });
   },
 
   dismissRelease: () => set({ lastRelease: null }),
+
+  closeType: () => set({ openType: null, openTypeStatus: 'IDLE', openTypeError: null }),
+
+  loadType: async (typeId) => {
+    const projectId = get().projectId;
+    if (!projectId) return null;
+    set({ openTypeStatus: 'LOADING', openTypeError: null });
+    try {
+      // The designer edits the authored (draft) definition, which is what the tree lists.
+      const type = await getFaceplateType(projectId, typeId, 'draft');
+      set({ openType: type, openTypeStatus: 'READY', openTypeError: null });
+      return type;
+    } catch (error) {
+      set({
+        openType: null,
+        openTypeStatus: 'ERROR',
+        openTypeError: `Faceplate type could not be read: ${message(error)}`,
+      });
+      return null;
+    }
+  },
 
   createType: async ({ name, udt }) => {
     const projectId = get().projectId;
@@ -147,6 +182,7 @@ export const useFaceplateStore = create<FaceplateStoreState>((set, get) => ({
     try {
       const created = await apiCreateType(projectId, { name: name.trim(), udt });
       await get().refresh();
+      set({ openType: created, openTypeStatus: 'READY', openTypeError: null });
       return created;
     } catch (error) {
       set({ errorMessage: `Faceplate type was not created: ${message(error)}` });
@@ -162,6 +198,8 @@ export const useFaceplateStore = create<FaceplateStoreState>((set, get) => ({
     }
     try {
       await saveFaceplateTypeDraft(projectId, type.id, type);
+      // Re-read rather than assume: the daemon assigns ids and version bookkeeping.
+      await get().loadType(type.id);
       await get().refresh();
       return true;
     } catch (error) {
@@ -179,9 +217,10 @@ export const useFaceplateStore = create<FaceplateStoreState>((set, get) => ({
     try {
       const result = await releaseFaceplateType(projectId, typeId);
       set({ lastRelease: result });
-      // Instances resolve against the master at read time, so the only honest
-      // post-release state is a fresh read from the daemon.
+      // Instances resolve against the master at read time, so the only honest post-release
+      // state is a fresh read from the daemon.
       await get().refresh();
+      await get().loadType(typeId);
       return result;
     } catch (error) {
       set({ errorMessage: `Faceplate release failed: ${message(error)}` });
@@ -200,7 +239,11 @@ export const useFaceplateStore = create<FaceplateStoreState>((set, get) => ({
       return null;
     }
     try {
-      const created = await apiCreateInstance(projectId, { name: name.trim(), typeId, bindings: [] });
+      const created = await apiCreateInstance(projectId, {
+        name: name.trim(),
+        typeId,
+        bindings: [],
+      });
       await get().refresh();
       return created;
     } catch (error) {
@@ -218,17 +261,13 @@ export const useFaceplateStore = create<FaceplateStoreState>((set, get) => ({
       return true;
     } catch (error) {
       set({
-        errorMessage: typeVersion === null
-          ? `Instance was not unfrozen: ${message(error)}`
-          : `Instance was not frozen: ${message(error)}`,
+        errorMessage:
+          typeVersion === null
+            ? `Instance was not unfrozen: ${message(error)}`
+            : `Instance was not frozen: ${message(error)}`,
       });
       return false;
     }
-  },
-
-  knownUdtNames: () => {
-    const names = get().types.map((type) => type.udt?.name).filter(Boolean);
-    return Array.from(new Set(names));
   },
 
   watchPropagation: () => {
@@ -236,8 +275,8 @@ export const useFaceplateStore = create<FaceplateStoreState>((set, get) => ({
     if (propagation) return () => stopPropagation();
 
     propagation = new EventSource('/api/v1/telemetry/stream');
-    // Instances resolve against the master at read time, so the honest reaction to a release is a
-    // re-read, never a local version bump.
+    // Instances resolve against the master at read time, so the honest reaction to a release is
+    // a re-read, never a local version bump.
     propagation.addEventListener('FACEPLATE_PROPAGATED', () => {
       void get().refresh();
     });

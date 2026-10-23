@@ -1,16 +1,18 @@
 /**
  * Project-scoped faceplate master-type API client (TSK-309).
  *
- * Every call goes to the daemon; there is no local fallback and no cached
- * fiction. Failures surface as an Error with a readable message so the designer
- * can show what actually went wrong.
+ * Every call goes to the daemon; there is no local fallback and no cached fiction.
+ * Failures surface as an Error with a readable message so the designer can say what
+ * actually went wrong.
  */
 
 import {
   FaceplateInstance,
   FaceplateReleaseResult,
   FaceplateType,
-  ResolvedFaceplateInstance,
+  FaceplateTypeSummary,
+  InstanceBinding,
+  ResolvedInstance,
   UdtDefinition,
 } from '../types/faceplate';
 
@@ -51,9 +53,24 @@ function unwrap<T>(body: unknown, key: string): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-export async function listFaceplateTypes(projectId: string): Promise<FaceplateType[]> {
+/** The tree reads the draft stage: what the engineer has authored, released or not. */
+export async function listFaceplateTypes(projectId: string): Promise<FaceplateTypeSummary[]> {
   const body = await call<unknown>(`${base(projectId)}/types`);
-  return unwrap<FaceplateType>(body, 'types');
+  return unwrap<FaceplateTypeSummary>(body, 'types');
+}
+
+/**
+ * Read one full type. `draft` is the authored definition the designer edits; `active` is the
+ * published one an instance resolves against.
+ */
+export async function getFaceplateType(
+  projectId: string,
+  typeId: string,
+  view: 'draft' | 'active' = 'draft'
+): Promise<FaceplateType> {
+  return call<FaceplateType>(
+    `${base(projectId)}/types/${encodeURIComponent(typeId)}?view=${view}`
+  );
 }
 
 export async function createFaceplateType(
@@ -72,14 +89,11 @@ export async function saveFaceplateTypeDraft(
   typeId: string,
   type: FaceplateType
 ): Promise<void> {
-  await call<void>(
-    `${base(projectId)}/types/${encodeURIComponent(typeId)}/draft`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(type),
-    }
-  );
+  await call<void>(`${base(projectId)}/types/${encodeURIComponent(typeId)}/draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...type, id: typeId }),
+  });
 }
 
 export async function releaseFaceplateType(
@@ -92,11 +106,9 @@ export async function releaseFaceplateType(
   );
 }
 
-export async function listFaceplateInstances(
-  projectId: string
-): Promise<ResolvedFaceplateInstance[]> {
+export async function listFaceplateInstances(projectId: string): Promise<ResolvedInstance[]> {
   const body = await call<unknown>(`${base(projectId)}/instances`);
-  return unwrap<ResolvedFaceplateInstance>(body, 'instances');
+  return unwrap<ResolvedInstance>(body, 'instances');
 }
 
 export async function createFaceplateInstance(
@@ -105,7 +117,7 @@ export async function createFaceplateInstance(
     name: string;
     typeId: string;
     typeVersion?: number | null;
-    bindings?: Array<{ faceplateKey: string; tagUri: string }>;
+    bindings?: InstanceBinding[];
   }
 ): Promise<FaceplateInstance> {
   return call<FaceplateInstance>(`${base(projectId)}/instances`, {
@@ -119,7 +131,7 @@ export async function createFaceplateInstance(
 export async function updateFaceplateInstance(
   projectId: string,
   instanceId: string,
-  patch: { typeVersion?: number | null; bindings?: Array<{ faceplateKey: string; tagUri: string }> }
+  patch: { typeVersion?: number | null; bindings?: InstanceBinding[] }
 ): Promise<FaceplateInstance> {
   return call<FaceplateInstance>(
     `${base(projectId)}/instances/${encodeURIComponent(instanceId)}`,
