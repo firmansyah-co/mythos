@@ -191,23 +191,37 @@ describe('Faceplate master types (TSK-309): real data only, no phantom library',
     expect(container.querySelector('[data-testid="empty-faceplates-notice"]')).toBeNull();
   });
 
-  it('never offers the sample UDT placeholders in the type creator', () => {
+  it('never offers the sample UDT placeholders in the type creator', async () => {
     openProject();
-    mockFaceplateApi([], []);
+    mockFaceplateApi([masterType()], [resolvedInstance()]);
 
     renderClient(<FaceplateTypeDesigner typeId="new" />);
-
-    const html = container.innerHTML;
-    expect(html).not.toContain('DUT_BottleSpec');
-    expect(html).not.toContain('DUT_MachineState');
+    await settle();
+    expect(container.innerHTML).not.toContain('DUT_BottleSpec');
+    expect(container.innerHTML).not.toContain('DUT_MachineState');
 
     // The member data-type picker only offers elementary IEC types; no project type can be
-    // selected because the project has none.
-    const options = Array.from(container.querySelectorAll('option')).map((option) =>
+    // selected because none is offered.
+    const creatorOptions = Array.from(container.querySelectorAll('option')).map((option) =>
       option.textContent?.trim()
     );
-    expect(options).not.toContain('DUT_BottleSpec');
-    expect(options).toContain('BOOL');
+    expect(creatorOptions).not.toContain('DUT_BottleSpec');
+    expect(creatorOptions).toContain('BOOL');
+
+    // The existing-type editor is the other place a type picker could appear.
+    renderClient(<FaceplateTypeDesigner typeId="ft_motor" />);
+    await waitFor(
+      () => container.querySelector('[data-testid="udt-binding-section"]') !== null,
+      'UDT binding section to render'
+    );
+    const editorOptions = Array.from(container.querySelectorAll('option')).map((option) =>
+      option.textContent?.trim()
+    );
+    expect(editorOptions).not.toContain('DUT_BottleSpec');
+    expect(editorOptions).not.toContain('DUT_MachineState');
+    // Bindings offer only the UDT members this master declares.
+    expect(editorOptions).toContain('bRunning');
+    expect(container.innerHTML).not.toContain('DUT_BottleSpec');
   });
 
   it('renders an instance from its master, and follows the master when the master changes', async () => {
