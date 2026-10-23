@@ -18,6 +18,7 @@ Welcome to the comprehensive technical documentation and system specification re
 - **[ADR-005: Native Model Context Protocol (MCP) Self-Registration](../specs/adr/ADR-005-native-mcp-self-registration.md)**: Native Rust MCP server with procedural macros for autonomous AI agent inspection and tool execution.
 - **[ADR-006: Server-Driven UI (SDUI) & Auto-Generated TypeScript Contract](../specs/adr/ADR-006-server-driven-ui-auto-types.md)**: Pure Dumb Frontend paradigm with build-time `ts-rs` type synchronization.
 - **[ADR-007: ISA-18.2 Alarms, ISA-88 Recipes, Historian & Disaster Recovery](../specs/adr/ADR-007-isa18-2-isa88-historian-baseline.md)**: First-Out latching, 4-phase recipe handshakes, Swinging Door Compression in Parquet, and 1-click `.mythos-pkg` restoration.
+- **[ADR-008: Universal Plugin Harness Architecture ("Everything is a Plugin")](../specs/adr/ADR-008-universal-plugin-harness-architecture.md)**: Zero-domain microkernel, capability-based plugin isolation, and both backend engines and frontend GUI modules delivered as plugins.
 
 ### 1.3 Technical Architecture Handbooks (`docs/01-architecture/`)
 - **[00-Cargo Workspace and Crates Design](01-architecture/00-cargo-workspace-and-crates-design.md)**: Modular crate layout, internal dependencies, trait interfaces, and compilation invariants.
@@ -26,6 +27,9 @@ Welcome to the comprehensive technical documentation and system specification re
 - **[03-Native STruC++ Runtime Engine & In-Process FFI Bridge](01-architecture/03-openplc-v4-ffi-bridge.md)**: Linux real-time thread priority, memory synchronization cycle, and STruC++ pipeline.
 - **[04-Model Context Protocol (MCP) Subsystem](01-architecture/04-mcp-subsystem-spec.md)**: Stdio and SSE transports, procedural macros, and cryptographic security scopes for AI agents.
 - **[05-HTTP, SSE, and WebSocket API](01-architecture/05-http-sse-and-websocket-api.md)**: OpenAPI 3.1 endpoints, 100ms SSE telemetry streaming, oscilloscope WebSocket protocol, and in-canvas logic deployment.
+- **[06-Universal Plugin Harness and Extensibility](01-architecture/06-universal-plugin-harness-and-extensibility.md)**: Zero-domain microkernel, plugin host supervisor, capability-based security barrier, and unified MCP aggregation.
+- **[07-Cross-Platform Hardware Abstraction Layer and Containerization](01-architecture/07-cross-platform-hal-and-containerization.md)**: `mythos-pal` platform abstraction traits, Windows/macOS/Linux parity, and Docker deployment.
+- **[08-One-Click Installers and Distribution](01-architecture/08-one-click-installers-and-distribution.md)**: Multi-channel release feeds, SemVer pinning, bootstrap scripts, and local rollback.
 
 ### 1.4 Data, Addressing & Memory Retention (`docs/02-data-and-addressing/`)
 - **[Tag Namespace Rules](02-data-and-addressing/tag-namespace-rules.md)**: Semantic naming convention `external.<namespace>.<device>.<variable>` and validation rules.

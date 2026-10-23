@@ -48,7 +48,7 @@ MythOS requires a strict architectural separation where the frontend functions a
 **Chosen Option**: Option 3 (Server-Driven UI with Automated Type Export).
 
 ### 4.1 Architecture Details
-- **Type Generation**: Rust structs and enums in `mythos-core` and `mythos-driver-api` derive `specta::Type` and `serde::Serialize`. Running `cargo test --package mythos-core --test export_types` generates fully typed TypeScript definitions directly into `frontend/src/types/generated.ts`.
+- **Type Generation**: Rust structs and enums in `mythos-core` and `mythos-driver-api` derive `specta::Type` and `serde::Serialize`. *[Superseded by ADR-008: `mythos-driver-api` is now `crates/mythos-plugin-sdk`. Original name retained as decided.]* Running `cargo test --package mythos-core --test export_types` generates fully typed TypeScript definitions directly into `frontend/src/types/generated.ts`.
 - **Pure Dumb Frontend Contract**:
   * The frontend receives pre-scaled engineering values, formatted display strings, and explicit color/status tokens (e.g., `status: "FAULT_CRITICAL"`, `colorToken: "color-status-danger"`).
   * The frontend never calculates `(raw_val * scale) + offset` or evaluates `if (temp > 85) state = ALARM`. The backend computes and emits the finalized visual token.
