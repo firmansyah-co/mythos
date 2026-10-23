@@ -20,7 +20,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenExitDialog, className = ''
   const menuItems = ['File', 'Edit', 'View', 'PLC', 'Online', 'Tools', 'Help'];
 
   return (
-    <header className={`w-full bg-[#0A0D12] border-b border-neutral-800 select-none text-neutral-300 ${className}`}>
+    <header className={`w-full bg-[var(--bg-base)] border-b border-neutral-800 select-none text-neutral-300 ${className}`}>
       {/* Primary Menu & Brand Strip */}
       <div className="flex items-center justify-between px-3 h-9">
         <div className="flex items-center gap-4">

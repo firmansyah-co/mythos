@@ -69,7 +69,7 @@ export const LogicEditorPlugin: React.FC<LogicEditorPluginProps> = ({
   // Online Debug & Forcing Deck State
   const [debugState, setDebugState] = useState<OnlineDebugState>(sharedDebugEngine.getSnapshot());
   const [isForceDeckOpen, setIsForceDeckOpen] = useState(false);
-  const isOnlineDebug = debugState.state === 'ONLINE' || debugState.state === 'SIMULATING';
+  const isOnlineDebug = debugState.state === 'ONLINE';
 
   useEffect(() => {
     const unsubscribe = sharedDebugEngine.subscribe((state) => {
@@ -102,7 +102,7 @@ export const LogicEditorPlugin: React.FC<LogicEditorPluginProps> = ({
 
   return (
     <div
-      className={`flex flex-col w-full h-full bg-[#0A0D12] overflow-hidden ${className}`}
+      className={`flex flex-col w-full h-full bg-[var(--bg-base)] overflow-hidden ${className}`}
       data-testid="logic-editor-plugin"
     >
       {/* Top Deploy & Controller Action Bar */}
@@ -113,7 +113,7 @@ export const LogicEditorPlugin: React.FC<LogicEditorPluginProps> = ({
       />
 
       {/* Editor Main Sub-Toolbar / Language & Canvas Mode Switcher */}
-      <div className="flex items-center justify-between px-3 py-1 bg-[#131924] border-b border-neutral-800 text-xs">
+      <div className="flex items-center justify-between px-3 py-1 bg-[var(--bg-surface)] border-b border-neutral-800 text-xs">
         {/* Multi-language Navigation Tabs */}
         <div className="flex items-center gap-1 bg-neutral-900 p-0.5 rounded border border-neutral-800 overflow-x-auto">
           {/* ST */}
@@ -239,6 +239,16 @@ export const LogicEditorPlugin: React.FC<LogicEditorPluginProps> = ({
               </>
             )}
           </button>
+
+          {debugState.state === 'FAULT' && (
+            <span
+              role="alert"
+              data-testid="debug-connection-state"
+              className="text-rose-300 border border-rose-800 bg-rose-950/50 px-2 py-0.5 rounded text-[11px] font-mono"
+            >
+              FAULT: no live telemetry
+            </span>
+          )}
 
           {/* Power Flow Floating Overlay */}
           <PowerFlowOverlay

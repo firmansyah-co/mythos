@@ -10,7 +10,6 @@ import {
   Radio,
   ArrowRight,
   Shield,
-  CheckCircle,
   Plus,
 } from 'lucide-react';
 import { useHmiStore } from '../../stores/useHmiStore';
@@ -45,28 +44,20 @@ export const PortalView: React.FC<PortalViewProps> = ({
   const [projectComment, setProjectComment] = useState('Standard IEC 61131-3 Automation Project');
   const [projectPath, setProjectPath] = useState('/opt/mythos/projects');
 
-  // Existing projects list
-  const [existingProjects, setExistingProjects] = useState<ProjectMetadata[]>([
-    {
-      id: 'bottling_plant_line01',
-      name: 'BottlingPlant_Line01',
-      version: '1.0.0',
-      description: 'Automated High-Speed Bottling & Conveyor Subsystem',
-      author: 'MythOS Systems',
-    },
-    {
-      id: 'packaging_skid_02',
-      name: 'Packaging_Skid_02',
-      version: '1.0.0',
-      description: 'End-of-Line Secondary Packaging & Palletizer',
-      author: 'Industrial Automation Lead',
-    },
-  ]);
-  const [selectedExistingProjectId, setSelectedExistingProjectId] = useState<string>('bottling_plant_line01');
+  // Existing projects are loaded from the backend; an unavailable API is not a project list.
+  const [existingProjects, setExistingProjects] = useState<ProjectMetadata[]>([]);
+  const [selectedExistingProjectId, setSelectedExistingProjectId] = useState<string | null>(null);
+  const [projectListError, setProjectListError] = useState<string | null>(null);
+  const [projectListLoading, setProjectListLoading] = useState(true);
+  const [listRevision, setListRevision] = useState(0);
+
+  // Inline action errors keep the form values so the same action can be retried.
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
 
   // Import package state
-  const [importPackagePath, setImportPackagePath] = useState('plant_archive_2025.mythos-pkg');
-  const [importSuccess, setImportSuccess] = useState(false);
+  const [importPackagePath, setImportPackagePath] = useState('');
+  const [importError, setImportError] = useState<string | null>(null);
 
   // Store actions
   const createNewProject = useHmiStore((s) => s.createNewProject);
@@ -78,46 +69,80 @@ export const PortalView: React.FC<PortalViewProps> = ({
   useEffect(() => {
     // Attempt to load existing projects from backend
     let isMounted = true;
-    fetch('/api/v1/projects')
-      .then((res) => {
-        if (res.ok) return res.json();
-        return null;
+    const controller = new AbortController();
+    setProjectListLoading(true);
+    setProjectListError(null);
+    fetch('/api/v1/projects', { signal: controller.signal })
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error(`Project list unavailable (HTTP ${res.status})`);
+        }
+        const data: unknown = await res.json();
+        if (!Array.isArray(data)) {
+          throw new Error('Project list response was invalid');
+        }
+        if (!data.every((id) => typeof id === 'string' && id.length > 0)) {
+          throw new Error('Project list must contain project IDs');
+        }
+        return Promise.all(data.map(async (id: string) => {
+          const response = await fetch(`/api/v1/projects/${encodeURIComponent(id)}`, { signal: controller.signal });
+          if (!response.ok) throw new Error(`Project details unavailable (HTTP ${response.status})`);
+          const project: ProjectMetadata = await response.json();
+          if (project?.id !== id || typeof project.name !== 'string') throw new Error('Project details were invalid');
+          return project;
+        }));
       })
       .then((data) => {
-        if (isMounted && Array.isArray(data) && data.length > 0) {
+        if (isMounted) {
           setExistingProjects(data);
-          setSelectedExistingProjectId(data[0].id);
+          setSelectedExistingProjectId(data[0]?.id ?? null);
+          setProjectListError(null);
         }
       })
-      .catch(() => {
-        // Fallback maintained
-      });
+      .catch((error: unknown) => {
+        if (isMounted) {
+          setProjectListError(error instanceof Error ? error.message : 'Project list unavailable');
+          setExistingProjects([]);
+          setSelectedExistingProjectId(null);
+        }
+      })
+      .finally(() => { if (isMounted) setProjectListLoading(false); });
 
     return () => {
       isMounted = false;
+      controller.abort();
     };
-  }, []);
+  }, [listRevision]);
+
+  const submitCreateProject = async () => {
+    if (!projectName.trim()) return;
+    setCreateError(null);
+    const created = await createNewProject(projectName.trim(), projectAuthor.trim(), projectComment.trim(), projectPath.trim());
+    if (!created) {
+      setCreateError(useHmiStore.getState().errorMessage ?? 'Project creation failed');
+    }
+  };
 
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!projectName.trim()) return;
-    await createNewProject(projectName.trim(), projectAuthor.trim(), projectComment.trim(), projectPath.trim());
-    setWorkspaceMode('PROJECT');
+    await submitCreateProject();
   };
 
   const handleOpenExistingProject = async () => {
     if (!selectedExistingProjectId) return;
-    await openExistingProject(selectedExistingProjectId);
-    setWorkspaceMode('PROJECT');
+    setOpenError(null);
+    const opened = await openExistingProject(selectedExistingProjectId);
+    if (!opened) {
+      setOpenError(useHmiStore.getState().errorMessage ?? 'Project could not be opened');
+    }
   };
 
-  const handleImportPackage = async () => {
-    if (!importPackagePath) return;
-    setImportSuccess(true);
-    setTimeout(async () => {
-      await createNewProject('Restored_From_Archive', 'Encrypted WAL Restorer', 'Restored from ' + importPackagePath);
-      setWorkspaceMode('PROJECT');
-    }, 400);
+  const handleImportPackage = () => {
+    setImportError(
+      importPackagePath.trim()
+        ? 'Package restore is unavailable: no backend import operation is connected.'
+        : 'Select a package archive before restoring.'
+    );
   };
 
   const jumpToProjectView = () => {
@@ -126,14 +151,14 @@ export const PortalView: React.FC<PortalViewProps> = ({
 
   return (
     <div
-      className={`flex w-full h-full bg-[#0A0D12] text-neutral-200 select-none overflow-hidden ${className}`}
+      className={`flex w-full h-full bg-[var(--bg-base)] text-neutral-200 select-none overflow-hidden ${className}`}
       data-testid="portal-view"
     >
       {/* Left Navigation Launchpad (Workbench Launchpad Menu) */}
-      <aside className="w-72 bg-[#0F141C] border-r border-neutral-800 flex flex-col justify-between flex-shrink-0">
+      <aside className="w-72 bg-[var(--bg-surface)] border-r border-neutral-800 flex flex-col justify-between flex-shrink-0">
         <div>
           {/* Portal Brand Header */}
-          <div className="p-4 border-b border-neutral-800 bg-[#0A0D12]">
+          <div className="p-4 border-b border-neutral-800 bg-[var(--bg-base)]">
             <div className="flex items-center gap-2.5">
               <MythosLogo size={28} className="shrink-0 shadow-md" />
               <div>
@@ -226,7 +251,7 @@ export const PortalView: React.FC<PortalViewProps> = ({
         </div>
 
         {/* Switch to Project View footer shortcut */}
-        <div className="p-3 border-t border-neutral-800 bg-[#0A0D12]">
+        <div className="p-3 border-t border-neutral-800 bg-[var(--bg-base)]">
           <button
             onClick={jumpToProjectView}
             data-testid="portal-jump-to-project-btn"
@@ -244,9 +269,9 @@ export const PortalView: React.FC<PortalViewProps> = ({
       </aside>
 
       {/* Main Task Launchpad Canvas */}
-      <main className="flex-1 flex flex-col bg-[#0A0D12] overflow-y-auto">
+      <main className="flex-1 flex flex-col bg-[var(--bg-base)] overflow-y-auto">
         {/* Category Header Banner */}
-        <div className="px-8 py-6 bg-[#0F141C] border-b border-neutral-800">
+        <div className="px-8 py-6 bg-[var(--bg-surface)] border-b border-neutral-800">
           <div className="max-w-4xl">
             <h2 className="text-xl font-bold text-white tracking-tight">
               {activeCategory === 'START' && 'Start / Project Administration'}
@@ -308,11 +333,18 @@ export const PortalView: React.FC<PortalViewProps> = ({
 
               {/* Sub-Tab 1: Create New Project */}
               {startTab === 'CREATE' && (
-                <div className="p-6 bg-[#0F141C] border border-neutral-800 rounded-lg shadow-lg">
+                <div className="p-6 bg-[var(--bg-surface)] border border-neutral-800 rounded-lg shadow-lg">
                   <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
                     <FolderPlus className="w-4 h-4 text-cyan-400" />
                     Create New Automation Project
                   </h3>
+
+                  {createError && (
+                    <div role="alert" data-testid="portal-create-error" className="mb-4 border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-200">
+                      {createError}
+                      <button type="button" onClick={() => { void submitCreateProject(); }} className="ml-3 underline">Retry</button>
+                    </div>
+                  )}
 
                   <form onSubmit={handleCreateProject} className="space-y-4 text-xs">
                     <div className="grid grid-cols-2 gap-4">
@@ -382,12 +414,30 @@ export const PortalView: React.FC<PortalViewProps> = ({
 
               {/* Sub-Tab 2: Open Existing Project */}
               {startTab === 'OPEN' && (
-                <div className="p-6 bg-[#0F141C] border border-neutral-800 rounded-lg shadow-lg">
+                <div className="p-6 bg-[var(--bg-surface)] border border-neutral-800 rounded-lg shadow-lg">
                   <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
                     <FolderOpen className="w-4 h-4 text-cyan-400" />
                     Open Existing Project
                   </h3>
 
+                  {openError && (
+                    <div role="alert" data-testid="portal-open-error" className="mb-3 border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-200">
+                      {openError}
+                      <button type="button" onClick={() => { void handleOpenExistingProject(); }} className="ml-3 underline">Retry</button>
+                    </div>
+                  )}
+                  {projectListError && (
+                    <div role="alert" className="mb-3 border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-200">
+                      {projectListError}.
+                      <button type="button" onClick={() => setListRevision((value) => value + 1)} className="ml-3 underline">Retry project list</button>
+                    </div>
+                  )}
+                  {projectListLoading && <p role="status" className="mb-3 text-xs text-neutral-400">Loading projects…</p>}
+                  {!projectListLoading && !projectListError && existingProjects.length === 0 && (
+                    <div className="mb-3 border border-neutral-700 bg-neutral-900 p-3 text-xs text-neutral-400">
+                      No projects are available from the backend.
+                    </div>
+                  )}
                   <div className="space-y-2 mb-4">
                     {existingProjects.map((p) => {
                       const isSelected = selectedExistingProjectId === p.id;
@@ -421,6 +471,7 @@ export const PortalView: React.FC<PortalViewProps> = ({
                   <div className="flex justify-end">
                     <button
                       onClick={handleOpenExistingProject}
+                      disabled={projectListLoading || !selectedExistingProjectId}
                       data-testid="btn-open-project"
                       className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs shadow-md transition-colors flex items-center gap-2 cursor-pointer"
                     >
@@ -433,7 +484,7 @@ export const PortalView: React.FC<PortalViewProps> = ({
 
               {/* Sub-Tab 3: Import Package */}
               {startTab === 'IMPORT' && (
-                <div className="p-6 bg-[#0F141C] border border-neutral-800 rounded-lg shadow-lg">
+                <div className="p-6 bg-[var(--bg-surface)] border border-neutral-800 rounded-lg shadow-lg">
                   <h3 className="text-sm font-semibold text-white mb-2 flex items-center gap-2">
                     <Shield className="w-4 h-4 text-emerald-400" />
                     Restore Encrypted Package Archive (.mythos-pkg)
@@ -455,10 +506,9 @@ export const PortalView: React.FC<PortalViewProps> = ({
                       />
                     </div>
 
-                    {importSuccess && (
-                      <div className="p-2.5 rounded bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 flex items-center gap-2">
-                        <CheckCircle className="w-4 h-4" />
-                        <span>Package verified &amp; unpacked successfully! Transitioning...</span>
+                    {importError && (
+                      <div role="alert" className="border border-rose-800 bg-rose-950/40 p-2.5 text-rose-200">
+                        {importError}
                       </div>
                     )}
 
@@ -480,7 +530,7 @@ export const PortalView: React.FC<PortalViewProps> = ({
 
           {/* CATEGORY 2: DEVICES & NETWORKS */}
           {activeCategory === 'DEVICES_NETWORKS' && (
-            <div className="p-6 bg-[#0F141C] border border-neutral-800 rounded-lg shadow-lg space-y-4">
+            <div className="p-6 bg-[var(--bg-surface)] border border-neutral-800 rounded-lg shadow-lg space-y-4">
               <h3 className="text-sm font-semibold text-white flex items-center gap-2">
                 <Network className="w-4 h-4 text-cyan-400" />
                 Devices &amp; Networks
@@ -529,7 +579,7 @@ export const PortalView: React.FC<PortalViewProps> = ({
 
           {/* CATEGORY 3: PLC PROGRAMMING */}
           {activeCategory === 'PLC_PROGRAMMING' && (
-            <div className="p-6 bg-[#0F141C] border border-neutral-800 rounded-lg shadow-lg space-y-4">
+            <div className="p-6 bg-[var(--bg-surface)] border border-neutral-800 rounded-lg shadow-lg space-y-4">
               <h3 className="text-sm font-semibold text-white flex items-center gap-2">
                 <Cpu className="w-4 h-4 text-emerald-400" />
                 PLC Programming
@@ -580,7 +630,7 @@ export const PortalView: React.FC<PortalViewProps> = ({
 
           {/* CATEGORY 4: MOTION & TECHNOLOGY */}
           {activeCategory === 'MOTION_TECHNOLOGY' && (
-            <div className="p-6 bg-[#0F141C] border border-neutral-800 rounded-lg shadow-lg space-y-4">
+            <div className="p-6 bg-[var(--bg-surface)] border border-neutral-800 rounded-lg shadow-lg space-y-4">
               <h3 className="text-sm font-semibold text-white flex items-center gap-2">
                 <Activity className="w-4 h-4 text-amber-400" />
                 Motion &amp; Technology Objects
@@ -610,7 +660,7 @@ export const PortalView: React.FC<PortalViewProps> = ({
 
           {/* CATEGORY 5: VISUALIZATION */}
           {activeCategory === 'VISUALIZATION' && (
-            <div className="p-6 bg-[#0F141C] border border-neutral-800 rounded-lg shadow-lg space-y-4">
+            <div className="p-6 bg-[var(--bg-surface)] border border-neutral-800 rounded-lg shadow-lg space-y-4">
               <h3 className="text-sm font-semibold text-white flex items-center gap-2">
                 <Monitor className="w-4 h-4 text-sky-400" />
                 Visualization (Web HMI)
@@ -642,7 +692,7 @@ export const PortalView: React.FC<PortalViewProps> = ({
 
           {/* CATEGORY 6: ONLINE & DIAGNOSTICS */}
           {activeCategory === 'ONLINE_DIAGNOSTICS' && (
-            <div className="p-6 bg-[#0F141C] border border-neutral-800 rounded-lg shadow-lg space-y-4">
+            <div className="p-6 bg-[var(--bg-surface)] border border-neutral-800 rounded-lg shadow-lg space-y-4">
               <h3 className="text-sm font-semibold text-white flex items-center gap-2">
                 <Radio className="w-4 h-4 text-purple-400" />
                 Online &amp; Diagnostics

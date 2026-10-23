@@ -10,8 +10,9 @@ export type TelemetryListener = (state: OnlineDebugState) => void;
 
 /**
  * Online Debug Engine compliant with SYS-REQ-096 safety invariants.
- * Connects to runtime telemetry (SSE / WebSocket / simulated PLC engine)
- * and governs variable forcing with strict audit logs.
+ * Connects to runtime telemetry (SSE / WebSocket) and governs variable forcing
+ * with strict audit logs. A missing or failed transport becomes FAULT; the engine
+ * never synthesizes a process image of its own.
  */
 export class OnlineDebugEngine {
   private state: DebugConnectionState = 'DISCONNECTED';
@@ -20,37 +21,8 @@ export class OnlineDebugEngine {
   private auditLogs: ForcingAuditLog[] = [];
   private listeners: Set<TelemetryListener> = new Set();
   private cycleTimeMs: number = 10;
-  private timerId: any = null;
   private ws: WebSocket | null = null;
   private sse: EventSource | null = null;
-
-  constructor() {
-    this.seedDefaultTelemetry();
-  }
-
-  private seedDefaultTelemetry() {
-    this.telemetry = {
-      'external.DI_StartPB': true,
-      'external.DI_EStop_PB': false,
-      'external.DO_ConveyorRun': true,
-      'external.DI_BottlePE': true,
-      'internal.B_IndexActive': true,
-      'Gate_Open': true,
-      'Bottle_Count': 142,
-      'Conveyor_Velocity_Setpoint': 24.5,
-      'DI_StartPB': true,
-      'DI_EStop_PB': false,
-      'DO_ConveyorRun': true,
-      'DI_BottlePE': true,
-      'DI_BottleInPosition': true,
-      'DI_AutoPermissive': true,
-      'DI_FaultAlarm': false,
-      'DO_MainPowerContactor': true,
-      'TON_1.IN': true,
-      'TON_1.Q': true,
-      'TON_1.ET': 'T#1800ms',
-    };
-  }
 
   public subscribe(listener: TelemetryListener): () => void {
     this.listeners.add(listener);
@@ -79,10 +51,11 @@ export class OnlineDebugEngine {
   }
 
   /**
-   * Connects to live PLC online debugging stream or starts high-fidelity simulation
+   * Connects to the live PLC online debugging stream. No URL, or a failed
+   * transport, is reported as FAULT rather than simulated.
    */
   public connect(url?: string): void {
-    if (this.state === 'ONLINE' || this.state === 'SIMULATING') return;
+    if (this.state === 'ONLINE' || this.state === 'CONNECTING') return;
 
     this.state = 'CONNECTING';
     this.notify();
@@ -103,59 +76,28 @@ export class OnlineDebugEngine {
           }
         };
         this.ws.onerror = () => {
-          this.fallbackToSimulation();
+          this.markFault();
         };
         this.ws.onclose = () => {
-          this.state = 'DISCONNECTED';
-          this.notify();
+          if (this.state !== 'FAULT') {
+            this.state = 'DISCONNECTED';
+            this.notify();
+          }
         };
         return;
       } catch {
-        this.fallbackToSimulation();
+        this.markFault();
         return;
       }
     }
 
-    this.fallbackToSimulation();
+    this.markFault();
   }
 
-  private fallbackToSimulation(): void {
-    this.state = 'SIMULATING';
-    this.startSimulationLoop();
+  private markFault(): void {
+    this.state = 'FAULT';
+    this.telemetry = {};
     this.notify();
-  }
-
-  private startSimulationLoop(): void {
-    if (this.timerId) clearInterval(this.timerId);
-
-    let tick = 0;
-    this.timerId = setInterval(() => {
-      tick++;
-      // Simulate real-time cyclic PLC state variations
-      const count = 100 + (tick % 50);
-      const isBottle = tick % 6 !== 0;
-
-      const nextTelemetry: Record<string, boolean | number | string> = {
-        ...this.telemetry,
-        Bottle_Count: count,
-        'external.DI_BottlePE': isBottle,
-        DI_BottlePE: isBottle,
-        DI_BottleInPosition: isBottle,
-        'internal.B_IndexActive': isBottle,
-        Gate_Open: isBottle,
-      };
-
-      // Apply forced variable overrides (SYS-REQ-096 safety lock)
-      for (const [varName, forced] of Object.entries(this.forcedVariables)) {
-        if (forced.active) {
-          nextTelemetry[varName] = forced.value;
-        }
-      }
-
-      this.telemetry = nextTelemetry;
-      this.cycleTimeMs = 8 + Math.floor(Math.random() * 4);
-      this.notify();
-    }, 200);
   }
 
   private handleIncomingTelemetry(frame: TelemetryFrame): void {
@@ -171,10 +113,6 @@ export class OnlineDebugEngine {
   }
 
   public disconnect(): void {
-    if (this.timerId) {
-      clearInterval(this.timerId);
-      this.timerId = null;
-    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;

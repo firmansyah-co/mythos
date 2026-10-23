@@ -269,7 +269,7 @@ export const MonacoStEditor: React.FC<MonacoStEditorProps> = ({
 
   if (isHeadless || !isClient) {
     return (
-      <div className={`w-full h-full bg-[#0F141C] p-2 flex flex-col ${className}`} data-testid="monaco-st-editor-wrapper">
+      <div className={`w-full h-full bg-[var(--bg-surface)] p-2 flex flex-col ${className}`} data-testid="monaco-st-editor-wrapper">
         <div className="flex items-center justify-between pb-1.5 mb-1 border-b border-neutral-800 text-[11px] font-mono">
           <div className="flex items-center gap-2">
             <span className="text-neutral-400">Language:</span>
@@ -321,11 +321,11 @@ export const MonacoStEditor: React.FC<MonacoStEditorProps> = ({
 
   return (
     <div
-      className={`w-full h-full relative overflow-hidden bg-[#0A0D12] flex flex-col ${className}`}
+      className={`w-full h-full relative overflow-hidden bg-[var(--bg-base)] flex flex-col ${className}`}
       data-testid="monaco-st-editor-container"
     >
       {/* Mini top toolbar for sub-language toggle & live badge summary */}
-      <div className="flex items-center justify-between px-3 py-1 bg-[#0F141C] border-b border-neutral-800 text-xs">
+      <div className="flex items-center justify-between px-3 py-1 bg-[var(--bg-surface)] border-b border-neutral-800 text-xs">
         <div className="flex items-center gap-2">
           <div className="flex items-center bg-neutral-900 rounded p-0.5 border border-neutral-800">
             <button
@@ -398,7 +398,7 @@ export const MonacoStEditor: React.FC<MonacoStEditorProps> = ({
             bracketPairColorization: { enabled: true },
           }}
           loading={
-            <div className="flex items-center justify-center h-full text-xs font-mono text-neutral-400 bg-[#0A0D12]">
+            <div className="flex items-center justify-center h-full text-xs font-mono text-neutral-400 bg-[var(--bg-base)]">
               Loading IEC 61131-3 Monaco Editor ({currentLang})...
             </div>
           }
@@ -425,13 +425,13 @@ function injectRemoteCursorStyles(): void {
     }
     .yRemoteSelectionHead {
       position: absolute;
-      border-left: 2px solid #3B82F6;
+      border-left: 2px solid var(--collab-blue);
       box-sizing: border-box;
       height: 100%;
     }
     .yRemoteSelectionHead::after {
       content: ' ';
-      border: 3px solid #3B82F6;
+      border: 3px solid var(--collab-blue);
       border-radius: 4px;
       left: -4px;
       top: -5px;

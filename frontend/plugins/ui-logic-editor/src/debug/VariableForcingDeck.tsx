@@ -49,9 +49,9 @@ export const VariableForcingDeck: React.FC<VariableForcingDeckProps> = ({
 
   return (
     <div className={`fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 font-sans ${className}`}>
-      <div className="w-full max-w-2xl bg-[#0F141C] border border-amber-600/70 rounded-lg shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+      <div className="w-full max-w-2xl bg-[var(--bg-surface)] border border-amber-600/70 rounded-lg shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
         {/* Header with Safety Warning Badge */}
-        <div className="flex items-center justify-between px-4 py-3 bg-[#171E2B] border-b border-amber-600/50">
+        <div className="flex items-center justify-between px-4 py-3 bg-[var(--bg-surface)] border-b border-amber-600/50">
           <div className="flex items-center gap-2.5">
             <ShieldAlert className="w-5 h-5 text-amber-400 animate-pulse" />
             <div>
@@ -92,7 +92,7 @@ export const VariableForcingDeck: React.FC<VariableForcingDeckProps> = ({
               value={targetName}
               onChange={(e) => setTargetName(e.target.value)}
               placeholder="e.g. DI_StartPB, Conveyor_Motor"
-              className="w-full px-2.5 py-1.5 bg-[#0A0D12] border border-neutral-700 rounded text-cyan-300 focus:outline-none focus:border-amber-500"
+              className="w-full px-2.5 py-1.5 bg-[var(--bg-base)] border border-neutral-700 rounded text-cyan-300 focus:outline-none focus:border-amber-500"
               required
             />
           </div>
@@ -102,7 +102,7 @@ export const VariableForcingDeck: React.FC<VariableForcingDeckProps> = ({
             <select
               value={targetType}
               onChange={(e) => setTargetType(e.target.value)}
-              className="w-full px-2 py-1.5 bg-[#0A0D12] border border-neutral-700 rounded text-neutral-200 focus:outline-none"
+              className="w-full px-2 py-1.5 bg-[var(--bg-base)] border border-neutral-700 rounded text-neutral-200 focus:outline-none"
             >
               <option value="BOOL">BOOL</option>
               <option value="INT">INT</option>
@@ -117,7 +117,7 @@ export const VariableForcingDeck: React.FC<VariableForcingDeckProps> = ({
               <select
                 value={targetVal}
                 onChange={(e) => setTargetVal(e.target.value)}
-                className="w-full px-2 py-1.5 bg-[#0A0D12] border border-neutral-700 rounded text-emerald-400 font-bold focus:outline-none"
+                className="w-full px-2 py-1.5 bg-[var(--bg-base)] border border-neutral-700 rounded text-emerald-400 font-bold focus:outline-none"
               >
                 <option value="TRUE">TRUE (1)</option>
                 <option value="FALSE">FALSE (0)</option>
@@ -127,7 +127,7 @@ export const VariableForcingDeck: React.FC<VariableForcingDeckProps> = ({
                 type="text"
                 value={targetVal}
                 onChange={(e) => setTargetVal(e.target.value)}
-                className="w-full px-2 py-1.5 bg-[#0A0D12] border border-neutral-700 rounded text-neutral-200 focus:outline-none font-mono"
+                className="w-full px-2 py-1.5 bg-[var(--bg-base)] border border-neutral-700 rounded text-neutral-200 focus:outline-none font-mono"
               />
             )}
           </div>
@@ -142,7 +142,7 @@ export const VariableForcingDeck: React.FC<VariableForcingDeckProps> = ({
         </form>
 
         {/* View Switcher Tabs & Emergency Release All */}
-        <div className="flex items-center justify-between px-4 py-2 bg-[#121822] border-b border-neutral-800 text-xs">
+        <div className="flex items-center justify-between px-4 py-2 bg-[var(--bg-surface)] border-b border-neutral-800 text-xs">
           <div className="flex items-center gap-2">
             <button
               onClick={() => setActiveTab('FORCED')}
@@ -188,7 +188,7 @@ export const VariableForcingDeck: React.FC<VariableForcingDeckProps> = ({
               </div>
             ) : (
               <table className="w-full text-left border-collapse">
-                <thead className="bg-[#141B26] text-neutral-400 text-[11px] border-b border-neutral-800">
+                <thead className="bg-[var(--bg-surface)] text-neutral-400 text-[11px] border-b border-neutral-800">
                   <tr>
                     <th className="py-2 px-3">Variable</th>
                     <th className="py-2 px-3">Forced Value</th>

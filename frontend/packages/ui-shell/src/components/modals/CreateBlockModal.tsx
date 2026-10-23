@@ -39,9 +39,9 @@ export const CreateBlockModal: React.FC<CreateBlockModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-      <div className="w-full max-w-md bg-[#0F141C] border border-neutral-800 rounded-lg shadow-2xl text-neutral-200 overflow-hidden font-sans">
+      <div className="w-full max-w-md bg-[var(--bg-surface)] border border-neutral-800 rounded-lg shadow-2xl text-neutral-200 overflow-hidden font-sans">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 bg-[#0A0D12] border-b border-neutral-800">
+        <div className="flex items-center justify-between px-4 py-3 bg-[var(--bg-base)] border-b border-neutral-800">
           <div className="flex items-center gap-2">
             <FileCode2 className="w-4 h-4 text-cyan-400" />
             <h3 className="text-sm font-semibold text-white tracking-wide">

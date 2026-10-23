@@ -109,8 +109,8 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
       className={`flex flex-col w-84 bg-slate-900/95 border border-slate-700/80 rounded-lg p-3 shadow-xl backdrop-blur-sm text-slate-100 ${className}`}
       style={{
         borderTop: alarmActive
-          ? '3px solid var(--alarm-major, #EA580C)'
-          : '3px solid var(--isa101-pump-running, #0284C7)',
+          ? '3px solid var(--alarm-major)'
+          : '3px solid var(--isa101-pump-running)',
       }}
     >
       {/* Header */}

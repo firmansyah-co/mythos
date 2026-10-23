@@ -91,11 +91,11 @@ export const SfcCanvas: React.FC<SfcCanvasProps> = ({
 
   return (
     <div
-      className={`flex flex-col w-full h-full bg-[#0A0D12] text-neutral-200 p-4 select-none overflow-auto ${className}`}
+      className={`flex flex-col w-full h-full bg-[var(--bg-base)] text-neutral-200 p-4 select-none overflow-auto ${className}`}
       data-testid="sfc-canvas"
     >
       {/* Top Header */}
-      <div className="flex items-center justify-between pb-3 border-b border-neutral-800 mb-4 bg-[#0A0D12]">
+      <div className="flex items-center justify-between pb-3 border-b border-neutral-800 mb-4 bg-[var(--bg-base)]">
         <div>
           <div className="flex items-center gap-2">
             <h3 className="text-xs font-semibold text-neutral-200 tracking-wide uppercase">
@@ -127,7 +127,7 @@ export const SfcCanvas: React.FC<SfcCanvasProps> = ({
       </div>
 
       {/* SFC Sequence Viewer */}
-      <div className="relative w-full h-[650px] border border-neutral-800/60 rounded bg-[#070A0F] overflow-y-auto p-8 flex flex-col items-center">
+      <div className="relative w-full h-[650px] border border-neutral-800/60 rounded bg-[var(--bg-base)] overflow-y-auto p-8 flex flex-col items-center">
         {activeSteps.map((step, idx) => {
           const trans = activeTransitions.find((t) => t.fromStepId === step.id);
           const isStepActive = Boolean(step.isActive || (debugActive && (idx === 0 || liveTelemetry[step.name] === true)));
@@ -144,12 +144,12 @@ export const SfcCanvas: React.FC<SfcCanvasProps> = ({
                       : 'border-2 border-neutral-600 bg-neutral-900'
                   } ${
                     isStepActive
-                      ? 'border-[#22C55E] bg-[#22C55E]/20 text-[#22C55E] drop-shadow-[0_0_10px_rgba(34,197,94,0.6)]'
+                      ? 'border-[var(--bus-ethernet)] bg-[var(--bus-ethernet)]/20 text-[var(--bus-ethernet)] drop-shadow-[0_0_10px_rgba(34,197,94,0.6)]'
                       : 'text-neutral-200'
                   }`}
                 >
                   {isStepActive && (
-                    <span className="absolute -top-2 -left-2 w-4 h-4 rounded-full bg-[#22C55E] animate-ping" />
+                    <span className="absolute -top-2 -left-2 w-4 h-4 rounded-full bg-[var(--bus-ethernet)] animate-ping" />
                   )}
                   <div className="flex items-center gap-1">
                     <span className="font-bold text-xs">{step.name}</span>
@@ -176,7 +176,7 @@ export const SfcCanvas: React.FC<SfcCanvasProps> = ({
                   {step.actions.map((act) => (
                     <div
                       key={act.id}
-                      className="flex items-center border border-neutral-700 rounded bg-[#111622] text-[11px] font-mono shadow overflow-hidden"
+                      className="flex items-center border border-neutral-700 rounded bg-[var(--bg-surface)] text-[11px] font-mono shadow overflow-hidden"
                     >
                       {/* Qualifier Box (N, S, R, P, L, D) */}
                       <span className="px-2 py-1 bg-cyan-900/40 text-cyan-300 font-bold border-r border-neutral-700 min-w-[28px] text-center">
@@ -201,7 +201,7 @@ export const SfcCanvas: React.FC<SfcCanvasProps> = ({
                   {/* Vertical Wire */}
                   <div
                     className={`w-0.5 h-6 ${
-                      trans.isSatisfied || debugActive ? 'bg-[#22C55E]' : 'bg-neutral-600'
+                      trans.isSatisfied || debugActive ? 'bg-[var(--bus-ethernet)]' : 'bg-neutral-600'
                     }`}
                   />
 
@@ -210,7 +210,7 @@ export const SfcCanvas: React.FC<SfcCanvasProps> = ({
                     <div
                       className={`h-1 w-10 ${
                         trans.isSatisfied || debugActive
-                          ? 'bg-[#22C55E] shadow-[0_0_8px_#22C55E]'
+                          ? 'bg-[var(--bus-ethernet)] shadow-[0_0_8px_var(--bus-ethernet)]'
                           : 'bg-neutral-400'
                       }`}
                     />
@@ -225,12 +225,12 @@ export const SfcCanvas: React.FC<SfcCanvasProps> = ({
                   {/* Vertical Wire down to next step */}
                   <div
                     className={`w-0.5 h-6 ${
-                      trans.isSatisfied || debugActive ? 'bg-[#22C55E]' : 'bg-neutral-600'
+                      trans.isSatisfied || debugActive ? 'bg-[var(--bus-ethernet)]' : 'bg-neutral-600'
                     }`}
                   />
                   <ArrowDown
                     className={`w-3.5 h-3.5 -mt-1 ${
-                      trans.isSatisfied || debugActive ? 'text-[#22C55E]' : 'text-neutral-600'
+                      trans.isSatisfied || debugActive ? 'text-[var(--bus-ethernet)]' : 'text-neutral-600'
                     }`}
                   />
                 </div>

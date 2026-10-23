@@ -103,50 +103,50 @@ export interface BusColorDefinition {
 
 export const PROTOCOL_COLORS: Record<ProtocolType, BusColorDefinition> = {
   PROFINET: {
-    stroke: '#16A34A', // Green
+    stroke: 'var(--bus-ethernet)', // Green
     strokeWidth: 3,
     label: 'PROFINET',
   },
   MODBUS_TCP: {
-    stroke: '#16A34A', // Green
+    stroke: 'var(--bus-ethernet)', // Green
     strokeWidth: 3,
     label: 'Modbus TCP',
   },
   MODBUS_RTU: {
-    stroke: '#0284C7', // Blue
+    stroke: 'var(--bus-serial)', // Blue
     strokeWidth: 2.5,
     label: 'Modbus RTU',
   },
   PROFIBUS_DP: {
-    stroke: '#0284C7', // Blue
+    stroke: 'var(--bus-serial)', // Blue
     strokeWidth: 2.5,
     label: 'PROFIBUS DP',
   },
   CANOPEN: {
-    stroke: '#CA8A04', // Amber/Yellow
+    stroke: 'var(--bus-can)', // Amber/Yellow
     strokeWidth: 2.5,
     strokeDasharray: '6,3',
     label: 'CANopen',
   },
   ETHERNET_BACKBONE: {
-    stroke: '#38BDF8', // Slate Blue / Sky Blue
+    stroke: 'var(--bus-backbone)', // Slate Blue / Sky Blue
     strokeWidth: 3,
     label: 'Ethernet Backbone',
   },
   SAFETY_PROFISAFE: {
-    stroke: '#DC2626', // Crimson Red
+    stroke: 'var(--bus-safety)', // Crimson Red
     strokeWidth: 4,
     label: 'Safety Loop / SIL-3 STO',
   },
   IOLINK: {
-    stroke: '#9333EA', // Purple
+    stroke: 'var(--bus-io-link)', // Purple
     strokeWidth: 2,
     label: 'IO-Link',
   },
 };
 
 export const OFFLINE_BUS_COLOR: BusColorDefinition = {
-  stroke: '#475569',
+  stroke: 'var(--bus-offline)',
   strokeWidth: 2,
   strokeDasharray: '4,4',
   label: 'Offline / Severed',

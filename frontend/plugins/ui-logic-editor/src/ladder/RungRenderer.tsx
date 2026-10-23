@@ -138,7 +138,7 @@ export const RungRenderer: React.FC<RungRendererProps> = ({
         key={branch.id}
         className={`my-1 mx-2 p-2 border-l-2 border-r-2 rounded relative flex flex-col gap-2 ${
           isBranchActive
-            ? 'border-[#22C55E] bg-[#22C55E]/5'
+            ? 'border-[var(--bus-ethernet)] bg-[var(--bus-ethernet)]/5'
             : 'border-cyan-600/70 bg-neutral-900/50'
         }`}
         data-testid={`ladder-branch-${branch.id}`}
@@ -178,8 +178,8 @@ export const RungRenderer: React.FC<RungRendererProps> = ({
 
   return (
     <div
-      className={`border rounded bg-[#0F141C] p-3 shadow-inner transition-colors duration-200 ${
-        isRungEnergized ? 'border-[#22C55E]/80 shadow-[0_0_15px_rgba(34,197,94,0.15)]' : 'border-neutral-800/80'
+      className={`border rounded bg-[var(--bg-surface)] p-3 shadow-inner transition-colors duration-200 ${
+        isRungEnergized ? 'border-[var(--bus-ethernet)]/80 shadow-[0_0_15px_rgba(34,197,94,0.15)]' : 'border-neutral-800/80'
       }`}
       data-testid={`rung-container-${rung.id}`}
     >
@@ -188,7 +188,7 @@ export const RungRenderer: React.FC<RungRendererProps> = ({
         <div className="flex items-center gap-2">
           <span
             className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-              isRungEnergized ? 'bg-[#22C55E] text-black font-extrabold' : 'bg-neutral-800 text-cyan-400'
+              isRungEnergized ? 'bg-[var(--bus-ethernet)] text-black font-extrabold' : 'bg-neutral-800 text-cyan-400'
             }`}
           >
             RUNG {index + 1}
@@ -223,7 +223,7 @@ export const RungRenderer: React.FC<RungRendererProps> = ({
       <div
         className={`relative flex items-center py-4 px-3 bg-neutral-950/70 rounded border-l-4 border-r-4 transition-colors ${
           isRungEnergized
-            ? 'border-l-[#22C55E] border-r-neutral-600'
+            ? 'border-l-[var(--bus-ethernet)] border-r-neutral-600'
             : 'border-l-blue-600 border-r-neutral-700'
         }`}
       >

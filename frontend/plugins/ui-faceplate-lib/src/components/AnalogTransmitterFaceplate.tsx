@@ -41,11 +41,11 @@ export const AnalogTransmitterFaceplate: React.FC<AnalogTransmitterFaceplateProp
   };
 
   const getAlarmColor = () => {
-    if (sensorFault) return 'var(--alarm-diagnostic, #2563EB)';
-    if (alarm === 'CRITICAL') return 'var(--alarm-critical, #DC2626)';
-    if (alarm === 'MAJOR') return 'var(--alarm-major, #EA580C)';
-    if (alarm === 'MINOR') return 'var(--alarm-minor, #CA8A04)';
-    return 'var(--border-default, #334155)';
+    if (sensorFault) return 'var(--alarm-diagnostic, var(--alarm-diagnostic))';
+    if (alarm === 'CRITICAL') return 'var(--alarm-critical, var(--alarm-critical))';
+    if (alarm === 'MAJOR') return 'var(--alarm-major, var(--alarm-major))';
+    if (alarm === 'MINOR') return 'var(--alarm-minor, var(--alarm-minor))';
+    return 'var(--border-default, var(--border-default))';
   };
 
   // Tier 1: ISA-101 Transmitter Circle Bubble

@@ -17,12 +17,7 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
   currentAmps = 0,
   torquePercent = 0,
   maxSpeed = 1500,
-  interlocks = [
-    { id: 'estop', name: 'Emergency Stop Circuit OK (ISO 13849-1)', isSatisfied: true },
-    { id: 'lube', name: 'Lube Oil Pressure Normal', isSatisfied: true },
-    { id: 'thermal', name: 'Motor Thermal Overload Relay Normal', isSatisfied: !tripped },
-    { id: 'guard', name: 'Safety Guard Closed & Latched', isSatisfied: true },
-  ],
+  interlocks = [],
   tier = 2,
   alarm = tripped ? 'CRITICAL' : 'NORMAL',
   alarmActive = tripped,
@@ -60,9 +55,9 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
 
   // Status color determination adhering strictly to ISA-101
   const getSymbolFill = () => {
-    if (tripped) return 'var(--alarm-critical, #DC2626)';
-    if (running) return 'var(--isa101-pump-running, #0284C7)';
-    return 'var(--isa101-pump-stopped, #475569)';
+    if (tripped) return 'var(--alarm-critical, var(--alarm-critical))';
+    if (running) return 'var(--isa101-pump-running, var(--bus-serial))';
+    return 'var(--isa101-pump-stopped)';
   };
 
   // Tier 1: ISA-101 P&ID Vector Symbol
@@ -123,10 +118,10 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
       className={`flex flex-col w-80 bg-slate-900/95 border border-slate-700/80 rounded-lg p-3 shadow-xl backdrop-blur-sm text-slate-100 ${className}`}
       style={{
         borderTop: tripped
-          ? '3px solid var(--alarm-critical, #DC2626)'
+          ? '3px solid var(--alarm-critical, var(--alarm-critical))'
           : running
-          ? '3px solid var(--isa101-pump-running, #0284C7)'
-          : '3px solid var(--border-default, #334155)',
+          ? '3px solid var(--isa101-pump-running, var(--bus-serial))'
+          : '3px solid var(--border-default, var(--border-default))',
       }}
     >
       {/* Header */}
@@ -192,13 +187,15 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
         </div>
       </div>
 
+      {/* ISA-101: pushbuttons stay neutral. Saturated red/green are reserved for abnormal
+          process state (trips, alarms), so START/STOP are light-grey bordered buttons here. */}
       {/* Operator Primary Action Bar */}
       <div className="flex items-center gap-2 mt-3 pt-2 border-t border-slate-800">
         <button
           onClick={onStart}
           disabled={running || tripped || isLocked}
           data-testid="btn-motor-start"
-          className="flex-1 py-1.5 px-3 rounded bg-emerald-700/80 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium text-xs shadow transition-colors"
+          className="flex-1 py-1.5 px-3 rounded border border-slate-600 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 font-medium text-xs shadow transition-colors"
         >
           START
         </button>
@@ -206,7 +203,7 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
           onClick={onStop}
           disabled={!running || isLocked}
           data-testid="btn-motor-stop"
-          className="flex-1 py-1.5 px-3 rounded bg-rose-800/80 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium text-xs shadow transition-colors"
+          className="flex-1 py-1.5 px-3 rounded border border-slate-600 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 font-medium text-xs shadow transition-colors"
         >
           STOP
         </button>
@@ -305,6 +302,11 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
           Safety Interlock Matrix (ISO 13849-1)
         </span>
         <div className="flex flex-col gap-1 mt-1">
+          {interlocks.length === 0 && (
+            <div className="text-xs text-slate-400 py-0.5">
+              No interlock telemetry — none bound to this device.
+            </div>
+          )}
           {interlocks.map((item: InterlockCondition) => (
             <div key={item.id} className="flex items-center justify-between text-xs py-0.5 border-b border-slate-900/50 last:border-0">
               <span className="text-slate-300 truncate max-w-[260px]">{item.name}</span>

@@ -4,7 +4,7 @@ import { X, Layers } from 'lucide-react';
 export interface CreateScreenModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreate: (name: string, isRoot: boolean) => void;
+  onCreate: (name: string, isRoot: boolean) => void | boolean | Promise<boolean>;
 }
 
 export const CreateScreenModal: React.FC<CreateScreenModalProps> = ({
@@ -14,13 +14,17 @@ export const CreateScreenModal: React.FC<CreateScreenModalProps> = ({
 }) => {
   const [name, setName] = useState('');
   const [isRoot, setIsRoot] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
-    onCreate(name.trim(), isRoot);
+    if (!name.trim() || isSaving) return;
+    setIsSaving(true);
+    let result;
+    try { result = await onCreate(name.trim(), isRoot); } finally { setIsSaving(false); }
+    if (result === false) return;
     setName('');
     setIsRoot(false);
     onClose();
@@ -28,9 +32,9 @@ export const CreateScreenModal: React.FC<CreateScreenModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-      <div className="w-full max-w-md bg-[#0F141C] border border-neutral-800 rounded-lg shadow-2xl text-neutral-200 overflow-hidden font-sans">
+      <div className="w-full max-w-md bg-[var(--bg-surface)] border border-neutral-800 rounded-lg shadow-2xl text-neutral-200 overflow-hidden font-sans">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 bg-[#0A0D12] border-b border-neutral-800">
+        <div className="flex items-center justify-between px-4 py-3 bg-[var(--bg-base)] border-b border-neutral-800">
           <div className="flex items-center gap-2">
             <Layers className="w-4 h-4 text-sky-400" />
             <h3 className="text-sm font-semibold text-white tracking-wide">
@@ -88,6 +92,7 @@ export const CreateScreenModal: React.FC<CreateScreenModalProps> = ({
             <button
               type="submit"
               data-testid="modal-screen-submit"
+              disabled={isSaving}
               className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-medium shadow transition-colors"
             >
               Add Screen

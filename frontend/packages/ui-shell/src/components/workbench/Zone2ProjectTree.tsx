@@ -62,11 +62,11 @@ export const Zone2ProjectTree: React.FC<Zone2ProjectTreeProps> = ({
 
   return (
     <div
-      className={`flex flex-col w-full h-full bg-[#0F141C] border-r border-neutral-800 text-neutral-300 text-xs select-none overflow-y-auto ${className}`}
+      className={`flex flex-col w-full h-full bg-[var(--bg-surface)] border-r border-neutral-800 text-neutral-300 text-xs select-none overflow-y-auto ${className}`}
       data-testid="zone2-project-tree"
     >
       {/* Zone 2 Header */}
-      <div className="flex items-center justify-between px-3 py-2 bg-[#0A0D12] border-b border-neutral-800 font-semibold text-[11px] text-neutral-400 tracking-wider uppercase">
+      <div className="flex items-center justify-between px-3 py-2 bg-[var(--bg-base)] border-b border-neutral-800 font-semibold text-[11px] text-neutral-400 tracking-wider uppercase">
         <span>Project Tree</span>
         <span className="text-[10px] text-neutral-600 font-mono">SYS-REQ-097</span>
       </div>

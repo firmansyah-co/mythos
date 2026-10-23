@@ -78,9 +78,3 @@ export interface ScreenTab {
   isSubScreen: boolean;
   isDirty: boolean;
 }
-
-export interface AuthCredentials {
-  role: 'Engineer' | 'Admin' | 'Operator';
-  token?: string;
-  password?: string;
-}

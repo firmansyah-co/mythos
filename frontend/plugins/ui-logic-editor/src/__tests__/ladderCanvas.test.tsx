@@ -79,7 +79,7 @@ describe('TSK-702: LadderCanvas Component (Dual Power Rails, Interactivity, Pari
     expect(onDeleteRung).toHaveBeenCalledWith('rung-1');
   });
 
-  it('animates power rails and rungs in vibrant green (#22C55E) when debugActive and energized', () => {
+  it('animates power rails and rungs with the energized bus token when debugActive and energized', () => {
     const html = renderClient(
       <LadderCanvas
         debugActive={true}
@@ -90,6 +90,6 @@ describe('TSK-702: LadderCanvas Component (Dual Power Rails, Interactivity, Pari
         }}
       />
     );
-    expect(html).toContain('#22C55E');
+    expect(html).toContain('var(--bus-ethernet)');
   });
 });

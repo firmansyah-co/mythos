@@ -297,7 +297,7 @@ export const LadderCanvas: React.FC<LadderCanvasProps> = ({
 
   return (
     <div
-      className={`flex flex-col w-full h-full bg-[#0A0D12] text-neutral-200 p-4 overflow-y-auto select-none ${className}`}
+      className={`flex flex-col w-full h-full bg-[var(--bg-base)] text-neutral-200 p-4 overflow-y-auto select-none ${className}`}
       data-testid="ladder-canvas"
     >
       {/* Top Banner Toolbar */}

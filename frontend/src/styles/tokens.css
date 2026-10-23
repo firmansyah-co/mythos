@@ -43,6 +43,7 @@
 
   /* Industrial Bus Link Colors (Dark) */
   --bus-ethernet: #16A34A;
+  --bus-backbone: #38BDF8;
   --bus-serial: #0284C7;
   --bus-can: #CA8A04;
   --bus-safety: #DC2626;
@@ -135,6 +136,7 @@
 
   /* Industrial Bus Link Colors (Light) */
   --bus-ethernet: #15803D;
+  --bus-backbone: #0284C7;
   --bus-serial: #0369A1;
   --bus-can: #B45309;
   --bus-safety: #DC2626;

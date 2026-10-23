@@ -12,20 +12,22 @@ describe('TSK-705: OnlineDebugEngine (Telemetry, Power-Flow & SYS-REQ-096 Audit 
     engine.disconnect();
   });
 
-  it('initializes in DISCONNECTED state with default process image and empty force list', () => {
+  it('initializes in DISCONNECTED state with an empty process image and empty force list', () => {
     const snap = engine.getSnapshot();
     expect(snap.state).toBe('DISCONNECTED');
     expect(snap.forcedVariables).toEqual({});
     expect(snap.auditLogs).toHaveLength(0);
-    expect(snap.telemetry['external.DI_StartPB']).toBe(true);
+    expect(snap.telemetry).toEqual({});
   });
 
-  it('transitions to SIMULATING when connected in test environment and publishes telemetry stream updates', () => {
+  it('reports FAULT instead of simulated telemetry when no live transport is available', () => {
     const listener = vi.fn();
     const unsub = engine.subscribe(listener);
 
     engine.connect();
-    expect(engine.getSnapshot().state).toBe('SIMULATING');
+    const snap = engine.getSnapshot();
+    expect(snap.state).toBe('FAULT');
+    expect(snap.telemetry).toEqual({});
     expect(listener).toHaveBeenCalled();
 
     unsub();

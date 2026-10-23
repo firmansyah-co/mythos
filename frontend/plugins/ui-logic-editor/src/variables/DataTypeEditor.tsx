@@ -123,7 +123,7 @@ export const DataTypeEditor: React.FC<DataTypeEditorProps> = ({
 
   return (
     <div
-      className={`flex flex-col w-full h-full bg-[#0A0D12] text-neutral-200 p-4 select-none overflow-hidden ${className}`}
+      className={`flex flex-col w-full h-full bg-[var(--bg-base)] text-neutral-200 p-4 select-none overflow-hidden ${className}`}
       data-testid="datatype-editor"
     >
       {/* Top Header */}
@@ -164,8 +164,8 @@ export const DataTypeEditor: React.FC<DataTypeEditorProps> = ({
 
       <div className="flex-1 flex gap-4 min-h-0 overflow-hidden">
         {/* Left Side: Type List */}
-        <div className="w-64 border border-neutral-800 rounded bg-[#0D121A] flex flex-col overflow-hidden">
-          <div className="p-2.5 bg-[#141B26] border-b border-neutral-800 text-xs font-semibold text-neutral-300 flex items-center gap-2">
+        <div className="w-64 border border-neutral-800 rounded bg-[var(--bg-base)] flex flex-col overflow-hidden">
+          <div className="p-2.5 bg-[var(--bg-surface)] border-b border-neutral-800 text-xs font-semibold text-neutral-300 flex items-center gap-2">
             <Layers className="w-4 h-4 text-cyan-400" />
             <span>Defined Data Types ({types.length})</span>
           </div>
@@ -211,7 +211,7 @@ export const DataTypeEditor: React.FC<DataTypeEditorProps> = ({
 
         {/* Right Side: Type Detail & Members */}
         {activeType ? (
-          <div className="flex-1 border border-neutral-800 rounded bg-[#0D121A] flex flex-col overflow-hidden p-4">
+          <div className="flex-1 border border-neutral-800 rounded bg-[var(--bg-base)] flex flex-col overflow-hidden p-4">
             <div className="flex items-center justify-between pb-3 border-b border-neutral-800 mb-3 text-xs">
               <div className="flex items-center gap-3">
                 <span className="text-neutral-400 font-mono">Type Name:</span>
@@ -258,7 +258,7 @@ export const DataTypeEditor: React.FC<DataTypeEditorProps> = ({
 
                 <div className="flex-1 overflow-auto border border-neutral-800 rounded">
                   <table className="w-full text-left text-xs font-mono border-collapse">
-                    <thead className="bg-[#141B26] text-neutral-400 text-[11px] sticky top-0">
+                    <thead className="bg-[var(--bg-surface)] text-neutral-400 text-[11px] sticky top-0">
                       <tr>
                         <th className="py-2 px-3 border-r border-neutral-800">Member Name</th>
                         <th className="py-2 px-3 border-r border-neutral-800">Data Type</th>
@@ -365,7 +365,7 @@ export const DataTypeEditor: React.FC<DataTypeEditorProps> = ({
             {activeType.kind === 'ENUM' && (
               <div className="flex-1 flex flex-col min-h-0">
                 <span className="text-xs font-semibold text-neutral-300 mb-2">Enumeration Values</span>
-                <div className="p-3 border border-neutral-800 rounded bg-[#070A0F] font-mono text-xs text-amber-300 space-y-1">
+                <div className="p-3 border border-neutral-800 rounded bg-[var(--bg-base)] font-mono text-xs text-amber-300 space-y-1">
                   {activeType.enumConstants?.map((val, idx) => (
                     <div key={idx} className="flex items-center gap-2">
                       <span className="text-neutral-500">{idx}:</span>

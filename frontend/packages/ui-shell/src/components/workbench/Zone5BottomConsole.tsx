@@ -22,13 +22,13 @@ export const Zone5BottomConsole: React.FC<Zone5BottomConsoleProps> = ({
 
   return (
     <div
-      className={`w-full bg-[#0F141C] border-t border-neutral-800 text-neutral-300 text-xs select-none flex flex-col ${
+      className={`w-full bg-[var(--bg-surface)] border-t border-neutral-800 text-neutral-300 text-xs select-none flex flex-col ${
         isCollapsed ? 'h-7' : 'h-48'
       } ${className}`}
       data-testid="zone5-bottom-console"
     >
       {/* Tab Header Strip */}
-      <div className="flex items-center justify-between px-3 bg-[#0A0D12] border-b border-neutral-800 h-7 text-[11px]">
+      <div className="flex items-center justify-between px-3 bg-[var(--bg-base)] border-b border-neutral-800 h-7 text-[11px]">
         <div className="flex items-center gap-1">
           <button
             onClick={() => setActiveTab('ALARMS')}
@@ -38,8 +38,8 @@ export const Zone5BottomConsole: React.FC<Zone5BottomConsoleProps> = ({
                 : 'text-neutral-400 hover:text-neutral-200'
             }`}
           >
-            <BellRing className="w-3.5 h-3.5 text-rose-400 animate-pulse" />
-            <span>ISA-18.2 Alarms (1 Active)</span>
+            <BellRing className="w-3.5 h-3.5 text-neutral-400" />
+            <span>ISA-18.2 Alarms (0 Active)</span>
           </button>
 
           <button
@@ -69,7 +69,7 @@ export const Zone5BottomConsole: React.FC<Zone5BottomConsoleProps> = ({
 
         <div className="flex items-center gap-3">
           <span className="font-mono text-[10px] text-neutral-500">
-            CYCLE: <span className="text-emerald-400 font-semibold">410µs</span> | DEADTIME: <span className="text-cyan-400">0µs</span>
+            CYCLE: <span className="text-neutral-300 font-semibold">—</span> | DEADTIME: <span className="text-neutral-300">—</span>
           </span>
           <button
             onClick={onToggleCollapse}
@@ -82,55 +82,23 @@ export const Zone5BottomConsole: React.FC<Zone5BottomConsoleProps> = ({
 
       {/* Content Area */}
       {!isCollapsed && (
-        <div className="flex-1 p-3 overflow-y-auto font-mono text-[11px] space-y-1 bg-[#0A0D12]">
+        <div className="flex-1 p-3 overflow-y-auto font-mono text-[11px] space-y-1 bg-[var(--bg-base)]">
           {activeTab === 'ALARMS' && (
-            <div className="space-y-1.5">
-              <div className="p-2 rounded bg-rose-950/40 border border-rose-800/60 text-rose-300 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="px-1.5 py-0.5 bg-rose-600 text-white font-bold rounded text-[9px]">
-                    CRITICAL / PRIORITY 1
-                  </span>
-                  <span className="font-semibold">Boiler 02 High Pressure Trip Threshold Exceeded (48.2 bar)</span>
-                </div>
-                <div className="text-neutral-400 text-[10px] flex items-center gap-2">
-                  <span>TAG: external.PT_Boiler02</span>
-                  <button className="px-2 py-0.5 bg-rose-900 hover:bg-rose-800 text-white rounded text-[10px] font-sans">
-                    ACKNOWLEDGE
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-1.5 rounded bg-amber-950/30 border border-amber-800/40 text-amber-300 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="px-1.5 py-0.5 bg-amber-600 text-white font-bold rounded text-[9px]">
-                    WARNING / PRIORITY 2
-                  </span>
-                  <span>Feedwater VFD Motor Inverter Temperature High (78°C)</span>
-                </div>
-                <span className="text-neutral-500 text-[10px]">14:22:01.402 UTC</span>
-              </div>
+            <div className="p-2 rounded border border-neutral-800 bg-neutral-900/60 text-neutral-400">
+              No alarms are published by the backend. Alarm rows appear here once the controller raises them.
             </div>
           )}
 
           {activeTab === 'CONSOLE' && (
-            <div className="space-y-1 text-neutral-400">
-              <div className="text-cyan-400">[STruC++ Hot-Reload Supervisor] Online. Ready for deploy commands.</div>
-              <div>[14:22:00] Initialized SHM RingBuffer: 262,144 bytes mapped at /dev/shm/mythos_tagbus.</div>
-              <div className="text-emerald-400">[14:22:01] POST /api/v1/control/deploy dispatched for MainTask.</div>
-              <div>[14:22:01] STruC++ compiler: generated.cpp produced (0 warnings).</div>
-              <div className="text-emerald-400">[14:22:02] libstrucpp_program_v1.so hot-swapped during 410µs scan dead-time.</div>
-              <div className="text-neutral-500">[14:22:02] Hot-reload SUCCESSFUL. Production control loop unaffected.</div>
+            <div className="p-2 rounded border border-neutral-800 bg-neutral-900/60 text-neutral-400">
+              No compiler output for this session. Deploy a logic block to stream the build and hot-reload log here.
             </div>
           )}
 
           {activeTab === 'DIAGNOSTICS' && (
-            <div className="space-y-1 text-neutral-400">
-              <div className="flex items-center justify-between text-neutral-300 pb-1 border-b border-neutral-800">
-                <span>CPU Core 1 Isolation: SCHED_FIFO Priority 99</span>
-                <span className="text-emerald-400">JITTER &lt; 5µs</span>
-              </div>
-              <div>PROFINET IO Controller: 8 Devices configured, 0 packet drops.</div>
-              <div>Modbus TCP Gateway: Slave ID 1 responding in 1.4ms.</div>
+            <div className="p-2 rounded border border-neutral-800 bg-neutral-900/60 text-neutral-400">
+              No diagnostics reported by the backend. Controller cycle time, fieldbus health and core isolation
+              appear here when the daemon publishes them.
             </div>
           )}
         </div>

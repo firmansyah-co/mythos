@@ -124,7 +124,7 @@ export const VariableTableGrid: React.FC<VariableTableGridProps> = ({
 
   return (
     <div
-      className={`flex flex-col w-full h-full bg-[#0A0D12] text-neutral-200 p-4 select-none overflow-hidden ${className}`}
+      className={`flex flex-col w-full h-full bg-[var(--bg-base)] text-neutral-200 p-4 select-none overflow-hidden ${className}`}
       data-testid="variable-table-grid"
     >
       {/* Top Filter and Controls Bar */}
@@ -172,9 +172,9 @@ export const VariableTableGrid: React.FC<VariableTableGridProps> = ({
       </div>
 
       {/* Spreadsheet Grid Table */}
-      <div className="flex-1 overflow-auto border border-neutral-800 rounded bg-[#0D121A]">
+      <div className="flex-1 overflow-auto border border-neutral-800 rounded bg-[var(--bg-base)]">
         <table className="w-full text-left text-xs font-mono border-collapse">
-          <thead className="bg-[#141B26] text-neutral-400 border-b border-neutral-800 sticky top-0 z-10 select-none text-[11px]">
+          <thead className="bg-[var(--bg-surface)] text-neutral-400 border-b border-neutral-800 sticky top-0 z-10 select-none text-[11px]">
             <tr>
               <th className="py-2 px-3 border-r border-neutral-800 w-10 text-center">#</th>
               <th className="py-2 px-3 border-r border-neutral-800 min-w-[140px]">Name</th>

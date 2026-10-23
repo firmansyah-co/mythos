@@ -1,3 +1,5 @@
+@import '../../../src/tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -9,8 +11,8 @@
 body {
   margin: 0;
   padding: 0;
-  background-color: #0A0D12;
-  color: #E2E8F0;
+  background-color: var(--bg-base);
+  color: var(--text-primary);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   overflow: hidden;
   user-select: none;
@@ -19,13 +21,13 @@ body {
 /* Dockview Dark Industrial Theme Overrides */
 .dockview-theme-dark {
   --dv-drag-over-background-color: rgba(14, 165, 233, 0.2);
-  --dv-drag-over-border-color: #0ea5e9;
-  --dv-tabs-and-actions-container-background-color: #0A0D12;
-  --dv-activegroup-visiblepanel-tab-background-color: #0F141C;
-  --dv-activegroup-hiddenpanel-tab-background-color: #0A0D12;
-  --dv-inactivegroup-visiblepanel-tab-background-color: #0F141C;
-  --dv-inactivegroup-hiddenpanel-tab-background-color: #0A0D12;
-  --dv-tab-divider-color: #1F2937;
-  --dv-activegroup-visiblepanel-tab-color: #38BDF8;
-  --dv-separator-border: #1F2937;
+  --dv-drag-over-border-color: var(--border-focus);
+  --dv-tabs-and-actions-container-background-color: var(--bg-base);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--bg-surface);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--bg-base);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--bg-surface);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--bg-base);
+  --dv-tab-divider-color: var(--border-subtle);
+  --dv-activegroup-visiblepanel-tab-color: var(--border-focus);
+  --dv-separator-border: var(--border-subtle);
 }

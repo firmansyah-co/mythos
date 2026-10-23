@@ -138,11 +138,11 @@ export const FbdCanvas: React.FC<FbdCanvasProps> = ({
 
   return (
     <div
-      className={`flex flex-col w-full h-full bg-[#0A0D12] text-neutral-200 p-4 select-none overflow-auto relative ${className}`}
+      className={`flex flex-col w-full h-full bg-[var(--bg-base)] text-neutral-200 p-4 select-none overflow-auto relative ${className}`}
       data-testid="fbd-canvas"
     >
       {/* Top Header & Palette */}
-      <div className="flex items-center justify-between pb-3 border-b border-neutral-800 mb-4 z-10 bg-[#0A0D12]/90 backdrop-blur-sm">
+      <div className="flex items-center justify-between pb-3 border-b border-neutral-800 mb-4 z-10 bg-[var(--bg-base)]/90 backdrop-blur-sm">
         <div>
           <div className="flex items-center gap-2">
             <h3 className="text-xs font-semibold text-neutral-200 tracking-wide uppercase">
@@ -200,7 +200,7 @@ export const FbdCanvas: React.FC<FbdCanvasProps> = ({
       </div>
 
       {/* SVG Canvas for Wires & Connections */}
-      <div className="relative w-full h-[650px] border border-neutral-800/60 rounded bg-[#070A0F] overflow-hidden">
+      <div className="relative w-full h-[650px] border border-neutral-800/60 rounded bg-[var(--bg-base)] overflow-hidden">
         {/* Wire Connections Layer */}
         <svg className="absolute inset-0 w-full h-full pointer-events-none z-0">
           <defs>
@@ -213,7 +213,7 @@ export const FbdCanvas: React.FC<FbdCanvasProps> = ({
               markerHeight="6"
               orient="auto-start-reverse"
             >
-              <path d="M 0 1 L 8 5 L 0 9 z" fill="#38BDF8" />
+              <path d="M 0 1 L 8 5 L 0 9 z" fill="var(--border-focus)" />
             </marker>
           </defs>
 
@@ -233,7 +233,7 @@ export const FbdCanvas: React.FC<FbdCanvasProps> = ({
               <path
                 key={wire.id}
                 d={`M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${endY}, ${endX} ${endY}`}
-                stroke={wire.isEnergized || debugActive ? '#22C55E' : '#38BDF8'}
+                stroke={wire.isEnergized || debugActive ? 'var(--bus-ethernet)' : 'var(--border-focus)'}
                 strokeWidth={wire.isEnergized || debugActive ? '3' : '2'}
                 fill="none"
                 markerEnd="url(#fbd-arrow)"
@@ -248,11 +248,11 @@ export const FbdCanvas: React.FC<FbdCanvasProps> = ({
           <div
             key={blk.id}
             style={{ transform: `translate(${blk.x}px, ${blk.y}px)` }}
-            className="absolute w-[200px] bg-[#111622] border border-neutral-700/80 rounded-md shadow-lg z-10 font-mono text-xs select-none"
+            className="absolute w-[200px] bg-[var(--bg-surface)] border border-neutral-700/80 rounded-md shadow-lg z-10 font-mono text-xs select-none"
             data-testid={`fbd-block-${blk.id}`}
           >
             {/* Block Header */}
-            <div className="flex items-center justify-between px-2.5 py-1.5 bg-[#171F2F] border-b border-neutral-700/70">
+            <div className="flex items-center justify-between px-2.5 py-1.5 bg-[var(--bg-surface)] border-b border-neutral-700/70">
               <span className="font-bold text-cyan-300 text-[11px]">{blk.blockType}</span>
               <div className="flex items-center gap-1">
                 <span className="text-neutral-400 text-[10px]">{blk.name}</span>

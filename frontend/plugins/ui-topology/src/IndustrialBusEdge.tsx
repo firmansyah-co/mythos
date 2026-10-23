@@ -87,7 +87,7 @@ export const IndustrialBusEdge: React.FC<EdgeProps> = ({
             className="nodrag nopan px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border shadow-sm transition-all"
           >
             <div
-              className="flex items-center gap-1.5 bg-[#0A0D12]/90 backdrop-blur-sm border-[#232B3B] px-1.5 py-0.5 rounded text-[#D0D6E0]"
+              className="flex items-center gap-1.5 bg-[var(--bg-base)]/90 backdrop-blur-sm border-[var(--bg-highlight)] px-1.5 py-0.5 rounded text-[var(--text-primary)]"
               style={{ borderColor: colorDef.stroke }}
             >
               <span
@@ -96,7 +96,7 @@ export const IndustrialBusEdge: React.FC<EdgeProps> = ({
               />
               <span>{edgeData.label || colorDef.label}</span>
               {edgeData.lengthMeters !== undefined && (
-                <span className="text-[#8A8F98] text-[9px] border-l border-[#232B3B] pl-1">
+                <span className="text-[var(--text-secondary)] text-[9px] border-l border-[var(--bg-highlight)] pl-1">
                   {edgeData.lengthMeters}m
                 </span>
               )}
