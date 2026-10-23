@@ -261,8 +261,12 @@ pub async fn update_instance<S: PlatformShm + 'static>(
 /// Reject any binding whose `tagUri` is not registered in the live tag catalog.
 ///
 /// Grammar validation already happened in the store; this is the existence half. An empty
-/// `tagUri` means "unassigned" and is allowed. All unknown tags are reported at once so a
-/// client fixing a screen gets one complete list rather than one error per attempt.
+/// `tagUri` means **unassigned** and is deliberately allowed: an engineer authors a screen
+/// before the device is commissioned, and refusing that would block the workflow this check
+/// exists to protect. Only a *supplied* URI is required to exist.
+///
+/// All unknown URIs are reported at once, in a machine-readable list, so a client can highlight
+/// the specific bindings that failed instead of parsing prose.
 async fn require_registered_tags<S: PlatformShm + 'static>(
     state: &ApiState<S>,
     bindings: &[InstanceBinding],
@@ -276,11 +280,13 @@ async fn require_registered_tags<S: PlatformShm + 'static>(
     if unknown.is_empty() {
         return Ok(());
     }
-    Err(failure(
+    Err((
         StatusCode::BAD_REQUEST,
-        format!(
-            "tagUri(s) not registered in the tag catalog: {unknown:?}. Register the tag or leave \
-             tagUri empty to save the binding as unassigned."
-        ),
+        Json(json!({
+            "error": "One or more tagUri values are not registered in the tag catalog",
+            "code": "UNREGISTERED_TAG_URI",
+            "unknownTagUris": unknown,
+            "hint": "Register the tags, or leave tagUri empty to save the binding as unassigned.",
+        })),
     ))
 }

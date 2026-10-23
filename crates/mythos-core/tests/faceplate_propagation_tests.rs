@@ -514,12 +514,13 @@ async fn instance_bindings_are_validated_against_the_master_and_the_tag_namespac
         StatusCode::BAD_REQUEST,
         "an unregistered tag must be rejected: {error}"
     );
-    assert!(
-        error["error"]
-            .as_str()
-            .unwrap()
-            .contains("not registered in the tag catalog"),
-        "error must say the tag is not registered: {error}"
+    // Machine-readable, per-URI: the designer highlights the specific bindings from this list
+    // rather than parsing prose.
+    assert_eq!(error["code"], "UNREGISTERED_TAG_URI");
+    assert_eq!(
+        error["unknownTagUris"],
+        json!(["external.boiler.p999.b_running"]),
+        "every offending URI must be listed: {error}"
     );
 
     // A declared key pointing at a registered tag is accepted.
@@ -539,6 +540,64 @@ async fn instance_bindings_are_validated_against_the_master_and_the_tag_namespac
         status,
         StatusCode::CREATED,
         "valid binding rejected: {created}"
+    );
+}
+
+/// Every offending URI is reported in one response, and an empty URI is not an offender.
+#[tokio::test]
+async fn unregistered_tag_uris_are_all_reported_and_empty_means_unassigned() {
+    let (_dir, storage) = seeded();
+    let app = build_app(&storage);
+    save_draft(
+        &app,
+        "fp_motor",
+        type_body("fp_motor", &["running", "actualSpeed"]),
+    )
+    .await;
+    release(&app, "fp_motor").await;
+
+    let (status, error) = call(
+        &app,
+        "POST",
+        &instances_base(),
+        json!({
+            "name": "P101",
+            "typeId": "fp_motor",
+            "bindings": [
+                {"faceplateKey": "running", "tagUri": "external.boiler.p1.b_running"},
+                {"faceplateKey": "actualSpeed", "tagUri": "external.boiler.p1.r_speed"}
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error["code"], "UNREGISTERED_TAG_URI");
+    let listed = error["unknownTagUris"].as_array().unwrap();
+    assert_eq!(
+        listed.len(),
+        2,
+        "both offenders in one response, not first-failure: {error}"
+    );
+
+    // Unassigned (empty) bindings are intentionally allowed - authoring before commissioning.
+    let (status, created) = call(
+        &app,
+        "POST",
+        &instances_base(),
+        json!({
+            "name": "P102",
+            "typeId": "fp_motor",
+            "bindings": [
+                {"faceplateKey": "running", "tagUri": ""},
+                {"faceplateKey": "actualSpeed", "tagUri": ""}
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "empty tagUri is unassigned and must be allowed: {created}"
     );
 }
 
