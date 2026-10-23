@@ -13,6 +13,7 @@ import {
   ValveFaceplate,
   PidControllerFaceplate,
   AnalogTransmitterFaceplate,
+  resolveComponentData,
 } from '@mythos/ui-faceplate-lib';
 import { useHmiStore, isCanvasEqual } from '../../stores/useHmiStore';
 import { Plus, Layers, FileCode2, Network, Save, Rocket, Undo2, Loader2 } from 'lucide-react';
@@ -170,7 +171,9 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
     [setSelectedContextItem]
   );
 
-  // Quick faceplate insertion for empty screens or testing
+  // Quick faceplate insertion for empty screens or testing.
+  // Only design configuration is seeded. No process value is written: a component that has
+  // just been placed is not bound to a device yet, and SYS-REQ-096 forbids inventing one.
   const handleAddFaceplate = (type: 'MOTOR' | 'VALVE' | 'PID' | 'TRANSMITTER') => {
     const newComp =
       type === 'MOTOR'
@@ -181,7 +184,7 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
             label: 'Conveyor Drive Motor',
             udtArchetype: 'FB_Motor_UDT',
             hardwareAddress: '%QX0.0..%QX0.3',
-            props: { running: true, tripped: false, actualSpeed: 1450, speedSetpoint: 1500, currentAmps: 18.5, torquePercent: 78, tier: 2 },
+            props: { tier: 2 },
           }
         : type === 'VALVE'
         ? {
@@ -191,7 +194,7 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
             label: 'Pneumatic Isolation Valve',
             udtArchetype: 'FB_Digital_Valve_UDT',
             hardwareAddress: '%QX1.0..%QX1.1',
-            props: { openLimit: true, closedLimit: false, transitFault: false, positionPercent: 100, tier: 2 },
+            props: { tier: 2 },
           }
         : type === 'PID'
         ? {
@@ -201,7 +204,7 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
             label: 'Temperature Loop Controller',
             udtArchetype: 'FB_PID_Controller_UDT',
             hardwareAddress: '%IW30..%QW30',
-            props: { pv: 82.5, sp: 80.0, cv: 45.2, unit: '°C', tier: 2 },
+            props: { tier: 2 },
           }
         : {
             id: `pt_${Date.now()}`,
@@ -210,7 +213,7 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
             label: 'Line Pressure Transmitter',
             udtArchetype: 'FB_Analog_Transmitter_UDT',
             hardwareAddress: '%IW20',
-            props: { pv: 6.84, unit: 'bar', minRange: 0, maxRange: 16, tier: 2 },
+            props: { tier: 2 },
           };
 
     const nextComponents = [...components, newComp];
@@ -345,6 +348,7 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
             <div className="pt-2 flex flex-wrap gap-2 justify-center">
               <button
                 type="button"
+                data-testid="add-motor-btn"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleAddFaceplate('MOTOR');
@@ -404,7 +408,12 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
               const compId = comp.id || `comp-${idx}`;
               const tag = comp.tag || comp.props?.tag || compId;
               const label = comp.label || comp.props?.label || tag;
-              const propsData = comp.props || {};
+              // Canonical resolution of a canvas component into displayable data. There is no
+              // default value on this path: a component with no binding and no stored value
+              // resolves to `NOT_BOUND`, and the faceplate renders a quiescent no-data state.
+              // SYS-REQ-096 — never substitute a plausible process value here.
+              const { quality, values, config } = resolveComponentData(comp);
+              const tier = (config.tier as 1 | 2 | 3 | undefined) ?? (comp.tier as 1 | 2 | 3 | undefined) ?? 2;
 
               if (compType === 'MOTOR' || compType === 'VFD') {
                 return (
@@ -416,13 +425,15 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
                     <MotorFaceplate
                       tag={tag}
                       label={label}
-                      running={propsData.running ?? comp.running ?? true}
-                      tripped={propsData.tripped ?? comp.tripped ?? false}
-                      actualSpeed={propsData.actualSpeed ?? comp.actualSpeed ?? 1450}
-                      speedSetpoint={propsData.speedSetpoint ?? comp.speedSetpoint ?? 1500}
-                      currentAmps={propsData.currentAmps ?? comp.currentAmps ?? 18.5}
-                      torquePercent={propsData.torquePercent ?? comp.torquePercent ?? 78}
-                      tier={propsData.tier ?? comp.tier ?? 2}
+                      quality={quality}
+                      running={values.running as boolean | null | undefined}
+                      tripped={values.tripped as boolean | null | undefined}
+                      actualSpeed={values.actualSpeed as number | null | undefined}
+                      speedSetpoint={values.speedSetpoint as number | null | undefined}
+                      currentAmps={values.currentAmps as number | null | undefined}
+                      torquePercent={values.torquePercent as number | null | undefined}
+                      maxSpeed={config.maxSpeed as number | undefined}
+                      tier={tier}
                     />
                   </div>
                 );
@@ -438,11 +449,13 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
                     <ValveFaceplate
                       tag={tag}
                       label={label}
-                      openLimit={propsData.openLimit ?? comp.openLimit ?? true}
-                      closedLimit={propsData.closedLimit ?? comp.closedLimit ?? false}
-                      transitFault={propsData.transitFault ?? comp.transitFault ?? false}
-                      positionPercent={propsData.positionPercent ?? comp.positionPercent ?? 100}
-                      tier={propsData.tier ?? comp.tier ?? 2}
+                      quality={quality}
+                      openLimit={values.openLimit as boolean | null | undefined}
+                      closedLimit={values.closedLimit as boolean | null | undefined}
+                      transitFault={values.transitFault as boolean | null | undefined}
+                      positionPercent={values.positionPercent as number | null | undefined}
+                      positionSetpoint={values.positionSetpoint as number | null | undefined}
+                      tier={tier}
                     />
                   </div>
                 );
@@ -458,14 +471,17 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
                     <PidControllerFaceplate
                       tag={tag}
                       label={label}
-                      pv={propsData.pv ?? comp.pv ?? 82.5}
-                      sp={propsData.sp ?? comp.sp ?? 80.0}
-                      cv={propsData.cv ?? comp.cv ?? 45.2}
-                      unit={propsData.unit ?? comp.unit ?? '°C'}
-                      kp={propsData.kp ?? comp.kp ?? 1.5}
-                      tn={propsData.tn ?? comp.tn ?? 20.0}
-                      tv={propsData.tv ?? comp.tv ?? 3.0}
-                      tier={propsData.tier ?? comp.tier ?? 2}
+                      quality={quality}
+                      pv={values.pv as number | null | undefined}
+                      sp={values.sp as number | null | undefined}
+                      cv={values.cv as number | null | undefined}
+                      unit={config.unit as string | undefined}
+                      kp={config.kp as number | null | undefined}
+                      tn={config.tn as number | null | undefined}
+                      tv={config.tv as number | null | undefined}
+                      spMin={config.spMin as number | null | undefined}
+                      spMax={config.spMax as number | null | undefined}
+                      tier={tier}
                     />
                   </div>
                 );
@@ -481,14 +497,18 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
                     <AnalogTransmitterFaceplate
                       tag={tag}
                       label={label}
-                      pv={propsData.pv ?? comp.pv ?? 6.84}
-                      unit={propsData.unit ?? comp.unit ?? 'bar'}
-                      transmitterType={propsData.transmitterType ?? comp.transmitterType ?? 'PRESSURE'}
-                      minRange={propsData.minRange ?? comp.minRange ?? 0}
-                      maxRange={propsData.maxRange ?? comp.maxRange ?? 16}
-                      highLimit={propsData.highLimit ?? comp.highLimit ?? 12}
-                      highHighLimit={propsData.highHighLimit ?? comp.highHighLimit ?? 14}
-                      tier={propsData.tier ?? comp.tier ?? 2}
+                      quality={quality}
+                      pv={values.pv as number | null | undefined}
+                      unit={config.unit as string | undefined}
+                      transmitterType={config.transmitterType as 'PRESSURE' | 'TEMPERATURE' | 'FLOW' | 'LEVEL' | undefined}
+                      minRange={config.minRange as number | null | undefined}
+                      maxRange={config.maxRange as number | null | undefined}
+                      highLimit={config.highLimit as number | null | undefined}
+                      highHighLimit={config.highHighLimit as number | null | undefined}
+                      lowLimit={config.lowLimit as number | null | undefined}
+                      lowLowLimit={config.lowLowLimit as number | null | undefined}
+                      sensorFault={values.sensorFault as boolean | null | undefined}
+                      tier={tier}
                     />
                   </div>
                 );
