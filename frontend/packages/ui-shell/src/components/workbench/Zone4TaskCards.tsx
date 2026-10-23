@@ -4,8 +4,6 @@ import {
   Server,
   Library,
   Sliders,
-  CheckCircle,
-  XCircle,
   Activity,
   ChevronLeft,
   ChevronRight,
@@ -207,35 +205,13 @@ export const Zone4TaskCards: React.FC<Zone4TaskCardsProps> = ({
               {/* Interlock Matrix Checklist (TSK-306) */}
               <div className="p-2.5 rounded bg-neutral-900/80 border border-neutral-800 space-y-2">
                 <span className="font-semibold text-neutral-200 text-xs flex items-center gap-1.5">
-                  <Activity className="w-3.5 h-3.5 text-amber-400" />
+                  <Activity className="w-3.5 h-3.5 text-neutral-400" />
                   Interlock Matrix Checklist
                 </span>
-                <div className="space-y-1.5 text-[11px]">
-                  <div className="flex items-center justify-between py-1 border-b border-neutral-800">
-                    <span className="text-neutral-300">E-Stop Circuit Permissive</span>
-                    <span className="flex items-center gap-1 text-emerald-400 font-mono">
-                      <CheckCircle className="w-3.5 h-3.5" /> [✓] OK
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between py-1 border-b border-neutral-800">
-                    <span className="text-neutral-300">Guard Door Closed Interlock</span>
-                    <span className="flex items-center gap-1 text-emerald-400 font-mono">
-                      <CheckCircle className="w-3.5 h-3.5" /> [✓] OK
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between py-1 border-b border-neutral-800">
-                    <span className="text-neutral-300">Motor Overtemp Thermal Trip</span>
-                    <span className="flex items-center gap-1 text-emerald-400 font-mono">
-                      <CheckCircle className="w-3.5 h-3.5" /> [✓] CLEAR
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between py-1">
-                    <span className="text-neutral-300">Lubrication Pressure Delta</span>
-                    <span className="flex items-center gap-1 text-rose-400 font-mono">
-                      <XCircle className="w-3.5 h-3.5" /> [✗] LOW (1.1 bar)
-                    </span>
-                  </div>
-                </div>
+                <p className="text-[11px] text-neutral-400 leading-relaxed">
+                  No interlock telemetry is available for this selection. Interlock states are read from the
+                  controller process image and nothing is bound here yet.
+                </p>
               </div>
             </div>
           )}

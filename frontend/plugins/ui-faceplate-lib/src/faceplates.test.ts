@@ -183,4 +183,114 @@ describe('TSK-304: 3-Tier Visual Faceplate Component Library', () => {
       expect(html).toContain('Integral (Tn s)');
     });
   });
+  describe('ISA-101 pushbutton colour discipline', () => {
+    // ISA-101 reserves saturated red/green for abnormal process state (trips, alarms).
+    // Ordinary operator pushbuttons must stay neutral so an alarm still stands out.
+    const SATURATED = /(?:bg|border|text)-(?:red|rose|green|emerald|lime)-\d+/;
+
+    function buttonMarkup(html: string, testId: string): string {
+      const start = html.indexOf(`data-testid="${testId}"`);
+      expect(start, `missing ${testId}`).toBeGreaterThan(-1);
+      // The className sits immediately after the data-testid on these buttons.
+      const end = html.indexOf('>', start);
+      return html.slice(start, end);
+    }
+
+    it('should keep motor START/STOP neutral in normal (non-tripped) operation', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(MotorFaceplate, {
+          tag: 'P-101A',
+          label: 'Slurry Feed Pump A',
+          running: false,
+          tripped: false,
+          actualSpeed: 0,
+          speedSetpoint: 1500,
+          tier: 2,
+        })
+      ));
+      expect(buttonMarkup(html, 'btn-motor-start')).not.toMatch(SATURATED);
+      expect(buttonMarkup(html, 'btn-motor-stop')).not.toMatch(SATURATED);
+    });
+
+    it('should keep valve OPEN/CLOSE neutral in normal operation', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(ValveFaceplate, {
+          tag: 'XV-101',
+          label: 'Feed Isolation Valve',
+          openLimit: false,
+          closedLimit: false,
+          transitFault: false,
+          positionPercent: 50,
+          tier: 2,
+        })
+      ));
+      expect(buttonMarkup(html, 'btn-valve-open')).not.toMatch(SATURATED);
+      expect(buttonMarkup(html, 'btn-valve-close')).not.toMatch(SATURATED);
+    });
+
+    it('should still render the saturated critical alarm annunciation when tripped', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(MotorFaceplate, {
+          tag: 'P-101A',
+          label: 'Slurry Feed Pump A',
+          running: false,
+          tripped: true,
+          actualSpeed: 0,
+          speedSetpoint: 1500,
+          tier: 1,
+        })
+      ));
+      // The trip state itself must remain high-saturation: that is the one thing red is for.
+      expect(html).toMatch(SATURATED);
+      expect(html).toContain('isa18-alarm-badge');
+    });
+  });
+});
+
+describe('Faceplates never invent interlock states', () => {
+  it('renders an explicit unbound state when no interlocks are provided', () => {
+    const motor = normalizeHtml(renderToString(
+      React.createElement(MotorFaceplate, {
+        tag: 'M-201',
+        label: 'Unbound Motor',
+        running: true,
+        tripped: false,
+        actualSpeed: 300,
+        speedSetpoint: 300,
+        tier: 3,
+      })
+    ));
+    expect(motor).toContain('No interlock telemetry');
+    expect(motor).not.toContain('Emergency Stop Circuit OK');
+
+    const valve = normalizeHtml(renderToString(
+      React.createElement(ValveFaceplate, {
+        tag: 'XV-201',
+        label: 'Unbound Valve',
+        openLimit: true,
+        closedLimit: false,
+        transitFault: false,
+        tier: 3,
+      })
+    ));
+    expect(valve).toContain('No interlock telemetry');
+  });
+
+  it('renders the interlocks the caller actually bound', () => {
+    const html = normalizeHtml(renderToString(
+      React.createElement(MotorFaceplate, {
+        tag: 'M-202',
+        label: 'Bound Motor',
+        running: true,
+        tripped: false,
+        actualSpeed: 300,
+        speedSetpoint: 300,
+        tier: 3,
+        interlocks: [{ id: 'guard', name: 'Guard Closed', isSatisfied: false }],
+      })
+    ));
+    expect(html).toContain('Guard Closed');
+    expect(html).toContain('[✗] TRIP');
+    expect(html).not.toContain('No interlock telemetry');
+  });
 });

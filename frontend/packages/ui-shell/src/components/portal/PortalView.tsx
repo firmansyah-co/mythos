@@ -51,6 +51,10 @@ export const PortalView: React.FC<PortalViewProps> = ({
   const [projectListLoading, setProjectListLoading] = useState(true);
   const [listRevision, setListRevision] = useState(0);
 
+  // Inline action errors keep the form values so the same action can be retried.
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
+
   // Import package state
   const [importPackagePath, setImportPackagePath] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
@@ -110,15 +114,27 @@ export const PortalView: React.FC<PortalViewProps> = ({
     };
   }, [listRevision]);
 
+  const submitCreateProject = async () => {
+    if (!projectName.trim()) return;
+    setCreateError(null);
+    const created = await createNewProject(projectName.trim(), projectAuthor.trim(), projectComment.trim(), projectPath.trim());
+    if (!created) {
+      setCreateError(useHmiStore.getState().errorMessage ?? 'Project creation failed');
+    }
+  };
+
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!projectName.trim()) return;
-    await createNewProject(projectName.trim(), projectAuthor.trim(), projectComment.trim(), projectPath.trim());
+    await submitCreateProject();
   };
 
   const handleOpenExistingProject = async () => {
     if (!selectedExistingProjectId) return;
-    await openExistingProject(selectedExistingProjectId);
+    setOpenError(null);
+    const opened = await openExistingProject(selectedExistingProjectId);
+    if (!opened) {
+      setOpenError(useHmiStore.getState().errorMessage ?? 'Project could not be opened');
+    }
   };
 
   const handleImportPackage = () => {
@@ -323,6 +339,13 @@ export const PortalView: React.FC<PortalViewProps> = ({
                     Create New Automation Project
                   </h3>
 
+                  {createError && (
+                    <div role="alert" data-testid="portal-create-error" className="mb-4 border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-200">
+                      {createError}
+                      <button type="button" onClick={() => { void submitCreateProject(); }} className="ml-3 underline">Retry</button>
+                    </div>
+                  )}
+
                   <form onSubmit={handleCreateProject} className="space-y-4 text-xs">
                     <div className="grid grid-cols-2 gap-4">
                       <div>
@@ -397,6 +420,12 @@ export const PortalView: React.FC<PortalViewProps> = ({
                     Open Existing Project
                   </h3>
 
+                  {openError && (
+                    <div role="alert" data-testid="portal-open-error" className="mb-3 border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-200">
+                      {openError}
+                      <button type="button" onClick={() => { void handleOpenExistingProject(); }} className="ml-3 underline">Retry</button>
+                    </div>
+                  )}
                   {projectListError && (
                     <div role="alert" className="mb-3 border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-200">
                       {projectListError}.

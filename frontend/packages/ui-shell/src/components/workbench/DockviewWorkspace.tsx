@@ -14,8 +14,8 @@ import {
   PidControllerFaceplate,
   AnalogTransmitterFaceplate,
 } from '@mythos/ui-faceplate-lib';
-import { useHmiStore } from '../../stores/useHmiStore';
-import { Plus, Layers, FileCode2, Network } from 'lucide-react';
+import { useHmiStore, isCanvasEqual } from '../../stores/useHmiStore';
+import { Plus, Layers, FileCode2, Network, Save, Rocket, Undo2, Loader2 } from 'lucide-react';
 
 // Panel 1: Monaco Logic Editor tab
 const MonacoLogicPanel: React.FC<IDockviewPanelProps<{ targetBlock?: string; language?: string }>> = (props) => {
@@ -39,7 +39,7 @@ const MonacoLogicPanel: React.FC<IDockviewPanelProps<{ targetBlock?: string; lan
 };
 
 // Panel 2: HMI Screen Canvas tab (Real Faceplates & ISA-101 Canvas)
-const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: string; title?: string; subscreenId?: string }>> = (props) => {
+export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: string; title?: string; subscreenId?: string }>> = (props) => {
   const screenId = props.params?.screenId || 'screen_01_plant_overview';
   const title = props.params?.title || 'Screen Canvas';
   const lifecycleMode = useHmiStore((s) => s.lifecycleMode);
@@ -47,6 +47,11 @@ const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: string; ti
   const draftScreens = useHmiStore((s) => s.draftScreens);
   const activeScreens = useHmiStore((s) => s.activeScreens);
   const updateDraftCanvas = useHmiStore((s) => s.updateDraftCanvas);
+  const saveScreenDraft = useHmiStore((s) => s.saveScreenDraft);
+  const commitHmiDraft = useHmiStore((s) => s.commitHmiDraft);
+  const discardHmiDraft = useHmiStore((s) => s.discardHmiDraft);
+  const currentProject = useHmiStore((s) => s.currentProject);
+  const screenSaveStatus = useHmiStore((s) => s.screenSaveStatus);
   const setSelectedContextItem = useHmiStore((s) => s.setSelectedContextItem);
 
   // Screen & Subscreen resolution
@@ -66,6 +71,62 @@ const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: string; ti
     screen?.canvasData;
 
   const components: any[] = canvasData?.components || [];
+
+  // Persistence state for this panel. The draft buffer is only written on edit, so a saved
+  // screen still shows a draft entry: dirty has to be judged against the last saved revision.
+  const savedScreens = useHmiStore((s) => s.savedScreens);
+  const isSubscreenTab = screenId.includes('::');
+  const hasDraft = draftScreens.has(screenId);
+  const isDirty = hasDraft && !isCanvasEqual(canvasData, savedScreens.get(screenId));
+  const isBusy = screenSaveStatus === 'SAVING' || screenSaveStatus === 'COMMITTING';
+  let unsavedScreenCount = 0;
+  draftScreens.forEach((draft, id) => {
+    if (!isCanvasEqual(draft, savedScreens.get(id))) unsavedScreenCount += 1;
+  });
+  // The backend persists canvas data per screen; sub-screen canvases have no storage route yet.
+  const canPersist = Boolean(currentProject) && !isSubscreenTab;
+
+  // Save status is shared by the store, so it is only shown on a panel that actually has
+  // pending work; a clean panel keeps reporting its own in-sync state.
+  const statusLabel = isSubscreenTab
+    ? 'SUB-SCREEN (NOT PERSISTED)'
+    : isDirty && screenSaveStatus === 'ERROR'
+    ? 'SAVE FAILED'
+    : isDirty && isBusy
+    ? screenSaveStatus === 'SAVING'
+      ? 'SAVING…'
+      : 'COMMITTING…'
+    : isDirty
+    ? 'UNSAVED CHANGES'
+    : screenSaveStatus === 'SAVED' || screenSaveStatus === 'COMMITTED'
+    ? 'SAVED'
+    : 'IN SYNC';
+
+  const statusTone = isSubscreenTab
+    ? 'text-neutral-400 border-neutral-700 bg-neutral-900'
+    : isDirty && screenSaveStatus === 'ERROR'
+    ? 'text-rose-400 border-rose-800 bg-rose-950/60'
+    : isDirty
+    ? 'text-amber-400 border-amber-800 bg-amber-950/60'
+    : 'text-emerald-400 border-emerald-800 bg-emerald-950/60';
+
+  const handleSave = useCallback(async () => {
+    if (!canPersist) return;
+    // A panel on a never-edited screen has no draft entry yet: seed one so Save writes exactly
+    // what the operator is looking at rather than silently doing nothing.
+    if (!hasDraft && canvasData) updateDraftCanvas(screenId, canvasData);
+    await saveScreenDraft(screenId);
+  }, [canPersist, hasDraft, canvasData, screenId, saveScreenDraft, updateDraftCanvas]);
+
+  const handleDiscard = useCallback(() => {
+    discardHmiDraft();
+    setSelectedContextItem({
+      id: screenId,
+      name: screen?.name || title,
+      type: 'HMI_SCREEN',
+      metadata: { screenId, subscreenId: subId, is_root: screen?.is_root },
+    });
+  }, [discardHmiDraft, screenId, screen, title, subId, setSelectedContextItem]);
 
   // Canvas selection handler
   const handleCanvasClick = useCallback(() => {
@@ -188,8 +249,68 @@ const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: string; ti
             MODE: {lifecycleMode}
           </span>
         </div>
-        <div className="text-[11px] font-mono text-neutral-400">
-          RESOLUTION: 1920x1080 (FHD) • GRID: 16px SNAP
+        <div className="flex items-center gap-2">
+          <span
+            data-testid="canvas-save-status"
+            className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold border ${statusTone}`}
+            title={
+              canPersist
+                ? 'Draft canvases are stored per project on the backend'
+                : isSubscreenTab
+                ? 'Sub-screen canvases are not persisted by the backend yet'
+                : 'Open a project before saving a screen'
+            }
+          >
+            {statusLabel}
+          </span>
+
+          <button
+            type="button"
+            data-testid="canvas-discard-btn"
+            onClick={handleDiscard}
+            disabled={!hasDraft || isBusy}
+            title="Discard unsaved canvas edits and reload the last saved revision"
+            className="flex items-center gap-1 px-2 py-1 rounded border border-neutral-700 bg-neutral-900 text-[11px] text-neutral-300 hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+            <span>DISCARD</span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="canvas-save-btn"
+            onClick={handleSave}
+            disabled={!canPersist || isBusy}
+            title="Save this screen draft to the backend (Ctrl+S)"
+            className="flex items-center gap-1 px-2 py-1 rounded border border-cyan-700 bg-cyan-950/60 text-[11px] text-cyan-300 hover:bg-cyan-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {screenSaveStatus === 'SAVING' ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Save className="w-3.5 h-3.5" />
+            )}
+            <span>SAVE</span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="canvas-commit-btn"
+            onClick={() => { void commitHmiDraft(); }}
+            disabled={!canPersist || isBusy}
+            title="Save all drafts and commit them to the active runtime screens (Ctrl+Shift+S)"
+            className="flex items-center gap-1 px-2 py-1 rounded border border-emerald-700 bg-emerald-950/60 text-[11px] text-emerald-300 hover:bg-emerald-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {screenSaveStatus === 'COMMITTING' ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Rocket className="w-3.5 h-3.5" />
+            )}
+            <span>COMMIT</span>
+          </button>
+
+          <span className="text-[11px] font-mono text-neutral-400 border-l border-neutral-800 pl-2">
+            RESOLUTION: 1920x1080 (FHD) • GRID: 16px SNAP
+          </span>
         </div>
       </div>
 
@@ -393,7 +514,12 @@ const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: string; ti
       <div className="flex items-center justify-between px-3 py-1 bg-[var(--bg-surface)] border-t border-neutral-800 text-[11px] text-neutral-500 font-mono">
         <span>TagBus Status: <strong className="text-emerald-400 font-mono">ACTIVE (100ms)</strong></span>
         <span>Components: <strong className="text-cyan-400 font-mono">{components.length}</strong></span>
-        <span>Uncommitted Draft WAL: <strong className="text-amber-400 font-mono">0 deltas</strong></span>
+        <span>
+          Unsaved drafts:{' '}
+          <strong className={unsavedScreenCount > 0 ? 'text-amber-400 font-mono' : 'text-emerald-400 font-mono'}>
+            {unsavedScreenCount} {unsavedScreenCount === 1 ? 'screen' : 'screens'}
+          </strong>
+        </span>
       </div>
     </div>
   );

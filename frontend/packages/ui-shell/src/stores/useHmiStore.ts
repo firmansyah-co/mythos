@@ -43,7 +43,11 @@ export interface HmiStoreState {
   // Dual-Buffer Screen Payloads
   activeScreens: Map<string, any>; // Committed runtime screens (screens/active/<id>.json)
   draftScreens: Map<string, any>;  // Sandboxed draft buffers (screens/draft/<id>.json)
+  /** Last canvas on disk per screen id: the baseline `discardHmiDraft` reverts to. */
+  savedScreens: Map<string, any>;  // Persisted draft revision (screens/draft/screens.json)
   isHmiDirty: boolean;
+  /** Operator-facing state of the last Save / Commit attempt, shown by the canvas toolbar. */
+  screenSaveStatus: 'IDLE' | 'SAVING' | 'SAVED' | 'COMMITTING' | 'COMMITTED' | 'ERROR';
 
   // WinCC Fullscreen Industrial Kiosk State
   isRuntimeFullscreen: boolean;
@@ -112,6 +116,43 @@ export interface HmiStoreState {
   requestEnterRuntime: () => Promise<void>;
   /** Leaves runtime kiosk mode. Unauthenticated: no backend authorization endpoint exists yet. */
   requestExitRuntime: () => Promise<boolean>;
+}
+
+/**
+ * Structural comparison for canvas payloads, used to tell an edited draft from the revision
+ * last written to disk. Key order is irrelevant; `undefined` members are ignored so a payload
+ * that merely gained explicit undefined fields does not read as an unsaved change.
+ */
+export function isCanvasEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || a === undefined || b === undefined) {
+    return a === undefined && b === undefined ? true : a === null && b === null;
+  }
+  if (typeof a !== 'object' || typeof b !== 'object') return false;
+
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((item, index) => isCanvasEqual(item, b[index]));
+  }
+
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left).filter((key) => left[key] !== undefined);
+  const rightKeys = Object.keys(right).filter((key) => right[key] !== undefined);
+  if (keys.length !== rightKeys.length) return false;
+  return keys.every((key) => isCanvasEqual(left[key], right[key]));
+}
+
+/**
+ * Turn a failed API call into a message an operator can act on. `fetch` rejects with a
+ * TypeError when the daemon is unreachable, whose bare "Failed to fetch" says nothing
+ * about the backend being down, so that case is named explicitly.
+ */
+function apiFailure(error: unknown, fallback: string): string {
+  if (error instanceof TypeError) {
+    return `${fallback}: backend unreachable (${error.message})`;
+  }
+  return error instanceof Error ? error.message : fallback;
 }
 
 export const SAMPLE_PROJECT_METADATA: ProjectMetadata = {
@@ -276,7 +317,9 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
   lifecycleMode: 'EDIT',
   activeScreens: new Map(),
   draftScreens: new Map(),
+  savedScreens: new Map(),
   isHmiDirty: false,
+  screenSaveStatus: 'IDLE',
   isRuntimeFullscreen: false,
   runtimeAuthLock: true,
 
@@ -331,7 +374,7 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
       });
       return metadata;
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Project creation failed';
+      const message = apiFailure(error, 'Project creation failed');
       set({ errorMessage: message });
       return null;
     }
@@ -353,9 +396,14 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
       const screens: ScreenDescriptor[] = await screensResponse.json();
       if (!Array.isArray(screens)) throw new Error('Project screens response was invalid');
       get().resetToEmptyProject();
+      const savedScreens = new Map<string, any>();
+      screens.forEach((screen) => {
+        if (screen.canvasData) savedScreens.set(screen.id, screen.canvasData);
+      });
       set({
         errorMessage: null,
         screens,
+        savedScreens,
         currentProject: data,
         workspaceMode: 'PROJECT',
         selectedContextItem: {
@@ -367,7 +415,7 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
       });
       return true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Project could not be opened';
+      const message = apiFailure(error, 'Project could not be opened');
       set({ errorMessage: message });
       return false;
     }
@@ -386,18 +434,25 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
       activeWorkbenchTabId: null,
       selectedContextItem: null,
       draftScreens: new Map(),
+      savedScreens: new Map(),
       activeScreens: new Map(),
       isHmiDirty: false,
+      screenSaveStatus: 'IDLE',
       errorMessage: null,
     });
   },
 
   loadSampleProject: () => {
+    const savedScreens = new Map<string, any>();
+    SAMPLE_SCREENS.forEach((screen) => {
+      if (screen.canvasData) savedScreens.set(screen.id, screen.canvasData);
+    });
     set({
       errorMessage: null,
       currentProject: SAMPLE_PROJECT_METADATA,
       projectBlocks: SAMPLE_PROJECT_BLOCKS,
       screens: SAMPLE_SCREENS,
+      savedScreens,
       activeScreenId: 'screen_01_plant_overview',
       openTabs: [
         {
@@ -578,7 +633,11 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
         throw new Error('Screen creation returned incomplete screen data');
       }
 
-      set((s) => ({ screens: [...s.screens, newScreen], errorMessage: null }));
+      set((s) => {
+        const savedScreens = new Map(s.savedScreens);
+        if (newScreen.canvasData) savedScreens.set(newScreen.id, newScreen.canvasData);
+        return { screens: [...s.screens, newScreen], savedScreens, errorMessage: null };
+      });
       get().openScreenTab(newScreen.id);
       get().setSelectedContextItem({
         id: newScreen.id,
@@ -588,7 +647,7 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
       });
       return newScreen.id;
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Screen creation failed';
+      const message = apiFailure(error, 'Screen creation failed');
       set({ errorMessage: message });
       return null;
     }
@@ -621,7 +680,7 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
       get().openScreenTab(parentScreenId, newSub.id);
       return newSub.id;
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Sub-screen creation failed';
+      const message = apiFailure(error, 'Sub-screen creation failed');
       set({ errorMessage: message });
       return null;
     }
@@ -694,7 +753,7 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
   saveScreenDraft: async (screenId) => {
     const canvasData = get().draftScreens.get(screenId);
     if (!canvasData) return true;
-    set({ errorMessage: null });
+    set({ errorMessage: null, screenSaveStatus: 'SAVING' });
 
     try {
       const project = get().currentProject;
@@ -707,21 +766,42 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
       if (!res.ok) {
         throw new Error(`Screen draft save failed (HTTP ${res.status})`);
       }
-      set((state) => ({ screens: state.screens.map((screen) => screen.id === screenId ? { ...screen, canvasData } : screen) }));
+      // The draft buffer keeps reading from the in-editor copy; savedScreens becomes the
+      // discard baseline and screens can now be re-seeded from a reload or a fresh panel.
+      set((state) => {
+        const savedScreens = new Map(state.savedScreens);
+        savedScreens.set(screenId, JSON.parse(JSON.stringify(canvasData)));
+        return {
+          screens: state.screens.map((screen) => screen.id === screenId ? { ...screen, canvasData } : screen),
+          savedScreens,
+          screenSaveStatus: 'SAVED' as const,
+        };
+      });
       return true;
     } catch (error) {
-      set({ errorMessage: error instanceof Error ? error.message : 'Screen draft save failed' });
+      set({
+        errorMessage: apiFailure(error, 'Screen draft save failed'),
+        screenSaveStatus: 'ERROR',
+      });
       return false;
     }
   },
 
   commitHmiDraft: async () => {
-    set({ errorMessage: null });
+    set({ errorMessage: null, screenSaveStatus: 'COMMITTING' });
     try {
       const project = get().currentProject;
       if (!project) throw new Error('Open a project before committing HMI drafts');
-      for (const screenId of get().draftScreens.keys()) {
-        if (!await get().saveScreenDraft(screenId)) return false;
+      // Only persist screens whose draft drifted from the saved revision. Re-saving clean
+      // screens would write identical payloads and fail on screens the server never created.
+      const dirtyScreenIds = [...get().draftScreens.entries()]
+        .filter(([screenId, draft]) => !isCanvasEqual(draft, get().savedScreens.get(screenId)))
+        .map(([screenId]) => screenId);
+      for (const screenId of dirtyScreenIds) {
+        if (!await get().saveScreenDraft(screenId)) {
+          set({ screenSaveStatus: 'ERROR' });
+          return false;
+        }
       }
       const res = await fetch(`/api/v1/projects/${encodeURIComponent(project.id)}/hmi/commit`, { method: 'POST' });
       if (!res.ok) {
@@ -731,24 +811,39 @@ export const useHmiStore = create<HmiStoreState>((set, get) => ({
       if (!activeData || typeof activeData !== 'object' || Array.isArray(activeData)) {
         throw new Error('HMI draft commit returned invalid data');
       }
+      // The committed payload now equals the draft, so the draft buffer can be dropped and
+      // the canvas renders from the active buffer instead of a stale editing copy.
+      const activeScreens = new Map<string, any>(Object.entries(activeData));
       set({
-        activeScreens: new Map(Object.entries(activeData)),
+        activeScreens,
+        savedScreens: new Map(activeScreens),
+        draftScreens: new Map(),
         isHmiDirty: false,
         lifecycleMode: 'RUNTIME',
+        screenSaveStatus: 'COMMITTED',
         errorMessage: null,
       });
       return true;
     } catch (error) {
-      set({ errorMessage: error instanceof Error ? error.message : 'HMI draft commit failed' });
+      set({
+        errorMessage: apiFailure(error, 'HMI draft commit failed'),
+        screenSaveStatus: 'ERROR',
+      });
       return false;
     }
   },
 
   discardHmiDraft: () => {
-    const { activeScreens } = get();
-    const reverted = new Map();
-    activeScreens.forEach((v, k) => reverted.set(k, JSON.parse(JSON.stringify(v))));
-    set({ draftScreens: reverted, isHmiDirty: false });
+    // Revert to the last revision written to disk, not to the committed runtime buffer:
+    // discarding unsaved edits must not silently roll a screen back past its last save.
+    // Only screens that were actually edited revert; untouched saved screens keep no draft entry.
+    const { savedScreens, draftScreens } = get();
+    const reverted = new Map<string, any>();
+    draftScreens.forEach((_draft, screenId) => {
+      const saved = savedScreens.get(screenId);
+      if (saved !== undefined) reverted.set(screenId, JSON.parse(JSON.stringify(saved)));
+    });
+    set({ draftScreens: reverted, isHmiDirty: false, screenSaveStatus: 'IDLE' });
   },
 
   requestEnterRuntime: async () => {

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Zone1TopNav } from './components/workbench/Zone1TopNav';
 import { Zone2ProjectTree } from './components/workbench/Zone2ProjectTree';
 import { DockviewWorkspace } from './components/workbench/DockviewWorkspace';
@@ -21,6 +21,34 @@ export const App: React.FC = () => {
   const openWorkbenchDocument = useHmiStore((s) => s.openWorkbenchDocument);
   const errorMessage = useHmiStore((s) => s.errorMessage);
   const clearError = useHmiStore((s) => s.clearError);
+  const saveScreenDraft = useHmiStore((s) => s.saveScreenDraft);
+  const commitHmiDraft = useHmiStore((s) => s.commitHmiDraft);
+
+  // Workbench-wide Save / Commit shortcuts. Prefixed keys fire while focus sits on a faceplate,
+  // a dockview tab strip or anywhere outside the canvas, which is where the operator actually is.
+  const handleSaveShortcut = useCallback(
+    (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's') return;
+      const state = useHmiStore.getState();
+      if (!state.currentProject || state.isRuntimeFullscreen) return;
+      if (state.screenSaveStatus === 'SAVING' || state.screenSaveStatus === 'COMMITTING') return;
+      event.preventDefault();
+      if (event.shiftKey) {
+        void commitHmiDraft();
+        return;
+      }
+      const activeId = state.activeWorkbenchTabId;
+      if (!activeId) return;
+      if (!state.draftScreens.has(activeId)) return;
+      void saveScreenDraft(activeId);
+    },
+    [saveScreenDraft, commitHmiDraft]
+  );
+
+  useEffect(() => {
+    window.addEventListener('keydown', handleSaveShortcut);
+    return () => window.removeEventListener('keydown', handleSaveShortcut);
+  }, [handleSaveShortcut]);
 
   const [isExitKioskOpen, setIsExitKioskOpen] = useState(false);
   const [isZone4Collapsed, setIsZone4Collapsed] = useState(false);
