@@ -151,3 +151,42 @@ jobs:
         if: always()
         run: |
           /opt/hostedtoolcache/cargo/bin/sccache --show-stats || true
+
+  frontend-tests:
+    name: Frontend Web Workbench Test Suite & Lints
+    runs-on: arc-runner-org
+    defaults:
+      run:
+        # frontend/ is the pnpm workspace root (pnpm-workspace.yaml + pnpm-lock.yaml live here).
+        # Top-level packages/ and plugins/ entries without a package.json are ignored by pnpm.
+        working-directory: frontend
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # Pinned: frontend/package.json has no packageManager field, so a bare
+          # action-setup would fail. This matches the version that generated pnpm-lock.yaml.
+          version: 12.14.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Pinned: no .nvmrc and no engines field. Vite 6 needs >=18; @types/node is ^22.
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck & Lint
+        run: pnpm lint
+
+      - name: Run Frontend Test Suite
+        run: pnpm test
+
+      - name: Build Frontend Bundles
+        run: pnpm build
