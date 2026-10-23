@@ -433,6 +433,7 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
                       currentAmps={values.currentAmps as number | null | undefined}
                       torquePercent={values.torquePercent as number | null | undefined}
                       maxSpeed={config.maxSpeed as number | undefined}
+                      operatingMode={values.operatingMode as 'MANUAL' | 'AUTO' | 'CASCADE' | 'LOCAL' | 'REMOTE' | undefined}
                       tier={tier}
                     />
                   </div>
@@ -455,6 +456,7 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
                       transitFault={values.transitFault as boolean | null | undefined}
                       positionPercent={values.positionPercent as number | null | undefined}
                       positionSetpoint={values.positionSetpoint as number | null | undefined}
+                      operatingMode={values.operatingMode as 'MANUAL' | 'AUTO' | 'CASCADE' | 'LOCAL' | 'REMOTE' | undefined}
                       tier={tier}
                     />
                   </div>
@@ -481,6 +483,7 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
                       tv={config.tv as number | null | undefined}
                       spMin={config.spMin as number | null | undefined}
                       spMax={config.spMax as number | null | undefined}
+                      operatingMode={values.operatingMode as 'MANUAL' | 'AUTO' | 'CASCADE' | 'LOCAL' | 'REMOTE' | undefined}
                       tier={tier}
                     />
                   </div>

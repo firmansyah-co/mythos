@@ -64,8 +64,12 @@ export interface BaseFaceplateProps {
   alarmActive?: boolean;
   /** Unacknowledged alarm flag (triggers ISA-18.2 1Hz flashing) */
   alarmUnacknowledged?: boolean;
-  /** Operating control mode */
-  operatingMode?: OperatingMode;
+  /**
+   * Operating control mode as reported by the device. Optional: a faceplate announces a mode
+   * only when live telemetry supplies one. There is deliberately no 'AUTO' default — asserting
+   * automatic control for an unobserved device is a fabricated plant state (SYS-REQ-096).
+   */
+  operatingMode?: OperatingMode | null;
   /** Maintenance lock enabled */
   maintenanceLock?: boolean;
   /** Interactive callbacks */
@@ -124,7 +128,7 @@ export interface AnalogTransmitterFaceplateProps extends BaseFaceplateProps {
   pv?: number | null;
   /** Engineering unit (e.g. "bar", "°C", "m³/h", "%"). Absent = the design stores none. */
   unit?: string;
-  /** Measurement type */
+  /** Measurement type. Absent = the design stores none; no type chip is shown. */
   transmitterType?: 'PRESSURE' | 'TEMPERATURE' | 'FLOW' | 'LEVEL';
   /** Range limits. Absent = the design stores none; the range bar is not drawn. */
   minRange?: number | null;

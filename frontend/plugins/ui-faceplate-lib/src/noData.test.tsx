@@ -213,6 +213,93 @@ describe('SYS-REQ-096: faceplates never fabricate process values', () => {
     });
   });
 
+  describe('device state and configuration are not invented either', () => {
+    it('unbound Motor asserts no control mode', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(MotorFaceplate, {
+          tag: 'MTR-905',
+          label: 'Unbound motor',
+          quality: 'NOT_BOUND',
+          tier: 2,
+        })
+      ));
+      expect(html).not.toContain('AUTO');
+      expect(html).not.toContain('MANUAL');
+      expect(html).not.toContain('CASCADE');
+      expect(html).not.toContain('data-testid="motor-mode"');
+    });
+
+    it('unbound Valve asserts no control mode', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(ValveFaceplate, {
+          tag: 'XV-905',
+          label: 'Unbound valve',
+          quality: 'NOT_BOUND',
+          tier: 2,
+        })
+      ));
+      expect(html).not.toContain('AUTO');
+      expect(html).not.toContain('MANUAL');
+      expect(html).not.toContain('data-testid="valve-mode"');
+    });
+
+    it('unbound PID controller asserts no control mode', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(PidControllerFaceplate, {
+          tag: 'TIC-905',
+          label: 'Unbound loop',
+          quality: 'NOT_BOUND',
+          tier: 2,
+        })
+      ));
+      expect(html).not.toContain('AUTO');
+      expect(html).not.toContain('MANUAL');
+      expect(html).not.toContain('CASCADE');
+      expect(html).not.toContain('data-testid="pid-mode-badge"');
+    });
+
+    it('Motor with an absent speed range does not print an invented span', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(MotorFaceplate, {
+          tag: 'MTR-906',
+          label: 'Motor without a stored range',
+          quality: 'NOT_BOUND',
+          tier: 3,
+        })
+      ));
+      expect(html).not.toContain('1500');
+      expect(html).not.toContain('Speed Target (0 - 1500');
+    });
+
+    it('Transmitter with no stored measurement type prints no type chip', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(AnalogTransmitterFaceplate, {
+          tag: 'PT-906',
+          label: 'Typeless transmitter',
+          quality: 'NOT_BOUND',
+          tier: 2,
+        })
+      ));
+      expect(html).not.toContain('PRESSURE');
+      expect(html).not.toContain('TEMPERATURE');
+      expect(html).not.toContain('data-testid="transmitter-type"');
+    });
+
+    it('live telemetry still announces a real control mode', () => {
+      const html = normalizeHtml(renderToString(
+        React.createElement(MotorFaceplate, {
+          tag: 'MTR-907',
+          label: 'Live motor in manual',
+          quality: 'GOOD',
+          operatingMode: 'MANUAL',
+          ...MOTOR_VALUES,
+          tier: 2,
+        })
+      ));
+      expect(textOf(html, 'motor-mode')).toBe('MANUAL');
+    });
+  });
+
   describe('live telemetry still renders normally', () => {
     it('Motor with GOOD quality renders its real values', () => {
       const html = normalizeHtml(renderToString(

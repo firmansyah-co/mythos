@@ -24,7 +24,7 @@ export const AnalogTransmitterFaceplate: React.FC<AnalogTransmitterFaceplateProp
   label,
   pv,
   unit,
-  transmitterType = 'PRESSURE',
+  transmitterType,
   minRange = null,
   maxRange = null,
   highHighLimit = null,
@@ -152,9 +152,14 @@ export const AnalogTransmitterFaceplate: React.FC<AnalogTransmitterFaceplateProp
         </div>
         <div className="flex items-center gap-1.5">
           <DataQualityBadge quality={quality} />
-          <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-slate-800 text-slate-300 border border-slate-700">
-            {transmitterType}
-          </span>
+          {transmitterType && (
+            <span
+              data-testid="transmitter-type"
+              className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-slate-800 text-slate-300 border border-slate-700"
+            >
+              {transmitterType}
+            </span>
+          )}
           <button
             onClick={() => handleTierSwitch(3)}
             className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs border border-slate-700 transition-colors"

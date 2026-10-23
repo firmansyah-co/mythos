@@ -32,7 +32,7 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
   alarm,
   alarmActive,
   alarmUnacknowledged,
-  operatingMode = 'AUTO',
+  operatingMode,
   maintenanceLock = false,
   onTierChange,
   onModeToggle,
@@ -42,7 +42,7 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
   className = '',
 }) => {
   const [activeTier, setActiveTier] = useState<FaceplateTier>(tier);
-  const [internalMode, setInternalMode] = useState<OperatingMode>(operatingMode);
+  const [internalMode, setInternalMode] = useState<OperatingMode | null>(operatingMode ?? null);
   const [isLocked, setIsLocked] = useState<boolean>(maintenanceLock);
 
   const live = isLiveQuality(quality);
@@ -83,6 +83,9 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
     : inTransit
     ? 'IN MOTION'
     : NO_DATA_TEXT;
+
+  // Control mode is device state: announce it only for live telemetry, never as a default.
+  const announcedMode: OperatingMode | null = live ? internalMode : null;
 
   const positionText = formatProcessValue(positionPercent, quality, 0);
   const positionBarPercent = processBarPercent(positionPercent, quality, 100, 0);
@@ -195,11 +198,16 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
         </div>
         <div className="flex items-center gap-1.5">
           <DataQualityBadge quality={quality} />
-          <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold tracking-wider ${
-            internalMode === 'AUTO' ? 'bg-sky-950 text-sky-300 border border-sky-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
-          }`}>
-            {internalMode}
-          </span>
+          {announcedMode && (
+            <span
+              data-testid="valve-mode"
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold tracking-wider ${
+                announcedMode === 'AUTO' ? 'bg-sky-950 text-sky-300 border border-sky-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
+              }`}
+            >
+              {announcedMode}
+            </span>
+          )}
           <button
             onClick={() => handleTierSwitch(3)}
             className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs border border-slate-700 transition-colors"
@@ -303,7 +311,9 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
         <div className="flex items-center gap-1">
           <button
             onClick={() => handleModeSwitch('AUTO')}
-            className={`px-3 py-1 rounded text-xs font-mono font-semibold transition-colors ${
+            disabled={!live}
+            title={live ? undefined : 'Device is not reporting: mode cannot be changed'}
+            className={`px-3 py-1 rounded text-xs font-mono font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               internalMode === 'AUTO' ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
             }`}
           >
@@ -311,7 +321,9 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
           </button>
           <button
             onClick={() => handleModeSwitch('MANUAL')}
-            className={`px-3 py-1 rounded text-xs font-mono font-semibold transition-colors ${
+            disabled={!live}
+            title={live ? undefined : 'Device is not reporting: mode cannot be changed'}
+            className={`px-3 py-1 rounded text-xs font-mono font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               internalMode === 'MANUAL' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
             }`}
           >

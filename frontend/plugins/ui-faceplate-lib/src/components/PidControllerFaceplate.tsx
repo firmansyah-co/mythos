@@ -39,7 +39,7 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
   quality,
   alarmActive,
   alarmUnacknowledged,
-  operatingMode = 'AUTO',
+  operatingMode,
   onTierChange,
   onModeToggle,
   onSpChange,
@@ -48,7 +48,7 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
   className = '',
 }) => {
   const [activeTier, setActiveTier] = useState<FaceplateTier>(tier);
-  const [internalMode, setInternalMode] = useState<OperatingMode>(operatingMode);
+  const [internalMode, setInternalMode] = useState<OperatingMode | null>(operatingMode ?? null);
   const [targetSp, setTargetSp] = useState<number | null>(sp ?? null);
   const [targetCv, setTargetCv] = useState<number | null>(cv ?? null);
   const [tuneKp, setTuneKp] = useState<number | null>(kp ?? null);
@@ -58,6 +58,8 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
   const live = isLiveQuality(quality);
   const displayable = hasDisplayableValue(quality);
   const pvValue: number | null = pv ?? null;
+  // Control mode is device state: announce it only for live telemetry, never as a default.
+  const announcedMode: OperatingMode | null = live ? internalMode : null;
 
   // Alarm thresholds are judged only against a real reading; missing data never trips a limit.
   const canJudgeLimits = displayable && pvValue !== null && Number.isFinite(pvValue);
@@ -138,7 +140,11 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
           </div>
         )}
       </div>
-      <span className="mt-1 font-mono text-[10px] text-slate-400">{internalMode}</span>
+      {announcedMode ? (
+        <span data-testid="pid-mode" className="mt-1 font-mono text-[10px] text-slate-400">{announcedMode}</span>
+      ) : (
+        <span data-testid="pid-mode" className="mt-1 font-mono text-[10px] text-slate-400">{NO_DATA_TEXT}</span>
+      )}
       <DataQualityBadge quality={quality} className="mt-0.5" />
     </div>
   );
@@ -164,11 +170,16 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
         </div>
         <div className="flex items-center gap-1.5">
           <DataQualityBadge quality={quality} />
-          <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold tracking-wider ${
-            internalMode === 'AUTO' ? 'bg-sky-950 text-sky-300 border border-sky-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
-          }`}>
-            {internalMode}
-          </span>
+          {announcedMode && (
+            <span
+              data-testid="pid-mode-badge"
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold tracking-wider ${
+                announcedMode === 'AUTO' ? 'bg-sky-950 text-sky-300 border border-sky-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
+              }`}
+            >
+              {announcedMode}
+            </span>
+          )}
           <button
             onClick={() => handleTierSwitch(3)}
             className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs border border-slate-700 transition-colors"
@@ -262,7 +273,9 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
           <button
             key={m}
             onClick={() => handleModeSwitch(m)}
-            className={`flex-1 py-1 rounded text-xs font-mono font-semibold transition-colors ${
+            disabled={!live}
+            title={live ? undefined : 'Device is not reporting: mode cannot be changed'}
+            className={`flex-1 py-1 rounded text-xs font-mono font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               internalMode === m ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
             }`}
           >

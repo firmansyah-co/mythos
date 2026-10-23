@@ -29,14 +29,14 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
   speedSetpoint,
   currentAmps = null,
   torquePercent = null,
-  maxSpeed = 1500,
+  maxSpeed,
   interlocks = [],
   tier = 2,
   quality,
   alarm,
   alarmActive,
   alarmUnacknowledged,
-  operatingMode = 'AUTO',
+  operatingMode,
   maintenanceLock = false,
   onTierChange,
   onModeToggle,
@@ -48,7 +48,7 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
   className = '',
 }) => {
   const [activeTier, setActiveTier] = useState<FaceplateTier>(tier);
-  const [internalMode, setInternalMode] = useState<OperatingMode>(operatingMode);
+  const [internalMode, setInternalMode] = useState<OperatingMode | null>(operatingMode ?? null);
   const [inputSpeed, setInputSpeed] = useState<number>(speedSetpoint ?? 0);
   const [isLocked, setIsLocked] = useState<boolean>(maintenanceLock);
 
@@ -69,6 +69,9 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
   const torqueText = formatProcessValue(torquePercent, quality, 0);
   const speedBarPercent = rangeMax === null ? 0 : processBarPercent(actualSpeed, quality, rangeMax, 0);
   const stateText = formatProcessState(running, quality, 'RUNNING', 'STOPPED');
+  // Control mode is device state, not design configuration: announce it only when live
+  // telemetry supplied one. An unobserved device has no mode, and "AUTO" is not a safe guess.
+  const announcedMode: OperatingMode | null = live ? internalMode : null;
 
   const handleTierSwitch = (newTier: FaceplateTier) => {
     setActiveTier(newTier);
@@ -178,11 +181,16 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
         </div>
         <div className="flex items-center gap-1.5">
           <DataQualityBadge quality={quality} />
-          <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold tracking-wider ${
-            internalMode === 'AUTO' ? 'bg-sky-950 text-sky-300 border border-sky-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
-          }`}>
-            {internalMode}
-          </span>
+          {announcedMode && (
+            <span
+              data-testid="motor-mode"
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold tracking-wider ${
+                announcedMode === 'AUTO' ? 'bg-sky-950 text-sky-300 border border-sky-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
+              }`}
+            >
+              {announcedMode}
+            </span>
+          )}
           <button
             onClick={() => handleTierSwitch(3)}
             className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs border border-slate-700 transition-colors"
@@ -320,7 +328,9 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
         <div className="flex items-center gap-1">
           <button
             onClick={() => handleModeSwitch('AUTO')}
-            className={`px-3 py-1 rounded text-xs font-mono font-semibold transition-colors ${
+            disabled={!live}
+            title={live ? undefined : 'Device is not reporting: mode cannot be changed'}
+            className={`px-3 py-1 rounded text-xs font-mono font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               internalMode === 'AUTO' ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
             }`}
           >
@@ -328,7 +338,9 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
           </button>
           <button
             onClick={() => handleModeSwitch('MANUAL')}
-            className={`px-3 py-1 rounded text-xs font-mono font-semibold transition-colors ${
+            disabled={!live}
+            title={live ? undefined : 'Device is not reporting: mode cannot be changed'}
+            className={`px-3 py-1 rounded text-xs font-mono font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               internalMode === 'MANUAL' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
             }`}
           >
