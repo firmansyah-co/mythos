@@ -170,13 +170,6 @@ jobs:
     # Clean-tree build measured ~8.5 min (ui-logic-editor alone is ~6.5 min).
     # Without this, a hang would run to GitHub's 6h default.
     timeout-minutes: 30
-    env:
-      # This self-hosted runner keeps persistent HOME state from earlier runs that
-      # were executed as root: /home/runner/.npm/_cacache is not writable by the
-      # runner uid. Keep both npm's cache and pnpm's store job-local rather than
-      # chowning shared infra (which would regress the next time anything runs as root).
-      npm_config_cache: ${{ runner.temp }}/npm-cache
-      npm_config_store_dir: ${{ runner.temp }}/pnpm-store
     defaults:
       run:
         # frontend/ is the pnpm workspace root (pnpm-workspace.yaml + pnpm-lock.yaml live here).
@@ -185,6 +178,19 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Configure Job-Local Caches
+        run: |
+          # This self-hosted runner keeps persistent HOME state from earlier runs that
+          # were executed as root: /home/runner/.npm/_cacache is not writable by the
+          # runner uid. Keep npm's cache and pnpm's store job-local instead of chowning
+          # shared infra (which would regress the next time anything runs as root).
+          #
+          # Set through GITHUB_ENV rather than a job-level env: block, because the
+          # `runner` context is not available in jobs.<job_id>.env and using it there
+          # makes the whole workflow fail at startup.
+          echo "npm_config_cache=$RUNNER_TEMP/npm-cache" >> "$GITHUB_ENV"
+          echo "npm_config_store_dir=$RUNNER_TEMP/pnpm-store" >> "$GITHUB_ENV"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
