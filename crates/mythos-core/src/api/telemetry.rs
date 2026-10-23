@@ -48,6 +48,10 @@ pub struct TagValueUpdate {
 
 /// Decode a slot value according to its declared `type_code`.
 ///
+/// The code-to-type mapping lives in exactly one place: `TagDataType` in `mythos-shm`. This
+/// function only translates the decoded value into JSON, so a new type added there cannot drift out
+/// of step with the wire format here.
+///
 /// Returns the wire type name and the value. The type code is the *only* source of truth: reading
 /// a slot with an accessor that does not match how it was written produces a meaningless number,
 /// which is exactly the defect this replaces.
@@ -55,21 +59,28 @@ pub(crate) fn decode_slot_value(
     type_code: u16,
     value: &mythos_shm::TagValueRaw,
 ) -> (&'static str, serde_json::Value) {
+    use mythos_shm::{DecodedValue, TagDataType};
     use serde_json::Value;
-    match type_code {
-        1 => ("BOOL", Value::Bool(value.as_bool())),
-        2 => ("INT", Value::from(value.as_i16())),
-        3 => ("DINT", Value::from(value.as_i32())),
-        4 => ("REAL", Value::from(value.as_f32())),
-        5 => ("LREAL", Value::from(value.as_f64())),
-        6 => ("UINT", Value::from(value.as_u16())),
-        7 => ("UDINT", Value::from(value.as_u32())),
-        8 => ("LINT", Value::from(value.as_i64())),
-        9 => ("ULINT", Value::from(value.as_u64())),
-        10 => ("BYTE", Value::from(value.as_u8())),
-        // No declared type: report it as such rather than guessing f64 and emitting a denormal.
-        _ => ("UNSPECIFIED", Value::Null),
-    }
+
+    let Some(data_type) = TagDataType::from_code(type_code) else {
+        // No declared type (or an unrecognised one): report it as such rather than guessing f64 and
+        // emitting a denormal, which is the defect this replaces.
+        return ("UNSPECIFIED", Value::Null);
+    };
+
+    let decoded = match value.decode_as(data_type) {
+        DecodedValue::Bool(v) => Value::Bool(v),
+        DecodedValue::U8(v) => Value::from(v),
+        DecodedValue::U16(v) => Value::from(v),
+        DecodedValue::U32(v) => Value::from(v),
+        DecodedValue::U64(v) => Value::from(v),
+        DecodedValue::I16(v) => Value::from(v),
+        DecodedValue::I32(v) => Value::from(v),
+        DecodedValue::I64(v) => Value::from(v),
+        DecodedValue::F32(v) => Value::from(v),
+        DecodedValue::F64(v) => Value::from(v),
+    };
+    (data_type.as_str(), decoded)
 }
 
 /// 100ms batched telemetry payload envelope.

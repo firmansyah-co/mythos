@@ -133,12 +133,27 @@ impl TagValueRaw {
 
     #[inline]
     pub fn as_i16(&self) -> i16 {
-        (self.as_i64()) as i16
+        // Narrowing a value stored wider than the declared type silently truncates
+        // (`from_i32(70000).as_i16()` is 4464). That is a writer/declaration mismatch rather than a
+        // meaningful read, so it is caught in debug builds where the check is free in release.
+        let wide = self.as_i64();
+        debug_assert!(
+            i16::try_from(wide).is_ok(),
+            "as_i16 on a value that does not fit i16 ({wide}); the writer stored wider than the \
+             slot's declared type"
+        );
+        wide as i16
     }
 
     #[inline]
     pub fn as_u16(&self) -> u16 {
-        (self.as_u64()) as u16
+        let wide = self.as_u64();
+        debug_assert!(
+            u16::try_from(wide).is_ok(),
+            "as_u16 on a value that does not fit u16 ({wide}); the writer stored wider than the \
+             slot's declared type"
+        );
+        wide as u16
     }
 
     #[inline]

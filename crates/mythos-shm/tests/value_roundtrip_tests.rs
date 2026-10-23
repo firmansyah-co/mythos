@@ -105,3 +105,41 @@ fn integer_bits_do_not_read_as_their_numeric_value_in_f64() {
          symptom this work removes"
     );
 }
+
+/// A retained tag restored from NVRAM must keep its declared type.
+///
+/// `restore_retained_tag` used to hardcode `type_code: 0`, so a restored tag would come back with
+/// no declared type and read as `UNSPECIFIED`/null on every typed consumer. Nothing calls it yet,
+/// which is exactly why the trap is worth a test now rather than when retention is wired.
+#[test]
+fn restore_retained_tag_carries_the_declared_type() {
+    // DefaultShm (PosixShm), not MemoryShm: MemoryShm::open_or_create allocates a fresh isolated
+    // buffer per call, so a writer and a reader "on the same name" never share memory. This is the
+    // third place in this sprint that trap has produced a silently meaningless test.
+    use mythos_pal::DefaultShm;
+    use mythos_shm::{ShmReaderHandle, ShmWriterHandle, TagFlags};
+
+    let name = format!("mythos_retained_{}", std::process::id());
+    #[cfg(target_os = "linux")]
+    let _ = mythos_pal::PosixShm::unlink(&name);
+    let mut writer = ShmWriterHandle::<DefaultShm>::new(&name, 16).unwrap();
+    writer.restore_retained_tag(3, 5, TagValueRaw::from_f64(101.3));
+    writer.publish();
+
+    // Read through a reader handle: update() takes the published bank.
+    let mut reader = ShmReaderHandle::<DefaultShm>::new(&name, 16).unwrap();
+    reader.update();
+    let slot = reader.read_tag(3).unwrap();
+    assert_eq!(
+        slot.type_code, 5,
+        "a restored tag that loses its declared type reads as UNSPECIFIED/null on the HMI"
+    );
+    assert_eq!(slot.value.as_f64(), 101.3);
+    assert_ne!(
+        slot.flags & TagFlags::RETENTION_RETAIN,
+        0,
+        "retention flag must survive the restore"
+    );
+    #[cfg(target_os = "linux")]
+    let _ = mythos_pal::PosixShm::unlink(&name);
+}
