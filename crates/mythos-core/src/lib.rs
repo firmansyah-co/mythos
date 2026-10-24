@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod collab;
 pub mod device;
 pub mod discovery;
+pub mod faceplate;
 pub mod historian;
 pub mod namespace;
 pub mod nvram;
