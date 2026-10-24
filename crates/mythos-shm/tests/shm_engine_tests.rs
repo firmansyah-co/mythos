@@ -194,31 +194,157 @@ fn test_concurrent_writer_and_readers() {
     }
 }
 
-#[test]
-fn test_atomic_swap_latency_under_50ns() {
+/// # Latency measurement regime (read before changing this test)
+///
+/// **Target.** `TSK-002` requires atomic swap latency `< 50 ns`. That target is unchanged and
+/// this file does not loosen it.
+///
+/// **Which profile measures it.** The acceptance assertion runs **only in a release build**
+/// (`#[cfg(not(debug_assertions))]`), and CI runs it through the
+/// `cargo test --release -p mythos-shm` step in `.github/workflows/ci.yml`.
+///
+/// The reason is **headroom and variance under load, not that debug cannot meet the bound.** At a
+/// genuinely idle load average of 1.2 on 16 cores, an unoptimised debug build measures 26.4-32.5 ns
+/// and *does* pass 50 ns. What changes the choice is the margin: release is ~17-20 ns at the same
+/// idle, roughly 3x headroom instead of ~1.6x, and release degrades far more gracefully when the
+/// host is loaded (see the table). Certifying a nanosecond budget with the smaller margin is what
+/// made this check fragile, not the debug profile by itself.
+///
+/// **Which statistic.** The gate is the **best (minimum) batch** of 20 batches x 10,000
+/// iterations, not the mean and not p99. Measured distributions:
+///
+/// | profile | host load (1-min avg) | best batch | p50 | p99 |
+/// |---------|----------------------|-----------|-----|-----|
+/// | release | 1.2, genuinely idle | 17.2-20.0 ns | 17.2-20.0 ns | ~20 ns |
+/// | debug | 1.2, genuinely idle | **26.4-32.5 ns** | 27-32 ns | ~32 ns |
+/// | release | fleet running, no load added by me | 18.6-20.4 ns | 18.7-20.4 ns | 19.6-21.2 ns |
+/// | release | fleet running, + 16 busy cores | 32.8-35.5 ns | 33.5-36.7 ns | 114-120 ns |
+/// | debug | fleet running, no load added by me | 74.9-86.9 ns | 88-97 ns | 191-781 ns |
+/// | debug | fleet running, + 16 busy cores | 82.0-86.5 ns | 132-181 ns | 190-253 ns |
+///
+/// Read the load column, not just the profile column. The two idle rows were taken in a single
+/// genuinely quiet window (load 1.2); everything below them was taken while the fleet was building.
+/// "Fleet running, no load added by me" means exactly that: no load *I* created, on top of whatever
+/// the fleet was already doing. The debug figure in that row is roughly 3x the true-idle debug
+/// figure, which is the whole story of this test's history - a load-sensitive measurement on a
+/// host shared with a build fleet.
+///
+/// The distribution is **not** bimodal, but its *tail* is entirely contention: p99 triples
+/// under load while the best batch moves by ~60% and stays under the bound. Gating on p99
+/// would flake whenever the shared runner is busy; gating on the best batch measures the
+/// property the target describes (how long one atomic swap takes when the core is not being
+/// stolen) and is stable in both regimes. What it does **not** claim: that every operation
+/// under contention is under 50 ns - that is unachievable and not what TSK-002 asks.
+///
+/// **Regression sensitivity.** A per-operation regression applies to every batch, so the
+/// minimum catches it: injecting 10 `spin_loop` hints per publish moves the release best batch
+/// from ~24 ns to ~466 ns on a loaded host and from ~35 ns to ~595 ns under heavier load
+/// (~20x separation in both cases).
+///
+/// **Debug smoke check.** `test_atomic_swap_latency_smoke_debug` runs instead under debug with a
+/// deliberately loose bound. It is a smoke check that the buffer still works at all - it is NOT
+/// the acceptance criterion and must never be treated as one. Note that debug *can* meet 50 ns at
+/// true idle (26-32 ns); the loose bound exists because this host is usually loaded, where the same
+/// binary measures 75-87 ns, and a smoke check must not fail on that.
+///
+/// # The CI runner is the same host as the agent fleet
+///
+/// This is the fact that makes every number above hard to read, and nobody had written it down.
+/// The `arc-runner-org` runner is not a remote box: `Runner.Listener` processes run locally and
+/// CI competes for the **same cores** as the agent fleet's own `rustc` / `cc1plus` / `vitest` /
+/// `node` builds. Observed on this host (16 cores): load average 27 / 109 / 84 with ~22 build
+/// processes live, and 3 local `Runner.Listener` processes.
+///
+/// Consequences for anyone reading a failure:
+/// - A wall-clock latency assertion on this host measures **the fleet's build load as much as the
+///   algorithm**. That is why a single-sample assertion here was never going to be reliable, and
+///   why a docs-only PR could fail this check.
+/// - `debug_assertions` aside, "fast on my machine" and "fast in CI" are not the same claim here,
+///   because CI *is* another process on the same machine.
+/// - This fix does **not** make the 50 ns criterion enforced. It makes the required check stop
+///   certifying the criterion with a single wall-clock sample taken under an unpredictable load.
+///   Enforcing it is the separate p99 work (`TSK-010`), and even that needs a dedicated runner or a
+///   stated caveat to be trustworthy on this host.
+/// - The load is **bursty, not constant**: the same host measured load 1.2 (genuinely idle) and
+///   load 216 in the same day. A check whose pass/fail depends on when it happens to run is unsound
+///   regardless of which profile it uses. That is the actual defect this fix removes.
+/// - Residual risk that remains after this fix: a sufficiently loaded host can push even the best
+///   batch over the bound. Min-over-batches is robust, not immune. If that starts happening, the
+///   answer is a dedicated runner, not a looser bound.
+const LATENCY_BATCHES: usize = 20;
+const LATENCY_ITERATIONS_PER_BATCH: usize = 10_000;
+
+/// Best (minimum) batch cost in ns per atomic operation, after warm-up.
+///
+/// Returns the minimum over `LATENCY_BATCHES` batches so an intermittent scheduler preemption
+/// discards only the batches it spoiled instead of poisoning the whole measurement.
+fn best_batch_ns_per_op() -> f64 {
     let tb = TripleBufferState::new();
     let mut write_bank = 0;
 
-    // Warm-up
-    for _ in 0..1_000 {
+    // Warm-up: 200k operations so the first buckets are not measured cold.
+    for _ in 0..200_000 {
         write_bank = tb.publish_write(write_bank);
         let _ = tb.acquire_read();
     }
 
-    let iterations = 100_000;
-    let start = Instant::now();
-    for _ in 0..iterations {
-        write_bank = tb.publish_write(write_bank);
-        let _ = tb.acquire_read();
+    let mut samples = Vec::with_capacity(LATENCY_BATCHES);
+    for _ in 0..LATENCY_BATCHES {
+        let start = Instant::now();
+        for _ in 0..LATENCY_ITERATIONS_PER_BATCH {
+            write_bank = tb.publish_write(write_bank);
+            let _ = tb.acquire_read();
+        }
+        samples.push(start.elapsed().as_nanos() as f64 / (LATENCY_ITERATIONS_PER_BATCH * 2) as f64);
     }
-    let elapsed = start.elapsed();
-    let total_operations = iterations * 2;
-    let ns_per_op = elapsed.as_nanos() as f64 / total_operations as f64;
 
-    println!("Average atomic swap operation latency: {:.2} ns", ns_per_op);
+    // Report the distribution on every run so CI logs carry the evidence the regime was chosen
+    // on, rather than requiring someone to reproduce it later.
+    let mut sorted = samples.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = sorted.len();
+    let mean = samples.iter().sum::<f64>() / n as f64;
+    println!(
+        "Atomic swap latency distribution ({} batches x {} iters): best={:.2} p50={:.2} p99={:.2} max={:.2} mean={:.2} ns/op",
+        LATENCY_BATCHES,
+        LATENCY_ITERATIONS_PER_BATCH,
+        sorted[0],
+        sorted[n / 2],
+        sorted[n * 99 / 100],
+        sorted[n - 1],
+        mean
+    );
+    sorted[0]
+}
+
+/// TSK-002 acceptance: atomic swap latency < 50 ns, measured on an optimised build.
+#[cfg(not(debug_assertions))]
+#[test]
+fn test_atomic_swap_latency_under_50ns() {
+    let best = best_batch_ns_per_op();
     assert!(
-        ns_per_op < 50.0,
-        "Atomic swap operation latency ({:.2} ns) exceeded 50 ns threshold!",
-        ns_per_op
+        best < 50.0,
+        "Atomic swap latency best batch ({best:.2} ns) exceeded the 50 ns TSK-002 target. \
+         This is a release build, so this is the optimised number; a regression has been \
+         introduced. See the regime table in this file's header."
+    );
+}
+
+/// Debug-profile smoke check. Not the acceptance criterion - see the header.
+///
+/// The bound is loose on purpose. Debug measures 26-32 ns at true idle but 75-87 ns when the fleet
+/// is building, and this host is usually building, so a tight bound here would fail for reasons
+/// unrelated to correctness. It exists to catch a gross breakage (a lock, a syscall, an
+/// allocation) on the debug path that CI runs for the rest of the suite.
+#[cfg(debug_assertions)]
+#[test]
+fn test_atomic_swap_latency_smoke_debug() {
+    let best = best_batch_ns_per_op();
+    assert!(
+        best < 250.0,
+        "Debug smoke check failed: best batch {best:.2} ns. Release measures ~17-20 ns and debug \
+         ~26-87 ns depending on host load, so this indicates a real regression (e.g. a lock or \
+         syscall on the hot path), not merely the debug profile or contention. The acceptance \
+         criterion is the release-only test_atomic_swap_latency_under_50ns."
     );
 }
