@@ -126,7 +126,12 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
   className = '',
 }) => {
   const [activeTab, setActiveTab] = useState<InspectorTabType>(initialTab);
-  const [ctrl, setCtrl] = useState<ManualControlState>(controlState ?? {});
+  // Local state holds OPERATOR INTENT only: the setpoint the operator is currently dragging, plus
+  // the two jog latches. Every measured value is read straight from `controlState` on each render.
+  // Snapshotting the prop into state (the pre-fix shape) pins the drawer to its mount-time values,
+  // so a device that starts reporting after mount would show a stale reading under GOOD — the
+  // same fabrication this slice removes, pointing the other way.
+  const [draftSetpoint, setDraftSetpoint] = useState<number | null>(null);
   const [jogFwdActive, setJogFwdActive] = useState(false);
   const [jogRevActive, setJogRevActive] = useState(false);
 
@@ -135,31 +140,48 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
   const live = inspectorIsLive(quality);
   const reason = inspectorNoDataReason(quality);
 
+  const ctrl: ManualControlState = controlState ?? {};
+
   if (!isOpen) return null;
 
   const handleSetpointSlider = (val: number) => {
-    setCtrl((prev) => ({ ...prev, setpoint: val }));
+    // Shown while the operator drags; released on pointer/key release, after which the drawer
+    // reports the device's own setpoint again rather than an unconfirmed command.
+    setDraftSetpoint(val);
     onSetpointChange?.(val);
   };
 
+  const releaseSetpointDraft = () => setDraftSetpoint(null);
+
   const handleToggleAuto = () => {
-    if (!live) return;
-    const nextAuto = !ctrl.isAutoMode;
-    setCtrl((prev) => ({ ...prev, isAutoMode: nextAuto }));
-    onModeToggle?.(nextAuto);
+    if (!live || !hasMode) return;
+    // The command is a request, not a state change: the badge keeps announcing what the device
+    // last reported until the caller supplies the new mode.
+    onModeToggle?.(!isAutoMode);
   };
 
   const unit = ctrl.engineeringUnit ?? '';
   const processValueText = inspectorValue(ctrl.processValue, quality, 1);
   const outputPowerText = inspectorValue(ctrl.outputPowerPct, quality, 1);
-  const setpointText = inspectorValue(ctrl.setpoint, quality, 1);
+  const committedSetpoint = ctrl.setpoint ?? null;
+  const shownSetpoint = draftSetpoint ?? committedSetpoint;
+  const setpointText = inspectorValue(shownSetpoint, quality, 1);
 
   // A control mode is device state. `undefined` is falsy, so `ctrl.isAutoMode ? AUTO : MANUAL`
   // would silently report MANUAL for a device that never reported a mode — the same fabrication
   // the faceplates had. The mode is announced only when a real boolean was supplied.
   const hasMode = ctrl.isAutoMode === true || ctrl.isAutoMode === false;
   const modeKnown = live && hasMode;
-  const modeText = !modeKnown ? NO_DATA_TEXT : ctrl.isAutoMode ? 'CASCADE / AUTO' : 'HAND / MANUAL';
+  const isAutoMode = ctrl.isAutoMode === true;
+  const modeText = !modeKnown ? NO_DATA_TEXT : isAutoMode ? 'CASCADE / AUTO' : 'HAND / MANUAL';
+
+  // A setpoint span the device has not reported is not invented: without both ends of the range
+  // the slider cannot place a thumb or bound a command, so the control is disabled and the ends
+  // read `----`, matching how the faceplates treat an unreported speed range.
+  const rangeMin = ctrl.minSetpoint ?? null;
+  const rangeMax = ctrl.maxSetpoint ?? null;
+  const hasSetpointRange = rangeMin !== null && rangeMax !== null && rangeMax > rangeMin;
+  const canCommandSetpoint = live && hasSetpointRange && !isAutoMode;
 
   // Trend: draw only real samples. No synthetic walk, no invented sample rate.
   const trend: MiniTrendPoint[] = live && Array.isArray(trendHistory) ? trendHistory : [];
@@ -183,9 +205,9 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
     : '';
 
   const loopErrorText =
-    live && ctrl.setpoint !== null && ctrl.setpoint !== undefined &&
+    live && committedSetpoint !== null &&
     ctrl.processValue !== null && ctrl.processValue !== undefined
-      ? inspectorValue(ctrl.setpoint - ctrl.processValue, quality, 2)
+      ? inspectorValue(committedSetpoint - ctrl.processValue, quality, 2)
       : NO_DATA_TEXT;
 
   const maintenance: DeviceMaintenanceInfo = live ? maintenanceInfo ?? {} : {};
@@ -312,7 +334,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
                   className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold ${
                     !modeKnown
                       ? 'bg-neutral-800 text-neutral-300 border border-neutral-600'
-                      : ctrl.isAutoMode
+                      : isAutoMode
                       ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/40'
                       : 'bg-amber-950 text-amber-400 border border-amber-500/40'
                   }`}
@@ -328,7 +350,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
                 data-testid="inspector-mode-toggle"
                 className="px-2.5 py-1 rounded bg-[var(--bg-highlight)] hover:bg-sky-600 text-white text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {modeKnown ? `Switch to ${ctrl.isAutoMode ? 'Manual' : 'Auto'}` : 'Mode unavailable'}
+                {modeKnown ? `Switch to ${isAutoMode ? 'Manual' : 'Auto'}` : 'Mode unavailable'}
               </button>
             </div>
 
@@ -388,17 +410,25 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
               </div>
               <input
                 type="range"
-                min={ctrl.minSetpoint ?? 0}
-                max={ctrl.maxSetpoint ?? 100}
+                data-testid="inspector-setpoint-slider"
+                data-range-known={hasSetpointRange}
+                // No range from the device means no command span: the thumb is parked at the
+                // bottom of an unusable control rather than given an invented 0-100 span.
+                min={rangeMin ?? 0}
+                max={rangeMax ?? 0}
                 step={0.5}
-                disabled={!live || ctrl.isAutoMode === true}
-                value={live ? ctrl.setpoint ?? 0 : 0}
+                disabled={!canCommandSetpoint}
+                title={canCommandSetpoint ? undefined : 'Device has not reported a usable setpoint range'}
+                value={live ? shownSetpoint ?? 0 : 0}
                 onChange={(e) => handleSetpointSlider(parseFloat(e.target.value))}
+                onPointerUp={releaseSetpointDraft}
+                onKeyUp={releaseSetpointDraft}
+                onBlur={releaseSetpointDraft}
                 className="w-full h-2 bg-[var(--bg-base)] rounded-lg appearance-none cursor-pointer accent-sky-400 disabled:opacity-40"
               />
               <div className="flex justify-between text-[10px] text-[var(--text-secondary)] font-mono">
-                <span>{live ? `${ctrl.minSetpoint ?? NO_DATA_TEXT} ${unit}`.trim() : NO_DATA_TEXT}</span>
-                <span>{live ? `${ctrl.maxSetpoint ?? NO_DATA_TEXT} ${unit}`.trim() : NO_DATA_TEXT}</span>
+                <span>{live && rangeMin !== null ? `${rangeMin} ${unit}`.trim() : NO_DATA_TEXT}</span>
+                <span>{live && rangeMax !== null ? `${rangeMax} ${unit}`.trim() : NO_DATA_TEXT}</span>
               </div>
             </div>
 
@@ -406,7 +436,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                disabled={!live || ctrl.isAutoMode === true}
+                disabled={!live || isAutoMode}
                 onMouseDown={() => {
                   setJogFwdActive(true);
                   onJogForward?.(true);
@@ -434,7 +464,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
 
               <button
                 type="button"
-                disabled={!live || ctrl.isAutoMode === true}
+                disabled={!live || isAutoMode}
                 onMouseDown={() => {
                   setJogRevActive(true);
                   onJogReverse?.(true);

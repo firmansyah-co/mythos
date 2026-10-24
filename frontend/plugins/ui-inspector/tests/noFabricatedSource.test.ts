@@ -75,6 +75,23 @@ describe('SYS-REQ-096: Inspector Drawer source carries no fabricated device data
     expect(drawer).toContain('inspectorText');
   });
 
+  it('never snapshots device state into local state', () => {
+    // The prop-update defect: `useState(controlState ?? {})` pins the drawer to its mount-time
+    // values, so a reading supplied after mount is never displayed. Only operator intent (a
+    // setpoint being dragged, the jog latches) may live in state; measured values come from the
+    // prop on every render. A behavioural test cannot see this while the call site passes
+    // quality="NOT_BOUND", so the shape itself is guarded here.
+    expect(drawer).not.toMatch(/useState<[^>]*>\s*\(\s*controlState/);
+    expect(drawer).not.toMatch(/useState\(\s*controlState/);
+  });
+
+  it('does not invent a setpoint range when the device reports none', () => {
+    // One level down from the same class: the readout said `----` while the slider still handed
+    // the operator a usable 0-100 command span.
+    expect(drawer).not.toMatch(/minSetpoint\s*\?\?\s*\d/);
+    expect(drawer).not.toMatch(/maxSetpoint\s*\?\?\s*\d/);
+  });
+
   it('never gives the quality prop a permissive default', () => {
     expect(drawer).toContain('DEFAULT_INSPECTOR_QUALITY');
     expect(deviceData).toMatch(/DEFAULT_INSPECTOR_QUALITY:\s*ProcessDataQuality\s*=\s*'NOT_BOUND'/);

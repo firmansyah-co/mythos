@@ -8,9 +8,11 @@
  * is *explained*, not merely blank: a grid of dashes without a reason is its own failure.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { renderToString } from 'react-dom/server';
+import { createRoot, Root } from 'react-dom/client';
+import { flushSync } from 'react-dom';
 import { InspectorDrawer } from '../src/InspectorDrawer';
 import { InspectorTabType } from '../src/types';
 import type { InterlockCondition, MiniTrendPoint, DeviceMaintenanceInfo, ManualControlState } from '../src/types';
@@ -93,7 +95,128 @@ const REAL_CONTROL: ManualControlState = {
   outputPowerPct: 33.0,
 };
 
-describe('SYS-REQ-096: Inspector Drawer fabricates nothing', () => {
+
+/**
+ * Prop-update path.
+ *
+ * `renderToString` renders each tree once, so it cannot see the defect this block covers: the
+ * drawer used to snapshot `controlState` into state at mount (`useState(controlState ?? {})`)
+ * and never re-read it. It is latent only while the sole call site passes `quality="NOT_BOUND"`;
+ * the moment telemetry populates the props, a device that starts reporting after mount would
+ * show its mount-time reading under GOOD — a stale number presented as a measurement.
+ *
+ * These render a mounted instance and re-render the SAME instance, which is what the canvas does
+ * (DockviewWorkspace keys the drawer on the component id, so a data update re-renders in place).
+ */
+describe('SYS-REQ-096: the drawer re-reads device state supplied after mount', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  const draw = (props: Record<string, unknown>) => {
+    flushSync(() => {
+      root.render(
+        React.createElement(InspectorDrawer, {
+          isOpen: true,
+          onClose: () => {},
+          initialTab: 'MANUAL_CONTROL',
+          ...props,
+        } as any)
+      );
+    });
+    return normalizeHtml(container.innerHTML);
+  };
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    flushSync(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it('renders a process value that arrives after mount, not the one from mount', () => {
+    const first = draw({ quality: 'GOOD', controlState: { processValue: 12.5 } });
+    expect(textOf(first, 'inspector-process-value')).toBe('12.5');
+
+    const second = draw({ quality: 'GOOD', controlState: { processValue: 77.5 } });
+    expect(textOf(second, 'inspector-process-value')).toBe('77.5');
+    expect(second).not.toContain('>12.5<');
+  });
+
+  it('updates the output reading and the setpoint readout after mount', () => {
+    draw({ quality: 'GOOD', controlState: { ...REAL_CONTROL, processValue: 12.5 } });
+
+    const second = draw({
+      quality: 'GOOD',
+      controlState: { ...REAL_CONTROL, processValue: 77.5, outputPowerPct: 88.0, setpoint: 90.0 },
+    });
+    expect(textOf(second, 'inspector-output-power')).toBe('88.0');
+    expect(textOf(second, 'inspector-setpoint')).toBe('90.0 bar');
+    expect(second).not.toContain('>12.5<');
+    expect(second).not.toContain('>33.0<');
+  });
+
+  it('announces a control mode that is supplied only on a later render', () => {
+    const first = draw({ quality: 'GOOD', controlState: { processValue: 41.2 } });
+    expect(textOf(first, 'inspector-control-mode')).toBe('----');
+
+    const second = draw({ quality: 'GOOD', controlState: { processValue: 41.2, isAutoMode: true } });
+    expect(textOf(second, 'inspector-control-mode')).toBe('CASCADE / AUTO');
+
+    const third = draw({ quality: 'GOOD', controlState: { processValue: 41.2, isAutoMode: false } });
+    expect(textOf(third, 'inspector-control-mode')).toBe('HAND / MANUAL');
+  });
+
+  it('follows the device from NOT_BOUND to GOOD when telemetry starts', () => {
+    const unbound = draw({ quality: 'NOT_BOUND' });
+    expect(textOf(unbound, 'inspector-process-value')).toBe('----');
+
+    const live = draw({ quality: 'GOOD', controlState: { processValue: 61.4 } });
+    expect(textOf(live, 'inspector-process-value')).toBe('61.4');
+    expect(live).not.toContain('data-testid="inspector-no-data-banner"');
+  });
+
+  it('park a stale reading when the device stops reporting', () => {
+    draw({ quality: 'GOOD', controlState: { processValue: 61.4 } });
+
+    const dropped = draw({ quality: 'BAD_QUALITY', controlState: { processValue: 61.4 } });
+    expect(textOf(dropped, 'inspector-process-value')).toBe('----');
+    expect(dropped).not.toContain('>61.4<');
+  });
+
+  it('does not invent a setpoint range the device did not report', () => {
+    const noRange = draw({ quality: 'GOOD', controlState: { processValue: 41.2, setpoint: 42.0 } });
+    expect(noRange).toMatch(/data-testid="inspector-setpoint-slider"[^>]*\sdisabled=""/);
+    expect(noRange).toContain('data-range-known="false"');
+    expect(noRange).not.toContain('>0.0 bar<');
+    expect(noRange).not.toContain('>100.0 bar<');
+
+    const withRange = draw({
+      quality: 'GOOD',
+      controlState: { processValue: 41.2, setpoint: 42.0, minSetpoint: 10, maxSetpoint: 90, engineeringUnit: 'bar' },
+    });
+    expect(withRange).toContain('data-range-known="true"');
+    expect(withRange).not.toMatch(/data-testid="inspector-setpoint-slider"[^>]*\sdisabled=""/);
+    expect(withRange).toContain('>10 bar<');
+    expect(withRange).toContain('>90 bar<');
+  });
+
+  it('read the setpoint range the device reports, not a fixed 0-100', () => {
+    const html = draw({
+      quality: 'GOOD',
+      controlState: { setpoint: 55, minSetpoint: 10, maxSetpoint: 90, engineeringUnit: 'bar' },
+    });
+    expect(html).toMatch(/data-testid="inspector-setpoint-slider"[^>]*min="10"/);
+    expect(html).toMatch(/data-testid="inspector-setpoint-slider"[^>]*max="90"/);
+  });
+});
+
+describe('SYS-REQ-096: the drawer fabricates nothing', () => {
   describe('unbound (NOT_BOUND)', () => {
     it('renders no process value, setpoint or output reading', () => {
       const html = render({ quality: 'NOT_BOUND' }, 'MANUAL_CONTROL');
