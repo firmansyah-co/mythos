@@ -6,11 +6,13 @@ on:
       - dev
       - rc
       - release
+  # No `branches` filter: a pull_request trigger that lists base branches runs no
+  # workflow at all for a PR opened against any other base (a stacked PR shows an
+  # empty check list, not a failing one), so review verdicts were being issued on
+  # code nothing had ever compiled. dev/rc/release remain gated by the push filter
+  # above plus their required status checks with strict=true, so merged content is
+  # still gated at the branch boundary; this only closes the PR-review blind spot.
   pull_request:
-    branches:
-      - dev
-      - rc
-      - release
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
