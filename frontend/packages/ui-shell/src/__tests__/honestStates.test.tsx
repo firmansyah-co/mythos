@@ -6,6 +6,9 @@ import { useHmiStore } from '../stores/useHmiStore';
 import { Zone4TaskCards } from '../components/workbench/Zone4TaskCards';
 import { Zone5BottomConsole } from '../components/workbench/Zone5BottomConsole';
 import { PortalView } from '../components/portal/PortalView';
+import { HmiScreenCanvasPanel } from '../components/workbench/DockviewWorkspace';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -98,5 +101,31 @@ describe('Honest states: no fabricated operational data or silent failures', () 
     expect(consoleHtml).not.toContain('Boiler 02');
     expect(consoleHtml).not.toContain('410µs');
     expect(consoleHtml).not.toContain('libstrucpp_program_v1.so');
+  });
+
+  it('does not assert TagBus health it never measured', () => {
+    // There is no supervisor telemetry transport in the shell, so the canvas footer cannot
+    // know TagBus state. It must say so rather than render a green "ACTIVE".
+    const html = renderClient(<HmiScreenCanvasPanel params={{}} /> as any);
+
+    expect(html).toContain('TagBus Status');
+    expect(html).toContain('UNKNOWN (NOT MEASURED)');
+    expect(html).not.toContain('ACTIVE (100ms)');
+    expect(html).not.toContain('ACTIVE');
+
+    // The two neighbouring figures are measured from the store, so they stay.
+    expect(html).toContain('Components');
+  });
+
+  it('has no hardcoded TagBus health literal left in the panel source', () => {
+    // Second layer: a DOM test alone can stay green if a quality gate suppresses the value,
+    // so guard the source too. This fails on a reintroduced "ACTIVE" announcement.
+    // Vitest runs from the frontend workspace root (where vitest.config.ts lives).
+    const source = readFileSync(
+      path.resolve(process.cwd(), 'packages/ui-shell/src/components/workbench/DockviewWorkspace.tsx'),
+      'utf-8'
+    );
+    expect(source).not.toContain('ACTIVE (100ms)');
+    expect(source).not.toMatch(/TagBus Status:[^\n]*text-emerald/);
   });
 });
