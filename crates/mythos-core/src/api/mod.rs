@@ -3,6 +3,7 @@
 //! Provides REST endpoints (`/api/v1/health`, `/api/v1/tags`, `/api/v1/projects`)
 //! and real-time SSE stream (`/api/v1/telemetry/stream`) with locked 100ms batch throttling.
 
+pub mod datatypes;
 pub mod faceplates;
 pub mod mcp;
 mod screens;
@@ -94,6 +95,23 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
         .route(
             "/api/v1/projects/:id/hmi/commit",
             post(screens::commit::<S>),
+        )
+        // Project-scoped DUT/UDT registry (logic editor data types)
+        .route(
+            "/api/v1/projects/:id/datatypes",
+            get(datatypes::list::<S>).post(datatypes::create::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/datatypes/:dut",
+            get(datatypes::get::<S>).delete(datatypes::delete::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/datatypes/:dut/draft",
+            put(datatypes::save_draft::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/datatypes/:dut/release",
+            post(datatypes::release::<S>),
         )
         // Project-scoped master faceplate types and instances (TSK-309)
         .route(
