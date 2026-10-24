@@ -151,6 +151,22 @@ jobs:
           fi
           cargo test --workspace --verbose
 
+      # TSK-002's "< 50 ns atomic swap" target is asserted here on the release build, because
+      # release has ~3x headroom rather than ~1.6x and degrades much less when the runner is
+      # loaded. Debug is not incapable of meeting the bound (it measures 26-32 ns at true idle),
+      # but this runner shares its cores with the agent fleet and its load swings from 1.2 to
+      # 200+, so the larger margin is what makes the gate stable. The debug run above therefore
+      # only smoke-checks the hot path; the acceptance assertion is gated on this release run.
+      # See the header of crates/mythos-shm/tests/shm_engine_tests.rs for the measurement regime,
+      # the recorded distributions with their load conditions, and the local-runner fact.
+      - name: Run SHM Atomic Swap Latency Gate (release)
+        run: |
+          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
+          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
+            source /opt/hostedtoolcache/cargo/env
+          fi
+          cargo test --release -p mythos-shm --test shm_engine_tests -- --nocapture
+
       - name: Run SHM Micro-Benchmark Check
         run: |
           export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
