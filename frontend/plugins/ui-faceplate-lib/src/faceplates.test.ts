@@ -16,6 +16,7 @@ describe('TSK-304: 3-Tier Visual Faceplate Component Library', () => {
       const html = normalizeHtml(renderToString(
         React.createElement(MotorFaceplate, {
           tag: 'P-101A',
+          quality: 'GOOD',
           label: 'Slurry Feed Pump A',
           running: true,
           tripped: false,
@@ -33,6 +34,7 @@ describe('TSK-304: 3-Tier Visual Faceplate Component Library', () => {
       const html = normalizeHtml(renderToString(
         React.createElement(MotorFaceplate, {
           tag: 'P-101A',
+          quality: 'GOOD',
           label: 'Slurry Feed Pump A',
           running: true,
           tripped: false,
@@ -55,6 +57,7 @@ describe('TSK-304: 3-Tier Visual Faceplate Component Library', () => {
       const html = normalizeHtml(renderToString(
         React.createElement(MotorFaceplate, {
           tag: 'P-101A',
+          quality: 'GOOD',
           label: 'Slurry Feed Pump A',
           running: false,
           tripped: true,
@@ -75,6 +78,7 @@ describe('TSK-304: 3-Tier Visual Faceplate Component Library', () => {
       const html = normalizeHtml(renderToString(
         React.createElement(ValveFaceplate, {
           tag: 'XV-101',
+          quality: 'GOOD',
           label: 'Slurry Inlet Isolation Valve',
           openLimit: true,
           closedLimit: false,
@@ -91,6 +95,7 @@ describe('TSK-304: 3-Tier Visual Faceplate Component Library', () => {
       const html = normalizeHtml(renderToString(
         React.createElement(ValveFaceplate, {
           tag: 'XV-101',
+          quality: 'GOOD',
           label: 'Slurry Inlet Valve',
           openLimit: false,
           closedLimit: true,
@@ -110,6 +115,7 @@ describe('TSK-304: 3-Tier Visual Faceplate Component Library', () => {
       const html = normalizeHtml(renderToString(
         React.createElement(AnalogTransmitterFaceplate, {
           tag: 'PT-101',
+          quality: 'GOOD',
           label: 'Discharge Header Pressure',
           pv: 6.84,
           unit: 'bar',
@@ -126,6 +132,7 @@ describe('TSK-304: 3-Tier Visual Faceplate Component Library', () => {
       const html = normalizeHtml(renderToString(
         React.createElement(AnalogTransmitterFaceplate, {
           tag: 'PT-101',
+          quality: 'GOOD',
           label: 'Discharge Header Pressure',
           pv: 6.84,
           unit: 'bar',
@@ -147,6 +154,7 @@ describe('TSK-304: 3-Tier Visual Faceplate Component Library', () => {
       const html = normalizeHtml(renderToString(
         React.createElement(PidControllerFaceplate, {
           tag: 'TIC-101',
+          quality: 'GOOD',
           label: 'Primary Reactor Temp',
           pv: 82.5,
           sp: 80.0,
@@ -166,6 +174,7 @@ describe('TSK-304: 3-Tier Visual Faceplate Component Library', () => {
       const html = normalizeHtml(renderToString(
         React.createElement(PidControllerFaceplate, {
           tag: 'TIC-101',
+          quality: 'GOOD',
           label: 'Primary Reactor Temp',
           pv: 82.5,
           sp: 80.0,
@@ -200,6 +209,7 @@ describe('TSK-304: 3-Tier Visual Faceplate Component Library', () => {
       const html = normalizeHtml(renderToString(
         React.createElement(MotorFaceplate, {
           tag: 'P-101A',
+          quality: 'GOOD',
           label: 'Slurry Feed Pump A',
           running: false,
           tripped: false,
@@ -216,6 +226,7 @@ describe('TSK-304: 3-Tier Visual Faceplate Component Library', () => {
       const html = normalizeHtml(renderToString(
         React.createElement(ValveFaceplate, {
           tag: 'XV-101',
+          quality: 'GOOD',
           label: 'Feed Isolation Valve',
           openLimit: false,
           closedLimit: false,
@@ -232,6 +243,7 @@ describe('TSK-304: 3-Tier Visual Faceplate Component Library', () => {
       const html = normalizeHtml(renderToString(
         React.createElement(MotorFaceplate, {
           tag: 'P-101A',
+          quality: 'GOOD',
           label: 'Slurry Feed Pump A',
           running: false,
           tripped: true,
@@ -252,6 +264,7 @@ describe('Faceplates never invent interlock states', () => {
     const motor = normalizeHtml(renderToString(
       React.createElement(MotorFaceplate, {
         tag: 'M-201',
+        quality: 'GOOD',
         label: 'Unbound Motor',
         running: true,
         tripped: false,
@@ -266,6 +279,7 @@ describe('Faceplates never invent interlock states', () => {
     const valve = normalizeHtml(renderToString(
       React.createElement(ValveFaceplate, {
         tag: 'XV-201',
+        quality: 'GOOD',
         label: 'Unbound Valve',
         openLimit: true,
         closedLimit: false,
@@ -280,6 +294,7 @@ describe('Faceplates never invent interlock states', () => {
     const html = normalizeHtml(renderToString(
       React.createElement(MotorFaceplate, {
         tag: 'M-202',
+        quality: 'GOOD',
         label: 'Bound Motor',
         running: true,
         tripped: false,
