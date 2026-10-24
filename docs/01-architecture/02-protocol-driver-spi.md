@@ -665,7 +665,11 @@ No code path provisions a device from a catalog match. The "single-click commiss
 }
 ```
 
-An AI agent that calls this tool on a host with no discovery engine receives a Siemens ET200SP at a specific MAC and IP, with confidence 1.0, and no indication that the result is fabricated. This is the same defect class as SYS-REQ-096: a plausible value reported where no measurement exists. It is recorded here because this document is the trace for discovery behaviour. It requires a code change outside this document's scope.
+An AI agent that calls this tool on a host with no discovery engine receives a Siemens ET200SP at a specific MAC and IP, with confidence 1.0, and no indication that the result is fabricated. This is the same defect class as SYS-REQ-096: a plausible value reported where no measurement exists.
+
+**Reachability: latent, not live.** No crate in the workspace depends on `mythos-mcp`. `Cargo.toml:9` lists it as a workspace member and `Cargo.toml:33` declares it as a workspace dependency. Nothing consumes either. The daemon's MCP surface is a separate hand-rolled handler, `crates/mythos-core/src/api/mcp.rs`, mounted at `crates/mythos-core/src/api/mod.rs:129-130`. That handler advertises two tools, `mythos_read_tag` (`mcp.rs:244`) and `mythos_write_tag` (`mcp.rs:253`), and returns `-32601` for every other name (`mcp.rs:315`, `mcp.rs:326`). No caller reaches `mythos_discover_devices` today.
+
+The defect is latent, not theoretical. It becomes live when `mythos-mcp` is mounted, which Sprint 5 delivers. That timing does not reduce the defect: the fabricated device, the fabricated hardware identity, and the `confidence: 1.0` are what the code returns. Fix it before mounting. The change is code, outside this document's scope.
 
 ---
 
@@ -833,7 +837,7 @@ Revision 1.2.0 specified an append-only SQLite table `audit_events` with columns
 | :--- | :--- |
 | `DeviceModeController` | Exported from `mythos_core`, unit-tested in `crates/mythos-core/tests/device_mode_tests.rs`. No other caller. |
 | `QualityGate` | `TagSynchronizer::sync_inputs` and `sync_outputs`. Unit-tested in `crates/mythos-strucpp/tests/sync_and_gating_tests.rs`. |
-| Any HTTP route | None. The API router has 9 routes, and none addresses device mode or simulation. |
+| Any HTTP route | None. No route in `crates/mythos-core/src/api/mod.rs` addresses device mode or simulation. |
 | Any MCP tool | None. |
 | Any driver | None. `ModbusDriver` has no mode field, and `mythos-plugin-sdk` does not expose one. |
 
