@@ -5,6 +5,9 @@
 
 export * from './types';
 export * from './autoBind';
+export * from './processData';
+export * from './componentData';
+export * from './components/DataQualityBadge';
 export * from './components/MotorFaceplate';
 export * from './components/ValveFaceplate';
 export * from './components/AnalogTransmitterFaceplate';
