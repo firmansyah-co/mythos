@@ -43,15 +43,21 @@
 //! # Why the spec number is reported and not asserted
 //!
 //! Asserting `p99 < 100 ns` here would create a permanently red required check, which is exactly
-//! the failure mode this sprint has been removing. The gate therefore asserts a **regression
-//! bound** only, and prints the TSK-010 verdict on every run. CI carries the number; the board
-//! decides what to do about it.
+//! the failure mode this sprint has been removing. This test is therefore a **report, not a
+//! gate**: it asserts a gross-regression backstop only, and prints the TSK-010 verdict on every
+//! run. CI carries the number; the board decides what to do about it.
+//!
+//! The naming matters as much as the behaviour. A green check called "p99 Concurrency Gate"
+//! that passes while printing `TSK-010 VERDICT: ... NOT MET` states a pass the run did not
+//! establish, and a reader scanning check names never sees the verdict. The CI step is
+//! `Report SHM p99 under 16 threads (TSK-010, non-gating)` and this file/test are named to match,
+//! so the surface cannot claim more than the assertion proves.
 //!
 //! # Two defects preceded this version
 //!
 //! 1. **No p99 existed.** `readers_16_threads` in `benches/shm_bench.rs` timed a whole writer loop
 //!    and reported it as a latency percentile; CI only ran `cargo bench --no-run`.
-//! 2. **The first version of this gate never shared memory.** It used `MemoryShm`, whose
+//! 2. **The first version of this measurement never shared memory.** It used `MemoryShm`, whose
 //!    `open_or_create` calls `new_isolated` on every call and allocates a fresh zeroed buffer, so
 //!    the 15 "readers" each had a private segment and never contended at all. That harness
 //!    established neither a pass nor a breach. This version uses `DefaultShm` and **asserts a
@@ -121,7 +127,7 @@ impl Distribution {
 }
 
 #[test]
-fn tsk010_p99_read_write_under_16_concurrent_threads() {
+fn report_tsk010_p99_read_write_under_16_concurrent_threads() {
     // Unique per process so parallel test binaries never collide on a segment name.
     let name = format!("mythos_tsk010_p99_{}", std::process::id());
 
@@ -236,7 +242,7 @@ fn tsk010_p99_read_write_under_16_concurrent_threads() {
         let _ = mythos_pal::PosixShm::unlink(&name);
     }
 
-    // TSK-010's verdict is REPORTED, not asserted as a pass/fail gate.
+    // TSK-010's verdict is REPORTED, not asserted. This test is not a gate on the spec number.
     //
     // The shipped engine does not meet the criterion in its literal regime: measured p99 is
     // ~1.3-2.5 us against a 100 ns target, on a provably shared segment, with and without CPU
@@ -244,9 +250,9 @@ fn tsk010_p99_read_write_under_16_concurrent_threads() {
     // cache-line ping-pong, not measurement error. Asserting the spec number here would create a
     // permanently red required check, which is the failure mode this sprint exists to remove.
     //
-    // So: report the verdict unambiguously in the log, and gate only on gross regression. The
-    // spec question is a finding for the board (see the PR body), not something a CI threshold
-    // can decide.
+    // So: report the verdict unambiguously in the log, and assert only a gross-regression
+    // backstop. The spec question is a finding for the board (see the PR body), not something a
+    // CI threshold can decide.
     let read_verdict = if swaps.p(0.99) < SPEC_P99_NS {
         "MET"
     } else {
@@ -267,6 +273,12 @@ fn tsk010_p99_read_write_under_16_concurrent_threads() {
     // Regime A is reported, never asserted here: it is dominated by how long a busy-polling reader
     // waits for the writer to publish, which is a property of the harness's polling pattern and of
     // host scheduling, not of the atomic operation. Gating on it would reproduce the flake this
-    // sprint has been removing. Gross-breakage backstops only.
-    assert!(busy.p(0.99) < BUSY_POLL_BACKSTOP_NS);
+    // sprint has been removing. Gross-breakage backstop only, and it says so when it fires.
+    assert!(
+        busy.p(0.99) < BUSY_POLL_BACKSTOP_NS,
+        "regime A p99 ({} ns) exceeded the gross-breakage backstop ({} ns): the engine is \
+         hung or catastrophically regressed. This is NOT the TSK-010 verdict.",
+        busy.p(0.99),
+        BUSY_POLL_BACKSTOP_NS
+    );
 }
