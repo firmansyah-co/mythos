@@ -6,11 +6,13 @@ on:
       - dev
       - rc
       - release
+  # No `branches` filter: a pull_request trigger that lists base branches runs no
+  # workflow at all for a PR opened against any other base (a stacked PR shows an
+  # empty check list, not a failing one), so review verdicts were being issued on
+  # code nothing had ever compiled. dev/rc/release remain gated by the push filter
+  # above plus their required status checks with strict=true, so merged content is
+  # still gated at the branch boundary; this only closes the PR-review blind spot.
   pull_request:
-    branches:
-      - dev
-      - rc
-      - release
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -35,6 +37,18 @@ jobs:
 
       - name: Install Build Tools & Linker
         run: |
+          # Serialize every apt run. All jobs on this self-hosted runner share the
+          # persistent cache at /opt/hostedtoolcache/apt, and concurrent runs raced it:
+          # one left a stale archives/lock and every later run died with
+          # "E: Could not get lock ... It is held by process 0" (exit 100).
+          sudo mkdir -p /opt/hostedtoolcache/apt
+          exec 9>/opt/hostedtoolcache/apt/.mythos-apt.lock
+          flock 9
+
+          # Only now that we hold the serialization lock is it safe to clear stale
+          # locks: removing them outside it could corrupt an apt run that holds one.
+          sudo rm -f /opt/hostedtoolcache/apt/archives/lock /opt/hostedtoolcache/apt/lists/lock
+
           # Disable docker-clean so downloaded .deb packages are preserved
           sudo rm -f /etc/apt/apt.conf.d/docker-clean 2>/dev/null || true
 
@@ -139,6 +153,22 @@ jobs:
           fi
           cargo test --workspace --verbose
 
+      # TSK-002's "< 50 ns atomic swap" target is asserted here on the release build, because
+      # release has ~3x headroom rather than ~1.6x and degrades much less when the runner is
+      # loaded. Debug is not incapable of meeting the bound (it measures 26-32 ns at true idle),
+      # but this runner shares its cores with the agent fleet and its load swings from 1.2 to
+      # 200+, so the larger margin is what makes the gate stable. The debug run above therefore
+      # only smoke-checks the hot path; the acceptance assertion is gated on this release run.
+      # See the header of crates/mythos-shm/tests/shm_engine_tests.rs for the measurement regime,
+      # the recorded distributions with their load conditions, and the local-runner fact.
+      - name: Run SHM Atomic Swap Latency Gate (release)
+        run: |
+          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
+          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
+            source /opt/hostedtoolcache/cargo/env
+          fi
+          cargo test --release -p mythos-shm --test shm_engine_tests -- --nocapture
+
       - name: Run SHM Micro-Benchmark Check
         run: |
           export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
@@ -151,3 +181,81 @@ jobs:
         if: always()
         run: |
           /opt/hostedtoolcache/cargo/bin/sccache --show-stats || true
+
+  frontend-tests:
+    name: Frontend Web Workbench Test Suite & Lints
+    runs-on: arc-runner-org
+    # Clean-tree build measured ~8.5 min (ui-logic-editor alone is ~6.5 min).
+    # Without this, a hang would run to GitHub's 6h default.
+    timeout-minutes: 30
+    defaults:
+      run:
+        # frontend/ is the pnpm workspace root (pnpm-workspace.yaml + pnpm-lock.yaml live here).
+        # Top-level packages/ and plugins/ entries without a package.json are ignored by pnpm.
+        working-directory: frontend
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure Job-Local Caches
+        run: |
+          # This self-hosted runner keeps persistent HOME state from earlier runs that
+          # were executed as root: /home/runner/.npm/_cacache is not writable by the
+          # runner uid. Keep npm's cache and pnpm's store job-local instead of chowning
+          # shared infra (which would regress the next time anything runs as root).
+          #
+          # Set through GITHUB_ENV rather than a job-level env: block, because the
+          # `runner` context is not available in jobs.<job_id>.env and using it there
+          # makes the whole workflow fail at startup.
+          echo "npm_config_cache=$RUNNER_TEMP/npm-cache" >> "$GITHUB_ENV"
+          echo "npm_config_store_dir=$RUNNER_TEMP/pnpm-store" >> "$GITHUB_ENV"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Pinned: no .nvmrc and no engines field. Vite 6 needs >=18; @types/node is ^22.
+          # MUST run before pnpm is installed: arc-runner-org is self-hosted and has no
+          # node on PATH, so pnpm/action-setup's self-installer dies with
+          # "sh: 1: node: not found". For the same reason `cache: pnpm` cannot be used
+          # here (setup-node shells out to a pnpm that does not exist yet).
+          node-version: '22'
+
+      - name: Install pnpm
+        run: |
+          # Pinned: frontend/package.json has no packageManager field, so nothing would
+          # otherwise select a version. This matches the version that generated pnpm-lock.yaml.
+          # Install into a job-local prefix: GITHUB_PATH only affects later steps, so the
+          # absolute binary is invoked here as well.
+          npm install --global --prefix "$RUNNER_TEMP/pnpm-prefix" pnpm@12.14.0
+          echo "$RUNNER_TEMP/pnpm-prefix/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/pnpm-prefix/bin/pnpm" --version
+
+      - name: Resolve pnpm Store Path
+        id: pnpm-store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm Store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-${{ runner.os }}-
+
+      - name: Verify Toolchain Versions
+        run: |
+          # Proof in the run log that the pinned versions above are what actually ran.
+          node --version
+          pnpm --version
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck & Lint
+        run: pnpm lint
+
+      - name: Run Frontend Test Suite
+        run: pnpm test
+
+      - name: Build Frontend Bundles
+        run: pnpm build
