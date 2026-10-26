@@ -33,6 +33,14 @@ const SOURCE_ROOTS = ['packages', 'plugins', 'src'];
  * - `plugins/ui-inspector/src/InspectorDrawer.tsx` is fixed by PR #27, which ships
  *   `plugins/ui-inspector/tests/noFabricatedSource.test.ts`. Remove this entry once #27 merges.
  */
+/**
+ * Sample data that is deliberately retained because it is never a fallback: the opt-in demo
+ * project behind the explicit `loadSampleProject()` action. Reaching it takes a user action, so
+ * it asserts nothing about a real plant. Listed by name, not by pattern, so new samples cannot
+ * inherit the exemption.
+ */
+const SAMPLE_CONSTANT_EXEMPT = new Set(['SAMPLE_PROJECT_METADATA', 'SAMPLE_PROJECT_BLOCKS', 'SAMPLE_SCREENS']);
+
 const FIXED_ELSEWHERE = new Map<string, string>([
   [
     'plugins/ui-inspector/src/InspectorDrawer.tsx',
@@ -90,18 +98,49 @@ function productionFiles(): string[] {
   return files.filter((f) => !FIXED_ELSEWHERE.has(path.relative(ROOT, f)));
 }
 
-/** True when the right-hand side of a default is authored content rather than a scalar knob. */
-function isContentDefault(expr: string): boolean {
+/**
+ * True when the right-hand side of a default is *sample content* rather than a value derived at
+ * render time.
+ *
+ * The distinction the guard needs:
+ *   content     — a non-empty collection literal, or a reference to a module-level collection
+ *                 constant, however that constant is spelled (`sampleRungs` as readily as
+ *                 `DEFAULT_RUNGS`).
+ *   not content — a scalar literal, an empty collection, an expression computed from other props
+ *                 (`tripped ? 'CRITICAL' : 'NORMAL'`), or a bare reference to another prop
+ *                 (`alarmActive = tripped`).
+ *
+ * Derived *values* are a different defect class from fabricated *content*, and are covered by the
+ * `||`/fallback shape guard rather than here. An earlier version matched only upper-case seeds, so
+ * `= sampleRungs` walked straight through.
+ */
+function isContentDefault(expr: string, source: string): boolean {
   const value = expr.trim();
-  // Empty collection: the honest default, and the one the fix installs.
   if (value === '[]' || value === '{}' || value === 'new Map()' || value === 'new Set()') return false;
-  // A non-empty array/object literal is content, whatever is inside it.
+  // Scalar literals are knobs, not content.
+  if (/^(?:'[^']*'|"[^"]*"|`[^`]*`|-?\d+(?:\.\d+)?|true|false|null|undefined)$/.test(value)) {
+    return false;
+  }
+  if (/[?:]/.test(value) || /\|\||&&/.test(value)) return false;
+  // Non-empty collection literal is content, whatever is inside it.
   if (/^\[/.test(value) || /^\{/.test(value)) return true;
-  // A reference to a module-level constant (DEFAULT_*, SAMPLE_*, a FIXTURE) is content.
-  if (/^[A-Z][A-Za-z0-9_]*$/.test(value)) return true;
-  if (/^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/.test(value) && /DEFAULT_|SAMPLE|FIXTURE|DEMO|MOCK/.test(value)) return true;
-  // A call that builds content (e.g. makeSampleRungs()) is content.
-  if (/^[A-Za-z0-9_]+\(/.test(value)) return true;
+
+  const identifier = /^([A-Za-z_$][A-Za-z0-9_$.]*)$/.exec(value)?.[1];
+  if (identifier) {
+    const root = identifier.split('.')[0];
+    // Does the file define this name as a collection constant? Then the default is a sample.
+    const collectionDef = new RegExp(
+      `(?:const|let|var)\\s+${root}\\b[^=]*=\\s*(?:\\[|\\{)`
+    );
+    if (collectionDef.test(source)) return true;
+    // Otherwise it is another prop: a derived value, not sample content.
+    return false;
+  }
+
+  // A call that builds content, when it is named like sample data.
+  if (/^[A-Za-z_$][A-Za-z0-9_$]*\(/.test(value)) {
+    return /default|sample|fixture|demo|mock/i.test(value);
+  }
   return false;
 }
 
@@ -166,7 +205,7 @@ describe('SYS-REQ-096: no workbench surface defaults to fabricated content', () 
       const source = fs.readFileSync(file, 'utf8');
       for (const { prop, expr } of propDefaults(source)) {
         if (CONFIG_DEFAULT_PROPS.has(prop)) continue;
-        if (isContentDefault(expr)) {
+        if (isContentDefault(expr, source)) {
           offenders.push(`${path.relative(ROOT, file)}: ${prop} = ${expr}`);
         }
       }
@@ -180,13 +219,34 @@ describe('SYS-REQ-096: no workbench surface defaults to fabricated content', () 
     const offenders: string[] = [];
     for (const file of files) {
       const source = fs.readFileSync(file, 'utf8');
-      const re = /export const (DEFAULT_[A-Z0-9_]+)\s*(?::[^=]+)?=\s*(\[[\s\S]*?\n\]|\{[\s\S]*?\n\};)/g;
+      // Any exported name, any casing, on one line or many. A single-line export was previously
+      // invisible because the pattern required a newline before the closing bracket.
+      const re =
+        /export const ([A-Za-z0-9_]+)\s*(?::[^=]+)?=\s*(\[[^\]]*\]|\{(?:[^{}]|\{[^{}]*\})*\})\s*;/g;
       let m: RegExpExecArray | null;
       while ((m = re.exec(source)) !== null) {
-        offenders.push(`${path.relative(ROOT, file)}: ${m[1]}`);
+        const name = m[1];
+        // Empty collections carry no sample content.
+        const body = m[2].replace(/\s/g, '');
+        if (body === '[]' || body === '{}') continue;
+        // Case-insensitive, so `sampleRungs` is caught as readily as `SAMPLE_RUNGS`.
+        if (!/(?:^|_)(?:default|sample|fixture|demo|mock)/i.test(name)) continue;
+        if (SAMPLE_CONSTANT_EXEMPT.has(name)) continue;
+        offenders.push(`${path.relative(ROOT, file)}: ${name}`);
       }
     }
     expect(offenders, `sample data exported from production source:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it('imports no fixture module from production source', () => {
+    const offenders: string[] = [];
+    for (const file of files) {
+      const source = fs.readFileSync(file, 'utf8');
+      if (/from\s+['"][^'"]*fixtures?\//.test(source)) {
+        offenders.push(path.relative(ROOT, file));
+      }
+    }
+    expect(offenders, `fixture module imported by production source:\n${offenders.join('\n')}`).toEqual([]);
   });
 
   it('leaves every fixed surface consuming the shared contract with no sample vocabulary', () => {

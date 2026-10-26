@@ -11,5 +11,9 @@
     {
       "path": "../../packages/ui-empty-state"
     }
+  ],
+  "exclude": [
+    "src/__tests__/**/*",
+    "dist"
   ]
 }
