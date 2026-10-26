@@ -17,12 +17,7 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
   currentAmps = 0,
   torquePercent = 0,
   maxSpeed = 1500,
-  interlocks = [
-    { id: 'estop', name: 'Emergency Stop Circuit OK (ISO 13849-1)', isSatisfied: true },
-    { id: 'lube', name: 'Lube Oil Pressure Normal', isSatisfied: true },
-    { id: 'thermal', name: 'Motor Thermal Overload Relay Normal', isSatisfied: !tripped },
-    { id: 'guard', name: 'Safety Guard Closed & Latched', isSatisfied: true },
-  ],
+  interlocks = [],
   tier = 2,
   alarm = tripped ? 'CRITICAL' : 'NORMAL',
   alarmActive = tripped,
@@ -305,6 +300,11 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
           Safety Interlock Matrix (ISO 13849-1)
         </span>
         <div className="flex flex-col gap-1 mt-1">
+          {interlocks.length === 0 && (
+            <div className="text-xs text-slate-400 py-0.5">
+              No interlock telemetry — none bound to this device.
+            </div>
+          )}
           {interlocks.map((item: InterlockCondition) => (
             <div key={item.id} className="flex items-center justify-between text-xs py-0.5 border-b border-slate-900/50 last:border-0">
               <span className="text-slate-300 truncate max-w-[260px]">{item.name}</span>

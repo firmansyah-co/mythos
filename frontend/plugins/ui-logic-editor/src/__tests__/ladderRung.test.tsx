@@ -8,7 +8,7 @@ import {
   CoilElementView,
   FunctionBlockElementView,
 } from '../ladder/LadderElements';
-import { DEFAULT_LD_RUNGS } from '../LadderCanvas';
+import { LADDER_FIXTURE_RUNGS } from './fixtures/logicFixtures';
 import { LadderRung } from '../ladder/types';
 
 let container: HTMLDivElement;
@@ -163,7 +163,7 @@ describe('TSK-702: Ladder Rung & Elements Unit Suite', () => {
     it('renders RungRenderer with quick insertion toolbar', () => {
       renderClient(
         <RungRenderer
-          rung={DEFAULT_LD_RUNGS[0]}
+          rung={LADDER_FIXTURE_RUNGS[0]}
           index={0}
           onUpdateRung={() => {}}
           onDeleteRung={() => {}}

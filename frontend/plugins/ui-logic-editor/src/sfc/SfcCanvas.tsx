@@ -1,67 +1,13 @@
 import React, { useState } from 'react';
 import { SfcStep, SfcTransition, SfcCanvasProps } from './types';
 import { Plus, ArrowDown } from 'lucide-react';
+import { EmptySurface, EMPTY_SURFACE } from '@mythos/ui-empty-state';
 
-export const DEFAULT_SFC_STEPS: SfcStep[] = [
-  {
-    id: 'step-0',
-    name: 'Init_Step',
-    isInitial: true,
-    isActive: true,
-    x: 180,
-    y: 40,
-    actions: [
-      { id: 'act-1', qualifier: 'N', actionName: 'DO_IdleIndicator := TRUE;' },
-    ],
-  },
-  {
-    id: 'step-1',
-    name: 'Conveyor_Run',
-    isInitial: false,
-    isActive: false,
-    x: 180,
-    y: 200,
-    actions: [
-      { id: 'act-2', qualifier: 'S', actionName: 'DO_ConveyorMotor' },
-      { id: 'act-3', qualifier: 'L', duration: 'T#5S', actionName: 'FeedWarningLight' },
-    ],
-  },
-  {
-    id: 'step-2',
-    name: 'Cap_Cylinder_Dwell',
-    isInitial: false,
-    isActive: false,
-    x: 180,
-    y: 360,
-    actions: [
-      { id: 'act-4', qualifier: 'P', actionName: 'TriggerBottleCountInc' },
-      { id: 'act-5', qualifier: 'D', duration: 'T#500MS', actionName: 'ExtendCappingArm' },
-    ],
-  },
-];
 
-export const DEFAULT_SFC_TRANSITIONS: SfcTransition[] = [
-  {
-    id: 'trans-0-1',
-    name: 'T1',
-    condition: 'DI_StartPB = TRUE',
-    fromStepId: 'step-0',
-    toStepId: 'step-1',
-    isSatisfied: true,
-  },
-  {
-    id: 'trans-1-2',
-    name: 'T2',
-    condition: 'DI_BottleInPosition = TRUE',
-    fromStepId: 'step-1',
-    toStepId: 'step-2',
-    isSatisfied: false,
-  },
-];
 
 export const SfcCanvas: React.FC<SfcCanvasProps> = ({
-  steps = DEFAULT_SFC_STEPS,
-  transitions = DEFAULT_SFC_TRANSITIONS,
+  steps,
+  transitions,
   onAddStep,
   onDeleteStep,
   readOnly = false,
@@ -69,8 +15,8 @@ export const SfcCanvas: React.FC<SfcCanvasProps> = ({
   debugActive = false,
   liveTelemetry = {},
 }) => {
-  const [activeSteps, setActiveSteps] = useState<SfcStep[]>(steps);
-  const [activeTransitions] = useState<SfcTransition[]>(transitions);
+  const [activeSteps, setActiveSteps] = useState<SfcStep[]>(steps ?? []);
+  const [activeTransitions] = useState<SfcTransition[]>(transitions ?? []);
 
   const handleAddStep = () => {
     const newIdx = activeSteps.length;
@@ -128,7 +74,12 @@ export const SfcCanvas: React.FC<SfcCanvasProps> = ({
 
       {/* SFC Sequence Viewer */}
       <div className="relative w-full h-[650px] border border-neutral-800/60 rounded bg-[var(--bg-base)] overflow-y-auto p-8 flex flex-col items-center">
-        {activeSteps.map((step, idx) => {
+        {activeSteps.length === 0 ? (
+          <div className="flex items-center justify-center h-full w-full">
+            <EmptySurface copy={EMPTY_SURFACE.logic} />
+          </div>
+        ) : (
+          activeSteps.map((step, idx) => {
           const trans = activeTransitions.find((t) => t.fromStepId === step.id);
           const isStepActive = Boolean(step.isActive || (debugActive && (idx === 0 || liveTelemetry[step.name] === true)));
 
@@ -237,7 +188,8 @@ export const SfcCanvas: React.FC<SfcCanvasProps> = ({
               )}
             </React.Fragment>
           );
-        })}
+          })
+        )}
       </div>
     </div>
   );

@@ -76,6 +76,27 @@ importers:
         specifier: ^3.0.5
         version: 3.2.7(@types/node@22.20.5)(happy-dom@21.0.3)(jiti@1.21.7)
 
+  packages/ui-empty-state:
+    devDependencies:
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.3.0
+      '@vitejs/plugin-react':
+        specifier: ^4.3.4
+        version: 4.7.0(vite@6.4.4(@types/node@22.20.5)(jiti@1.21.7))
+      react:
+        specifier: ^19.0.0
+        version: 19.3.1
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vite:
+        specifier: ^6.1.0
+        version: 6.4.4(@types/node@22.20.5)(jiti@1.21.7)
+      vitest:
+        specifier: ^3.0.5
+        version: 3.2.7(@types/node@22.20.5)(happy-dom@21.0.3)(jiti@1.21.7)
+
   packages/ui-shell:
     dependencies:
       '@mythos/ui-faceplate-lib':
@@ -234,6 +255,9 @@ importers:
       '@monaco-editor/react':
         specifier: ^4.7.0
         version: 4.7.0(monaco-editor@0.57.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@mythos/ui-empty-state':
+        specifier: workspace:*
+        version: link:../../packages/ui-empty-state
       lucide-react:
         specifier: ^1.59.0
         version: 1.59.0(@types/react@19.3.0)(react@19.3.1)
@@ -280,6 +304,9 @@ importers:
 
   plugins/ui-topology:
     dependencies:
+      '@mythos/ui-empty-state':
+        specifier: workspace:*
+        version: link:../../packages/ui-empty-state
       '@xyflow/react':
         specifier: ^12.12.0
         version: 12.12.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
