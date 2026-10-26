@@ -13,13 +13,74 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
 
 /// Tag update payload broadcast in 100ms batches.
+///
+/// # Wire shape (the HMI consumer is built against this, so it is a contract)
+///
+/// `value` carries the tag's **true** JSON type — `true`/`false` for BOOL, an integer for the
+/// integer types, a number for the float types — and `type` names that type
+/// (`"BOOL"`, `"INT"`, `"DINT"`, `"REAL"`, `"LREAL"`, `"UINT"`, `"UDINT"`, `"LINT"`, `"ULINT"`,
+/// `"BYTE"`). A consumer must branch on `type` when it needs to know the type; it must not infer
+/// one from the number's shape.
+///
+/// A tag whose slot carries no type code (`0`) or an unrecognised one is reported as
+/// `type: "UNSPECIFIED"` with `value: null`. That is deliberate: the previous implementation read
+/// every slot through `as_f64` regardless of type, so a DINT holding 42 surfaced as a denormal
+/// (~1e-322) and looked like a broken instrument rather than an undeclared type. `null` plus an
+/// explicit type is the honest representation of "the writer did not say what this is".
+///
+/// 64-bit integers are emitted as JSON numbers. `serde_json` preserves the full `i64`/`u64` range
+/// in the wire text, but JavaScript clients lose precision above 2^53; a client that must be exact
+/// for `LINT`/`ULINT` should parse with a BigInt-aware reader. This is stated rather than solved
+/// here because the alternative (stringly-typed values) makes every consumer branch on `type`
+/// before it can do arithmetic, which is worse for the common case.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TagValueUpdate {
     pub uri: String,
     pub slot_id: u32,
-    pub value: f64,
+    /// Declared tag type name, or `"UNSPECIFIED"` when the slot carries no usable type code.
+    #[serde(rename = "type")]
+    pub type_name: &'static str,
+    /// The value, decoded according to the slot's declared type. `null` when unspecified.
+    pub value: serde_json::Value,
     pub quality: String,
     pub timestamp_ns: u64,
+}
+
+/// Decode a slot value according to its declared `type_code`.
+///
+/// The code-to-type mapping lives in exactly one place: `TagDataType` in `mythos-shm`. This
+/// function only translates the decoded value into JSON, so a new type added there cannot drift out
+/// of step with the wire format here.
+///
+/// Returns the wire type name and the value. The type code is the *only* source of truth: reading
+/// a slot with an accessor that does not match how it was written produces a meaningless number,
+/// which is exactly the defect this replaces.
+pub(crate) fn decode_slot_value(
+    type_code: u16,
+    value: &mythos_shm::TagValueRaw,
+) -> (&'static str, serde_json::Value) {
+    use mythos_shm::{DecodedValue, TagDataType};
+    use serde_json::Value;
+
+    let Some(data_type) = TagDataType::from_code(type_code) else {
+        // No declared type (or an unrecognised one): report it as such rather than guessing f64 and
+        // emitting a denormal, which is the defect this replaces.
+        return ("UNSPECIFIED", Value::Null);
+    };
+
+    let decoded = match value.decode_as(data_type) {
+        DecodedValue::Bool(v) => Value::Bool(v),
+        DecodedValue::U8(v) => Value::from(v),
+        DecodedValue::U16(v) => Value::from(v),
+        DecodedValue::U32(v) => Value::from(v),
+        DecodedValue::U64(v) => Value::from(v),
+        DecodedValue::I16(v) => Value::from(v),
+        DecodedValue::I32(v) => Value::from(v),
+        DecodedValue::I64(v) => Value::from(v),
+        DecodedValue::F32(v) => Value::from(v),
+        DecodedValue::F64(v) => Value::from(v),
+    };
+    (data_type.as_str(), decoded)
 }
 
 /// 100ms batched telemetry payload envelope.
@@ -103,11 +164,12 @@ async fn build_telemetry_event<S: PlatformShm + 'static>(
                     "UNCERTAIN"
                 };
 
-                let val = slot.value.as_f64();
+                let (type_name, value) = decode_slot_value(slot.type_code, &slot.value);
                 updates.push(TagValueUpdate {
                     uri: tag_meta.uri.clone(),
                     slot_id: tag_meta.slot_id,
-                    value: val,
+                    type_name,
+                    value,
                     quality: quality_str.to_string(),
                     timestamp_ns: slot.timestamp_ns,
                 });
