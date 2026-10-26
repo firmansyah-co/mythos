@@ -1,5 +1,6 @@
 //! Integration tests for Server-Driven UI (SDUI) TypeScript type generation (TSK-302 / ADR-006).
 
+use mythos_core::datatype::{DataTypeEntry, DataTypeSummary};
 use mythos_core::faceplate::{
     BindingAccess, FaceplateBinding, FaceplateInstance, FaceplateReleaseResult, FaceplateType,
     FaceplateTypeSummary, FaceplateView, FaceplateViewKind, InstanceBinding, ReadStage,
@@ -59,6 +60,8 @@ fn test_sdui_typescript_type_export() {
             .expect("Failed to export FaceplateReleaseResult");
         ResolvedInstance::export_all_to(target_dir).expect("Failed to export ResolvedInstance");
         ReadStage::export_all_to(target_dir).expect("Failed to export ReadStage");
+        DataTypeEntry::export_all_to(target_dir).expect("Failed to export DataTypeEntry");
+        DataTypeSummary::export_all_to(target_dir).expect("Failed to export DataTypeSummary");
 
         // Also create an index.ts barrel export for frontend convenience
         let index_file = target_dir.join("index.ts");
@@ -89,6 +92,8 @@ export * from './StrandedInstance';
 export * from './FaceplateReleaseResult';
 export * from './ResolvedInstance';
 export * from './ReadStage';
+export * from './DataTypeEntry';
+export * from './DataTypeSummary';
 "#;
         fs::write(&index_file, barrel_content).expect("Failed to write index.ts barrel");
     }
@@ -114,6 +119,8 @@ export * from './ReadStage';
         assert!(target_dir.join("InstanceBinding.ts").exists());
         assert!(target_dir.join("StrandedInstance.ts").exists());
         assert!(target_dir.join("ReadStage.ts").exists());
+        assert!(target_dir.join("DataTypeEntry.ts").exists());
+        assert!(target_dir.join("DataTypeSummary.ts").exists());
         assert!(target_dir.join("index.ts").exists());
     }
 }

@@ -3,10 +3,9 @@ import type { UdtKind } from "./UdtKind";
 import type { UdtMember } from "./UdtMember";
 
 /**
- * Serialisable UDT definition carried by a faceplate type.
+ * Serialisable UDT definition.
  *
- * This is deliberately structural rather than a reference to a registry: the backend has
- * no shared data-type store yet, and a dangling name string would claim a validation that
- * does not exist.
+ * Structural rather than a name reference: every consumer (faceplate bindings, the logic editor,
+ * future compiler integration) validates against the members it can actually see.
  */
 export type UdtDefinition = { name: string, kind: UdtKind, members: Array<UdtMember>, enumConstants: Array<string>, baseType: string | null, };
