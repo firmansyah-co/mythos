@@ -10,7 +10,6 @@ use mythos_core::historian::{CsvExportRequest, CsvExporter, ResampleStrategy};
 use mythos_mcp_macros::mythos_mcp_tool;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
 use crate::context::McpContext;
@@ -75,33 +74,56 @@ pub async fn mythos_discover_devices(
         catalog: None,
     };
 
-    let discovered_devices = if let Some(engine) = &ctx.discovery_engine {
-        let filter = if proto_filter == "all" {
-            None
-        } else {
-            Some(proto_filter)
-        };
-        engine
-            .run_discovery(&disc_ctx, filter)
-            .await
-            .unwrap_or_default()
+    // No engine attached means no scan was performed. That is NOT "the network is
+    // empty", so it must not be reported as a successful zero-device result: a
+    // caller reading `devices: []` cannot tell the two apart. It is reported as an
+    // error (`is_error: true`) whose body carries the reason, and never as a device.
+    //
+    // This branch used to return an invented Siemens ET200SP with real-looking MAC,
+    // IP, article number and confidence 1.0. It is deleted outright rather than
+    // gated behind a cfg/feature flag, because a gate is how such a payload comes
+    // back: the honest answer to "no discovery engine" does not depend on a build
+    // profile.
+    let Some(engine) = &ctx.discovery_engine else {
+        let result = serde_json::json!({
+            "status": "unavailable",
+            "reason": "no discovery engine is attached to this MCP context; no scan was performed",
+            "interface": iface,
+            "protocol": proto_filter,
+            "count": 0,
+            "devices": [],
+        });
+        return CallToolResult::error_json(&result)
+            .map_err(|e| McpError::InternalError(e.to_string()));
+    };
+
+    let filter = if proto_filter == "all" {
+        None
     } else {
-        // Mock fallback discovered device when physical interface is unprivileged in container/test
-        vec![mythos_core::discovery::DiscoveredDevice {
-            device_id: "siemens-et200sp-01".to_string(),
-            protocol: "profinet-dcp".to_string(),
-            station_name: Some("io-et200sp-cell1".to_string()),
-            mac_address: Some("00:1B:1B:3A:4F:90".to_string()),
-            ip_address: Some("192.168.1.10".to_string()),
-            modbus_slave_id: None,
-            fingerprint_model: Some("6ES7155-6AU01-0BN0".to_string()),
-            vendor: Some("Siemens AG".to_string()),
-            confidence: 1.0,
-            properties: HashMap::new(),
-        }]
+        Some(proto_filter)
+    };
+
+    // A failed scan is also not an empty network. `unwrap_or_default()` used to turn
+    // every DiscoveryError (cancelled, bad interface, unregistered protocol) into an
+    // empty device list, which reads exactly like a completed sweep that found nothing.
+    let discovered_devices = match engine.run_discovery(&disc_ctx, filter).await {
+        Ok(devices) => devices,
+        Err(e) => {
+            let result = serde_json::json!({
+                "status": "failed",
+                "reason": format!("discovery scan failed: {e}"),
+                "interface": iface,
+                "protocol": proto_filter,
+                "count": 0,
+                "devices": [],
+            });
+            return CallToolResult::error_json(&result)
+                .map_err(|err| McpError::InternalError(err.to_string()));
+        }
     };
 
     let result = serde_json::json!({
+        "status": "complete",
         "interface": iface,
         "protocol": proto_filter,
         "count": discovered_devices.len(),
