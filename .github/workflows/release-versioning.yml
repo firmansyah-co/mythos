@@ -8,16 +8,18 @@ on:
       - release
     tags:
       - 'v*.*.*'
+  # No `branches` filter, for the same reason as ci.yml: a pull_request trigger that lists
+  # base branches runs no workflow at all for a PR opened against any other base, so a
+  # stacked PR shows an empty check list rather than a skipped one. This job only computes
+  # a version and renders a changelog; it publishes nothing unless the run is a v* tag or a
+  # push to release, so a feature-based PR is safe (and cheap) to include. Such a PR's
+  # `github.base_ref` is its feature branch and its computed tag is a `-dev.N+prN` preview.
   pull_request:
     types:
       - opened
       - synchronize
       - reopened
       - closed
-    branches:
-      - dev
-      - rc
-      - release
 
 permissions:
   contents: write
