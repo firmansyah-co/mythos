@@ -3,6 +3,8 @@
 //! Provides REST endpoints (`/api/v1/health`, `/api/v1/tags`, `/api/v1/projects`)
 //! and real-time SSE stream (`/api/v1/telemetry/stream`) with locked 100ms batch throttling.
 
+pub mod datatypes;
+pub mod faceplates;
 pub mod mcp;
 mod screens;
 pub mod state;
@@ -14,7 +16,7 @@ use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use mythos_pal::PlatformShm;
 use serde::{Deserialize, Serialize};
@@ -93,6 +95,48 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
         .route(
             "/api/v1/projects/:id/hmi/commit",
             post(screens::commit::<S>),
+        )
+        // Project-scoped DUT/UDT registry (logic editor data types)
+        .route(
+            "/api/v1/projects/:id/datatypes",
+            get(datatypes::list::<S>).post(datatypes::create::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/datatypes/:dut",
+            get(datatypes::get::<S>).delete(datatypes::delete::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/datatypes/:dut/draft",
+            put(datatypes::save_draft::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/datatypes/:dut/release",
+            post(datatypes::release::<S>),
+        )
+        // Project-scoped master faceplate types and instances (TSK-309)
+        .route(
+            "/api/v1/projects/:id/faceplates/types",
+            get(faceplates::list_types::<S>).post(faceplates::create_type::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/faceplates/types/:type",
+            get(faceplates::get_type::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/faceplates/types/:type/draft",
+            put(faceplates::save_draft::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/faceplates/types/:type/release",
+            post(faceplates::release::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/faceplates/instances",
+            get(faceplates::list_instances::<S>).post(faceplates::create_instance::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/faceplates/instances/:instance",
+            put(faceplates::update_instance::<S>),
         )
         // Telemetry Stream (100ms batched SSE)
         .route(

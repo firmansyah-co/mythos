@@ -9,7 +9,23 @@ use mythos_pal::PlatformShm;
 use mythos_shm::ShmReaderHandle;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast::Sender as BroadcastSender, RwLock};
+
+/// A named HMI notification delivered on `/api/v1/telemetry/stream`.
+///
+/// This is how the UI learns that a definition changed without polling: a release on one
+/// screen reaches every open operator station through the stream that is already open.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HmiEvent {
+    pub event: &'static str,
+    pub data: serde_json::Value,
+}
+
+impl HmiEvent {
+    pub fn new(event: &'static str, data: serde_json::Value) -> Self {
+        Self { event, data }
+    }
+}
 
 /// Application state shared across all Axum route handlers.
 pub struct ApiState<S: PlatformShm + 'static = mythos_pal::DefaultShm> {
@@ -21,6 +37,8 @@ pub struct ApiState<S: PlatformShm + 'static = mythos_pal::DefaultShm> {
     pub mcp_transport: Arc<McpSseTransport>,
     pub token_manager: Option<Arc<Ed25519TokenManager>>,
     pub audit_ledger: Option<Arc<MerkleAuditLedger>>,
+    /// Definition-change notifications relayed to every open operator station.
+    pub hmi_events: BroadcastSender<HmiEvent>,
 }
 
 impl<S: PlatformShm + 'static> Clone for ApiState<S> {
@@ -34,6 +52,7 @@ impl<S: PlatformShm + 'static> Clone for ApiState<S> {
             mcp_transport: Arc::clone(&self.mcp_transport),
             token_manager: self.token_manager.clone(),
             audit_ledger: self.audit_ledger.clone(),
+            hmi_events: self.hmi_events.clone(),
         }
     }
 }
@@ -58,7 +77,16 @@ impl<S: PlatformShm + 'static> ApiState<S> {
             mcp_transport: Arc::new(McpSseTransport::new()),
             token_manager: None,
             audit_ledger: None,
+            hmi_events: BroadcastSender::new(256),
         }
+    }
+
+    /// Publish a definition-change notification to every open operator station.
+    ///
+    /// A send with no subscribers is not an error: a release must succeed whether or not
+    /// anyone is watching.
+    pub fn notify_hmi(&self, event: HmiEvent) {
+        let _ = self.hmi_events.send(event);
     }
 
     /// Configure custom static asset directory for Web HMI serving.
