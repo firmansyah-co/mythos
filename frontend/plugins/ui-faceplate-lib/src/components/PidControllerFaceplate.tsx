@@ -48,7 +48,6 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
   className = '',
 }) => {
   const [activeTier, setActiveTier] = useState<FaceplateTier>(tier);
-  const [internalMode, setInternalMode] = useState<OperatingMode | null>(operatingMode ?? null);
   const [targetSp, setTargetSp] = useState<number | null>(sp ?? null);
   const [targetCv, setTargetCv] = useState<number | null>(cv ?? null);
   const [tuneKp, setTuneKp] = useState<number | null>(kp ?? null);
@@ -59,7 +58,10 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
   const displayable = hasDisplayableValue(quality);
   const pvValue: number | null = pv ?? null;
   // Control mode is device state: announce it only for live telemetry, never as a default.
-  const announcedMode: OperatingMode | null = live ? internalMode : null;
+  // A control mode is device state, read from the prop on every render. Mounting a copy in
+  // state pinned the badge to whatever the first render saw, so a mode that arrived with
+  // telemetry after mount was never announced (the canvas re-renders these in place).
+  const announcedMode: OperatingMode | null = live ? operatingMode ?? null : null;
 
   // Alarm thresholds are judged only against a real reading; missing data never trips a limit.
   const canJudgeLimits = displayable && pvValue !== null && Number.isFinite(pvValue);
@@ -87,8 +89,11 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
     onTierChange?.(newTier);
   };
 
+  // The command is a request, not a state change: the selector and the badge keep showing what
+  // the device last reported, and the mode moves when telemetry says it moved. This is also the
+  // safe direction for the controls gated on the mode — a live controller in AUTO does not
+  // become commandable because the operator asked for MANUAL.
   const handleModeSwitch = (m: OperatingMode) => {
-    setInternalMode(m);
     onModeToggle?.(m);
   };
 
@@ -276,7 +281,7 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
             disabled={!live}
             title={live ? undefined : 'Device is not reporting: mode cannot be changed'}
             className={`flex-1 py-1 rounded text-xs font-mono font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-              internalMode === m ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+              operatingMode === m ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
             }`}
           >
             {m}
@@ -285,7 +290,7 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
       </div>
 
       {/* Manual CV Override */}
-      {internalMode === 'MANUAL' && (
+      {operatingMode === 'MANUAL' && (
         <div className="flex flex-col gap-1 bg-amber-950/30 p-2.5 rounded border border-amber-800/60">
           <div className="flex justify-between text-xs text-amber-300">
             <span>Manual Output (CV Override)</span>

@@ -95,6 +95,19 @@ describe('SYS-REQ-096: faceplates carry no fabricating parameter defaults', () =
     }
   );
 
+  it('no faceplate samples device state into local state at mount', () => {
+    // The mirror-image defect of a fabricating default: a true state the surface suppresses.
+    // `useState(operatingMode ?? null)` reads the prop once, so telemetry that arrives after
+    // mount is never announced — and the canvas re-renders faceplates in place (keyed on the
+    // component id), so there is no remount to rescue it. Device state is read from the prop on
+    // every render; only operator intent may live in component state.
+    for (const { file, source } of sources) {
+      expect(source, `${file} must not snapshot operatingMode into state`).not.toMatch(
+        /useState\s*<[^>]*>\s*\(\s*operatingMode|useState\s*\(\s*operatingMode/
+      );
+    }
+  });
+
   it('no faceplate paints a colour from an ungated device-state prop', () => {
     // `className={running === true ? 'text-emerald-300' : ...}` printed `----` in the RUNNING
     // colour on an unbound device. The text already went through the quality gate; the class

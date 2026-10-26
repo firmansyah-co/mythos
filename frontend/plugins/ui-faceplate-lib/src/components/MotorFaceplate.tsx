@@ -48,7 +48,6 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
   className = '',
 }) => {
   const [activeTier, setActiveTier] = useState<FaceplateTier>(tier);
-  const [internalMode, setInternalMode] = useState<OperatingMode | null>(operatingMode ?? null);
   const [inputSpeed, setInputSpeed] = useState<number>(speedSetpoint ?? 0);
   const [isLocked, setIsLocked] = useState<boolean>(maintenanceLock);
 
@@ -71,7 +70,10 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
   const stateText = formatProcessState(running, quality, 'RUNNING', 'STOPPED');
   // Control mode is device state, not design configuration: announce it only when live
   // telemetry supplied one. An unobserved device has no mode, and "AUTO" is not a safe guess.
-  const announcedMode: OperatingMode | null = live ? internalMode : null;
+  // A control mode is device state, read from the prop on every render. Mounting a copy in
+  // state pinned the badge to whatever the first render saw, so a mode that arrived with
+  // telemetry after mount was never announced (the canvas re-renders these in place).
+  const announcedMode: OperatingMode | null = live ? operatingMode ?? null : null;
 
   // Interlock states are device state: a satisfied permissive is a measurement, so the rows
   // follow the same provenance gate as every other reading. A checkmark a caller passed
@@ -83,8 +85,11 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
     onTierChange?.(newTier);
   };
 
+  // The command is a request, not a state change: the selector and the badge keep showing what
+  // the device last reported, and the mode moves when telemetry says it moved. This is also the
+  // safe direction for the controls gated on the mode — a live controller in AUTO does not
+  // become commandable because the operator asked for MANUAL.
   const handleModeSwitch = (m: OperatingMode) => {
-    setInternalMode(m);
     onModeToggle?.(m);
   };
 
@@ -336,7 +341,7 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
             disabled={!live}
             title={live ? undefined : 'Device is not reporting: mode cannot be changed'}
             className={`px-3 py-1 rounded text-xs font-mono font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-              internalMode === 'AUTO' ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+              operatingMode === 'AUTO' ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
             }`}
           >
             AUTO
@@ -346,7 +351,7 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
             disabled={!live}
             title={live ? undefined : 'Device is not reporting: mode cannot be changed'}
             className={`px-3 py-1 rounded text-xs font-mono font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-              internalMode === 'MANUAL' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+              operatingMode === 'MANUAL' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
             }`}
           >
             MANUAL
@@ -378,7 +383,7 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
           max={rangeMax ?? 0}
           step="10"
           value={inputSpeed}
-          disabled={!live || rangeMax === null || internalMode !== 'MANUAL' || isLocked}
+          disabled={!live || rangeMax === null || operatingMode !== 'MANUAL' || isLocked}
           onChange={(e) => handleSpeedCommit(Number(e.target.value))}
           className="w-full accent-sky-500 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
         />
