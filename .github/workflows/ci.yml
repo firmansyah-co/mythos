@@ -198,8 +198,20 @@ jobs:
           cargo bench -p mythos-shm --bench shm_bench -- \
             --sample-size 10 --measurement-time 1 --warm-up-time 1 --noplot
 
+      # NON-BLOCKING, deliberately. Archival preserves the criterion numbers for later
+      # inspection; it cannot tell anyone whether the code is correct, so it must not be able to
+      # fail the job. It did: on PR #20 (run 40271532287) the upload succeeded — "Uploaded bytes
+      # 6146", "Finished uploading artifact content to blob storage" — and the step then failed at
+      # finalize after 5 attempts, `getaddrinfo EAI_AGAIN results-receiver.actions.githubusercontent.com`,
+      # which reddened the required check for a build whose tests and benchmark had all passed.
+      #
+      # `if: always()` is kept so the step still runs and still archives whenever the upload path
+      # is healthy; `continue-on-error` makes its outcome advisory. This matches `Display sccache
+      # Statistics` below, which was already written defensively with `|| true` — the asymmetry
+      # between the two is what let this through.
       - name: Archive SHM Benchmark Results
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: shm-criterion-results
