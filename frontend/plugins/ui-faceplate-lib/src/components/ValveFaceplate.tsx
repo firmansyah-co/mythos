@@ -90,6 +90,10 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
   const positionText = formatProcessValue(positionPercent, quality, 0);
   const positionBarPercent = processBarPercent(positionPercent, quality, 100, 0);
 
+  // Interlock states are device state: a satisfied permissive is a measurement, so the rows
+  // follow the same provenance gate as every other reading.
+  const interlockList: InterlockCondition[] = live && Array.isArray(interlocks) ? interlocks : [];
+
   const handleTierSwitch = (newTier: FaceplateTier) => {
     setActiveTier(newTier);
     onTierChange?.(newTier);
@@ -363,14 +367,14 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
           Valve Permissive Interlocks
         </span>
         <div className="flex flex-col gap-1 mt-1">
-          {interlocks.length === 0 && (
+          {interlockList.length === 0 && (
             <div className="text-xs text-slate-400 py-0.5">
               {live
                 ? 'No interlock telemetry — none bound to this device.'
                 : 'No interlock telemetry — device is not reporting.'}
             </div>
           )}
-          {interlocks.map((item: InterlockCondition) => (
+          {interlockList.map((item: InterlockCondition) => (
             <div key={item.id} className="flex items-center justify-between text-xs py-0.5 border-b border-slate-900/50 last:border-0">
               <span className="text-slate-300 truncate max-w-[260px]">{item.name}</span>
               <span className={`font-mono font-bold px-1.5 py-0.2 rounded text-[11px] ${

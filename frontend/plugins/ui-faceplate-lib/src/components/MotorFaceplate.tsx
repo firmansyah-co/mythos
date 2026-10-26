@@ -73,6 +73,11 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
   // telemetry supplied one. An unobserved device has no mode, and "AUTO" is not a safe guess.
   const announcedMode: OperatingMode | null = live ? internalMode : null;
 
+  // Interlock states are device state: a satisfied permissive is a measurement, so the rows
+  // follow the same provenance gate as every other reading. A checkmark a caller passed
+  // alongside an unbound device would otherwise sit there in the reassuring colour.
+  const interlockList: InterlockCondition[] = live && Array.isArray(interlocks) ? interlocks : [];
+
   const handleTierSwitch = (newTier: FaceplateTier) => {
     setActiveTier(newTier);
     onTierChange?.(newTier);
@@ -208,7 +213,7 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
       <div className="flex items-center justify-between text-[11px] font-mono pb-1">
         <span
           data-testid="motor-run-state"
-          className={running === true ? 'text-emerald-300' : 'text-slate-300'}
+          className={isRunning ? 'text-emerald-300' : 'text-slate-300'}
         >
           {formatProcessState(running, quality, 'RUNNING', 'STOPPED')}
         </span>
@@ -385,12 +390,14 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
           Safety Interlock Matrix (ISO 13849-1)
         </span>
         <div className="flex flex-col gap-1 mt-1">
-          {interlocks.length === 0 && (
+          {interlockList.length === 0 && (
             <div className="text-xs text-slate-400 py-0.5">
-              No interlock telemetry — none bound to this device.
+              {live
+                ? 'No interlock telemetry — none bound to this device.'
+                : 'No interlock telemetry — device is not reporting.'}
             </div>
           )}
-          {interlocks.map((item: InterlockCondition) => (
+          {interlockList.map((item: InterlockCondition) => (
             <div key={item.id} className="flex items-center justify-between text-xs py-0.5 border-b border-slate-900/50 last:border-0">
               <span className="text-slate-300 truncate max-w-[260px]">{item.name}</span>
               <span className={`font-mono font-bold px-1.5 py-0.2 rounded text-[11px] ${

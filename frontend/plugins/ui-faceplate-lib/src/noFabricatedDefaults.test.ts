@@ -95,6 +95,16 @@ describe('SYS-REQ-096: faceplates carry no fabricating parameter defaults', () =
     }
   );
 
+  it('no faceplate paints a colour from an ungated device-state prop', () => {
+    // `className={running === true ? 'text-emerald-300' : ...}` printed `----` in the RUNNING
+    // colour on an unbound device. The text already went through the quality gate; the class
+    // bypassed it. Colour must be driven by the gated value (`isRunning`, `isTripped`, ...).
+    const RAW_STATE_COMPARISON = /className=\{[^}]*\b(running|tripped|openLimit|closedLimit|transitFault|sensorFault)\s*===/;
+    for (const { file, source } of sources) {
+      expect(source, `${file} paints from a raw device-state prop`).not.toMatch(RAW_STATE_COMPARISON);
+    }
+  });
+
   it('every faceplate takes quality as a required parameter with no default', () => {
     // Same discipline as the canvas: a faceplate that cannot prove its values are live must not
     // fall back to a permissive default. It is destructured with no `=` at all.
