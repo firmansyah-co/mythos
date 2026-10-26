@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Boxes, Plus, Trash2, Save, Rocket, Snowflake, AlertTriangle, RotateCcw } from 'lucide-react';
 import { STANDARD_UDT_MAPPINGS } from '@mythos/ui-faceplate-lib';
 import { useHmiStore } from '../../stores/useHmiStore';
@@ -161,14 +161,24 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
 
   const [draft, setDraft] = useState<FaceplateType>(type);
   const [instanceName, setInstanceName] = useState('');
+  const errorMessage = useFaceplateStore((s) => s.errorMessage);
+  const clearError = useFaceplateStore((s) => s.clearError);
+  // The last server copy this editor adopted. Dirty is judged against it rather than against the
+  // current prop, so a background refresh cannot make unsaved edits look saved.
+  const serverRef = useRef<FaceplateType>(type);
 
   useEffect(() => {
-    setDraft(type);
+    // A refresh (another station's release, an SSE FACEPLATE_PROPAGATED) must not drop edits that
+    // were never saved. Follow the server only while the operator has nothing unsaved.
+    setDraft((current) =>
+      JSON.stringify(current) === JSON.stringify(serverRef.current) ? type : current
+    );
+    serverRef.current = type;
   }, [type]);
 
   const memberNames = draft.udt.members.map((member) => member.name).filter(Boolean);
   const boundInstances = instances.filter((instance) => instance.typeId === type.id);
-  const dirty = JSON.stringify(draft) !== JSON.stringify(type);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(serverRef.current);
 
   const patchUdt = (patch: Partial<UdtDefinition>) =>
     setDraft((current) => ({ ...current, udt: { ...current.udt, ...patch } }));
@@ -208,8 +218,14 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
           <button
             type="button"
             data-testid="release-faceplate-type"
+            disabled={dirty}
+            title={
+              dirty
+                ? 'Save the draft before releasing: release publishes the stored draft, not your unsaved edits.'
+                : undefined
+            }
             onClick={() => void release(type.id)}
-            className="flex items-center gap-1 rounded bg-blue-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-blue-500"
+            className="flex items-center gap-1 rounded bg-blue-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
           >
             <Rocket className="h-3 w-3" /> Release
           </button>
@@ -217,6 +233,27 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto p-3">
+        {dirty && (
+          <div
+            data-testid="release-blocked-unsaved"
+            className="rounded border border-amber-800 bg-amber-950/40 p-2 text-[11px] text-amber-300"
+          >
+            Release is blocked while this type has unsaved edits. Saving first means the version you
+            release is the one on screen; releasing without saving would publish the stored draft and
+            silently drop these changes.
+          </div>
+        )}
+        {errorMessage && (
+          <div
+            data-testid="faceplate-write-error"
+            className="flex items-start justify-between gap-2 rounded border border-rose-800 bg-rose-950/40 p-2 text-[11px] text-rose-300"
+          >
+            <span>{errorMessage}</span>
+            <button type="button" onClick={clearError} className="text-rose-400 hover:text-white">
+              Dismiss
+            </button>
+          </div>
+        )}
         {lastRelease && lastRelease.id === type.id && (
           <div
             data-testid="faceplate-release-result"
@@ -583,6 +620,8 @@ const TypeEditor: React.FC<{ type: FaceplateType }> = ({ type }) => {
 
 const NewTypeForm: React.FC = () => {
   const createType = useFaceplateStore((s) => s.createType);
+  const errorMessage = useFaceplateStore((s) => s.errorMessage);
+  const clearError = useFaceplateStore((s) => s.clearError);
   const [name, setName] = useState('');
   const [udt, setUdt] = useState<UdtDefinition>(emptyUdt());
 
@@ -595,6 +634,17 @@ const NewTypeForm: React.FC = () => {
       </p>
 
       <div className="max-w-xl space-y-3">
+        {errorMessage && (
+          <div
+            data-testid="faceplate-write-error"
+            className="flex items-start justify-between gap-2 rounded border border-rose-800 bg-rose-950/40 p-2 text-[11px] text-rose-300"
+          >
+            <span>{errorMessage}</span>
+            <button type="button" onClick={clearError} className="text-rose-400 hover:text-white">
+              Dismiss
+            </button>
+          </div>
+        )}
         <Field label="Type name">
           <input
             className={inputClass}
@@ -820,7 +870,9 @@ export const FaceplateTypeDesigner: React.FC<FaceplateTypeDesignerProps> = ({
   } else if (!openType || openTypeStatus !== 'READY') {
     body = <div className="p-4 text-[11px] text-neutral-400">Loading faceplate type…</div>;
   } else {
-    body = <TypeEditor key={`${openType.id}:${JSON.stringify(openType.views)}`} type={openType} />;
+    // Keyed by id only: remounting on a views change would reset the editor's local draft and
+    // drop unsaved edits on the next background refresh.
+    body = <TypeEditor key={openType.id} type={openType} />;
   }
 
   return (

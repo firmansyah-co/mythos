@@ -386,3 +386,181 @@ describe('Faceplate master types (TSK-309): real data only, no phantom library',
     );
   });
 });
+/**
+ * Review round 2 — the two blocking defects.
+ *
+ * B1: `release()` publishes the server draft while the editor holds unsaved edits; the refresh
+ *     then remounted the editor (the key embedded `views`) and the edits vanished with nothing
+ *     said. B1 is fixed by blocking release while dirty, and by not letting a background refresh
+ *     replace a dirty draft.
+ * B2: `saveDraft` / `release` / `createType` reported failure only through `errorMessage`, which
+ *     no editor read — a failed click looked like a no-op.
+ */
+describe('Faceplate designer review round 2: unsaved work and visible failures', () => {
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    useHmiStore.getState().resetToEmptyProject();
+    useFaceplateStore.getState().reset();
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  function typeNameInput(): HTMLInputElement {
+    const input = container.querySelector(
+      'input[data-testid="faceplate-type-name"]'
+    ) as HTMLInputElement | null;
+    if (!input) throw new Error('type name input not found');
+    return input;
+  }
+
+  /** Type into a controlled input the way the browser does, so React sees the change. */
+  function typeInto(input: HTMLInputElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+    setter.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  it('blocks Release while the draft has unsaved edits, and says why', async () => {
+    openProject();
+    mockFaceplateApi([summary()], [resolvedInstance()], masterType());
+    renderClient(<FaceplateTypeDesigner typeId="ft_motor" />);
+    await waitFor(
+      () => useFaceplateStore.getState().openTypeStatus === 'READY',
+      'type to load'
+    );
+
+    act(() => {
+      typeInto(typeNameInput(), 'Motor_VFD_RENAMED');
+    });
+    await settle();
+
+    const releaseBtn = container.querySelector(
+      '[data-testid="release-faceplate-type"]'
+    ) as HTMLButtonElement;
+    expect(releaseBtn).not.toBeNull();
+    expect(releaseBtn.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="release-blocked-unsaved"]')).not.toBeNull();
+
+    // Clicking anyway must not release, must not claim a version, and must not drop the edit.
+    act(() => {
+      releaseBtn.click();
+    });
+    await settle();
+    expect(container.querySelector('[data-testid="faceplate-release-result"]')).toBeNull();
+    expect(typeNameInput().value).toBe('Motor_VFD_RENAMED');
+  });
+
+  it('keeps a dirty draft when the store refreshes underneath it', async () => {
+    openProject();
+    mockFaceplateApi([summary()], [resolvedInstance()], masterType());
+    renderClient(<FaceplateTypeDesigner typeId="ft_motor" />);
+    await waitFor(
+      () => useFaceplateStore.getState().openTypeStatus === 'READY',
+      'type to load'
+    );
+
+    act(() => {
+      typeInto(typeNameInput(), 'Motor_VFD_RENAMED');
+    });
+    await settle();
+
+    // Another station releases: the store hands the editor a fresh copy of the server type.
+    act(() => {
+      useFaceplateStore.setState({ openType: masterType({ version: 2 }) });
+    });
+    await settle();
+
+    expect(typeNameInput().value).toBe('Motor_VFD_RENAMED');
+    expect(container.querySelector('[data-testid="release-blocked-unsaved"]')).not.toBeNull();
+  });
+
+  it('shows a failed Save draft instead of looking like a no-op', async () => {
+    openProject();
+    mockFaceplateApi([summary()], [resolvedInstance()], masterType());
+    renderClient(<FaceplateTypeDesigner typeId="ft_motor" />);
+    await waitFor(
+      () => useFaceplateStore.getState().openTypeStatus === 'READY',
+      'type to load'
+    );
+
+    global.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        return { ok: false, status: 500, json: async () => ({ error: 'daemon exploded' }) };
+      }
+      return { ok: true, status: 200, json: async () => masterType() };
+    }) as unknown as typeof fetch;
+
+    act(() => {
+      typeInto(typeNameInput(), 'Motor_VFD_RENAMED');
+    });
+    await settle();
+
+    const saveBtn = container.querySelector(
+      '[data-testid="save-faceplate-draft"]'
+    ) as HTMLButtonElement;
+    act(() => {
+      saveBtn.click();
+    });
+    await settle();
+
+    const alert = container.querySelector('[data-testid="faceplate-write-error"]');
+    expect(alert, 'a failed save must be visible in the editor').not.toBeNull();
+    expect(alert!.textContent).toContain('daemon exploded');
+  });
+
+  it('shows a failed type creation instead of looking like a no-op', async () => {
+    openProject();
+    global.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/faceplates/types') && init?.method === 'POST') {
+        return { ok: false, status: 500, json: async () => ({ error: 'daemon exploded' }) };
+      }
+      if (url.endsWith('/faceplates/instances')) {
+        return { ok: true, status: 200, json: async () => ({ instances: [] }) };
+      }
+      if (url.endsWith('/faceplates/types')) {
+        return { ok: true, status: 200, json: async () => ({ types: [] }) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    renderClient(<FaceplateTypeDesigner typeId="new" />);
+    await settle();
+
+    const nameInput = container.querySelector(
+      '[data-testid="new-faceplate-type-name"]'
+    ) as HTMLInputElement;
+    const udtInput = container.querySelector(
+      '[data-testid="new-faceplate-udt-name"]'
+    ) as HTMLInputElement;
+    expect(nameInput).not.toBeNull();
+    expect(udtInput).not.toBeNull();
+    act(() => {
+      typeInto(nameInput, 'New_Type');
+      typeInto(udtInput, 'UDT_New_Type');
+    });
+    await settle();
+
+    const createBtn = container.querySelector(
+      '[data-testid="create-faceplate-type"]'
+    ) as HTMLButtonElement;
+    expect(createBtn, 'create button not found').toBeDefined();
+    expect(createBtn.disabled).toBe(false);
+    act(() => {
+      createBtn!.click();
+    });
+    await settle();
+
+    const alert = container.querySelector('[data-testid="faceplate-write-error"]');
+    expect(alert, 'a failed create must be visible').not.toBeNull();
+    expect(alert!.textContent).toContain('daemon exploded');
+  });
+});
