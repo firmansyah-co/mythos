@@ -315,7 +315,10 @@ async fn test_tool_device_discovery_and_telemetry_csv() {
     );
     let disc_resp = server.handle_request(disc_req).await.unwrap();
     let res: CallToolResult = serde_json::from_value(disc_resp.result.unwrap()).unwrap();
-    assert_eq!(res.is_error, None);
+    // This server attaches no discovery engine, so the tool reports that it could
+    // not scan instead of inventing a device. See
+    // discovery_no_fabrication_test.rs for the full contract.
+    assert_eq!(res.is_error, Some(true));
 
     // 2. Export telemetry CSV
     let csv_req = JsonRpcRequest::new(

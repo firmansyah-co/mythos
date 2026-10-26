@@ -14,7 +14,7 @@ pub use buffer::TripleBufferState;
 pub use engine::{ShmReaderHandle, ShmWriterHandle, TagBusEngine};
 pub use error::ShmError;
 pub use pal::*;
-pub use slot::{QualityCode, TagFlags, TagSlot, TagValueRaw};
+pub use slot::{DecodedValue, QualityCode, TagDataType, TagFlags, TagSlot, TagValueRaw};
 pub use superblock::{
     calculate_bank_offset, calculate_shm_size, ShmSuperblock, DEFAULT_TAG_CAPACITY, SHM_MAGIC,
     SHM_VERSION, SUPERBLOCK_SIZE,
