@@ -38,16 +38,23 @@ pub async fn mythos_read_tag(
     ctx: McpContext,
     args: ReadTagArgs,
 ) -> Result<CallToolResult, McpError> {
-    let (value, quality, ts_ns) = ctx.execute_tag_read(&args.uri).await?;
+    let read = ctx.execute_tag_read(&args.uri).await?;
 
     let catalog = ctx.tag_catalog.read().await;
     let meta = catalog.get_by_uri(&args.uri);
 
+    // `value` is JSON null, not 0.0, when the tag has no recorded value, and the quality names
+    // the specific state rather than collapsing to a class. A consumer must be able to tell
+    // "never measured" from "measured as zero"; the previous shape gave it 0.0 with GOOD quality
+    // and no way to tell the difference.
     let result_json = serde_json::json!({
         "uri": args.uri,
-        "value": value,
-        "quality": quality,
-        "timestamp_ns": ts_ns,
+        "value": read.value,
+        "has_value": read.has_value(),
+        "quality": read.quality.code(),
+        "quality_name": read.quality.as_str(),
+        "quality_class": read.quality.class_str(),
+        "timestamp_ns": read.timestamp_ns,
         "slot_id": meta.as_ref().map(|m| m.slot_id),
         "engineering_units": meta.as_ref().map(|m| &m.engineering_units),
         "scale_min": meta.as_ref().map(|m| m.scale_min),

@@ -16,6 +16,7 @@ import {
   resolveComponentData,
 } from '@mythos/ui-faceplate-lib';
 import { useHmiStore, isCanvasEqual } from '../../stores/useHmiStore';
+import { APP_VERSION } from '../../lib/appVersion';
 import { FaceplateTypeDesigner } from '../faceplates/FaceplateTypeDesigner';
 import { Plus, Layers, FileCode2, Network, Save, Rocket, Undo2, Loader2 } from 'lucide-react';
 
@@ -554,6 +555,9 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
           </strong>
         </span>
         <span>Components: <strong className="text-cyan-400 font-mono">{components.length}</strong></span>
+        <span data-testid="app-version" title="Build version, stamped from the release tag.">
+          v<strong className="text-neutral-400 font-mono">{APP_VERSION}</strong>
+        </span>
         <span>
           Unsaved drafts:{' '}
           <strong className={unsavedScreenCount > 0 ? 'text-amber-400 font-mono' : 'text-emerald-400 font-mono'}>

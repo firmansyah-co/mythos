@@ -42,7 +42,24 @@ pub struct TagValueUpdate {
     pub type_name: &'static str,
     /// The value, decoded according to the slot's declared type. `null` when unspecified.
     pub value: serde_json::Value,
+    /// The quality **class**: `"GOOD"`, `"BAD"` or `"UNCERTAIN"`.
+    ///
+    /// Unchanged in meaning, and still present, so an existing consumer that only needs the class
+    /// keeps working. It is not sufficient on its own: it collapses `BAD_COMM_FAILURE`,
+    /// `BAD_SENSOR_FAILURE` and every other bad word into one value, so a faceplate reading only
+    /// this cannot tell a dropped field link from a failed sensor.
     pub quality: String,
+    /// The raw 16-bit quality word from the slot — the authoritative value.
+    pub quality_code: u16,
+    /// The specific quality state, named. `"BAD_COMM_FAILURE"`, `"UNCERTAIN_INITIAL_VALUE"`,
+    /// `"GOOD"`, and so on; `"UNRECOGNIZED"` for a word this build does not name.
+    ///
+    /// This and [`Self::quality_code`] are what make TSK-801's quality-mapping criterion meetable
+    /// from the UI at all. Before them the specific state was destroyed here, at the source, so no
+    /// amount of frontend work could recover it — a slice sized as UI work would have been sized
+    /// wrong. The name comes from `QualityCode::as_str`, the single code<->name mapping, so it
+    /// cannot drift from `quality_code`.
+    pub quality_name: &'static str,
     pub timestamp_ns: u64,
 }
 
@@ -156,21 +173,20 @@ async fn build_telemetry_event<S: PlatformShm + 'static>(
 
         for tag_meta in tags {
             if let Ok(slot) = reader.read_tag(tag_meta.slot_id as usize) {
-                let quality_str = if slot.quality.is_good() {
-                    "GOOD"
-                } else if slot.quality.is_bad() {
-                    "BAD"
-                } else {
-                    "UNCERTAIN"
-                };
-
+                // Report the specific quality as well as its class. The class alone is what the
+                // stream used to carry, and it is lossy in exactly the place that matters: a
+                // comm failure and a sensor failure are both "BAD" and mean different things to
+                // an operator looking at a faceplate. `class_str` and `as_str` both derive from
+                // the same `QualityCode`, so the two fields cannot disagree.
                 let (type_name, value) = decode_slot_value(slot.type_code, &slot.value);
                 updates.push(TagValueUpdate {
                     uri: tag_meta.uri.clone(),
                     slot_id: tag_meta.slot_id,
                     type_name,
                     value,
-                    quality: quality_str.to_string(),
+                    quality: slot.quality.class_str().to_string(),
+                    quality_code: slot.quality.code(),
+                    quality_name: slot.quality.as_str(),
                     timestamp_ns: slot.timestamp_ns,
                 });
             }

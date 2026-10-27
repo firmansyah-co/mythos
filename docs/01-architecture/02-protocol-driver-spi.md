@@ -414,11 +414,15 @@ One isolation boundary is implemented, and it is not in the plugin host. It is i
 `crates/mythos-strucpp/src/quality_gate.rs` defines `QualityGate`. It owns the device execution mode, a map of latched quality codes keyed by tag URI, and an atomic simulation flag.
 
 ```rust
-pub fn record_comm_loss(&self, tag_uri: &str) -> QualityCode   // latches BAD_COMM_FAILURE
-pub fn clear_comm_loss(&self, tag_uri: &str)                   // releases the latch
+pub fn record_comm_loss(&self, tag_uri: &str) -> QualityLatch  // latches BAD_COMM_FAILURE
+pub fn clear_comm_loss(&self, tag_uri: &str) -> ClearOutcome   // releases the latch, or refuses
 pub fn get_latched_quality(&self, tag_uri: &str) -> Option<QualityCode>
 pub fn validate_forcing_permitted(&self, tag_uri: &str) -> Result<(), StrucppError>
 ```
+
+`QualityLatch` carries the latched code plus a `QualityVisibility` saying whether it reached shared
+memory or stayed in this process. `ClearOutcome` is `Cleared { restored, visibility }` when a latch
+was released, or `NothingToClear` when there was none — in which case the slot is not touched.
 
 `TagSynchronizer::sync_inputs` (`mythos-strucpp/src/sync.rs:73`) consults the gate before it writes to located memory. When a tag carries a latched bad quality, the write is skipped and the PLC keeps its previous input value:
 
@@ -798,8 +802,8 @@ The same concept therefore crosses a serialisation boundary under two different 
 | `new(initial_mode)` | Creates the gate with an empty latch map. |
 | `current_mode()` / `is_simulation()` | Reads mode and the atomic simulation flag. |
 | `set_mode(new_mode)` | Sets mode and the simulation flag. Records no audit event. |
-| `record_comm_loss(tag_uri)` | Latches `QualityCode::BAD_COMM_FAILURE` (`0x0018`) for that URI and returns the code. |
-| `clear_comm_loss(tag_uri)` | Releases the latch. |
+| `record_comm_loss(tag_uri)` | Latches `QualityCode::BAD_COMM_FAILURE` (`0x0018`) for that URI, records the quality the slot carried beforehand, and returns a `QualityLatch`. |
+| `clear_comm_loss(tag_uri)` | Releases the latch and restores the recorded prior quality, or returns `ClearOutcome::NothingToClear` without touching the slot when there was no latch. |
 | `get_latched_quality(tag_uri)` | Returns the latched code, if any. |
 | `validate_forcing_permitted(tag_uri)` | Returns `Err(StrucppError::ManualForcingRejected)` in `PhysicalHardware`, `Ok(())` in `ManualSimulation`. |
 
@@ -808,7 +812,19 @@ The gate is consumed in two places:
 - `TagSynchronizer::sync_inputs` skips the copy into `%IX` for a tag with a latched bad quality (section 5.5).
 - `TagSynchronizer::sync_outputs` stamps `UNCERTAIN_SUBSTITUTE` on output slots when the gate reports `ManualSimulation`, and `GOOD` otherwise.
 
-Crucially, `record_comm_loss` does not write the quality word into the shared-memory slot. The code is latched in the gate's own map. The slot's `quality` field keeps whatever value the last writer gave it. An HMI that reads slot quality directly will not see the failure; only the control scan will.
+`record_comm_loss` writes the quality word into the tag's shared-memory slot and publishes it, when
+the gate was given a publication path (`with_shm_publication`, a writer handle plus a URI-to-slot
+map). A reader in another process then sees `BAD_COMM_FAILURE` at the slot. When the gate has no
+publication path, or the tag is not bound to a slot, the latch stays in the gate's own map and the
+returned `QualityVisibility` says `ProcessLocalOnly` with the reason — the failure is then visible
+only to `sync_inputs`, not to an HMI reading slot quality. A caller must handle that variant, so a
+latch that no other consumer can see cannot pass unnoticed.
+
+`clear_comm_loss` restores the quality the slot carried *before* the latch rather than stamping
+`GOOD`. A comm loss on top of an already-failing sensor therefore returns to `BAD_SENSOR_FAILURE`
+when the link recovers, and a recovery reported for a tag this process never saw fail releases
+nothing and leaves the slot alone. Both matter cross-process: stamping `GOOD` in either case would
+erase a real failure that another path set, and would report a failed device as healthy.
 
 ### 7.4 Quality codes
 
@@ -837,7 +853,7 @@ The constant is named `UNCERTAIN_SUBSTITUTE`, not `UNCERTAIN_SUBSTITUTED`. Revis
 | Default at construction | Yes | No |
 | Interface missing | `DeviceModeController::handle_comm_failure` returns `PhysicalCommunicationFailure`. | `Ok(())` — the failure is ignored. |
 | Cable severed or poll timeout | `QualityGate::record_comm_loss` latches `BAD_COMM_FAILURE` (`0x0018`). `sync_inputs` stops forwarding the tag. | No caller invokes `record_comm_loss` in this mode. The method itself does not check the mode, so a call would latch the same code. |
-| Quality word in the shared-memory slot | **Not written by the gate.** The latch is in-process. | `sync_outputs` stamps `UNCERTAIN_SUBSTITUTE` (`0x0044`) on output slots. |
+| Quality word in the shared-memory slot | **Written and published by the gate** when it has a publication path (`BadCommFailure` at the bound slot); otherwise latched in-process only. See section 7.3. | `sync_outputs` stamps `UNCERTAIN_SUBSTITUTE` (`0x0044`) on output slots. |
 | Manual injection | `inject_mock_value` returns `SimulationInjectionDisallowed`. `validate_forcing_permitted` returns `ManualForcingRejected`. | Accepted. |
 | Automatic transition to simulation | Impossible. No call site exists. | — |
 | Amber `[SIMULATION ACTIVE]` badge in the UI | **Not implemented.** No frontend code reads the mode. | **Not implemented.** |

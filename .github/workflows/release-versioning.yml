@@ -37,67 +37,93 @@ jobs:
 
       - name: Determine Target Version / Tag
         id: vars
+        # The derivation lives in scripts/version.sh, not in YAML, so it can be run and
+        # tested locally. It reads the last tag, counts commits since it, and builds the tag
+        # name; the manifests are stamped from it on the gated promotion path.
+        run: ./scripts/version.sh --print
+
+      - name: Check Tag Exists (precondition for any release)
+        id: tagexists
+        # A release must never create its own tag. GitHub's create-release API creates a missing
+        # tag from target_commitish, which defaults to the default branch - so without this gate
+        # a push to `release` would tag dev HEAD and publish it as a final, latest release. That
+        # route has no hyphen in it, so the prerelease guard alone never sees it.
         run: |
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -n "$LAST_TAG" ]; then
-            REF_BASE="$LAST_TAG"
-            BASE_VERSION="${LAST_TAG#v}"
+          TAG="${{ steps.vars.outputs.tag_name }}"
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "TAG PRECONDITION: ${TAG} exists at $(git rev-parse --short "refs/tags/${TAG}^{commit}")."
           else
-            REF_BASE=$(git rev-list --max-parents=0 HEAD)
-            BASE_VERSION="0.1.0"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "TAG PRECONDITION: ${TAG} does NOT exist in this checkout."
           fi
 
-          DELTA=$(git rev-list --count "${REF_BASE}..HEAD")
-
-          EVENT_NAME="${{ github.event_name }}"
-          BASE_REF="${{ github.base_ref }}"
-          REF_NAME="${{ github.ref_name }}"
-
-          if [ "$EVENT_NAME" = "push" ] && [[ "${{ github.ref }}" =~ ^refs/tags/v ]]; then
-            TAG_NAME="${GITHUB_REF#refs/tags/}"
-          elif [ "$EVENT_NAME" = "pull_request" ]; then
-            PR_NUM="${{ github.event.pull_request.number }}"
-            if [ "$BASE_REF" = "rc" ]; then
-              TAG_NAME="v${BASE_VERSION}-rc.${DELTA}+pr${PR_NUM}"
-            elif [ "$BASE_REF" = "release" ]; then
-              TAG_NAME="v${BASE_VERSION}+pr${PR_NUM}"
-            else
-              TAG_NAME="v${BASE_VERSION}-dev.${DELTA}+pr${PR_NUM}"
-            fi
-          elif [ "$EVENT_NAME" = "push" ]; then
-            if [ "$REF_NAME" = "rc" ]; then
-              TAG_NAME="v${BASE_VERSION}-rc.${DELTA}"
-            elif [ "$REF_NAME" = "release" ]; then
-              TAG_NAME="v${BASE_VERSION}"
-            else
-              TAG_NAME="v${BASE_VERSION}-dev.${DELTA}"
-            fi
-          else
-            TAG_NAME="v${BASE_VERSION}-dev.${DELTA}"
-          fi
-
-          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
-          echo "Determined SemVer tag: ${TAG_NAME}"
-          echo "Delta from ${REF_BASE}: ${DELTA}"
+      - name: Resolve Release Posture
+        id: posture
+        # The whole decision lives in scripts/release-posture.sh so it can be run and checked
+        # outside CI; its printed line IS the gate the release step obeys.
+        run: ./scripts/release-posture.sh "${{ steps.vars.outputs.tag_name }}" "${{ steps.tagexists.outputs.exists }}"
 
       - name: Install Prebuilt git-cliff
         run: |
           mkdir -p /tmp/bin
-          curl -sL https://github.com/orhun/git-cliff/releases/download/v2.14.2/git-cliff-2.14.2-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /tmp/bin --strip-components=1
+          # Download to a file, then unpack. The previous form piped curl into tar, which
+          # hides the real failure: a truncated response surfaced only as "gzip: stdin:
+          # unexpected end of file / tar: Unexpected EOF in archive", with curl's own exit
+          # code swallowed by the pipeline. -f makes curl fail on an HTTP error, and
+          # --retry-all-errors also covers the partial-transfer and DNS cases that plain
+          # --retry ignores - the exact truncation seen in run 40276789567.
+          curl -fsSL \
+            --retry 5 --retry-delay 2 --retry-all-errors \
+            -o /tmp/git-cliff.tar.gz \
+            https://github.com/orhun/git-cliff/releases/download/v2.14.2/git-cliff-2.14.2-x86_64-unknown-linux-gnu.tar.gz
+          tar -xzf /tmp/git-cliff.tar.gz -C /tmp/bin --strip-components=1
+          /tmp/bin/git-cliff --version
           echo "/tmp/bin" >> $GITHUB_PATH
 
       - name: Generate Changelog using git-cliff
         run: |
           /tmp/bin/git-cliff --config cliff.toml --tag ${{ steps.vars.outputs.tag_name }} --output CHANGELOG.md
 
+      - name: Create Release Tag (gated, outward-facing)
+        # Only a promotion to rc or release can create a tag. The first tag is a deliberate
+        # release decision, not a side effect of a build, so this refuses unless the repository
+        # variable VERSION_TAG_PUSH_ENABLED is exactly "true". Until then it prints what it
+        # WOULD create and exits 0 - a dry run, not a silent no-op.
+        if: github.event_name == 'push' && (github.ref_name == 'rc' || github.ref_name == 'release')
+        env:
+          TAG_PUSH_ENABLED: ${{ vars.VERSION_TAG_PUSH_ENABLED }}
+        run: |
+          TAG="${{ steps.vars.outputs.tag_name }}"
+          if [ "${TAG_PUSH_ENABLED:-false}" != "true" ]; then
+            echo "DRY RUN: would create annotated tag ${TAG} at ${GITHUB_SHA} and push it."
+            echo "REFUSED: repository variable VERSION_TAG_PUSH_ENABLED is not 'true'."
+            exit 0
+          fi
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::tag ${TAG} already exists; bump the base version before promoting"
+            exit 1
+          fi
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "refs/tags/${TAG}"
+          echo "Created and pushed annotated tag ${TAG}."
+
       - name: Create or Update GitHub Release
+        # A dev or rc tag never creates a release: posture.create is false for any tag with a
+        # prerelease identifier, so there is no API call to get wrong. The previous form
+        # published on ANY v* tag with draft:false and no prerelease flag, which would have
+        # presented v0.1.0-dev.0 as the Latest release.
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref_name == 'release')
+        if: steps.posture.outputs.create == 'true' && (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref_name == 'release'))
         with:
           tag_name: ${{ steps.vars.outputs.tag_name }}
+          # Defence in depth: even a permitted release points at the commit that was built,
+          # never at whatever the default branch happens to be when the API is called.
+          target_commitish: ${{ github.sha }}
           name: Release ${{ steps.vars.outputs.tag_name }}
           body_path: CHANGELOG.md
           draft: false
-          prerelease: ${{ startsWith(steps.vars.outputs.tag_name, 'v') && contains(steps.vars.outputs.tag_name, '-') }}
+          prerelease: ${{ steps.posture.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.posture.outputs.make_latest == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

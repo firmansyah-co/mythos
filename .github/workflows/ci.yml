@@ -178,16 +178,46 @@ jobs:
       #
       # REPORT, NOT A GATE. This step previously read "Run SHM p99 Concurrency Gate", which was
       # green while its own log printed "TSK-010 VERDICT: ... NOT MET" (measured p99 ~1.2-1.3 us
-      # against a 100 ns target). It asserts only a gross-regression backstop, so its name must
-      # not claim the criterion passed. Whether `p99 < 100 ns` should be enforced is a board
-      # scope decision, not a CI threshold; the number is reported and logged on every run.
-      - name: Report SHM p99 under 16 threads (TSK-010, non-gating)
+      # against a 100 ns target). It asserts only a gross-breakage backstop (p50 at 10x the p50 of
+      # the runs that bound was derived from), so its name must not claim the criterion passed.
+      # Whether `p99 < 100 ns` should be enforced is a board scope decision, not a CI threshold;
+      # the number is reported and logged on every run.
+      #
+      # MYTHOS_TSK010_OUT makes the retained-distribution path explicit here rather than leaving CI
+      # to rely on the test's own workspace-root derivation.
+      - name: Report SHM p99 under 16 threads (TSK-010 report + breakage backstop)
+        env:
+          MYTHOS_TSK010_OUT: ${{ github.workspace }}/target/tsk010-p99
         run: |
           export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
           if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
             source /opt/hostedtoolcache/cargo/env
           fi
           cargo test --release -p mythos-shm --test shm_p99_report -- --nocapture
+
+      # NOTE ON THE STEP NAME: it reads "report + breakage backstop", not "non-gating". The CRITERION
+      # is not gated (p99 < 100 ns is reported, never asserted), but the step CAN fail the job — on a
+      # gross-breakage backstop or on a starved population (a harness failure). The earlier
+      # "non-gating" wording was written before this step could fail and would understate it.
+      #
+      # RETAIN EACH RUN'S DISTRIBUTION. The board's decision is to write no bound until five or more
+      # runs exist; that is only possible if the runs are kept from now on. The three runs the
+      # current backstops were derived from had to be read out of CI logs by hand, and hand-read
+      # numbers are not a baseline. This artifact is what makes the fifth run a series rather than
+      # another log line.
+      #
+      # NON-BLOCKING for the same reason as the benchmark archive below: retaining numbers cannot
+      # tell anyone whether the code is correct, so it must not be able to fail the job (#35).
+      # `if: always()` so a run that failed its backstop still retains the numbers that show why.
+      - name: Archive TSK-010 p99 distributions
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsk010-p99-distributions
+          path: target/tsk010-p99
+          retention-days: 90
+          if-no-files-found: warn
 
       - name: Run SHM Micro-Benchmark (criterion, executed)
         run: |
