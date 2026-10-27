@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ChevronRight,
   ChevronDown,
@@ -13,6 +13,8 @@ import {
   Plus,
 } from 'lucide-react';
 import { useHmiStore } from '../../stores/useHmiStore';
+import { useFaceplateStore } from '../../stores/useFaceplateStore';
+import { versionLabel } from '../../types/faceplate';
 import { LogicBlockDescriptor } from '../../types/hmi';
 
 export interface Zone2ProjectTreeProps {
@@ -35,6 +37,22 @@ export const Zone2ProjectTree: React.FC<Zone2ProjectTreeProps> = ({
   const activeScreenId = useHmiStore((s) => s.activeScreenId);
   const addNewSubScreen = useHmiStore((s) => s.addNewSubScreen);
   const setSelectedContextItem = useHmiStore((s) => s.setSelectedContextItem);
+
+  // Master faceplate types come from the project-scoped faceplate routes.
+  const faceplateTypes = useFaceplateStore((s) => s.types);
+  const faceplateStatus = useFaceplateStore((s) => s.status);
+  const faceplateError = useFaceplateStore((s) => s.errorMessage);
+  const loadFaceplates = useFaceplateStore((s) => s.load);
+
+  const currentProjectId = currentProject?.id ?? null;
+  useEffect(() => {
+    if (currentProjectId) {
+      void loadFaceplates(currentProjectId);
+    } else {
+      // No project open: drop the previous project's library rather than showing it.
+      useFaceplateStore.getState().reset();
+    }
+  }, [currentProjectId, loadFaceplates]);
 
   const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>({
     root: true,
@@ -419,53 +437,99 @@ export const Zone2ProjectTree: React.FC<Zone2ProjectTreeProps> = ({
                       </div>
                     )}
 
-                    {/* Faceplates Library */}
+                    {/* Faceplate Types Library — real master types only (TSK-309) */}
                     <div>
-                      <div
-                        onClick={() => toggleNode('faceplates')}
-                        className="flex items-center gap-1.5 px-2 py-1 hover:bg-neutral-800/60 rounded cursor-pointer text-neutral-400"
-                      >
-                        {expandedNodes.faceplates ? (
-                          <ChevronDown className="w-3 h-3 text-neutral-500" />
-                        ) : (
-                          <ChevronRight className="w-3 h-3 text-neutral-500" />
-                        )}
-                        <Boxes className="w-3.5 h-3.5 text-teal-400" />
-                        <span>Faceplate Types</span>
+                      <div className="flex items-center justify-between px-2 py-1 text-neutral-400">
+                        <div
+                          onClick={() => toggleNode('faceplates')}
+                          className="flex items-center gap-1.5 cursor-pointer hover:text-white"
+                        >
+                          {expandedNodes.faceplates ? (
+                            <ChevronDown className="w-3 h-3 text-neutral-500" />
+                          ) : (
+                            <ChevronRight className="w-3 h-3 text-neutral-500" />
+                          )}
+                          <Boxes className="w-3.5 h-3.5 text-teal-400" />
+                          <span>Faceplate Types</span>
+                        </div>
+                        <button
+                          onClick={() => onOpenDocument?.('faceplate', 'new', 'Master Faceplate Types')}
+                          data-testid="add-faceplate-type-btn"
+                          className="p-0.5 hover:bg-neutral-700 rounded text-neutral-400 hover:text-white transition-colors"
+                          title="Add New Faceplate Type"
+                        >
+                          <Plus className="w-3.5 h-3.5 text-teal-400" />
+                        </button>
                       </div>
 
                       {expandedNodes.faceplates && (
                         <div className="pl-4 space-y-0.5 text-neutral-400">
-                          <div
-                            onClick={() => {
-                              onOpenDocument?.('faceplate', 'fp_motor_vfd', '📦 FP_Motor_VFD');
-                              setSelectedContextItem({
-                                id: 'fp_motor_vfd',
-                                name: 'FP_Motor_VFD',
-                                type: 'FACEPLATE',
-                                udtArchetype: 'FB_Motor_UDT',
-                                hardwareAddress: '%QX0.0..%QX0.3',
-                              });
-                            }}
-                            className="px-2 py-1 hover:bg-neutral-800/60 hover:text-white rounded cursor-pointer"
-                          >
-                            FP_Motor_VFD (v1.0.0)
-                          </div>
-                          <div
-                            onClick={() => {
-                              onOpenDocument?.('faceplate', 'fp_analog_valve', '📦 FP_AnalogValve');
-                              setSelectedContextItem({
-                                id: 'fp_analog_valve',
-                                name: 'FP_AnalogValve',
-                                type: 'FACEPLATE',
-                                udtArchetype: 'FB_Valve_UDT',
-                                hardwareAddress: '%QW10..%QW12',
-                              });
-                            }}
-                            className="px-2 py-1 hover:bg-neutral-800/60 hover:text-white rounded cursor-pointer"
-                          >
-                            FP_AnalogValve (v1.0.0)
-                          </div>
+                          {faceplateStatus === 'LOADING' && (
+                            <div className="px-2 py-1 text-[11px] italic text-neutral-500">
+                              Loading faceplate types…
+                            </div>
+                          )}
+
+                          {(faceplateStatus === 'IDLE' || faceplateStatus === 'READY') && !currentProjectId && (
+                            <div
+                              data-testid="faceplate-tree-no-project"
+                              className="px-2 py-1 text-[11px] italic text-neutral-500"
+                            >
+                              Open a project to see its faceplate types.
+                            </div>
+                          )}
+
+                          {faceplateStatus === 'ERROR' && (
+                            <div
+                              data-testid="faceplate-tree-error"
+                              className="px-2 py-1 text-[11px] text-rose-400"
+                            >
+                              {faceplateError}
+                            </div>
+                          )}
+
+                          {faceplateStatus === 'READY' && currentProjectId && faceplateTypes.length === 0 && (
+                            <div
+                              onClick={() => onOpenDocument?.('faceplate', 'new', 'Master Faceplate Types')}
+                              data-testid="empty-faceplates-notice"
+                              className="px-2 py-1 text-[11px] text-neutral-500 hover:text-teal-400 cursor-pointer italic"
+                            >
+                              (No faceplate types defined - click [+ Add new type])
+                            </div>
+                          )}
+
+                          {faceplateTypes.map((type) => (
+                            <div
+                              key={type.id}
+                              data-testid="faceplate-type-node"
+                              onClick={() => {
+                                onOpenDocument?.('faceplate', type.id, type.name);
+                                setSelectedContextItem({
+                                  id: type.id,
+                                  name: type.name,
+                                  type: 'FACEPLATE',
+                                  udtArchetype: type.udtName,
+                                  metadata: {
+                                    typeId: type.id,
+                                    activeVersion: type.activeVersion,
+                                    instanceCount: type.instanceCount,
+                                    hasDraft: type.hasDraft ?? false,
+                                  },
+                                });
+                              }}
+                              className="px-2 py-1 hover:bg-neutral-800/60 hover:text-white rounded cursor-pointer flex items-center justify-between gap-1"
+                            >
+                              <span className="truncate">
+                                {type.name}{' '}
+                                <span className="text-neutral-600">
+                                  ({versionLabel(type.activeVersion)})
+                                </span>
+                              </span>
+                              {type.hasDraft && (
+                                <span className="text-[9px] text-amber-400">draft</span>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       )}
                     </div>
