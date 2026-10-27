@@ -149,17 +149,23 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
     (comp: any, e: React.MouseEvent) => {
       e.stopPropagation();
       const compType = (comp.type || 'DEVICE').toUpperCase();
-      const tag = comp.tag || comp.props?.tag || comp.id || 'DEV-01';
-      const label = comp.label || comp.props?.label || tag;
+      // The component's own identity, or nothing. The chain used to end in a fabricated tag
+      // (`'DEV-01'`), so selecting an unidentified canvas component reported a tag that was never
+      // assigned to it.
+      const tag = comp.tag ?? comp.props?.tag ?? comp.id ?? null;
+      const label = comp.label ?? comp.props?.label ?? tag ?? null;
       const propsData = comp.props || {};
 
       setSelectedContextItem({
-        id: comp.id || tag,
-        name: tag,
+        id: comp.id ?? tag ?? undefined,
+        name: tag ?? undefined,
         type: 'FACEPLATE',
-        subType: comp.udtArchetype || `${compType}_UDT`,
-        hardwareAddress: comp.hardwareAddress || propsData.hardwareAddress || '%QX0.0',
-        udtArchetype: comp.udtArchetype || propsData.udtArchetype || `FB_${compType}_UDT`,
+        // The selected component's own attributes, or nothing. These previously synthesised a UDT
+        // name and an IEC address (`FB_${compType}_UDT`, `%QX0.0`) for a component that declares
+        // neither, so the inspector reported an archetype and an address the canvas never had.
+        subType: comp.udtArchetype ?? undefined,
+        hardwareAddress: comp.hardwareAddress ?? propsData.hardwareAddress ?? undefined,
+        udtArchetype: comp.udtArchetype ?? propsData.udtArchetype ?? undefined,
         metadata: {
           id: comp.id,
           tag,
