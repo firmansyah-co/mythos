@@ -382,6 +382,16 @@ fn report_tsk010_p99_read_write_under_16_concurrent_threads() {
             let mut all = Vec::with_capacity(SAMPLES_PER_THREAD);
             let mut swaps = Vec::new();
             let slot = 50usize;
+            // A FIXED SAMPLE BUDGET, deliberately, and the population variance is handled by the
+            // validity floor below rather than by lengthening this window.
+            //
+            // Sampling until the writer finishes was tried and REVERTED: it changes the statistic
+            // this file exists to measure. A reader that keeps spinning through the writer's whole
+            // run spends most of its samples waiting for a publish, which is inside regime A's
+            // population by definition; regime A's p50 moved from 74 ns to 316 ns under that change.
+            // The bounds in this file were derived from the fixed-budget p50s, so lengthening the
+            // window would silently invalidate their provenance — and the decision that set them
+            // says not to move them.
             while all.len() < SAMPLES_PER_THREAD {
                 let started = Instant::now();
                 let acquired = reader.update();
@@ -451,29 +461,6 @@ fn report_tsk010_p99_read_write_under_16_concurrent_threads() {
     writes.report();
     println!("TSK-010 target {SPEC_P99_NS} ns p99, 1-min load average at measurement: {load}");
 
-    // HARNESS VALIDITY FLOOR, checked before any performance assertion. Regime B only fills once the
-    // writer has published at least once, and the readers can finish their sample budget before that
-    // happens, so the population can collapse towards zero. Two observed shapes on UNMODIFIED code:
-    // n=1 in 1 of 4 local release runs (the lone descheduled sample was 10992 ns and tripped the
-    // regime B backstop — a false failure on an unchanged engine), and n=0 deterministically with a
-    // delayed writer attach.
-    //
-    // A starved population must report as a harness failure, never as gross breakage: the engine was
-    // not measured, so nothing about it was learned. The floor is 1000 against the lowest healthy
-    // observation among the retained runs (6710) — roughly 7x of margin, because this guards a
-    // harness defect rather than an engine property and must not itself become a flake.
-    const MIN_REGIME_B_SAMPLES: usize = 1_000;
-    assert!(
-        swaps.sorted.len() >= MIN_REGIME_B_SAMPLES,
-        "regime B population was starved: {} samples, floor is {}. Regime B counts only updates that \
-         ACQUIRED fresh data, so it depends on the writer publishing while the readers are still \
-         sampling. With a starved population nothing about the engine was measured — this is a \
-         HARNESS failure, not gross breakage and not the TSK-010 verdict. If this fires, check the \
-         priming write before the reader spawn rather than widening any bound.",
-        swaps.sorted.len(),
-        MIN_REGIME_B_SAMPLES
-    );
-
     #[cfg(target_os = "linux")]
     {
         let _ = mythos_pal::PosixShm::unlink(&name);
@@ -528,6 +515,65 @@ fn report_tsk010_p99_read_write_under_16_concurrent_threads() {
         REGIME_A_P50_BACKSTOP_NS,
         122
     );
+    // PRECONDITION FOR REGIME B ONLY: ENOUGH SAMPLES FOR A p50 TO MEAN ANYTHING.
+    //
+    // Placed here, immediately before the regime B assertion, rather than before both. A starved
+    // regime B must not stop regime A's backstop from being evaluated: a severe engine regression
+    // slows the readers so much that they finish after the writer's loop, which starves B while A
+    // still has its full 300,000 samples. Checking B's precondition first masked A's backstop on
+    // exactly the run that most needed it (observed in the regression control for this change).
+    //
+    // Regime A needs no floor: its population is every update+read pair from 15 readers with a
+    // fixed budget, so it is 300,000 by construction and cannot starve.
+    //
+    // This is checked before either performance assertion, and it is a precondition rather than a
+    // second threshold. Regime B counts only updates that ACQUIRED fresh data, so it depends on the
+    // writer publishing while the readers are still sampling; the readers can finish their sample
+    // budget first, collapsing the population. Two shapes observed on UNMODIFIED code: n=1 in 1 of 4
+    // local release runs, where the lone descheduled sample was 10992 ns and tripped the regime B
+    // backstop as gross breakage on an unchanged engine; and n=0 deterministically with a delayed
+    // writer attach, which panicked as a bare index-out-of-bounds because the empty guard in
+    // `percentile` was a `debug_assert!` in a release-only file.
+    //
+    // A p50 over one or two samples is not a median; it is a sample wearing a median's name. So the
+    // bound is only asserted when the population can support the statistic at all.
+    //
+    // CHOOSING N — derived from the observed populations, and this is a VALIDITY gate, not a health
+    // gate. Healthy regime B populations: 10,311 / 11,813 / 16,227 (PM-confirmed runs), 6,710-18,644
+    // across local runs after the priming fix, and a low of 1,080 in one run. Starved: 0 and 1.
+    //
+    // An earlier floor of 1,000 sat inside the observed healthy spread — one legitimate run measured
+    // 1,080 — so it would have failed a real measurement, which is the flake this row is about. The
+    // floor is therefore 100: ~10x below the lowest healthy population observed and ~100x above the
+    // starved cases, which pins it to the actual gap rather than to a round number that happens to
+    // look cautious. A p50 over 100 samples is a median; a p50 over 1 is a sample wearing its name.
+    //
+    // The population variance itself is NOT fixed here. Lengthening the readers' window would fix it
+    // and is the obvious move, but it moves regime A's p50 (measured: 74 ns -> 316 ns) and so would
+    // invalidate the provenance of the bounds this file asserts. The decision that set those bounds
+    // says not to move them, so the variance is handled by the precondition instead.
+    //
+    // WHY THIS FAILS RATHER THAN SKIPPING — the one place I read the instruction differently.
+    // "Report it and assert nothing" would, in Rust, be a PASSING test, hence a GREEN required check
+    // over a run that measured nothing: the next reader sees green and assumes coverage. That is the
+    // same lie as the empty check list in #29 and the step named "Gate" that printed NOT MET in #25,
+    // and this precondition exists to make the difference visible, so it must not resolve to green.
+    // It fails, and the message says the failure is the harness's and that nothing about the engine
+    // was learned. One line to change if that judgement is overruled.
+    const MIN_REGIME_B_SAMPLES: usize = 100;
+    assert!(
+        swaps.sorted.len() >= MIN_REGIME_B_SAMPLES,
+        "regime B population was starved: {} samples, minimum for a meaningful p50 is {}. Regime B \
+         counts only updates that ACQUIRED fresh data, so it depends on the writer publishing while \
+         the readers are still sampling. With a starved population NOTHING about the engine was \
+         measured, so THIS RUN MUST NOT BE READ AS GREEN: it is not a pass, it is not gross \
+         breakage, and it is not the TSK-010 verdict — the backstop was never evaluated. This is a \
+         HARNESS failure. Check the priming write before the reader spawn rather than widening any \
+         bound.",
+        swaps.sorted.len(),
+        MIN_REGIME_B_SAMPLES
+    );
+
     assert!(
         swaps.p(0.50) < REGIME_B_P50_BACKSTOP_NS,
         "regime B p50 ({} ns) exceeded the gross-breakage backstop ({} ns = 10x the {} ns p50 the \
