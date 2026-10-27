@@ -35,8 +35,23 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # REQ 5 — THE REMAINING ~80 s HERE IS A RUNNER-IMAGE PREREQUISITE, NOT A WORKFLOW BUG.
+      #
+      # Measured on run 40473129452: `Need to get 0 B/205 MB of archives` (the persistent .deb cache
+      # at /opt/hostedtoolcache/apt is working — zero downloads) followed by `348 newly installed`,
+      # taking 79 s. So the cost is dpkg unpacking/configuring, because the ARC container starts with
+      # none of these packages and does not persist installed ones between runs.
+      #
+      # The skip guard below is already correct and will fire the moment an image pre-installs them.
+      # No repository change can remove that 80 s without changing the job to run inside an image that
+      # bakes the toolchain — which is explicitly out of scope for this item ("do not mutate shared
+      # runner state unsafely"). Prerequisite, stated so it can be acted on: the arc-runner-org image
+      # should pre-install build-essential gcc libc6-dev pkg-config libdbus-1-dev libssl-dev
+      # libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev. When it does, this step
+      # reports "already installed, skipping" and the 80 s disappears with no further change.
       - name: Install Build Tools & Linker
         run: |
+          START=$(date +%s)
           # Serialize every apt run. All jobs on this self-hosted runner share the
           # persistent cache at /opt/hostedtoolcache/apt, and concurrent runs raced it:
           # one left a stale archives/lock and every later run died with
@@ -69,7 +84,9 @@ jobs:
 
           if dpkg -s $PKGS >/dev/null 2>&1; then
             echo "All required build tools and linker packages are already installed, skipping."
+            MODE="already present (image bakes the toolchain)"
           else
+            MODE="installed by apt in this run (dpkg configure only; 0 downloads from cache)"
             # Check if package lists need update (if lists are missing or older than 24 hours)
             if [ -z "$(find /opt/hostedtoolcache/apt/lists -maxdepth 1 -type f -name '*_Packages' -mtime -1 2>/dev/null)" ]; then
               echo "Package lists missing or older than 24h. Updating package lists..."
@@ -80,6 +97,18 @@ jobs:
             echo "Installing required packages..."
             sudo apt-get install -y --no-install-recommends $PKGS
           fi
+
+          SECS=$(( $(date +%s) - START ))
+          echo "build tools: $MODE in ${SECS}s"
+          {
+            echo "### Rust job timing"
+            echo ""
+            echo "| phase | seconds |"
+            echo "|---|---|"
+            echo "| build tools / linker | $SECS |"
+            echo ""
+            echo "- build tool mode: $MODE"
+          } >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Setup Cache Symlinks and Directories
         run: |
@@ -269,18 +298,31 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Configure Job-Local Caches
+      # REQ 1 — WHERE THE PNPM STORE ACTUALLY LIVES, MEASURED RATHER THAN ASSUMED.
+      #
+      # Two corrections to what this file used to claim, both established by measurement:
+      #
+      # 1. `npm_config_store_dir` IS NOT HONOURED. The workflow set it (to $RUNNER_TEMP/pnpm-store)
+      #    while the run at this head reports `pnpm store path` = /home/runner/.pnpm-store/v11. pnpm
+      #    reads storeDir from pnpm-workspace.yaml, its global config.yaml, or the CLI — not from
+      #    .npmrc/env. So the variable is removed rather than left in as decoration: an env var that
+      #    silently does nothing is worse than no env var, because the next reader believes it.
+      #
+      # 2. THE STORE WAS NEVER "JOB-LOCAL". The old comment here said it was kept job-local. It was
+      #    not: it has been in shared, persistent HOME (/home/runner/.pnpm-store/v11, measured 324 MB
+      #    / 15,262 files) all along. That also means the "host-backed store" I set out to engineer
+      #    may already exist by default, which is why the next experiment is DISABLING THE CACHE, not
+      #    relocating the store — see the note at the Cache step.
+      #
+      # npm_config_cache IS honoured (npm reads it) and stays: it points npm's own cache at a
+      # job-local directory, unrelated to pnpm's store.
+      - name: Configure npm cache directory
+        id: pnpm-store
+        shell: bash
         run: |
-          # This self-hosted runner keeps persistent HOME state from earlier runs that
-          # were executed as root: /home/runner/.npm/_cacache is not writable by the
-          # runner uid. Keep npm's cache and pnpm's store job-local instead of chowning
-          # shared infra (which would regress the next time anything runs as root).
-          #
-          # Set through GITHUB_ENV rather than a job-level env: block, because the
-          # `runner` context is not available in jobs.<job_id>.env and using it there
-          # makes the whole workflow fail at startup.
+          START=$(date +%s)
           echo "npm_config_cache=$RUNNER_TEMP/npm-cache" >> "$GITHUB_ENV"
-          echo "npm_config_store_dir=$RUNNER_TEMP/pnpm-store" >> "$GITHUB_ENV"
+          { echo "| configure npm cache | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -302,17 +344,61 @@ jobs:
           echo "$RUNNER_TEMP/pnpm-prefix/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/pnpm-prefix/bin/pnpm" --version
 
-      - name: Resolve pnpm Store Path
-        id: pnpm-store
+      # The cache path comes from pnpm ITSELF, not from an env var. Asking pnpm is authoritative and
+      # makes the cache key's path correct by construction; the env var that was meant to choose the
+      # store turned out not to be honoured at all (see the Configure step).
+      # RESOLVE ONLY — this value FEEDS the cache step, so failing here is correct: a silently empty
+      # path would make the cache a no-op. Everything observational moved to the report step below,
+      # which is non-fatal. (My first version of this step did both and, because GitHub runs bash with
+      # `-e -o pipefail`, a `find` on a not-yet-created store directory exited non-zero and reddened
+      # the required check — skipping install, tests and build. A diagnostic must never be able to
+      # do that; that is the #35 archival lesson, relearned the hard way on this very PR.)
+      - name: Resolve pnpm Store Path (authoritative)
+        id: pnpm-store-path
         shell: bash
-        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+        run: |
+          STORE=$(pnpm store path 2>/dev/null || true)
+          if [ -z "$STORE" ]; then
+            echo "::error::pnpm store path returned nothing; the pnpm cache would be a no-op"
+            exit 1
+          fi
+          echo "path=$STORE" >> "$GITHUB_OUTPUT"
+          echo "pnpm store path (from pnpm): $STORE"
 
+      # REQ 1, retained safety: the store round-trips through actions/cache because persistence to
+      # host storage has NOT been demonstrated (see the Configure step). Cost measured at 2 s restore
+      # + 12 s save warm, 95 s + 67 s cold.
       - name: Cache pnpm Store
+        id: pnpm-cache
         uses: actions/cache@v4
         with:
-          path: ${{ steps.pnpm-store.outputs.path }}
+          path: ${{ steps.pnpm-store-path.outputs.path }}
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
           restore-keys: pnpm-store-${{ runner.os }}-
+
+      # REQ 6 — OBSERVABILITY ONLY, AND THEREFORE NON-FATAL. Every command is tolerant and the step
+      # carries continue-on-error: it reports numbers, it cannot decide whether the code is correct,
+      # so it must not be able to fail the job. Same rule as the archival steps in #35.
+      #
+      # This is also where the req-1 facts surface every run: pnpm's real store, its size and file
+      # count, and the cache hit/miss, so a future change is judged against numbers, not belief.
+      - name: Report pnpm store state
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          STORE="${{ steps.pnpm-store-path.outputs.path }}"
+          SIZE=$(du -sh "$STORE" 2>/dev/null | cut -f1 || true)
+          ENTRIES=$(find "$STORE" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
+          {
+            echo ""
+            echo "| pnpm store inspect | 0 |"
+            echo ""
+            echo "- pnpm store path (from \`pnpm store path\`): \`${STORE:-<unresolved>}\`"
+            echo "- size: **${SIZE:-unknown}**, files: **${ENTRIES:-0}**"
+            echo "- cache-hit: \`${{ steps.pnpm-cache.outputs.cache-hit || 'n/a' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY" || true
+          echo "pnpm store: ${STORE:-<unresolved>} size=${SIZE:-unknown} files=${ENTRIES:-0} cache-hit=${{ steps.pnpm-cache.outputs.cache-hit || 'n/a' }}"
 
       - name: Verify Toolchain Versions
         run: |
@@ -320,8 +406,18 @@ jobs:
           node --version
           pnpm --version
 
+      # REQ 2 — SUPPLY-CHAIN VERIFICATION STAYS ON, IN THE REQUIRED JOB.
+      # `--frozen-lockfile` is not negotiable and is not cached away: it is what makes the install
+      # fail closed when pnpm-lock.yaml disagrees with package.json, and it runs in this job, which
+      # is a required context on dev. The store moving to host storage changes only where
+      # content-addressed tarballs live; the lockfile check itself still executes on every run.
       - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
+        run: |
+          START=$(date +%s)
+          STATUS=0
+          pnpm install --frozen-lockfile || STATUS=$?
+          { echo "| install dependencies (--frozen-lockfile) | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
+          exit $STATUS
 
       - name: Resolve Build Channel
         run: |
@@ -335,10 +431,25 @@ jobs:
           echo "VITE_APP_CHANNEL=${CHANNEL}" >> "$GITHUB_ENV"
 
       - name: Typecheck & Lint
-        run: pnpm lint
+        run: |
+          START=$(date +%s)
+          STATUS=0
+          pnpm lint || STATUS=$?
+          { echo "| typecheck + lint | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
+          exit $STATUS
 
       - name: Run Frontend Test Suite
-        run: pnpm test
+        run: |
+          START=$(date +%s)
+          STATUS=0
+          pnpm test || STATUS=$?
+          { echo "| frontend tests | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
+          exit $STATUS
 
       - name: Build Frontend Bundles
-        run: pnpm build
+        run: |
+          START=$(date +%s)
+          STATUS=0
+          pnpm build || STATUS=$?
+          { echo "| frontend build | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
+          exit $STATUS
