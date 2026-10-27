@@ -5,7 +5,7 @@ import { flushSync } from 'react-dom';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { HmiScreenCanvasPanel } from '../components/workbench/DockviewWorkspace';
-import { APP_VERSION } from '../lib/appVersion';
+import { APP_CHANNEL, APP_VERSION, normaliseChannel } from '../lib/appVersion';
 import { useHmiStore } from '../stores/useHmiStore';
 
 // The expectation is the manifest that scripts/version.sh stamps from the release tag — never a
@@ -52,8 +52,34 @@ describe('Version identity is visible and sourced, not hardcoded', () => {
     const el = container.querySelector('[data-testid="app-version"]');
 
     expect(el).not.toBeNull();
-    expect(el?.textContent?.replace(/\s+/g, '')).toBe(`v${pkg.version}`);
+    expect(el?.textContent?.replace(/\s+/g, '')).toContain(`v${pkg.version}`);
     expect(html).toContain(pkg.version);
+  });
+
+  it('renders the channel beside the version', () => {
+    const html = renderClient(<HmiScreenCanvasPanel params={{}} /> as any);
+    const el = container.querySelector('[data-testid="app-version"]');
+
+    expect(el?.textContent).toContain(APP_CHANNEL);
+    expect(html).toContain(APP_CHANNEL);
+  });
+
+  it('says unknown rather than defaulting the channel to dev', () => {
+    // No VITE_APP_CHANNEL is injected under vitest. A defaulted channel is the same fabrication
+    // shape as a defaulted sensor value: it looks like a measurement and is not one.
+    expect(APP_CHANNEL).toBe('unknown');
+  });
+
+  it('maps injected channel values and refuses an unrecognised one', () => {
+    // `import.meta.env.VITE_*` is substituted at transform time, so a test cannot inject a value
+    // after the module loads; the mapping is tested directly and the wiring is exercised in CI,
+    // which sets VITE_APP_CHANNEL and logs the resolved channel.
+    expect(normaliseChannel('release')).toBe('release');
+    expect(normaliseChannel('rc')).toBe('rc');
+    expect(normaliseChannel('dev')).toBe('dev');
+    expect(normaliseChannel(undefined)).toBe('unknown');
+    expect(normaliseChannel('')).toBe('unknown');
+    expect(normaliseChannel('staging')).toBe('unknown');
   });
 
   it('has no hardcoded version literal in the rendering surface', () => {
