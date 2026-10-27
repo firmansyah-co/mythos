@@ -27,26 +27,28 @@ const ROOT = process.cwd();
 const SOURCE_ROOTS = ['packages', 'plugins', 'src'];
 
 /**
- * Files another open change already owns, which carry their own equivalent guard. This is a
- * named, visible carry-out, not a hole: the exemption disappears with the PR that closes it.
+ * THE GUARD'S COMPLETE ALLOWLIST — both entries named, neither pattern-based:
  *
- * - `plugins/ui-inspector/src/InspectorDrawer.tsx` is fixed by PR #27, which ships
- *   `plugins/ui-inspector/tests/noFabricatedSource.test.ts`. Remove this entry once #27 merges.
+ *   FIXED_ELSEWHERE         — empty; the #27 entry was removed when that PR merged
+ *   SAMPLE_CONSTANT_EXEMPT  — the three constants below
+ *
+ * Kept here in the header on purpose: a hidden allowlist is indistinguishable from a hole to the
+ * next reader.
+ *
+ * Files another change owns, which carry their own equivalent guard. A named, visible carry-out
+ * rather than a hole, and each entry must disappear with the PR that closes it. The InspectorDrawer
+ * entry was removed when #27 merged: that file now carries no `DEFAULT_*` constants and #27 ships
+ * its own `noFabricatedSource.test.ts`. An exemption that outlives its reason is how a guard
+ * silently widens.
  */
+const FIXED_ELSEWHERE = new Map<string, string>([]);
+
 /**
- * Sample data that is deliberately retained because it is never a fallback: the opt-in demo
- * project behind the explicit `loadSampleProject()` action. Reaching it takes a user action, so
- * it asserts nothing about a real plant. Listed by name, not by pattern, so new samples cannot
- * inherit the exemption.
+ * Sample data deliberately retained because it is never a fallback: the opt-in demo project behind
+ * the explicit `loadSampleProject()` action. Reaching it takes a user action, so it asserts nothing
+ * about a real plant. Listed by name, not by pattern, so a new sample cannot inherit the exemption.
  */
 const SAMPLE_CONSTANT_EXEMPT = new Set(['SAMPLE_PROJECT_METADATA', 'SAMPLE_PROJECT_BLOCKS', 'SAMPLE_SCREENS']);
-
-const FIXED_ELSEWHERE = new Map<string, string>([
-  [
-    'plugins/ui-inspector/src/InspectorDrawer.tsx',
-    'fixed by PR #27, which ships plugins/ui-inspector/tests/noFabricatedSource.test.ts',
-  ],
-]);
 
 /**
  * Props whose default is configuration, not authored content: a view mode, a label, a class name,
@@ -121,9 +123,16 @@ function isContentDefault(expr: string, source: string): boolean {
   if (/^(?:'[^']*'|"[^"]*"|`[^`]*`|-?\d+(?:\.\d+)?|true|false|null|undefined)$/.test(value)) {
     return false;
   }
-  if (/[?:]/.test(value) || /\|\||&&/.test(value)) return false;
-  // Non-empty collection literal is content, whatever is inside it.
+  // ORDER MATTERS, and this order was the bug. A non-empty collection literal is content,
+  // whatever is inside it — checked BEFORE the derived-value exemption, because an inline array of
+  // objects always contains a colon from its keys. With the exemption first, `[{ id: 'x' }]` was
+  // classified as "derived from other props" and waved through, making the collection branch
+  // unreachable for the shape that matters most. The red proof in #33's body used exactly that
+  // shape, so it could not have failed; the guard shipped with a proof its own code could not pass.
   if (/^\[/.test(value) || /^\{/.test(value)) return true;
+  // A ternary or logical expression on a scalar is computed from other props: a derived VALUE,
+  // not authored content. Covered by the `||`/fallback shape guard instead.
+  if (/[?:]/.test(value) || /\|\||&&/.test(value)) return false;
 
   const identifier = /^([A-Za-z_$][A-Za-z0-9_$.]*)$/.exec(value)?.[1];
   if (identifier) {
