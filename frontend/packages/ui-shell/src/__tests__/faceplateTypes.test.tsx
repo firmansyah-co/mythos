@@ -564,3 +564,168 @@ describe('Faceplate designer review round 2: unsaved work and visible failures',
     expect(alert!.textContent).toContain('daemon exploded');
   });
 });
+
+/**
+ * The dirty gate is a two-direction property, and the first four tests only exercised one of them.
+ *
+ * Every one of those four passes against a STICKY gate — one that latches dirty and never clears —
+ * which is the opposite failure of the same mechanism B1 was about. A gate that blocks Release
+ * forever breaks the feature just as thoroughly as one that discards edits, and it was invisible to
+ * the suite.
+ *
+ * So these assert the OUTCOME (the release happened, the blocked notice is gone), not that a button
+ * became clickable: a gate that re-enables the control but still refuses to release would satisfy a
+ * button-state assertion.
+ */
+describe('Faceplate designer: the dirty gate can come back', () => {
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    useHmiStore.getState().resetToEmptyProject();
+    useFaceplateStore.getState().reset();
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  /** A store-backed faceplate API: a saved draft is what a later read returns. */
+  function mockWritableApi(initial: FaceplateType) {
+    let stored = initial;
+    let releaseCalls = 0;
+    const savedBodies: FaceplateType[] = [];
+    global.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/faceplates/types') && method === 'GET') {
+        return { ok: true, status: 200, json: async () => ({ types: [summary({ name: stored.name })] }) };
+      }
+      if (url.endsWith('/faceplates/instances')) {
+        return { ok: true, status: 200, json: async () => ({ instances: [] }) };
+      }
+      if (url.endsWith('/faceplates/types/ft_motor/draft') && method === 'PUT') {
+        stored = { ...JSON.parse(String(init!.body)), id: 'ft_motor' } as FaceplateType;
+        savedBodies.push(stored);
+        return { ok: true, status: 200, json: async () => stored };
+      }
+      if (url.endsWith('/faceplates/types/ft_motor/release')) {
+        releaseCalls += 1;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ id: 'ft_motor', version: 2, instancesAffected: 0, strandedInstances: [] }),
+        };
+      }
+      if (url.includes('/faceplates/types/')) {
+        return { ok: true, status: 200, json: async () => stored };
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    }) as unknown as typeof fetch;
+    return { saved: () => savedBodies, releases: () => releaseCalls };
+  }
+
+  function typeInto(input: HTMLInputElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+    setter.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function typeName(): HTMLInputElement {
+    return container.querySelector('input[data-testid="faceplate-type-name"]') as HTMLInputElement;
+  }
+
+  function releaseButton(): HTMLButtonElement {
+    return container.querySelector('[data-testid="release-faceplate-type"]') as HTMLButtonElement;
+  }
+
+  it('clears the gate after a save, and the release then actually happens', async () => {
+    openProject();
+    const api = mockWritableApi(masterType());
+    renderClient(<FaceplateTypeDesigner typeId="ft_motor" />);
+    await waitFor(() => useFaceplateStore.getState().openTypeStatus === 'READY', 'type to load');
+
+    act(() => {
+      typeInto(typeName(), 'Motor_VFD_RENAMED');
+    });
+    await settle();
+    expect(container.querySelector('[data-testid="release-blocked-unsaved"]')).not.toBeNull();
+
+    const save = container.querySelector('[data-testid="save-faceplate-draft"]') as HTMLButtonElement;
+    act(() => {
+      save.click();
+    });
+    await waitFor(() => api.saved().length === 1, 'the draft to be saved');
+    await settle();
+
+    // The gate cleared: not merely re-enabled, but reporting clean.
+    expect(
+      container.querySelector('[data-testid="release-blocked-unsaved"]'),
+      'the dirty gate stayed latched after a successful save'
+    ).toBeNull();
+    expect(releaseButton().disabled).toBe(false);
+    // The saved value is what is on screen.
+    expect(typeName().value).toBe('Motor_VFD_RENAMED');
+
+    // And the release actually succeeds — the outcome, not the control's appearance.
+    act(() => {
+      releaseButton().click();
+    });
+    await waitFor(() => api.releases() === 1, 'the release to be sent');
+    await settle();
+    const banner = container.querySelector('[data-testid="faceplate-release-result"]');
+    expect(banner, 'release did not report a result').not.toBeNull();
+    expect(banner!.textContent).toContain('Released');
+    expect(container.querySelector('[data-testid="faceplate-write-error"]')).toBeNull();
+  });
+
+  it('stays clean when a save changes nothing', async () => {
+    openProject();
+    mockWritableApi(masterType());
+    renderClient(<FaceplateTypeDesigner typeId="ft_motor" />);
+    await waitFor(() => useFaceplateStore.getState().openTypeStatus === 'READY', 'type to load');
+
+    // Untouched: already clean, and there is nothing to block.
+    expect(container.querySelector('[data-testid="release-blocked-unsaved"]')).toBeNull();
+    expect(releaseButton().disabled).toBe(false);
+  });
+
+  it('stays dirty when the save fails, so a lost edit is never presented as saved', async () => {
+    openProject();
+    mockWritableApi(masterType());
+    renderClient(<FaceplateTypeDesigner typeId="ft_motor" />);
+    await waitFor(() => useFaceplateStore.getState().openTypeStatus === 'READY', 'type to load');
+
+    global.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'PUT') {
+        return { ok: false, status: 500, json: async () => ({ error: 'daemon exploded' }) };
+      }
+      if (url.endsWith('/instances')) return { ok: true, status: 200, json: async () => ({ instances: [] }) };
+      if (url.endsWith('/types')) return { ok: true, status: 200, json: async () => ({ types: [summary()] }) };
+      return { ok: true, status: 200, json: async () => masterType() };
+    }) as unknown as typeof fetch;
+
+    act(() => {
+      typeInto(typeName(), 'Motor_VFD_RENAMED');
+    });
+    await settle();
+
+    act(() => {
+      (container.querySelector('[data-testid="save-faceplate-draft"]') as HTMLButtonElement).click();
+    });
+    await settle();
+
+    expect(container.querySelector('[data-testid="faceplate-write-error"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="release-blocked-unsaved"]'),
+      'a failed save must leave the draft dirty and Release blocked'
+    ).not.toBeNull();
+    expect(releaseButton().disabled).toBe(true);
+    expect(typeName().value).toBe('Motor_VFD_RENAMED');
+  });
+});
