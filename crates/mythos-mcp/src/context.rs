@@ -15,6 +15,7 @@ use mythos_core::historian::TimeSeriesPoint;
 use mythos_core::namespace::TagUri;
 use mythos_core::storage::ControllerStorage;
 use mythos_core::tag::{AccessMode, TagCatalog, TagMetadata};
+use mythos_shm::slot::QualityCode;
 
 /// Alarm registry mapping IDs to definitions and runtime states.
 #[derive(Debug, Default, Clone)]
@@ -76,7 +77,33 @@ impl CallerAuth {
 }
 
 /// Execution context passed to every MCP tool execution.
-type TagValueRecord = (f64, u32, u64);
+type TagValueRecord = (f64, QualityCode, u64);
+
+/// The outcome of a tag read, including whether a value exists at all.
+///
+/// `value` and `timestamp_ns` are `Option` because "no value has ever been recorded for this tag"
+/// is a real state, and it is not the value `0.0`. A catalog tag with no recorded value used to
+/// read as `(0.0, 192 GOOD, now)` — a plausible engineering value, stamped trustworthy, with the
+/// current time as if it had just been sampled. Nothing marked it as unmeasured, so a consumer
+/// could not tell it from a tag that genuinely reads 0.0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TagReadOutcome {
+    /// The recorded value, or `None` when this tag has no recorded value.
+    pub value: Option<f64>,
+    /// The quality of the reading. [`QualityCode::UNCERTAIN_INITIAL_VALUE`] when there is no
+    /// value, because that is what the absence of a first reading is.
+    pub quality: QualityCode,
+    /// When the value was recorded, or `None` when there is no value to timestamp. A fabricated
+    /// `now` for a value that was never sampled is the same defect as a fabricated value.
+    pub timestamp_ns: Option<u64>,
+}
+
+impl TagReadOutcome {
+    /// True only when the tag has a recorded value that a consumer may display.
+    pub fn has_value(&self) -> bool {
+        self.value.is_some()
+    }
+}
 
 #[derive(Clone)]
 pub struct McpContext {
@@ -201,11 +228,14 @@ impl McpContext {
         }
     }
 
-    /// Execute a tag read returning (value, quality, timestamp_ns)
-    pub async fn execute_tag_read(
-        &self,
-        uri_str: &str,
-    ) -> Result<(f64, u32, u64), crate::McpError> {
+    /// Execute a tag read, reporting honestly whether a value exists.
+    ///
+    /// A tag that is in the catalog but has no recorded value is **not** a tag reading `0.0`. It
+    /// returns `value: None` with [`QualityCode::UNCERTAIN_INITIAL_VALUE`] and no timestamp, so a
+    /// caller can tell "never measured" from "measured as zero" — which is the distinction the
+    /// previous `(0.0, 192 GOOD, now)` erased. `192` is `0xC0`, GOOD: the quality a consumer uses
+    /// to decide a value is trustworthy, attached to a value nobody ever read.
+    pub async fn execute_tag_read(&self, uri_str: &str) -> Result<TagReadOutcome, crate::McpError> {
         self.check_permission("tag:read")?;
 
         let catalog = self.tag_catalog.read().await;
@@ -217,15 +247,17 @@ impl McpContext {
         }
 
         let values = self.tag_values.read().await;
-        if let Some(&(val, quality, ts)) = values.get(uri_str) {
-            Ok((val, quality, ts))
-        } else {
-            let now_ns = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64;
-            // Default 0.0, Good quality (0xC0 / 192), current timestamp
-            Ok((0.0, 192, now_ns))
+        match values.get(uri_str) {
+            Some(&(val, quality, ts)) => Ok(TagReadOutcome {
+                value: Some(val),
+                quality,
+                timestamp_ns: Some(ts),
+            }),
+            None => Ok(TagReadOutcome {
+                value: None,
+                quality: QualityCode::UNCERTAIN_INITIAL_VALUE,
+                timestamp_ns: None,
+            }),
         }
     }
 
@@ -257,7 +289,9 @@ impl McpContext {
 
         let mut values = self.tag_values.write().await;
         let prev_val = values.get(uri_str).map(|v| v.0).unwrap_or(0.0);
-        values.insert(uri_str.to_string(), (clamped, 192, now_ns));
+        // A write this context just performed is a real value of its own making, so GOOD is
+        // honest here — unlike the read path, where nothing had been written at all.
+        values.insert(uri_str.to_string(), (clamped, QualityCode::GOOD, now_ns));
 
         // Audit log entry
         let audit_hash = if let Some(ledger) = &self.audit_ledger {

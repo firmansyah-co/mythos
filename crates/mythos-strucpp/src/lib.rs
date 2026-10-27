@@ -19,7 +19,10 @@ pub use deploy::{DeployRequest, DeployResult, LogicDeployer};
 pub use error::StrucppError;
 pub use ffi::{LocatedArea, LocatedSize, LocatedVarDescriptor, LocatedVarRaw, StrucppSymbols};
 pub use hot_reload::{HotReloadManager, LoadedLogicModule};
-pub use quality_gate::{DeviceExecutionMode, QualityGate};
+pub use quality_gate::{
+    ClearOutcome, DeviceExecutionMode, QualityGate, QualityLatch, QualityVisibility,
+    ShmQualityPublisher,
+};
 pub use runtime::{RuntimeMetrics, StrucppRuntime};
 pub use scheduler::{StagedSchedulerConfig, TaskScheduleConfig};
 pub use sync::{TagBinding, TagSynchronizer};
