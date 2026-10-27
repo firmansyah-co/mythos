@@ -536,7 +536,17 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
 
       {/* Canvas Bottom Status Bar */}
       <div className="flex items-center justify-between px-3 py-1 bg-[var(--bg-surface)] border-t border-neutral-800 text-[11px] text-neutral-500 font-mono">
-        <span>TagBus Status: <strong className="text-emerald-400 font-mono">ACTIVE (100ms)</strong></span>
+        {/* Nothing in this build measures TagBus health: there is no supervisor telemetry
+            transport in the shell yet. Reporting "ACTIVE" here would be a fabricated
+            system-health claim sitting next to honest NOT BOUND faceplates, so it states
+            the absence instead. Bind this to a real measured state when the transport lands
+            (qitem-20261023085422-f459118d847f001d). */}
+        <span>
+          TagBus Status:{' '}
+          <strong className="text-neutral-400 font-mono" title="No TagBus health signal is available to this build.">
+            UNKNOWN (NOT MEASURED)
+          </strong>
+        </span>
         <span>Components: <strong className="text-cyan-400 font-mono">{components.length}</strong></span>
         <span>
           Unsaved drafts:{' '}
