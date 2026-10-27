@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { createRoot, Root } from 'react-dom/client';
 import { flushSync } from 'react-dom';
-import { DataTypeEditor, DEFAULT_SAMPLE_DATA_TYPES } from '../variables/DataTypeEditor';
+import { DataTypeEditor } from '../variables/DataTypeEditor';
+import { DATA_TYPE_FIXTURE } from './fixtures/logicFixtures';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -30,7 +31,7 @@ describe('TSK-704: DataTypeEditor Suite (DUT / UDT Structs & Enums)', () => {
   });
 
   it('renders defined struct and enum types', () => {
-    const html = renderClient(<DataTypeEditor />);
+    const html = renderClient(<DataTypeEditor dataTypes={DATA_TYPE_FIXTURE} />);
     expect(html).toContain('DUT_BottleSpec');
     expect(html).toContain('DUT_MachineState');
     expect(html).toContain('STRUCT');
@@ -38,7 +39,7 @@ describe('TSK-704: DataTypeEditor Suite (DUT / UDT Structs & Enums)', () => {
   });
 
   it('renders struct members and generated IEC 61131-3 Structured Text representation', () => {
-    const html = renderClient(<DataTypeEditor />);
+    const html = renderClient(<DataTypeEditor dataTypes={DATA_TYPE_FIXTURE} />);
     expect(html).toContain('Height_mm');
     expect(html).toContain('Diameter_mm');
     expect(html).toContain('Volume_ml');
@@ -50,7 +51,7 @@ describe('TSK-704: DataTypeEditor Suite (DUT / UDT Structs & Enums)', () => {
 
   it('allows creating a new STRUCT or ENUM definition', () => {
     const onChange = vi.fn();
-    renderClient(<DataTypeEditor onChange={onChange} />);
+    renderClient(<DataTypeEditor dataTypes={DATA_TYPE_FIXTURE} onChange={onChange} />);
 
     const buttons = Array.from(container.querySelectorAll('button'));
     const addStructBtn = buttons.find((b) => b.textContent?.includes('+ New STRUCT'));

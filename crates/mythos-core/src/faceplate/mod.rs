@@ -22,58 +22,10 @@ use std::path::Path;
 use thiserror::Error;
 use ts_rs::TS;
 
-/// Kind of IEC 61131-3 user-defined type a faceplate binds to.
-///
-/// Mirrors the DUT model in `frontend/plugins/ui-logic-editor/src/variables/types.ts`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum UdtKind {
-    Struct,
-    Enum,
-    Alias,
-}
-
-/// One named field of a STRUCT UDT.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
-#[serde(rename_all = "camelCase")]
-pub struct UdtMember {
-    pub name: String,
-    pub data_type: String,
-}
-
-/// Serialisable UDT definition carried by a faceplate type.
-///
-/// This is deliberately structural rather than a reference to a registry: the backend has
-/// no shared data-type store yet, and a dangling name string would claim a validation that
-/// does not exist.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
-#[serde(rename_all = "camelCase")]
-pub struct UdtDefinition {
-    pub name: String,
-    pub kind: UdtKind,
-    #[serde(default)]
-    pub members: Vec<UdtMember>,
-    #[serde(default)]
-    pub enum_constants: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_type: Option<String>,
-}
-
-impl UdtDefinition {
-    /// Names a view binding may legally target for this UDT kind.
-    fn bindable_names(&self) -> BTreeSet<&str> {
-        match self.kind {
-            // ENUM values are the only addressable name; ALIAS members are carried by the
-            // aliased base type and are not describable here, so bindings must not target one.
-            UdtKind::Struct => self.members.iter().map(|m| m.name.as_str()).collect(),
-            UdtKind::Enum => self.enum_constants.iter().map(String::as_str).collect(),
-            UdtKind::Alias => BTreeSet::new(),
-        }
-    }
-}
+// The UDT representation is shared with the project data-type registry rather than owned here:
+// a faceplate type's inline `udt` is exactly a `UdtDefinition`, the same shape a registry entry
+// carries. Re-exported so existing `faceplate::UdtDefinition` paths keep resolving.
+pub use crate::datatype::{UdtDefinition, UdtKind, UdtMember};
 
 /// Direction capability of a faceplate view binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

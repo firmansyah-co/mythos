@@ -151,6 +151,11 @@ export const Zone4TaskCards: React.FC<Zone4TaskCardsProps> = ({
           <InspectorDrawer
             isOpen={true}
             onClose={() => setIsFullDrawerMode(false)}
+            // No live device telemetry reaches the workbench yet, so the drawer has nothing it
+            // can vouch for. NOT_BOUND is the honest declaration: it renders the no-data state
+            // instead of a fabricated process value, interlock matrix and asset record
+            // (SYS-REQ-096). This becomes GOOD once a telemetry transport populates the props.
+            quality="NOT_BOUND"
             deviceId={selectedContextItem?.id || targetObjectName}
             deviceName={targetObjectName}
             deviceType={udtArchetype}
