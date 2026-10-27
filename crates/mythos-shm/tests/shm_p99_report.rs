@@ -132,7 +132,16 @@ const REGIME_B_P50_BACKSTOP_NS: u64 = 4_490;
 const DISTRIBUTIONS_ENV: &str = "MYTHOS_TSK010_OUT";
 
 fn percentile(sorted: &[u64], p: f64) -> u64 {
-    debug_assert!(!sorted.is_empty());
+    // A percentile of an empty population does not exist. `debug_assert!` was no help here: release
+    // is the only profile this runs in, so a starved population panicked as a bare "index out of
+    // bounds: the len is 0 but the index is 0" with no population named and no bound quoted — the
+    // least diagnosable failure this file can produce, on the run you most want recorded.
+    assert!(
+        !sorted.is_empty(),
+        "cannot take a percentile of an empty population: no samples were collected, so there is \
+         nothing to measure and nothing to grade. This is a HARNESS failure (a starved population), \
+         not engine performance and not the TSK-010 verdict. See the population floor below."
+    );
     let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
     sorted[idx]
 }
@@ -156,6 +165,15 @@ impl Distribution {
     }
 
     fn report(&self) {
+        if self.sorted.is_empty() {
+            println!(
+                "{} under {} concurrent threads on ONE shared segment (n=0 ops): NO SAMPLES — \
+                 population starved, nothing measured",
+                self.label,
+                READER_THREADS + 1,
+            );
+            return;
+        }
         println!(
             "{} latency under {} concurrent threads on ONE shared segment (n={} ops): \
              p50={} p90={} p99={} max={} ns",
@@ -171,25 +189,47 @@ impl Distribution {
 }
 
 /// A population's distribution, in the shape the retained record carries.
+///
+/// The percentiles are `Option` so a starved population is recorded as *absent* rather than as a
+/// zero. Writing `"p50": 0` for a population with no samples would put a number in the series where
+/// no measurement exists — the same defect this whole slice is about, in the evidence file itself.
 struct Retained {
     name: &'static str,
     n: usize,
-    p50: u64,
-    p90: u64,
-    p99: u64,
-    max: u64,
+    p50: Option<u64>,
+    p90: Option<u64>,
+    p99: Option<u64>,
+    max: Option<u64>,
 }
 
 impl Retained {
     fn of(name: &'static str, d: &Distribution) -> Self {
+        if d.sorted.is_empty() {
+            return Self {
+                name,
+                n: 0,
+                p50: None,
+                p90: None,
+                p99: None,
+                max: None,
+            };
+        }
         Self {
             name,
             n: d.sorted.len(),
-            p50: d.p(0.50),
-            p90: d.p(0.90),
-            p99: d.p(0.99),
-            max: d.sorted[d.sorted.len() - 1],
+            p50: Some(d.p(0.50)),
+            p90: Some(d.p(0.90)),
+            p99: Some(d.p(0.99)),
+            max: Some(d.sorted[d.sorted.len() - 1]),
         }
+    }
+}
+
+/// Renders `Some(n)` as a JSON number and `None` as JSON `null`.
+fn json_num(v: Option<u64>) -> String {
+    match v {
+        Some(n) => n.to_string(),
+        None => "null".to_string(),
     }
 }
 
@@ -238,10 +278,10 @@ fn retain_distributions(run: &[Retained], load: &str) {
              \"max\": {}}}{}\n",
             r.name,
             r.n,
-            r.p50,
-            r.p90,
-            r.p99,
-            r.max,
+            json_num(r.p50),
+            json_num(r.p90),
+            json_num(r.p99),
+            json_num(r.max),
             if i + 1 == run.len() { "" } else { "," }
         ));
     }
@@ -307,6 +347,29 @@ fn report_tsk010_p99_read_write_under_16_concurrent_threads() {
     //   ALL    - every update()+read_tag pair (regime A: the literal criterion, busy poll)
     //   SWAP   - only the updates that actually acquired fresh data, i.e. took the state-word CAS
     //            (regime B: per-operation cost with spinning excluded)
+    // THE WRITER IS ATTACHED, PINNED AND PRIMED BEFORE ANY READER STARTS.
+    //
+    // This is the starvation fix. Regime B counts only updates that acquired fresh data, which
+    // requires the writer to have published. Creating the measuring writer *after* spawning the
+    // readers left a window in which all 15 readers could finish their sample budget (0.6-1.3 ms at
+    // these latencies) before the first publish landed, collapsing the population — the cause of the
+    // n=1 false backstop failure and the n=0 bare index panic. Priming here means the very first
+    // `update()` a reader makes can acquire, so the population cannot start empty by construction.
+    // The floor assertion below is the belt to this brace: it catches a collapse from any other cause.
+    let _ = mythos_pal::DefaultScheduler::pin_to_core(READER_THREADS);
+    let mut active_writer = ShmWriterHandle::<DefaultShm>::new(&name, MAX_TAGS).unwrap();
+    active_writer
+        .write_tag(
+            0,
+            TYPE_CODE_REAL,
+            QualityCode::GOOD,
+            TagValueRaw::from_f64(0.0),
+            0,
+            TagFlags::ACCESS_RO,
+        )
+        .unwrap();
+    active_writer.publish();
+
     let mut handles = Vec::new();
     for reader_index in 0..READER_THREADS {
         let segment = name.clone();
@@ -335,8 +398,6 @@ fn report_tsk010_p99_read_write_under_16_concurrent_threads() {
     }
 
     let mut writer_latencies = Vec::with_capacity(SAMPLES_PER_THREAD);
-    let _ = mythos_pal::DefaultScheduler::pin_to_core(READER_THREADS);
-    let mut active_writer = ShmWriterHandle::<DefaultShm>::new(&name, MAX_TAGS).unwrap();
     for i in 0..SAMPLES_PER_THREAD {
         let slot = i % MAX_TAGS;
         let start = Instant::now();
@@ -371,11 +432,11 @@ fn report_tsk010_p99_read_write_under_16_concurrent_threads() {
         .and_then(|s| s.split_whitespace().next().map(str::to_owned))
         .unwrap_or_else(|| "unknown".to_owned());
 
-    busy.report();
-    swaps.report();
-    writes.report();
-    println!("TSK-010 target {SPEC_P99_NS} ns p99, 1-min load average at measurement: {load}");
-
+    // RETAIN BEFORE ANYTHING THAT CAN FAIL. A starved or malformed run is precisely the one whose
+    // numbers matter, and a panic before this point leaves the archive step with nothing to upload —
+    // the run that most needs explaining would be the only one with no evidence. `report()` below
+    // cannot panic on an empty population, but it used to, and this ordering is the belt to that
+    // brace.
     retain_distributions(
         &[
             Retained::of("read_busy_poll", &busy),
@@ -383,6 +444,34 @@ fn report_tsk010_p99_read_write_under_16_concurrent_threads() {
             Retained::of("write", &writes),
         ],
         &load,
+    );
+
+    busy.report();
+    swaps.report();
+    writes.report();
+    println!("TSK-010 target {SPEC_P99_NS} ns p99, 1-min load average at measurement: {load}");
+
+    // HARNESS VALIDITY FLOOR, checked before any performance assertion. Regime B only fills once the
+    // writer has published at least once, and the readers can finish their sample budget before that
+    // happens, so the population can collapse towards zero. Two observed shapes on UNMODIFIED code:
+    // n=1 in 1 of 4 local release runs (the lone descheduled sample was 10992 ns and tripped the
+    // regime B backstop — a false failure on an unchanged engine), and n=0 deterministically with a
+    // delayed writer attach.
+    //
+    // A starved population must report as a harness failure, never as gross breakage: the engine was
+    // not measured, so nothing about it was learned. The floor is 1000 against the lowest healthy
+    // observation among the retained runs (6710) — roughly 7x of margin, because this guards a
+    // harness defect rather than an engine property and must not itself become a flake.
+    const MIN_REGIME_B_SAMPLES: usize = 1_000;
+    assert!(
+        swaps.sorted.len() >= MIN_REGIME_B_SAMPLES,
+        "regime B population was starved: {} samples, floor is {}. Regime B counts only updates that \
+         ACQUIRED fresh data, so it depends on the writer publishing while the readers are still \
+         sampling. With a starved population nothing about the engine was measured — this is a \
+         HARNESS failure, not gross breakage and not the TSK-010 verdict. If this fires, check the \
+         priming write before the reader spawn rather than widening any bound.",
+        swaps.sorted.len(),
+        MIN_REGIME_B_SAMPLES
     );
 
     #[cfg(target_os = "linux")]

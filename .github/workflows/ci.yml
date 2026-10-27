@@ -185,7 +185,7 @@ jobs:
       #
       # MYTHOS_TSK010_OUT makes the retained-distribution path explicit here rather than leaving CI
       # to rely on the test's own workspace-root derivation.
-      - name: Report SHM p99 under 16 threads (TSK-010, non-gating)
+      - name: Report SHM p99 under 16 threads (TSK-010 report + breakage backstop)
         env:
           MYTHOS_TSK010_OUT: ${{ github.workspace }}/target/tsk010-p99
         run: |
@@ -195,6 +195,11 @@ jobs:
           fi
           cargo test --release -p mythos-shm --test shm_p99_report -- --nocapture
 
+      # NOTE ON THE STEP NAME: it reads "report + breakage backstop", not "non-gating". The CRITERION
+      # is not gated (p99 < 100 ns is reported, never asserted), but the step CAN fail the job — on a
+      # gross-breakage backstop or on a starved population (a harness failure). The earlier
+      # "non-gating" wording was written before this step could fail and would understate it.
+      #
       # RETAIN EACH RUN'S DISTRIBUTION. The board's decision is to write no bound until five or more
       # runs exist; that is only possible if the runs are kept from now on. The three runs the
       # current backstops were derived from had to be read out of CI logs by hand, and hand-read
