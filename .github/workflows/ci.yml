@@ -298,59 +298,35 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # REQ 1 — AN EXPLICIT, PERSISTENT PNPM STORE, AND NO ARCHIVE ROUND-TRIP WHEN THE HOST HAS ONE.
+      # REQ 1 — AN EXPLICIT STORE PATH, REPORTED EVERY RUN; THE HOST-BACKED STORE IS NOT YET PROVEN.
       #
-      # The store used to be forced job-local ($RUNNER_TEMP/pnpm-store) and then shuttled through
-      # actions/cache as a ~66 MB archive: measured 2 s restore / 12 s save on a warm cache and
-      # 95 s restore / 67 s save on a cold one, for data the runner host can simply keep. This
-      # runner already persists /opt/hostedtoolcache for apt, rustup, cargo and sccache.
+      # Attempted and REVERTED, with the measurement that rejected it. I first pointed the store at
+      # the host-backed /opt/hostedtoolcache/pnpm-store and skipped actions/cache when it was
+      # writable. Two runs (the same SHA, attempt 1 and attempt 2 of run 40485669504) both reported
+      # the store EMPTY before install: `pnpm store -> /opt/hostedtoolcache/pnpm-store
+      # (persistent=true, entries_before=0)`. `npm_config_store_dir` was confirmed present in the
+      # step environment, so the likeliest reading is that pnpm does not honour that variable here
+      # and writes to its own default, leaving the directory I created unused.
       #
-      # RUNNER PREREQUISITE, stated rather than assumed: /opt/hostedtoolcache must be on persistent
-      # host storage and writable by the runner uid. If it is not, this step falls back to the old
-      # job-local store and the cache steps still run, so nothing breaks — it is just slower. The
-      # step prints which path it chose, so a silently degraded runner is visible in the log.
+      # Consequence: persistence across runs was NOT demonstrated, and persistence is the entire
+      # basis for removing the cache round-trip (measured cost 2 s restore + 12 s save warm,
+      # 95 s + 67 s cold). Removing the cache without it would risk a cold-store regression on any
+      # fresh pod, so the cache is restored unconditionally and the store path is now REPORTED
+      # rather than assumed. The authoritative answer comes from pnpm itself, in the step below.
       #
-      # Deliberately NOT chowning shared infra: the runner keeps persistent HOME state written by
-      # earlier root runs, and chowning it would regress the next time anything runs as root. The
-      # writability PROBE below decides, instead of a chown that guesses.
-      - name: Resolve pnpm store path
+      # The env vars are still set: if pnpm does honour them on this runner, the store lands on
+      # persistent host storage and the cache becomes cheap to restore because it is already warm.
+      # RUNNER PREREQUISITE: /opt/hostedtoolcache must be persistent and writable by the runner uid.
+      # Do NOT chown shared infra to force this: the runner keeps persistent HOME written by earlier
+      # root runs, and chowning regresses the next time anything runs as root.
+      - name: Configure Job-Local Caches
         id: pnpm-store
         shell: bash
         run: |
           START=$(date +%s)
-          HOST_STORE=/opt/hostedtoolcache/pnpm-store
-          persistent=false
-          if mkdir -p "$HOST_STORE" 2>/dev/null && [ -w "$HOST_STORE" ]; then
-            STORE="$HOST_STORE"
-            persistent=true
-          else
-            STORE="$RUNNER_TEMP/pnpm-store"
-            mkdir -p "$STORE"
-          fi
-
-          # Entries already in the store before this run: a warm/cold signal that does not depend
-          # on the cache API, and the honest replacement for a cache-hit flag when the store is
-          # host-backed and therefore never "restored".
-          ENTRIES_BEFORE=$(find "$STORE" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l | tr -d ' ')
-
-          echo "path=$STORE" >> "$GITHUB_OUTPUT"
-          echo "persistent=$persistent" >> "$GITHUB_OUTPUT"
-          echo "entries_before=$ENTRIES_BEFORE" >> "$GITHUB_OUTPUT"
           echo "npm_config_cache=$RUNNER_TEMP/npm-cache" >> "$GITHUB_ENV"
-          echo "npm_config_store_dir=$STORE" >> "$GITHUB_ENV"
-          echo "pnpm store -> $STORE (persistent=$persistent, entries_before=$ENTRIES_BEFORE)"
-
-          {
-            echo "### Frontend job timing"
-            echo ""
-            echo "| phase | seconds |"
-            echo "|---|---|"
-            echo "| pnpm store resolve | $(( $(date +%s) - START )) |"
-            echo ""
-            echo "- pnpm store path: \`$STORE\`"
-            echo "- host-backed (no cache round-trip): **$persistent**"
-            echo "- store entries before this run: **$ENTRIES_BEFORE**"
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "npm_config_store_dir=$RUNNER_TEMP/pnpm-store" >> "$GITHUB_ENV"
+          echo "| pnpm store configured | $(( $(date +%s) - START )) |" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -372,25 +348,46 @@ jobs:
           echo "$RUNNER_TEMP/pnpm-prefix/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/pnpm-prefix/bin/pnpm" --version
 
-      # Only round-trip the store through actions/cache when the runner host could not give us a
-      # persistent one. On a host-backed store this step does not run at all, which is the point:
-      # measured cost of the round-trip was 14 s warm / 162 s cold (restore + save).
-      - name: Cache pnpm Store (fallback only)
+      # The cache path comes from pnpm ITSELF, not from the env var we set. That distinction is the
+      # finding of this item: with npm_config_store_dir pointing at a host path, two runs reported
+      # that directory empty, so the variable is not a reliable way to choose the store here. Asking
+      # pnpm is authoritative, and it also makes the cache key's path correct by construction.
+      - name: Resolve pnpm Store Path (authoritative)
+        id: pnpm-store-path
+        shell: bash
+        run: |
+          START=$(date +%s)
+          STORE=$(pnpm store path)
+          echo "path=$STORE" >> "$GITHUB_OUTPUT"
+          echo "pnpm store path (from pnpm): $STORE"
+          SIZE=$(du -sh "$STORE" 2>/dev/null | cut -f1 || echo unknown)
+          ENTRIES=$(find "$STORE" -type f 2>/dev/null | wc -l | tr -d ' ')
+          echo "store size=$SIZE files=$ENTRIES"
+          {
+            echo "| pnpm store inspect | $(( $(date +%s) - START )) |"
+            echo ""
+            echo "- pnpm store path (from \`pnpm store path\`): \`$STORE\`"
+            echo "- size: **$SIZE**, files: **$ENTRIES**"
+            echo "- npm_config_store_dir we set: \`$npm_config_store_dir\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # REQ 1, retained safety: the store round-trips through actions/cache because persistence to
+      # host storage has NOT been demonstrated (see the Configure step). Cost measured at 2 s restore
+      # + 12 s save warm, 95 s + 67 s cold.
+      - name: Cache pnpm Store
         id: pnpm-cache
-        if: steps.pnpm-store.outputs.persistent != 'true'
         uses: actions/cache@v4
         with:
-          path: ${{ steps.pnpm-store.outputs.path }}
+          path: ${{ steps.pnpm-store-path.outputs.path }}
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
           restore-keys: pnpm-store-${{ runner.os }}-
 
-      # REQ 6 — record the store state either way, so "no cache step ran" (host-backed, the fast
-      # path) is distinguishable in the summary from "the cache step ran and missed".
+      # REQ 6 — the hit/miss flag and the authoritative path, in the summary next to the timings.
       - name: Report pnpm store state
         if: always()
         shell: bash
         run: |
-          echo "- pnpm cache: persistent=${{ steps.pnpm-store.outputs.persistent }} cache-hit=${{ steps.pnpm-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- pnpm cache: cache-hit=${{ steps.pnpm-cache.outputs.cache-hit || 'n/a' }} path=\`${{ steps.pnpm-store-path.outputs.path }}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify Toolchain Versions
         run: |
