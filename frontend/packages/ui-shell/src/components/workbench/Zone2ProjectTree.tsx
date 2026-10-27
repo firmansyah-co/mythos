@@ -139,13 +139,12 @@ export const Zone2ProjectTree: React.FC<Zone2ProjectTreeProps> = ({
                     <div
                       onClick={() => {
                         onOpenDocument?.('topology', 'network-view', '🌐 Network View');
-                        setSelectedContextItem({
-                          id: 'network-view',
-                          name: 'PROFINET Bus Network',
-                          type: 'DEVICE',
-                          subType: 'Network Topology',
-                          hardwareAddress: '192.168.1.0/24',
-                        });
+                        // Opening a view is not a device selection: these entries used to assert a
+                        // named network, rack and IP (`PROFINET Bus Network`, `ET 200SP Rack 0`,
+                        // `192.168.1.20`) that nothing had discovered. Clearing the selection is
+                        // honest - the view opens with nothing selected rather than with a
+                        // plausible-looking device carried over from a previous click.
+                        setSelectedContextItem(null);
                       }}
                       className="px-2 py-1 hover:bg-neutral-800/60 hover:text-white rounded cursor-pointer flex items-center gap-1.5"
                     >
@@ -154,13 +153,7 @@ export const Zone2ProjectTree: React.FC<Zone2ProjectTreeProps> = ({
                     <div
                       onClick={() => {
                         onOpenDocument?.('device', 'device-view', '🎛️ Device View');
-                        setSelectedContextItem({
-                          id: 'device-rack-0',
-                          name: 'ET 200SP Rack 0',
-                          type: 'DEVICE',
-                          subType: 'Modular I/O Chassis',
-                          hardwareAddress: '192.168.1.20',
-                        });
+                        setSelectedContextItem(null);
                       }}
                       className="px-2 py-1 hover:bg-neutral-800/60 hover:text-white rounded cursor-pointer flex items-center gap-1.5"
                     >
@@ -169,12 +162,7 @@ export const Zone2ProjectTree: React.FC<Zone2ProjectTreeProps> = ({
                     <div
                       onClick={() => {
                         onOpenDocument?.('topology', 'topology-view', '🔌 Topology View');
-                        setSelectedContextItem({
-                          id: 'topology-view',
-                          name: 'Fieldbus Physical Topology',
-                          type: 'DEVICE',
-                          subType: 'LLDP Port Map',
-                        });
+                        setSelectedContextItem(null);
                       }}
                       className="px-2 py-1 hover:bg-neutral-800/60 hover:text-white rounded cursor-pointer flex items-center gap-1.5"
                     >
@@ -292,12 +280,10 @@ export const Zone2ProjectTree: React.FC<Zone2ProjectTreeProps> = ({
                         <div className="pl-4 space-y-0.5 text-neutral-400">
                           <div
                             onClick={() => {
-                              setSelectedContextItem({
-                                id: 'plc-tag-table',
-                                name: 'Default Tag Table',
-                                type: 'TAG',
-                                hardwareAddress: '%IW0..%QW10',
-                              });
+                              // No tag table is loaded, so there is no table to select. The entry
+                              // used to assert one named "Default Tag Table" occupying an IEC
+                              // address range nothing had read.
+                              setSelectedContextItem(null);
                             }}
                             className="px-2 py-1 hover:bg-neutral-800/60 hover:text-white rounded cursor-pointer"
                           >
