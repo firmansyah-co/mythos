@@ -41,45 +41,7 @@ export interface MonacoStEditorProps {
   roomId?: string;
 }
 
-export const DEFAULT_ST_SAMPLE = `PROGRAM MainBottlingControl
-  VAR
-    Conveyor_Motor AT %QX0.0 : BOOL;
-    Bottle_Detect_PE AT %IX0.0 : BOOL;
-    Capping_Cylinder AT %QX0.1 : BOOL;
-    Bottle_Count : DINT := 0;
-  END_VAR
 
-  // Cyclic Execution: Detect bottle and actuate pneumatic capping cylinder
-  IF Bottle_Detect_PE THEN
-    Capping_Cylinder := TRUE;
-    Bottle_Count := Bottle_Count + 1;
-  ELSE
-    Capping_Cylinder := FALSE;
-  END_IF;
-
-  // Run conveyor if not in emergency stop
-  Conveyor_Motor := TRUE;
-END_PROGRAM
-`;
-
-export const DEFAULT_IL_SAMPLE = `(* Instruction List IEC 61131-3 Routine *)
-LD    %IX0.0          (* Load bottle presence sensor *)
-ANDN  %IX0.1          (* And Not Emergency Stop *)
-ST    %QX0.0          (* Energize conveyor run coil *)
-
-LD    %IX0.2          (* Bottle in position *)
-JMPC  ACTUATE_CYLINDER
-
-LD    FALSE
-ST    %QX0.1          (* Reset cylinder *)
-RET
-
-ACTUATE_CYLINDER:
-LD    TRUE
-ST    %QX0.1          (* Extend pneumatic cylinder *)
-CAL   TON_1(IN:=TRUE, PT:=T#500MS)
-RET
-`;
 
 export const MonacoStEditor: React.FC<MonacoStEditorProps> = ({
   value,
@@ -97,7 +59,9 @@ export const MonacoStEditor: React.FC<MonacoStEditorProps> = ({
   roomId,
 }) => {
   const [currentLang, setCurrentLang] = useState<TextualLogicLanguage>(language);
-  const defaultCode = defaultValue ?? (currentLang === 'IL' ? DEFAULT_IL_SAMPLE : DEFAULT_ST_SAMPLE);
+  // No sample program: an editor with nothing loaded shows nothing. A caller that passes no
+  // code gets an empty POU, never an invented one.
+  const defaultCode = defaultValue ?? '';
 
   const [internalVal, setInternalVal] = useState<string>(() => {
     if (yText && yText.toString().length > 0) {

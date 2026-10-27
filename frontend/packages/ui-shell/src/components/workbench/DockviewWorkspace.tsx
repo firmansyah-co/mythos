@@ -16,6 +16,7 @@ import {
   resolveComponentData,
 } from '@mythos/ui-faceplate-lib';
 import { useHmiStore, isCanvasEqual } from '../../stores/useHmiStore';
+import { FaceplateTypeDesigner } from '../faceplates/FaceplateTypeDesigner';
 import { Plus, Layers, FileCode2, Network, Save, Rocket, Undo2, Loader2 } from 'lucide-react';
 
 // Panel 1: Monaco Logic Editor tab
@@ -628,6 +629,13 @@ const NetworkTopologyPanel: React.FC<IDockviewPanelProps<{ title?: string }>> = 
   );
 };
 
+// Panel 4: Master Faceplate Type designer tab (TSK-309)
+const FaceplateDesignerPanel: React.FC<IDockviewPanelProps<{ typeId?: string; title?: string }>> = (props) => (
+  <div className="w-full h-full">
+    <FaceplateTypeDesigner typeId={props.params?.typeId} />
+  </div>
+);
+
 export interface DockviewWorkspaceProps {
   className?: string;
   onOpenCreateBlockModal?: () => void;
@@ -663,6 +671,8 @@ export const DockviewWorkspace: React.FC<DockviewWorkspaceProps> = ({
         componentName = 'hmiScreenCanvas';
       } else if (docType === 'topology' || docType === 'device' || docType === 'network-view') {
         componentName = 'networkTopology';
+      } else if (docType === 'faceplate') {
+        componentName = 'faceplateDesigner';
       }
 
       try {
@@ -673,6 +683,7 @@ export const DockviewWorkspace: React.FC<DockviewWorkspaceProps> = ({
           params: {
             targetBlock: id,
             screenId: id,
+            typeId: id,
             title,
             ...params,
           },
@@ -704,7 +715,14 @@ export const DockviewWorkspace: React.FC<DockviewWorkspaceProps> = ({
           setSelectedContextItem({
             id: pId,
             name: title,
-            type: compName === 'hmiScreenCanvas' ? 'HMI_SCREEN' : compName === 'networkTopology' ? 'DEVICE' : 'LOGIC_BLOCK',
+            type:
+              compName === 'hmiScreenCanvas'
+                ? 'HMI_SCREEN'
+                : compName === 'networkTopology'
+                ? 'DEVICE'
+                : compName === 'faceplateDesigner'
+                ? 'FACEPLATE'
+                : 'LOGIC_BLOCK',
           });
         }
       });
@@ -758,6 +776,7 @@ export const DockviewWorkspace: React.FC<DockviewWorkspaceProps> = ({
           monacoLogic: MonacoLogicPanel,
           hmiScreenCanvas: HmiScreenCanvasPanel,
           networkTopology: NetworkTopologyPanel,
+          faceplateDesigner: FaceplateDesignerPanel,
         }}
         onReady={onReady}
         className="dockview-theme-dark h-full w-full"

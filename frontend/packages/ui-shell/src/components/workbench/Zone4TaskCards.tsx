@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   BookOpen,
   Server,
@@ -11,6 +11,8 @@ import {
   Minimize2,
 } from 'lucide-react';
 import { useHmiStore } from '../../stores/useHmiStore';
+import { useFaceplateStore } from '../../stores/useFaceplateStore';
+import { versionLabel } from '../../types/faceplate';
 import { InspectorDrawer } from '@mythos/ui-inspector';
 
 export interface Zone4TaskCardsProps {
@@ -30,6 +32,23 @@ export const Zone4TaskCards: React.FC<Zone4TaskCardsProps> = ({
   const [isFullDrawerMode, setIsFullDrawerMode] = useState<boolean>(false);
 
   const selectedContextItem = useHmiStore((s) => s.selectedContextItem);
+  const setSelectedContextItem = useHmiStore((s) => s.setSelectedContextItem);
+  const currentProject = useHmiStore((s) => s.currentProject);
+
+  // Zone 4 Libraries tab lists the project's real master faceplate types.
+  const faceplateTypes = useFaceplateStore((s) => s.types);
+  const faceplateStatus = useFaceplateStore((s) => s.status);
+  const faceplateError = useFaceplateStore((s) => s.errorMessage);
+  const loadFaceplates = useFaceplateStore((s) => s.load);
+
+  const currentProjectId = currentProject?.id ?? null;
+  useEffect(() => {
+    if (currentProjectId) {
+      void loadFaceplates(currentProjectId);
+    } else {
+      useFaceplateStore.getState().reset();
+    }
+  }, [currentProjectId, loadFaceplates]);
 
   if (isCollapsed) {
     return (
@@ -53,17 +72,18 @@ export const Zone4TaskCards: React.FC<Zone4TaskCardsProps> = ({
     );
   }
 
-  // Dynamic context attributes
-  const targetObjectName = selectedContextItem?.name || 'FP_Motor_VFD_01';
+  // Dynamic context attributes. With nothing selected the inspector reports the absence rather
+  // than showing a plausible-looking device.
+  const targetObjectName = selectedContextItem?.name || 'No selection';
   const udtArchetype =
     selectedContextItem?.udtArchetype ||
     selectedContextItem?.subType ||
-    (selectedContextItem?.type ? `${selectedContextItem.type}_UDT` : 'FB_Motor_UDT');
+    (selectedContextItem?.type ? `${selectedContextItem.type}_UDT` : '—');
   const hardwareAddress =
     selectedContextItem?.hardwareAddress ||
     (selectedContextItem?.metadata?.hardwareAddress as string) ||
-    '%QX0.0..%QX0.3';
-  const category = selectedContextItem?.type || 'DEVICE';
+    '—';
+  const category = selectedContextItem?.type || 'NONE';
 
   return (
     <div
@@ -151,6 +171,11 @@ export const Zone4TaskCards: React.FC<Zone4TaskCardsProps> = ({
           <InspectorDrawer
             isOpen={true}
             onClose={() => setIsFullDrawerMode(false)}
+            // No live device telemetry reaches the workbench yet, so the drawer has nothing it
+            // can vouch for. NOT_BOUND is the honest declaration: it renders the no-data state
+            // instead of a fabricated process value, interlock matrix and asset record
+            // (SYS-REQ-096). This becomes GOOD once a telemetry transport populates the props.
+            quality="NOT_BOUND"
             deviceId={selectedContextItem?.id || targetObjectName}
             deviceName={targetObjectName}
             deviceType={udtArchetype}
@@ -257,14 +282,71 @@ export const Zone4TaskCards: React.FC<Zone4TaskCardsProps> = ({
           )}
 
           {activeTab === 'LIBRARIES' && (
-            <div className="space-y-2 text-xs">
+            <div className="space-y-2 text-xs" data-testid="zone4-faceplate-libraries">
               <span className="font-semibold text-neutral-400 text-[11px] uppercase tracking-wider">
                 Master Faceplate Types
               </span>
-              <div className="p-2 rounded bg-neutral-900 border border-neutral-800 space-y-1">
-                <div className="font-mono text-cyan-400">FP_Motor_VFD (v1.0.0)</div>
-                <div className="text-[11px] text-neutral-400">4 Archetype Views: P&amp;ID, Card, Popup, Alarm</div>
-              </div>
+
+              {faceplateStatus === 'LOADING' && (
+                <div className="text-[11px] italic text-neutral-500">Loading faceplate types…</div>
+              )}
+
+              {(faceplateStatus === 'IDLE' || faceplateStatus === 'READY') && !currentProjectId && (
+                <div data-testid="zone4-no-project-faceplates" className="text-[11px] text-neutral-500">
+                  Open a project to see its faceplate types.
+                </div>
+              )}
+
+              {faceplateStatus === 'ERROR' && (
+                <div data-testid="zone4-faceplate-error" className="text-[11px] text-rose-400">
+                  {faceplateError}
+                </div>
+              )}
+
+              {faceplateStatus === 'READY' && currentProjectId && faceplateTypes.length === 0 && (
+                <div data-testid="zone4-empty-faceplates" className="text-[11px] text-neutral-500">
+                  This project has no faceplate types. Create one in the Project Tree under
+                  Faceplate Types and release it to publish its views.
+                </div>
+              )}
+
+              {faceplateTypes.length > 0 && (
+                <div className="space-y-1">
+                  {faceplateTypes.map((type) => (
+                    <button
+                      key={type.id}
+                      type="button"
+                      onClick={() =>
+                        setSelectedContextItem({
+                          id: type.id,
+                          name: type.name,
+                          type: 'FACEPLATE',
+                          udtArchetype: type.udtName,
+                          metadata: {
+                            typeId: type.id,
+                            activeVersion: type.activeVersion,
+                            instanceCount: type.instanceCount,
+                            hasDraft: type.hasDraft ?? false,
+                          },
+                        })
+                      }
+                      className="w-full text-left p-2 rounded bg-neutral-900 border border-neutral-800 hover:border-teal-600 space-y-0.5"
+                    >
+                      <div className="font-mono text-cyan-400">
+                        {type.name}{' '}
+                        <span className="text-neutral-500">
+                          ({versionLabel(type.activeVersion)})
+                        </span>
+                        {type.hasDraft && <span className="ml-1 text-[9px] text-amber-400">draft</span>}
+                      </div>
+                      <div className="text-[11px] text-neutral-400">
+                        UDT {type.udtName} · {type.instanceCount} instance
+                        {type.instanceCount === 1 ? '' : 's'}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>

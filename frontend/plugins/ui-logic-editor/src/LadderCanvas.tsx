@@ -9,67 +9,11 @@ import {
 } from './ladder/types';
 import { RungRenderer } from './ladder/RungRenderer';
 import { Plus, Zap } from 'lucide-react';
+import { EmptySurface, EMPTY_SURFACE } from '@mythos/ui-empty-state';
 
-export const DEFAULT_LD_RUNGS: LadderRung[] = [
-  {
-    id: 'rung-1',
-    comment: 'Network 1: Feed Conveyor Run permissive interlock',
-    isEnergized: false,
-    elements: [
-      { id: 'e1', type: 'contact_no', tag: 'external.DI_StartPB', isEnergized: false },
-      { id: 'e2', type: 'contact_nc', tag: 'external.DI_EStop_PB', isEnergized: true },
-      { id: 'e3', type: 'coil', tag: 'external.DO_ConveyorRun', isEnergized: false },
-    ],
-  },
-  {
-    id: 'rung-2',
-    comment: 'Network 2: Bottle Detect & Indexing Gate with TON Timer',
-    isEnergized: false,
-    elements: [
-      { id: 'e4', type: 'contact_no', tag: 'external.DI_BottlePE', isEnergized: false },
-      {
-        id: 'e-block-1',
-        type: 'function_block',
-        blockType: 'TON',
-        instanceName: 'TON_BottleDwell',
-        inputs: [
-          { name: 'IN', type: 'BOOL', binding: 'DI_BottlePE' },
-          { name: 'PT', type: 'TIME', binding: 'T#500MS' },
-        ],
-        outputs: [
-          { name: 'Q', type: 'BOOL', binding: 'Gate_Open' },
-          { name: 'ET', type: 'TIME', binding: 'Dwell_Elapsed' },
-        ],
-      },
-      { id: 'e5', type: 'coil_set', tag: 'internal.B_IndexActive', isEnergized: false },
-    ],
-  },
-  {
-    id: 'rung-3',
-    comment: 'Network 3: Dual Emergency Stop Bypass (Parallel OR Branch)',
-    isEnergized: false,
-    elements: [
-      {
-        id: 'branch-1',
-        type: 'branch',
-        isEnergized: false,
-        branches: [
-          [
-            { id: 'b1-e1', type: 'contact_no', tag: 'DI_ManualPB', isEnergized: false },
-          ],
-          [
-            { id: 'b2-e1', type: 'contact_no', tag: 'DI_AutoPermissive', isEnergized: false },
-            { id: 'b2-e2', type: 'contact_nc', tag: 'DI_FaultAlarm', isEnergized: true },
-          ],
-        ],
-      },
-      { id: 'e6', type: 'coil', tag: 'DO_MainPowerContactor', isEnergized: false },
-    ],
-  },
-];
 
 export const LadderCanvas: React.FC<LadderCanvasProps> = ({
-  rungs = DEFAULT_LD_RUNGS,
+  rungs,
   onAddRung,
   onUpdateRung,
   onDeleteRung,
@@ -80,10 +24,10 @@ export const LadderCanvas: React.FC<LadderCanvasProps> = ({
   liveTelemetry = {},
   onForceVariable,
 }) => {
-  const [activeRungs, setActiveRungs] = useState<LadderRung[]>(rungs);
+  const [activeRungs, setActiveRungs] = useState<LadderRung[]>(rungs ?? []);
 
   useEffect(() => {
-    setActiveRungs(rungs);
+    setActiveRungs(rungs ?? []);
   }, [rungs]);
 
   // Evaluate power-flow when debugActive or liveTelemetry updates
@@ -337,8 +281,11 @@ export const LadderCanvas: React.FC<LadderCanvasProps> = ({
       </div>
 
       {/* Rungs List */}
-      <div className="space-y-4">
-        {activeRungs.map((rung, idx) => (
+      <div className="flex-1 space-y-4">
+        {activeRungs.length === 0 ? (
+          <EmptySurface copy={EMPTY_SURFACE.logic} />
+        ) : (
+          activeRungs.map((rung, idx) => (
           <RungRenderer
             key={rung.id}
             rung={rung}
@@ -351,7 +298,8 @@ export const LadderCanvas: React.FC<LadderCanvasProps> = ({
             onAddBranch={handleAddBranch}
             onAddBlock={handleAddBlock}
           />
-        ))}
+          ))
+        )}
       </div>
     </div>
   );
