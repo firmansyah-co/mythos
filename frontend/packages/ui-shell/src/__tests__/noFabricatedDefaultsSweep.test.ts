@@ -265,8 +265,14 @@ describe('SYS-REQ-096: no workbench surface defaults to fabricated content', () 
       if (!/from '@mythos\/ui-empty-state'/.test(source) && !surface.endsWith('MonacoStEditor.tsx')) {
         offenders.push(`${surface}: does not use the shared empty-surface contract`);
       }
-      // Fixture vocabulary must not be reachable from a component.
-      const sample = source.match(/\b(?:DEFAULT|SAMPLE|FIXTURE)_[A-Z0-9_]{2,}\b/);
+      // Fixture vocabulary must not be REACHABLE from a component. Comments are stripped first:
+      // a comment cannot fabricate, and a comment recording what was removed is exactly the
+      // documentation we want beside the grave — the guard should not punish the record. This
+      // surfaced when NetworkCanvas gained the rule comment explaining why DEFAULT_STATIONS went.
+      const code = source
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|\s)\/\/[^\n]*/g, '$1');
+      const sample = code.match(/\b(?:DEFAULT|SAMPLE|FIXTURE)_[A-Z0-9_]{2,}\b/);
       if (sample && !/DEFAULT_(ON|OFF)/.test(sample[0])) {
         offenders.push(`${surface}: references ${sample[0]}`);
       }
