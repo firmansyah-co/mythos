@@ -20,7 +20,8 @@
 # step that does not run.
 #
 # Usage:
-#   scripts/version.sh --print            print BASE_VERSION / BUILD / TAG_NAME (+ GITHUB_OUTPUT)
+#   scripts/version.sh --print            print BASE_VERSION / BUILD / TAG_NAME / CHANNEL (+ GITHUB_OUTPUT)
+#   scripts/version.sh --channel          print just the channel (release|rc|dev|unknown)
 #   scripts/version.sh --dry-run-stamp    print the stamping it WOULD apply, write nothing
 #   scripts/version.sh --stamp            write the version into every manifest
 #
@@ -105,6 +106,40 @@ esac
 
 VERSION="${TAG_NAME#v}"
 
+# --- channel ----------------------------------------------------------------
+# Which channel this build belongs to. Derived from the event that produced it, never defaulted:
+# a build that cannot establish its channel reports `unknown`, because a defaulted channel is the
+# same fabrication shape as a defaulted sensor value - it looks like a measurement and is not one.
+case "$EVENT_NAME" in
+  push)
+    if [ "${GITHUB_REF:-}" != "${GITHUB_REF#refs/tags/v}" ]; then
+      case "$TAG_NAME" in
+        *-dev.*) CHANNEL="dev" ;;
+        *-rc.*)  CHANNEL="rc" ;;
+        # Any OTHER suffix is not a channel: v1.2.3-beta.1 previously matched v[0-9]* and would
+        # have been labelled `release`. The arm order matters - this must precede the release arm.
+        *-*)     CHANNEL="unknown" ;;
+        v[0-9]*) CHANNEL="release" ;;
+        *)       CHANNEL="unknown" ;;
+      esac
+      CHANNEL_SOURCE="tag ${TAG_NAME}"
+    else
+      case "$REF_NAME" in
+        dev|rc|release) CHANNEL="$REF_NAME"; CHANNEL_SOURCE="branch ${REF_NAME}" ;;
+        *) CHANNEL="unknown"; CHANNEL_SOURCE="branch ${REF_NAME} is not a release channel" ;;
+      esac
+    fi
+    ;;
+  pull_request)
+    CHANNEL="unknown"
+    CHANNEL_SOURCE="a pull-request preview is not a channel build"
+    ;;
+  *)
+    CHANNEL="unknown"
+    CHANNEL_SOURCE="no release context (local build)"
+    ;;
+esac
+
 # --- stamping targets -------------------------------------------------------
 
 # Every manifest that carries a version. Listed explicitly: a glob that silently matches
@@ -173,14 +208,19 @@ case "$MODE" in
     echo "Base version:      ${BASE_VERSION}"
     echo "Build:             ${BUILD} (${BUILD_SOURCE})"
     echo "Tag name:          ${TAG_NAME}"
+    echo "Channel:           ${CHANNEL} (${CHANNEL_SOURCE})"
     if [ -n "${GITHUB_OUTPUT:-}" ]; then
       {
         echo "base_version=${BASE_VERSION}"
         echo "build=${BUILD}"
         echo "tag_name=${TAG_NAME}"
         echo "version=${VERSION}"
+        echo "channel=${CHANNEL}"
       } >> "$GITHUB_OUTPUT"
     fi
+    ;;
+  --channel)
+    echo "$CHANNEL"
     ;;
   --dry-run-stamp|--stamp)
     echo "Would stamp version ${BASE_VERSION} into:"
