@@ -133,10 +133,16 @@ impl<S: PlatformShm> TagBusEngine<S> {
     /// new value to offer. Writing the whole slot through [`Self::write_tag`] would force the
     /// caller to invent one, which is how a stale or fabricated process value gets republished
     /// alongside a real quality change. This preserves the slot's value, declared type, flags and
-    /// timestamp, and bumps the sequence so a reader can tell the slot was touched.
+    /// timestamp.
+    ///
+    /// It bumps `sequence` to match what `write_tag` does for a touched slot. Nothing in the
+    /// workspace reads `sequence` today, so this buys nothing yet — it is kept so that a future
+    /// reader does not find this one write path leaving the field stale, which would be a silent
+    /// inconsistency rather than a missing feature.
     ///
     /// The change is visible to readers only after a [`Self::publish_cycle`] — the triple buffer
-    /// hands out whole banks, not individual slots.
+    /// hands out whole banks, not individual slots — which is why callers that must be observable
+    /// use [`Self::set_quality_and_publish`] rather than this.
     #[inline(always)]
     pub fn set_quality(&mut self, slot_id: usize, quality: QualityCode) -> Result<(), ShmError> {
         if slot_id >= self.max_tags {
@@ -201,6 +207,27 @@ impl<S: PlatformShm> TagBusEngine<S> {
 
         self.publish_cycle();
         Ok(())
+    }
+
+    /// The quality word of a slot as most recently published, without advancing any reader state.
+    ///
+    /// Reads from [`TripleBufferState::latest_published_bank`] — the *clean* bank while `has_new`
+    /// is set, otherwise the read bank — not from `peek_read_bank`. Those differ exactly after a
+    /// publish: the newest snapshot sits in clean until a reader acquires it, and the read bank
+    /// still holds the previous one. Reading the read bank here returned a bank nobody had written
+    /// quality into (a default slot's `BAD_NOT_CONNECTED`), which the tests for the clear-path fix
+    /// caught as `restored: Some(QualityCode(8))` where `GOOD` was expected. Third instance of the
+    /// same bank-identity trap in this slice; the bank a caller means must be named explicitly.
+    #[inline(always)]
+    pub fn peek_quality(&self, slot_id: usize) -> Result<QualityCode, ShmError> {
+        if slot_id >= self.max_tags {
+            return Err(ShmError::SlotOutOfBounds {
+                index: slot_id,
+                max: self.max_tags,
+            });
+        }
+        let bank = self.bank_state().latest_published_bank();
+        unsafe { Ok((*self.bank_ptr(bank).add(slot_id)).quality) }
     }
 
     /// Atomically publish the current write buffer and advance writer to the new bank.
@@ -300,6 +327,12 @@ impl<S: PlatformShm> ShmWriterHandle<S> {
         quality: QualityCode,
     ) -> Result<(), ShmError> {
         self.engine.set_quality_and_publish(slot_id, quality)
+    }
+
+    /// The quality word a reader would see for this slot right now.
+    #[inline(always)]
+    pub fn peek_quality(&self, slot_id: usize) -> Result<QualityCode, ShmError> {
+        self.engine.peek_quality(slot_id)
     }
 
     #[inline(always)]

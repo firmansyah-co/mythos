@@ -20,7 +20,8 @@ pub use error::StrucppError;
 pub use ffi::{LocatedArea, LocatedSize, LocatedVarDescriptor, LocatedVarRaw, StrucppSymbols};
 pub use hot_reload::{HotReloadManager, LoadedLogicModule};
 pub use quality_gate::{
-    DeviceExecutionMode, QualityGate, QualityLatch, QualityVisibility, ShmQualityPublisher,
+    ClearOutcome, DeviceExecutionMode, QualityGate, QualityLatch, QualityVisibility,
+    ShmQualityPublisher,
 };
 pub use runtime::{RuntimeMetrics, StrucppRuntime};
 pub use scheduler::{StagedSchedulerConfig, TaskScheduleConfig};

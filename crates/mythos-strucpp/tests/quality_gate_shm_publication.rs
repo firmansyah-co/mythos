@@ -26,7 +26,9 @@
 
 use mythos_pal::DefaultShm;
 use mythos_shm::{QualityCode, ShmReaderHandle, ShmWriterHandle, TagFlags, TagValueRaw};
-use mythos_strucpp::{DeviceExecutionMode, QualityGate, QualityVisibility, ShmQualityPublisher};
+use mythos_strucpp::{
+    ClearOutcome, DeviceExecutionMode, QualityGate, QualityVisibility, ShmQualityPublisher,
+};
 use std::collections::HashMap;
 use std::process::Command;
 
@@ -180,14 +182,191 @@ fn recovery_is_visible_to_a_different_process() {
     assert!(bad.contains(&format!("quality={}", QualityCode::BAD_COMM_FAILURE.code())));
 
     let cleared = gate.clear_comm_loss(TAG_URI);
-    assert_eq!(cleared.quality, QualityCode::GOOD);
-    assert!(cleared.visibility.is_cross_process());
+    match &cleared {
+        ClearOutcome::Cleared {
+            restored,
+            visibility,
+        } => {
+            assert_eq!(
+                *restored,
+                Some(QualityCode::GOOD),
+                "the slot was GOOD before the comm loss, so GOOD is what a clear restores"
+            );
+            assert!(visibility.is_cross_process());
+        }
+        other => panic!("expected a clear, got {other:?}"),
+    }
 
     let after = observe_from_another_process(&name);
     assert!(
         after.contains(&format!("quality={}", QualityCode::GOOD.code())),
         "a recovery must reach other processes too, or readers stay bad forever, got: {after}"
     );
+
+    let _ = mythos_pal::PosixShm::unlink(&name);
+}
+
+/// The close miss: a recovery for a tag this process never saw fail.
+///
+/// `clear_comm_loss` used to publish GOOD unconditionally, so this erased a real
+/// BAD_SENSOR_FAILURE set by another path — cross-process — and replaced it with GOOD. A true BAD
+/// destroyed is worse than the invented device #32 removed: the consumer was told a sensor was
+/// fine when it was not.
+#[test]
+fn a_clear_with_no_latch_leaves_another_paths_failure_alone() {
+    let name = segment_name("closemiss");
+    let mut writer = ShmWriterHandle::<DefaultShm>::new(&name, MAX_TAGS).unwrap();
+
+    // Another path reports a sensor failure on the same slot and publishes it.
+    writer
+        .write_tag(
+            SLOT_ID as usize,
+            TYPE_CODE_REAL,
+            QualityCode::BAD_SENSOR_FAILURE,
+            TagValueRaw::from_f64(42.5),
+            1_700_000_000_000_000,
+            TagFlags::ACCESS_RO,
+        )
+        .unwrap();
+    writer.publish();
+
+    let before = observe_from_another_process(&name);
+    assert!(
+        before.contains(&format!(
+            "quality={}",
+            QualityCode::BAD_SENSOR_FAILURE.code()
+        )),
+        "control: the sensor failure must be visible before the clear, got: {before}"
+    );
+
+    let mut bindings = HashMap::new();
+    bindings.insert(TAG_URI.to_string(), SLOT_ID);
+    let gate = QualityGate::new(DeviceExecutionMode::PhysicalHardware)
+        .with_shm_publication(ShmQualityPublisher::new(writer, bindings));
+
+    // This gate never saw a comm loss for this tag.
+    let outcome = gate.clear_comm_loss(TAG_URI);
+
+    // The cross-process consequence is asserted first, because it is the harm: whatever the API
+    // returns, what another process can see is the part that matters. Asserting the return value
+    // first would let a passing API shape hide a slot that was rewritten anyway.
+    let after = observe_from_another_process(&name);
+    assert!(
+        after.contains(&format!(
+            "quality={}",
+            QualityCode::BAD_SENSOR_FAILURE.code()
+        )),
+        "the other path's real sensor failure must survive a bogus recovery, got: {after}"
+    );
+    assert!(
+        !after.contains(&format!("quality={}", QualityCode::GOOD.code())),
+        "the bogus recovery must not have re-stamped GOOD: {after}"
+    );
+
+    assert_eq!(
+        outcome,
+        ClearOutcome::NothingToClear,
+        "a clear with no latch must say so rather than claim a recovery"
+    );
+
+    let _ = mythos_pal::PosixShm::unlink(&name);
+}
+
+/// A comm loss on top of an existing failure, then a recovery: the underlying failure comes back.
+///
+/// Restoring a blanket GOOD here would report a failed sensor as healthy the moment the link
+/// returned, which is a fabricated pass rather than a fabricated value.
+#[test]
+fn a_clear_restores_the_quality_that_preceded_the_comm_loss() {
+    let name = segment_name("restore");
+    let mut writer = ShmWriterHandle::<DefaultShm>::new(&name, MAX_TAGS).unwrap();
+
+    writer
+        .write_tag(
+            SLOT_ID as usize,
+            TYPE_CODE_REAL,
+            QualityCode::BAD_SENSOR_FAILURE,
+            TagValueRaw::from_f64(42.5),
+            1_700_000_000_000_000,
+            TagFlags::ACCESS_RO,
+        )
+        .unwrap();
+    writer.publish();
+
+    let mut bindings = HashMap::new();
+    bindings.insert(TAG_URI.to_string(), SLOT_ID);
+    let gate = QualityGate::new(DeviceExecutionMode::PhysicalHardware)
+        .with_shm_publication(ShmQualityPublisher::new(writer, bindings));
+
+    // The link drops on a tag whose sensor was already failing.
+    gate.record_comm_loss(TAG_URI);
+    let during = observe_from_another_process(&name);
+    assert!(
+        during.contains(&format!("quality={}", QualityCode::BAD_COMM_FAILURE.code())),
+        "the comm loss must be visible, got: {during}"
+    );
+
+    let outcome = gate.clear_comm_loss(TAG_URI);
+    match outcome {
+        ClearOutcome::Cleared {
+            restored,
+            visibility,
+        } => {
+            assert_eq!(
+                restored,
+                Some(QualityCode::BAD_SENSOR_FAILURE),
+                "the sensor failure that was live underneath must be restored, not GOOD"
+            );
+            assert!(visibility.is_cross_process());
+        }
+        other => panic!("expected a clear, got {other:?}"),
+    }
+
+    let after = observe_from_another_process(&name);
+    assert!(
+        after.contains(&format!(
+            "quality={}",
+            QualityCode::BAD_SENSOR_FAILURE.code()
+        )),
+        "a recovered link over a failed sensor is still a failed sensor, got: {after}"
+    );
+
+    let _ = mythos_pal::PosixShm::unlink(&name);
+}
+
+/// A repeated comm loss must not overwrite what a clear has to restore.
+#[test]
+fn a_second_comm_loss_does_not_forget_the_original_quality() {
+    let name = segment_name("repeat");
+    let mut writer = ShmWriterHandle::<DefaultShm>::new(&name, MAX_TAGS).unwrap();
+    writer
+        .write_tag(
+            SLOT_ID as usize,
+            TYPE_CODE_REAL,
+            QualityCode::UNCERTAIN_SUBSTITUTE,
+            TagValueRaw::from_f64(1.0),
+            1_700_000_000_000_000,
+            TagFlags::ACCESS_RO,
+        )
+        .unwrap();
+    writer.publish();
+
+    let mut bindings = HashMap::new();
+    bindings.insert(TAG_URI.to_string(), SLOT_ID);
+    let gate = QualityGate::new(DeviceExecutionMode::PhysicalHardware)
+        .with_shm_publication(ShmQualityPublisher::new(writer, bindings));
+
+    gate.record_comm_loss(TAG_URI);
+    gate.record_comm_loss(TAG_URI); // flapped twice before recovering
+
+    match gate.clear_comm_loss(TAG_URI) {
+        ClearOutcome::Cleared { restored, .. } => assert_eq!(
+            restored,
+            Some(QualityCode::UNCERTAIN_SUBSTITUTE),
+            "the second latch must not have replaced the quality a clear restores"
+        ),
+        other => panic!("expected a clear, got {other:?}"),
+    }
 
     let _ = mythos_pal::PosixShm::unlink(&name);
 }

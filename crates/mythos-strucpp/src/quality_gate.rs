@@ -47,6 +47,39 @@ pub struct QualityLatch {
     pub visibility: QualityVisibility,
 }
 
+/// What releasing a latch did — or refused to do.
+///
+/// A clear that finds no latch must not vouch for the tag. `clear_comm_loss` used to publish GOOD
+/// unconditionally, so a recovery path firing for a tag this process never saw fail would erase a
+/// real `BAD_SENSOR_FAILURE` set by another path, cross-process, and replace it with GOOD. That is
+/// the same defect as the one this gate was fixed to stop causing: a true BAD destroyed rather
+/// than an invented device created.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClearOutcome {
+    /// A latch existed and was released.
+    ///
+    /// `restored` is the quality published back to the slot — the quality the slot carried *before*
+    /// this gate latched, so another path's failure is restored rather than erased. It is `None`
+    /// when that prior quality was never recorded (the gate had no readable slot at latch time),
+    /// in which case the slot is left exactly as the latch left it and the `visibility` says why
+    /// nothing was written.
+    Cleared {
+        restored: Option<QualityCode>,
+        visibility: QualityVisibility,
+    },
+    /// There was no latch for this tag. The slot was NOT touched.
+    NothingToClear,
+}
+
+/// A latch plus the quality that preceded it, so releasing the latch can restore rather than erase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LatchedQuality {
+    code: QualityCode,
+    /// `None` when the slot's quality could not be read at latch time (no publisher, or the tag was
+    /// not bound). A clear can then only leave the slot alone, never guess.
+    prior: Option<QualityCode>,
+}
+
 /// Shared-memory publication path for latched qualities.
 ///
 /// Holds a writer handle plus the URI-to-slot map that turns a tag's namespace name into the slot
@@ -75,7 +108,7 @@ impl ShmQualityPublisher {
 /// Alarm and simulation gating supervisor.
 pub struct QualityGate {
     mode: parking_lot::RwLock<DeviceExecutionMode>,
-    latched_alarms: parking_lot::RwLock<HashMap<String, QualityCode>>,
+    latched_alarms: parking_lot::RwLock<HashMap<String, LatchedQuality>>,
     simulation_flag: Arc<AtomicBool>,
     /// Absent until the gate is given a shared-memory path. While absent, every latch is
     /// process-local and says so in its [`QualityVisibility`].
@@ -138,25 +171,62 @@ impl QualityGate {
         )
     }
 
-    /// Clear latched alarm for a recovered tag, publishing the recovery when possible.
+    /// Release the latch for a recovered tag, restoring the quality the slot carried before it.
     ///
     /// Clearing is published for the same reason latching is: a recovery that only this process
     /// knows about leaves every reader on the bad quality forever.
-    pub fn clear_comm_loss(&self, tag_uri: &str) -> QualityLatch {
-        let mut alarms = self.latched_alarms.write();
-        let had = alarms.remove(tag_uri).is_some();
-        drop(alarms);
+    ///
+    /// Two things this deliberately does **not** do:
+    ///
+    /// - It does not publish GOOD when there was no latch to release. A recovery path firing for a
+    ///   tag this process never saw fail would erase a real `BAD_SENSOR_FAILURE` — set by another
+    ///   path, visible to another process — and replace it with GOOD. That is a true BAD destroyed
+    ///   rather than an invented device created: the same class of defect, one turn worse. With no
+    ///   latch, the slot is left untouched and [`ClearOutcome::NothingToClear`] says so.
+    /// - It does not publish GOOD when the slot carried something else before the comm loss. The
+    ///   latch records the quality it overwrote, and that is what is restored, so a sensor failure
+    ///   that was live underneath the comm failure comes back when the link does.
+    pub fn clear_comm_loss(&self, tag_uri: &str) -> ClearOutcome {
+        let removed = {
+            let mut alarms = self.latched_alarms.write();
+            alarms.remove(tag_uri)
+        };
 
-        let visibility = self.publish(tag_uri, QualityCode::GOOD);
-        if had {
+        let Some(latched) = removed else {
+            // Deliberately no publish here. See this method's doc comment.
             info!(
-                "Communication recovered for {}. Cleared alarm latch ({}).",
-                tag_uri,
-                describe_visibility(&visibility)
+                "Communication recovery reported for {tag_uri} with no latch to clear. \
+                 Slot left untouched (nothing was cleared)."
             );
-        }
-        QualityLatch {
-            quality: QualityCode::GOOD,
+            return ClearOutcome::NothingToClear;
+        };
+
+        let Some(prior) = latched.prior else {
+            // The slot's quality was not readable when the latch was taken, so there is no honest
+            // value to restore. Publishing GOOD would be a claim we cannot support.
+            info!(
+                "Communication recovered for {tag_uri}. The quality preceding the latch was never \
+                 recorded, so the slot is left as the latch left it."
+            );
+            return ClearOutcome::Cleared {
+                restored: None,
+                visibility: QualityVisibility::ProcessLocalOnly {
+                    reason: "the quality preceding the latch was not recorded, so nothing was \
+                             written back to the slot"
+                        .to_string(),
+                },
+            };
+        };
+
+        let visibility = self.publish(tag_uri, prior);
+        info!(
+            "Communication recovered for {tag_uri}. Restored {:#06x} ({}) ({}).",
+            prior.code(),
+            prior.as_str(),
+            describe_visibility(&visibility)
+        );
+        ClearOutcome::Cleared {
+            restored: Some(prior),
             visibility,
         }
     }
@@ -165,7 +235,19 @@ impl QualityGate {
     fn latch(&self, tag_uri: &str, quality: QualityCode, what: &str) -> QualityLatch {
         {
             let mut alarms = self.latched_alarms.write();
-            alarms.insert(tag_uri.to_string(), quality);
+            let prior = match alarms.get(tag_uri) {
+                // Already latched: keep the quality that was there *before the first* latch, so a
+                // repeated comm loss does not overwrite the thing a clear must restore.
+                Some(existing) => existing.prior,
+                None => self.peek_slot_quality(tag_uri),
+            };
+            alarms.insert(
+                tag_uri.to_string(),
+                LatchedQuality {
+                    code: quality,
+                    prior,
+                },
+            );
         }
         let visibility = self.publish(tag_uri, quality);
 
@@ -221,7 +303,28 @@ impl QualityGate {
     /// Check if tag has an active latched quality alarm.
     pub fn get_latched_quality(&self, tag_uri: &str) -> Option<QualityCode> {
         let alarms = self.latched_alarms.read();
-        alarms.get(tag_uri).copied()
+        alarms.get(tag_uri).map(|l| l.code)
+    }
+
+    /// The quality the tag's slot carries right now, if this gate can read it.
+    ///
+    /// `None` means "not readable" (no publication path, tag unbound, or the read failed) — never a
+    /// guess. A caller that gets `None` has no honest quality to restore later, and says so rather
+    /// than substituting GOOD.
+    fn peek_slot_quality(&self, tag_uri: &str) -> Option<QualityCode> {
+        let publisher = self.publisher.as_ref()?;
+        let slot_id = publisher.slot_for(tag_uri)?;
+        let writer = publisher.writer.lock();
+        match writer.peek_quality(slot_id as usize) {
+            Ok(q) => Some(q),
+            Err(e) => {
+                warn!(
+                    "Could not read slot {slot_id} quality for {tag_uri} before latching ({e}); \
+                     a later clear will leave the slot untouched rather than guess."
+                );
+                None
+            }
+        }
     }
 
     /// Gate manual slider injection or forced value write.
