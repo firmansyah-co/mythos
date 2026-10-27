@@ -116,6 +116,9 @@ case "$EVENT_NAME" in
       case "$TAG_NAME" in
         *-dev.*) CHANNEL="dev" ;;
         *-rc.*)  CHANNEL="rc" ;;
+        # Any OTHER suffix is not a channel: v1.2.3-beta.1 previously matched v[0-9]* and would
+        # have been labelled `release`. The arm order matters - this must precede the release arm.
+        *-*)     CHANNEL="unknown" ;;
         v[0-9]*) CHANNEL="release" ;;
         *)       CHANNEL="unknown" ;;
       esac

@@ -64,10 +64,23 @@ describe('Version identity is visible and sourced, not hardcoded', () => {
     expect(html).toContain(APP_CHANNEL);
   });
 
-  it('says unknown rather than defaulting the channel to dev', () => {
-    // No VITE_APP_CHANNEL is injected under vitest. A defaulted channel is the same fabrication
-    // shape as a defaulted sensor value: it looks like a measurement and is not one.
-    expect(APP_CHANNEL).toBe('unknown');
+  it('reports the injected channel, and invents none when nothing is injected', () => {
+    // This test must hold in EVERY environment the job runs in. CI exports VITE_APP_CHANNEL
+    // before this step on dev/rc/release pushes, so an unconditional `expect('unknown')` passed
+    // only on pull requests and reddened every push to dev - the failing path was never
+    // exercised because both runs at the time were event:pull_request.
+    const injected = (import.meta as ImportMeta & { env?: Record<string, string | undefined> })
+      .env?.VITE_APP_CHANNEL;
+
+    // The contract: whatever was injected is mapped, never replaced by a convenience default.
+    expect(APP_CHANNEL).toBe(normaliseChannel(injected));
+
+    if (injected === 'release' || injected === 'rc' || injected === 'dev') {
+      expect(APP_CHANNEL).toBe(injected);
+    } else {
+      // No channel injected: unknown, never a silent 'dev'.
+      expect(APP_CHANNEL).toBe('unknown');
+    }
   });
 
   it('maps injected channel values and refuses an unrecognised one', () => {
