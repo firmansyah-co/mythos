@@ -83,7 +83,18 @@ jobs:
       - name: Install Prebuilt git-cliff
         run: |
           mkdir -p /tmp/bin
-          curl -sL https://github.com/orhun/git-cliff/releases/download/v2.14.2/git-cliff-2.14.2-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /tmp/bin --strip-components=1
+          # Download to a file, then unpack. The previous form piped curl into tar, which
+          # hides the real failure: a truncated response surfaced only as "gzip: stdin:
+          # unexpected end of file / tar: Unexpected EOF in archive", with curl's own exit
+          # code swallowed by the pipeline. -f makes curl fail on an HTTP error, and
+          # --retry-all-errors also covers the partial-transfer and DNS cases that plain
+          # --retry ignores - the exact truncation seen in run 40276789567.
+          curl -fsSL \
+            --retry 5 --retry-delay 2 --retry-all-errors \
+            -o /tmp/git-cliff.tar.gz \
+            https://github.com/orhun/git-cliff/releases/download/v2.14.2/git-cliff-2.14.2-x86_64-unknown-linux-gnu.tar.gz
+          tar -xzf /tmp/git-cliff.tar.gz -C /tmp/bin --strip-components=1
+          /tmp/bin/git-cliff --version
           echo "/tmp/bin" >> $GITHUB_PATH
 
       - name: Generate Changelog using git-cliff
