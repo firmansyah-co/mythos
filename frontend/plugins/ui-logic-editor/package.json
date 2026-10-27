@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
+    "@mythos/ui-empty-state": "workspace:*",
     "lucide-react": "^1.59.0",
     "monaco-editor": "^0.52.2 || ^0.57.0",
     "y-monaco": "^0.1.6",

@@ -19,6 +19,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@mythos/ui-faceplate-lib": "workspace:*",
     "clsx": "^2.1.1",
     "lucide-react": "^1.59.0",
     "tailwind-merge": "^3.0.0",

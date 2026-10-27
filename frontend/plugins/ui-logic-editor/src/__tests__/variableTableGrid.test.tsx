@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { createRoot, Root } from 'react-dom/client';
 import { flushSync } from 'react-dom';
-import { VariableTableGrid, DEFAULT_SAMPLE_VARIABLES } from '../variables/VariableTableGrid';
+import { VariableTableGrid } from '../variables/VariableTableGrid';
+import { VARIABLE_FIXTURE_ROWS } from './fixtures/logicFixtures';
 import { VariableRow } from '../variables/types';
 
 let container: HTMLDivElement;
@@ -31,7 +32,7 @@ describe('TSK-704: Variable Table Grid Suite (POU Scopes & IEC Addressing)', () 
   });
 
   it('renders spreadsheet-style grid with POU scopes (VAR, VAR_INPUT, VAR_OUTPUT) and types', () => {
-    const html = renderClient(<VariableTableGrid />);
+    const html = renderClient(<VariableTableGrid variables={VARIABLE_FIXTURE_ROWS} />);
     expect(html).toContain('DI_StartPB');
     expect(html).toContain('DI_EStop_PB');
     expect(html).toContain('DO_ConveyorRun');
@@ -40,7 +41,7 @@ describe('TSK-704: Variable Table Grid Suite (POU Scopes & IEC Addressing)', () 
   });
 
   it('displays IEC memory addresses (%IX, %QX, %MW)', () => {
-    const html = renderClient(<VariableTableGrid />);
+    const html = renderClient(<VariableTableGrid variables={VARIABLE_FIXTURE_ROWS} />);
     expect(html).toContain('%IX0.0');
     expect(html).toContain('%IX0.1');
     expect(html).toContain('%QX0.0');
@@ -48,7 +49,7 @@ describe('TSK-704: Variable Table Grid Suite (POU Scopes & IEC Addressing)', () 
   });
 
   it('filters rows by variable name or address', () => {
-    renderClient(<VariableTableGrid />);
+    renderClient(<VariableTableGrid variables={VARIABLE_FIXTURE_ROWS} />);
     const searchInput = container.querySelector('input[placeholder*="Filter"]') as HTMLInputElement;
     expect(searchInput).toBeTruthy();
 
@@ -68,6 +69,7 @@ describe('TSK-704: Variable Table Grid Suite (POU Scopes & IEC Addressing)', () 
     let capturedVars: VariableRow[] = [];
     renderClient(
       <VariableTableGrid
+        variables={VARIABLE_FIXTURE_ROWS}
         onChange={(v) => {
           capturedVars = v;
         }}
@@ -81,7 +83,7 @@ describe('TSK-704: Variable Table Grid Suite (POU Scopes & IEC Addressing)', () 
       addBtn.click();
     });
 
-    expect(capturedVars.length).toBe(DEFAULT_SAMPLE_VARIABLES.length + 1);
+    expect(capturedVars.length).toBe(VARIABLE_FIXTURE_ROWS.length + 1);
     expect(capturedVars[capturedVars.length - 1].scope).toBe('VAR');
     expect(capturedVars[capturedVars.length - 1].dataType).toBe('BOOL');
   });

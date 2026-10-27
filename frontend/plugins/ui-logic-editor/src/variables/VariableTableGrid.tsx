@@ -1,64 +1,8 @@
 import React, { useState } from 'react';
 import { VariableRow, VariableScope, ELEMENTARY_DATA_TYPES, VariableTableGridProps } from './types';
 import { Plus, Trash2, Search, Filter, Lock, Unlock } from 'lucide-react';
+import { EmptySurface, EMPTY_SURFACE } from '@mythos/ui-empty-state';
 
-export const DEFAULT_SAMPLE_VARIABLES: VariableRow[] = [
-  {
-    id: 'v-1',
-    name: 'DI_StartPB',
-    scope: 'VAR_INPUT',
-    dataType: 'BOOL',
-    address: '%IX0.0',
-    initialValue: 'FALSE',
-    retain: false,
-    constant: false,
-    comment: 'Conveyor Start Pushbutton (N.O.)',
-  },
-  {
-    id: 'v-2',
-    name: 'DI_EStop_PB',
-    scope: 'VAR_INPUT',
-    dataType: 'BOOL',
-    address: '%IX0.1',
-    initialValue: 'TRUE',
-    retain: false,
-    constant: false,
-    comment: 'Emergency Stop Mushroom Button (N.C.)',
-  },
-  {
-    id: 'v-3',
-    name: 'DO_ConveyorRun',
-    scope: 'VAR_OUTPUT',
-    dataType: 'BOOL',
-    address: '%QX0.0',
-    initialValue: 'FALSE',
-    retain: false,
-    constant: false,
-    comment: 'Conveyor Motor Contactor Actuation',
-  },
-  {
-    id: 'v-4',
-    name: 'Bottle_Count',
-    scope: 'VAR',
-    dataType: 'DINT',
-    address: '',
-    initialValue: '0',
-    retain: true,
-    constant: false,
-    comment: 'Accumulated bottle count in shift',
-  },
-  {
-    id: 'v-5',
-    name: 'Conveyor_Velocity_Setpoint',
-    scope: 'VAR',
-    dataType: 'REAL',
-    address: '%MW100',
-    initialValue: '24.5',
-    retain: false,
-    constant: false,
-    comment: 'VFD Speed Reference in m/min',
-  },
-];
 
 const SCOPES: VariableScope[] = [
   'VAR',
@@ -71,7 +15,7 @@ const SCOPES: VariableScope[] = [
 ];
 
 export const VariableTableGrid: React.FC<VariableTableGridProps> = ({
-  variables = DEFAULT_SAMPLE_VARIABLES,
+  variables,
   availableDataTypes = [...ELEMENTARY_DATA_TYPES],
   onChange,
   readOnly = false,
@@ -80,7 +24,7 @@ export const VariableTableGrid: React.FC<VariableTableGridProps> = ({
   onForceVariable,
   onUnforceVariable,
 }) => {
-  const [rows, setRows] = useState<VariableRow[]>(variables);
+  const [rows, setRows] = useState<VariableRow[]>(variables ?? []);
   const [filterText, setFilterText] = useState('');
   const [scopeFilter, setScopeFilter] = useState<string>('ALL');
 
@@ -172,6 +116,11 @@ export const VariableTableGrid: React.FC<VariableTableGridProps> = ({
       </div>
 
       {/* Spreadsheet Grid Table */}
+      {rows.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center p-6">
+          <EmptySurface copy={EMPTY_SURFACE.variables} />
+        </div>
+      ) : (
       <div className="flex-1 overflow-auto border border-neutral-800 rounded bg-[var(--bg-base)]">
         <table className="w-full text-left text-xs font-mono border-collapse">
           <thead className="bg-[var(--bg-surface)] text-neutral-400 border-b border-neutral-800 sticky top-0 z-10 select-none text-[11px]">
@@ -363,6 +312,7 @@ export const VariableTableGrid: React.FC<VariableTableGridProps> = ({
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 };

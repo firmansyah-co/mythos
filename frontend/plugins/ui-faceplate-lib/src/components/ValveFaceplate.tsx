@@ -42,7 +42,6 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
   className = '',
 }) => {
   const [activeTier, setActiveTier] = useState<FaceplateTier>(tier);
-  const [internalMode, setInternalMode] = useState<OperatingMode | null>(operatingMode ?? null);
   const [isLocked, setIsLocked] = useState<boolean>(maintenanceLock);
 
   const live = isLiveQuality(quality);
@@ -85,18 +84,28 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
     : NO_DATA_TEXT;
 
   // Control mode is device state: announce it only for live telemetry, never as a default.
-  const announcedMode: OperatingMode | null = live ? internalMode : null;
+  // A control mode is device state, read from the prop on every render. Mounting a copy in
+  // state pinned the badge to whatever the first render saw, so a mode that arrived with
+  // telemetry after mount was never announced (the canvas re-renders these in place).
+  const announcedMode: OperatingMode | null = live ? operatingMode ?? null : null;
 
   const positionText = formatProcessValue(positionPercent, quality, 0);
   const positionBarPercent = processBarPercent(positionPercent, quality, 100, 0);
+
+  // Interlock states are device state: a satisfied permissive is a measurement, so the rows
+  // follow the same provenance gate as every other reading.
+  const interlockList: InterlockCondition[] = live && Array.isArray(interlocks) ? interlocks : [];
 
   const handleTierSwitch = (newTier: FaceplateTier) => {
     setActiveTier(newTier);
     onTierChange?.(newTier);
   };
 
+  // The command is a request, not a state change: the selector and the badge keep showing what
+  // the device last reported, and the mode moves when telemetry says it moved. This is also the
+  // safe direction for the controls gated on the mode — a live controller in AUTO does not
+  // become commandable because the operator asked for MANUAL.
   const handleModeSwitch = (m: OperatingMode) => {
-    setInternalMode(m);
     onModeToggle?.(m);
   };
 
@@ -314,7 +323,7 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
             disabled={!live}
             title={live ? undefined : 'Device is not reporting: mode cannot be changed'}
             className={`px-3 py-1 rounded text-xs font-mono font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-              internalMode === 'AUTO' ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+              operatingMode === 'AUTO' ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
             }`}
           >
             AUTO
@@ -324,7 +333,7 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
             disabled={!live}
             title={live ? undefined : 'Device is not reporting: mode cannot be changed'}
             className={`px-3 py-1 rounded text-xs font-mono font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-              internalMode === 'MANUAL' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+              operatingMode === 'MANUAL' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
             }`}
           >
             MANUAL
@@ -363,14 +372,14 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
           Valve Permissive Interlocks
         </span>
         <div className="flex flex-col gap-1 mt-1">
-          {interlocks.length === 0 && (
+          {interlockList.length === 0 && (
             <div className="text-xs text-slate-400 py-0.5">
               {live
                 ? 'No interlock telemetry — none bound to this device.'
                 : 'No interlock telemetry — device is not reporting.'}
             </div>
           )}
-          {interlocks.map((item: InterlockCondition) => (
+          {interlockList.map((item: InterlockCondition) => (
             <div key={item.id} className="flex items-center justify-between text-xs py-0.5 border-b border-slate-900/50 last:border-0">
               <span className="text-slate-300 truncate max-w-[260px]">{item.name}</span>
               <span className={`font-mono font-bold px-1.5 py-0.2 rounded text-[11px] ${

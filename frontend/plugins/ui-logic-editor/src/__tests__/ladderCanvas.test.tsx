@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { createRoot, Root } from 'react-dom/client';
 import { flushSync } from 'react-dom';
-import { LadderCanvas, DEFAULT_LD_RUNGS } from '../LadderCanvas';
+import { LadderCanvas } from '../LadderCanvas';
+import { LADDER_FIXTURE_RUNGS } from './fixtures/logicFixtures';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -30,7 +31,7 @@ describe('TSK-702: LadderCanvas Component (Dual Power Rails, Interactivity, Pari
   });
 
   it('renders dual power rails: left hot rail (+24V HOT) and right neutral rail (0V RET)', () => {
-    const html = renderClient(<LadderCanvas targetBlock="OB1_Process" />);
+    const html = renderClient(<LadderCanvas targetBlock="OB1_Process" rungs={LADDER_FIXTURE_RUNGS} />);
     expect(html).toContain('+24V');
     expect(html).toContain('HOT');
     expect(html).toContain('0V');
@@ -39,7 +40,7 @@ describe('TSK-702: LadderCanvas Component (Dual Power Rails, Interactivity, Pari
   });
 
   it('renders default rungs with comments, contacts, and coils', () => {
-    const html = renderClient(<LadderCanvas />);
+    const html = renderClient(<LadderCanvas rungs={LADDER_FIXTURE_RUNGS} />);
     expect(html).toContain('RUNG 1');
     expect(html).toContain('RUNG 2');
     expect(html).toContain('RUNG 3');
@@ -52,7 +53,7 @@ describe('TSK-702: LadderCanvas Component (Dual Power Rails, Interactivity, Pari
 
   it('adds a new rung when "+ Add Rung" button is clicked', () => {
     const onAddRung = vi.fn();
-    renderClient(<LadderCanvas onAddRung={onAddRung} />);
+    renderClient(<LadderCanvas rungs={LADDER_FIXTURE_RUNGS} onAddRung={onAddRung} />);
 
     const addBtn = container.querySelector('[data-testid="add-rung-button"]') as HTMLButtonElement;
     expect(addBtn).toBeTruthy();
@@ -67,7 +68,7 @@ describe('TSK-702: LadderCanvas Component (Dual Power Rails, Interactivity, Pari
 
   it('deletes a rung when delete rung button is clicked', () => {
     const onDeleteRung = vi.fn();
-    renderClient(<LadderCanvas onDeleteRung={onDeleteRung} />);
+    renderClient(<LadderCanvas rungs={LADDER_FIXTURE_RUNGS} onDeleteRung={onDeleteRung} />);
 
     const firstRungDeleteBtn = container.querySelector('[data-testid="rung-container-rung-1"] button[title="Delete Rung"]') as HTMLButtonElement;
     expect(firstRungDeleteBtn).toBeTruthy();
@@ -82,6 +83,7 @@ describe('TSK-702: LadderCanvas Component (Dual Power Rails, Interactivity, Pari
   it('animates power rails and rungs with the energized bus token when debugActive and energized', () => {
     const html = renderClient(
       <LadderCanvas
+        rungs={LADDER_FIXTURE_RUNGS}
         debugActive={true}
         liveTelemetry={{
           'external.DI_StartPB': true,

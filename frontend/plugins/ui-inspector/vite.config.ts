@@ -12,11 +12,14 @@ export default defineConfig({
       formats: ['es', 'cjs'],
     },
     rollupOptions: {
-      external: ['react', 'react-dom', 'react/jsx-runtime'],
+      // The faceplate library is a workspace sibling, not a bundled dependency: keeping it
+      // external avoids shipping a second copy of the shared quality/no-data contract.
+      external: ['react', 'react-dom', 'react/jsx-runtime', '@mythos/ui-faceplate-lib'],
       output: {
         globals: {
           react: 'React',
           'react-dom': 'ReactDOM',
+          '@mythos/ui-faceplate-lib': 'MythosUiFaceplateLib',
         },
       },
     },
