@@ -78,8 +78,18 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
   const spText = formatProcessValue(targetSp, quality, 1);
   const cvText = formatProcessValue(cv, quality, 1);
   const cvBarPercent = processBarPercent(cv, quality, 100, 0);
-  const spSliderMin = spMin ?? 0;
-  const spSliderMax = spMax ?? (displayable && targetSp !== null ? Math.max(100, targetSp) : 100);
+  // A setpoint span the device has not reported is NOT invented. A slider's range is a claim
+  // about what the device ACCEPTS, so an invented maximum is a fabricated constraint rather than
+  // a fabricated reading: it can show the operator a value the device will reject, or stop them
+  // short of one it would take. Neither end may be defaulted, and neither may be derived from the
+  // setpoint being edited — that makes the accepted range move as the operator drags.
+  // Without both ends the control is unusable and the range reads `----`, exactly as the motor
+  // faceplate treats an unreported speed range. Both ends are required, so a degenerate span
+  // (min === max) also leaves nothing commandable rather than inviting a pointless write.
+  const spRangeMin = spMin ?? null;
+  const spRangeMax = spMax ?? null;
+  const hasSpRange = spRangeMin !== null && spRangeMax !== null && spRangeMax > spRangeMin;
+  const canCommandSp = live && hasSpRange;
 
   const configText = (v: number | null | undefined): string =>
     v === null || v === undefined ? NO_DATA_TEXT : String(v);
@@ -227,16 +237,23 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
       {/* SP Slider Adjustment */}
       <div className="flex flex-col gap-1 pt-2 border-t border-slate-800">
         <div className="flex justify-between text-[11px] text-slate-400">
-          <span>Target Setpoint</span>
+          <span>
+            Target Setpoint ({hasSpRange ? `${spRangeMin} - ${spRangeMax}` : NO_DATA_TEXT})
+          </span>
           <span className="font-mono text-slate-300">{displayable ? `${spText} ${unit ?? ''}`.trim() : NO_DATA_TEXT}</span>
         </div>
         <input
           type="range"
-          min={spSliderMin}
-          max={spSliderMax}
+          data-testid="pid-sp-slider"
+          data-range-known={hasSpRange}
+          // No reported range means no command span: the thumb is parked at the bottom of an
+          // unusable control rather than given an invented 0-100 (or setpoint-sized) one.
+          min={spRangeMin ?? 0}
+          max={spRangeMax ?? 0}
           step="0.5"
-          value={live ? targetSp ?? spSliderMin : spSliderMin}
-          disabled={!live}
+          value={live ? targetSp ?? spRangeMin ?? 0 : spRangeMin ?? 0}
+          disabled={!canCommandSp}
+          title={canCommandSp ? undefined : 'Device has not reported a usable setpoint range'}
           onChange={(e) => handleSpCommit(Number(e.target.value))}
           className="w-full accent-sky-500 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
         />

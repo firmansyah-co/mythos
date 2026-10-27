@@ -325,18 +325,89 @@ impl QualityCode {
     pub const GOOD: Self = Self(0x00C0);
 
     #[inline(always)]
-    pub fn is_good(&self) -> bool {
+    pub const fn is_good(&self) -> bool {
         (self.0 & 0x00C0) == 0x00C0
     }
 
     #[inline(always)]
-    pub fn is_bad(&self) -> bool {
+    pub const fn is_bad(&self) -> bool {
         (self.0 & 0x00C0) == 0x0000
     }
 
     #[inline(always)]
-    pub fn is_uncertain(&self) -> bool {
+    pub const fn is_uncertain(&self) -> bool {
         (self.0 & 0x00C0) == 0x0040
+    }
+
+    /// Map a raw quality word to a named code. `None` means unrecognised by this build.
+    ///
+    /// The named constants above are the single source of truth for the code<->name mapping;
+    /// every boundary that carries quality out of the process (telemetry, MCP) uses this and
+    /// [`Self::as_str`] rather than re-deriving a name, so the mapping cannot drift into two
+    /// copies that disagree.
+    pub const fn from_code(code: u16) -> Option<Self> {
+        let candidate = Self(code);
+        if candidate.as_str_inner().is_some() {
+            Some(candidate)
+        } else {
+            None
+        }
+    }
+
+    /// The bit class of this code: `"GOOD"`, `"BAD"`, or `"UNCERTAIN"`.
+    ///
+    /// Defined for every possible 16-bit word, not just the named ones, and mirroring the
+    /// three-branch test this replaced so that "the class is unchanged" is true for *every* word
+    /// rather than only for the codes with names.
+    ///
+    /// The two class bits are `0b00` BAD, `0b01` UNCERTAIN, `0b11` GOOD. `0b10` is not a legal OPC
+    /// class, and this returns `UNCERTAIN` for it — the same as the code it replaces did — rather
+    /// than `BAD`. Both suppress a process value (only `GOOD` is live), so the difference is the
+    /// label an operator reads, and "we do not recognise this class" is the honest one to show.
+    /// A reader that needs to distinguish a reserved class from a named `UNCERTAIN_*` code uses
+    /// [`Self::from_code`], which returns `None` for it.
+    pub const fn class_str(self) -> &'static str {
+        if self.is_good() {
+            "GOOD"
+        } else if self.is_bad() {
+            "BAD"
+        } else {
+            "UNCERTAIN"
+        }
+    }
+
+    /// Stable wire name for a recognised code, or `"UNRECOGNIZED"` for any other word.
+    ///
+    /// An unrecognised word is *named as unrecognised*, never folded into a neighbouring code:
+    /// reporting a quality this build cannot interpret as `GOOD` would be the exact defect the
+    /// quality codes exist to prevent. Callers that must distinguish "unknown word" from "a known
+    /// word that happens to be called this" use [`Self::from_code`].
+    pub const fn as_str(self) -> &'static str {
+        match self.as_str_inner() {
+            Some(name) => name,
+            None => "UNRECOGNIZED",
+        }
+    }
+
+    const fn as_str_inner(self) -> Option<&'static str> {
+        Some(match self.0 {
+            0x0000 => "BAD_NON_SPECIFIC",
+            0x0004 => "BAD_CONFIG_ERROR",
+            0x0008 => "BAD_NOT_CONNECTED",
+            0x000C => "BAD_DEVICE_FAILURE",
+            0x0010 => "BAD_SENSOR_FAILURE",
+            0x0018 => "BAD_COMM_FAILURE",
+            0x0044 => "UNCERTAIN_SUBSTITUTE",
+            0x0048 => "UNCERTAIN_INITIAL_VALUE",
+            0x00C0 => "GOOD",
+            _ => return None,
+        })
+    }
+
+    /// The raw 16-bit word as it appears in a [`TagSlot`].
+    #[inline(always)]
+    pub const fn code(self) -> u16 {
+        self.0
     }
 }
 
@@ -405,6 +476,89 @@ impl Default for TagSlot {
             sequence: 0,
             flags: TagFlags::ACCESS_RO | TagFlags::RETENTION_VOLATILE,
             _padding: [0u8; 28],
+        }
+    }
+}
+
+#[cfg(test)]
+mod quality_class_tests {
+    use super::QualityCode;
+
+    /// The class must be defined for every 16-bit word, and must match the three-branch test it
+    /// replaced for all four class-bit patterns — not only for the codes that have names.
+    #[test]
+    fn class_covers_every_class_bit_pattern() {
+        // 0b00 BAD, for a named code and for an unnamed one.
+        assert_eq!(QualityCode::BAD_COMM_FAILURE.class_str(), "BAD");
+        assert_eq!(QualityCode(0x0001).class_str(), "BAD");
+
+        // 0b01 UNCERTAIN.
+        assert_eq!(
+            QualityCode::UNCERTAIN_INITIAL_VALUE.class_str(),
+            "UNCERTAIN"
+        );
+
+        // 0b11 GOOD.
+        assert_eq!(QualityCode::GOOD.class_str(), "GOOD");
+
+        // 0b10 is not a legal OPC class. It is reported UNCERTAIN, as the code this replaced did,
+        // and it is not named by from_code — so a caller can tell a reserved class from a named
+        // UNCERTAIN_* code.
+        assert_eq!(QualityCode(0x0080).class_str(), "UNCERTAIN");
+        assert_eq!(QualityCode::from_code(0x0080), None);
+        assert_eq!(QualityCode(0x0080).as_str(), "UNRECOGNIZED");
+    }
+
+    #[test]
+    fn every_named_code_round_trips_through_from_code() {
+        for code in [
+            QualityCode::BAD_NON_SPECIFIC,
+            QualityCode::BAD_CONFIG_ERROR,
+            QualityCode::BAD_NOT_CONNECTED,
+            QualityCode::BAD_DEVICE_FAILURE,
+            QualityCode::BAD_SENSOR_FAILURE,
+            QualityCode::BAD_COMM_FAILURE,
+            QualityCode::UNCERTAIN_SUBSTITUTE,
+            QualityCode::UNCERTAIN_INITIAL_VALUE,
+            QualityCode::GOOD,
+        ] {
+            assert_eq!(
+                QualityCode::from_code(code.code()),
+                Some(code),
+                "{} ({:#06x}) must round-trip",
+                code.as_str(),
+                code.code()
+            );
+            assert_ne!(code.as_str(), "UNRECOGNIZED");
+        }
+    }
+
+    /// The class bits and the specific name must agree for every named code: if `as_str` says GOOD
+    /// then `class_str` must say GOOD, or the two wire fields contradict each other.
+    #[test]
+    fn class_and_name_agree_for_every_named_code() {
+        for code in [
+            QualityCode::BAD_NON_SPECIFIC,
+            QualityCode::BAD_CONFIG_ERROR,
+            QualityCode::BAD_NOT_CONNECTED,
+            QualityCode::BAD_DEVICE_FAILURE,
+            QualityCode::BAD_SENSOR_FAILURE,
+            QualityCode::BAD_COMM_FAILURE,
+            QualityCode::UNCERTAIN_SUBSTITUTE,
+            QualityCode::UNCERTAIN_INITIAL_VALUE,
+            QualityCode::GOOD,
+        ] {
+            let name = code.as_str();
+            let class = code.class_str();
+            let agrees = match class {
+                "GOOD" => name == "GOOD",
+                "UNCERTAIN" => name.starts_with("UNCERTAIN"),
+                _ => name.starts_with("BAD"),
+            };
+            assert!(
+                agrees,
+                "{name} claims class {class}, so the two fields disagree"
+            );
         }
     }
 }

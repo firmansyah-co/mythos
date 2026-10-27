@@ -16,6 +16,7 @@ import {
   resolveComponentData,
 } from '@mythos/ui-faceplate-lib';
 import { useHmiStore, isCanvasEqual } from '../../stores/useHmiStore';
+import { APP_VERSION } from '../../lib/appVersion';
 import { FaceplateTypeDesigner } from '../faceplates/FaceplateTypeDesigner';
 import { Plus, Layers, FileCode2, Network, Save, Rocket, Undo2, Loader2 } from 'lucide-react';
 
@@ -149,17 +150,23 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
     (comp: any, e: React.MouseEvent) => {
       e.stopPropagation();
       const compType = (comp.type || 'DEVICE').toUpperCase();
-      const tag = comp.tag || comp.props?.tag || comp.id || 'DEV-01';
-      const label = comp.label || comp.props?.label || tag;
+      // The component's own identity, or nothing. The chain used to end in a fabricated tag
+      // (`'DEV-01'`), so selecting an unidentified canvas component reported a tag that was never
+      // assigned to it.
+      const tag = comp.tag ?? comp.props?.tag ?? comp.id ?? null;
+      const label = comp.label ?? comp.props?.label ?? tag ?? null;
       const propsData = comp.props || {};
 
       setSelectedContextItem({
-        id: comp.id || tag,
-        name: tag,
+        id: comp.id ?? tag ?? undefined,
+        name: tag ?? undefined,
         type: 'FACEPLATE',
-        subType: comp.udtArchetype || `${compType}_UDT`,
-        hardwareAddress: comp.hardwareAddress || propsData.hardwareAddress || '%QX0.0',
-        udtArchetype: comp.udtArchetype || propsData.udtArchetype || `FB_${compType}_UDT`,
+        // The selected component's own attributes, or nothing. These previously synthesised a UDT
+        // name and an IEC address (`FB_${compType}_UDT`, `%QX0.0`) for a component that declares
+        // neither, so the inspector reported an archetype and an address the canvas never had.
+        subType: comp.udtArchetype ?? undefined,
+        hardwareAddress: comp.hardwareAddress ?? propsData.hardwareAddress ?? undefined,
+        udtArchetype: comp.udtArchetype ?? propsData.udtArchetype ?? undefined,
         metadata: {
           id: comp.id,
           tag,
@@ -536,8 +543,21 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
 
       {/* Canvas Bottom Status Bar */}
       <div className="flex items-center justify-between px-3 py-1 bg-[var(--bg-surface)] border-t border-neutral-800 text-[11px] text-neutral-500 font-mono">
-        <span>TagBus Status: <strong className="text-emerald-400 font-mono">ACTIVE (100ms)</strong></span>
+        {/* Nothing in this build measures TagBus health: there is no supervisor telemetry
+            transport in the shell yet. Reporting "ACTIVE" here would be a fabricated
+            system-health claim sitting next to honest NOT BOUND faceplates, so it states
+            the absence instead. Bind this to a real measured state when the transport lands
+            (qitem-20261023085422-f459118d847f001d). */}
+        <span>
+          TagBus Status:{' '}
+          <strong className="text-neutral-400 font-mono" title="No TagBus health signal is available to this build.">
+            UNKNOWN (NOT MEASURED)
+          </strong>
+        </span>
         <span>Components: <strong className="text-cyan-400 font-mono">{components.length}</strong></span>
+        <span data-testid="app-version" title="Build version, stamped from the release tag.">
+          v<strong className="text-neutral-400 font-mono">{APP_VERSION}</strong>
+        </span>
         <span>
           Unsaved drafts:{' '}
           <strong className={unsavedScreenCount > 0 ? 'text-amber-400 font-mono' : 'text-emerald-400 font-mono'}>

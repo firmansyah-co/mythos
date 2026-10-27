@@ -108,6 +108,17 @@ describe('SYS-REQ-096: faceplates carry no fabricating parameter defaults', () =
     }
   });
 
+  it('never derives a slider range from the value being edited', () => {
+    // The pre-fix defect: `spMax ?? (displayable && targetSp !== null ? Math.max(100, targetSp) : 100)`.
+    // A range is a claim about what the device ACCEPTS, so an invented maximum is a fabricated
+    // constraint — and one derived from the setpoint moves as the operator drags. Behavioural
+    // tests cannot see this behind a disabled control, so the shape is guarded here.
+    const RANGE_FROM_VALUE = /(SliderMax|SliderMin|RangeMax|RangeMin)\s*=[^;\n]*\b(targetSp|targetCv|inputSpeed|speedSetpoint|pv)\b|(?:min|max)=\{[^}]*\b(targetSp|targetCv|inputSpeed|speedSetpoint)\b/;
+    for (const { file, source } of sources) {
+      expect(source, `${file} sizes a slider range from the edited value`).not.toMatch(RANGE_FROM_VALUE);
+    }
+  });
+
   it('no faceplate paints a colour from an ungated device-state prop', () => {
     // `className={running === true ? 'text-emerald-300' : ...}` printed `----` in the RUNNING
     // colour on an unbound device. The text already went through the quality gate; the class

@@ -90,9 +90,15 @@ fn test_quality_gate_comm_loss_latching_sys_req_096() {
     let force_res = gate.validate_forcing_permitted(tag);
     assert!(force_res.is_err());
 
-    // Record comm loss -> immediately latches BAD_COMM_FAILURE
-    let code = gate.record_comm_loss(tag);
-    assert_eq!(code, QualityCode::BAD_COMM_FAILURE);
+    // Record comm loss -> immediately latches BAD_COMM_FAILURE.
+    // No publication path is configured on this gate, so the latch must say so rather than let a
+    // caller assume other processes can see it (see quality_gate_shm_publication.rs).
+    let latch = gate.record_comm_loss(tag);
+    assert_eq!(latch.quality, QualityCode::BAD_COMM_FAILURE);
+    assert!(
+        !latch.visibility.is_cross_process(),
+        "a gate with no shared-memory path cannot claim cross-process visibility"
+    );
     assert_eq!(
         gate.get_latched_quality(tag),
         Some(QualityCode::BAD_COMM_FAILURE)
