@@ -323,6 +323,17 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Resolve Build Channel
+        run: |
+          # The channel the bundle belongs to, derived from the event that produced it
+          # (dev/rc/release branch, tag suffix, or unknown for a PR preview or local build).
+          # VITE_APP_CHANNEL is read by src/lib/appVersion.ts and rendered in the status bar.
+          # Never defaulted: scripts/version.sh prints `unknown` when it cannot establish one,
+          # because a defaulted channel is a fabricated measurement.
+          CHANNEL="$(../scripts/version.sh --channel)"
+          echo "Resolved build channel: ${CHANNEL}"
+          echo "VITE_APP_CHANNEL=${CHANNEL}" >> "$GITHUB_ENV"
+
       - name: Typecheck & Lint
         run: pnpm lint
 

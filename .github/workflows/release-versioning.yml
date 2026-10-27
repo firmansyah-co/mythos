@@ -91,6 +91,11 @@ jobs:
         # variable VERSION_TAG_PUSH_ENABLED is exactly "true". Until then it prints what it
         # WOULD create and exits 0 - a dry run, not a silent no-op.
         if: github.event_name == 'push' && (github.ref_name == 'rc' || github.ref_name == 'release')
+        # NOTE FOR WHOEVER ENABLES THE FLAG: promotion is a TWO-run operation, not one. Posture has
+        # already run by the time this step creates the tag, so this run prints RELEASE: NONE. The
+        # release then lands on the NEXT promotion push, once the tag already exists - a tag pushed
+        # by the workflow with GITHUB_TOKEN does not re-trigger the workflow. Enabling
+        # VERSION_TAG_PUSH_ENABLED and pushing once will look like the release silently failed.
         env:
           TAG_PUSH_ENABLED: ${{ vars.VERSION_TAG_PUSH_ENABLED }}
         run: |
