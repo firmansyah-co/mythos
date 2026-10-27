@@ -108,7 +108,7 @@ jobs:
             echo "| build tools / linker | $SECS |"
             echo ""
             echo "- build tool mode: $MODE"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Setup Cache Symlinks and Directories
         run: |
@@ -298,35 +298,31 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # REQ 1 — AN EXPLICIT STORE PATH, REPORTED EVERY RUN; THE HOST-BACKED STORE IS NOT YET PROVEN.
+      # REQ 1 — WHERE THE PNPM STORE ACTUALLY LIVES, MEASURED RATHER THAN ASSUMED.
       #
-      # Attempted and REVERTED, with the measurement that rejected it. I first pointed the store at
-      # the host-backed /opt/hostedtoolcache/pnpm-store and skipped actions/cache when it was
-      # writable. Two runs (the same SHA, attempt 1 and attempt 2 of run 40485669504) both reported
-      # the store EMPTY before install: `pnpm store -> /opt/hostedtoolcache/pnpm-store
-      # (persistent=true, entries_before=0)`. `npm_config_store_dir` was confirmed present in the
-      # step environment, so the likeliest reading is that pnpm does not honour that variable here
-      # and writes to its own default, leaving the directory I created unused.
+      # Two corrections to what this file used to claim, both established by measurement:
       #
-      # Consequence: persistence across runs was NOT demonstrated, and persistence is the entire
-      # basis for removing the cache round-trip (measured cost 2 s restore + 12 s save warm,
-      # 95 s + 67 s cold). Removing the cache without it would risk a cold-store regression on any
-      # fresh pod, so the cache is restored unconditionally and the store path is now REPORTED
-      # rather than assumed. The authoritative answer comes from pnpm itself, in the step below.
+      # 1. `npm_config_store_dir` IS NOT HONOURED. The workflow set it (to $RUNNER_TEMP/pnpm-store)
+      #    while the run at this head reports `pnpm store path` = /home/runner/.pnpm-store/v11. pnpm
+      #    reads storeDir from pnpm-workspace.yaml, its global config.yaml, or the CLI — not from
+      #    .npmrc/env. So the variable is removed rather than left in as decoration: an env var that
+      #    silently does nothing is worse than no env var, because the next reader believes it.
       #
-      # The env vars are still set: if pnpm does honour them on this runner, the store lands on
-      # persistent host storage and the cache becomes cheap to restore because it is already warm.
-      # RUNNER PREREQUISITE: /opt/hostedtoolcache must be persistent and writable by the runner uid.
-      # Do NOT chown shared infra to force this: the runner keeps persistent HOME written by earlier
-      # root runs, and chowning regresses the next time anything runs as root.
-      - name: Configure Job-Local Caches
+      # 2. THE STORE WAS NEVER "JOB-LOCAL". The old comment here said it was kept job-local. It was
+      #    not: it has been in shared, persistent HOME (/home/runner/.pnpm-store/v11, measured 324 MB
+      #    / 15,262 files) all along. That also means the "host-backed store" I set out to engineer
+      #    may already exist by default, which is why the next experiment is DISABLING THE CACHE, not
+      #    relocating the store — see the note at the Cache step.
+      #
+      # npm_config_cache IS honoured (npm reads it) and stays: it points npm's own cache at a
+      # job-local directory, unrelated to pnpm's store.
+      - name: Configure npm cache directory
         id: pnpm-store
         shell: bash
         run: |
           START=$(date +%s)
           echo "npm_config_cache=$RUNNER_TEMP/npm-cache" >> "$GITHUB_ENV"
-          echo "npm_config_store_dir=$RUNNER_TEMP/pnpm-store" >> "$GITHUB_ENV"
-          echo "| pnpm store configured | $(( $(date +%s) - START )) |" >> "$GITHUB_STEP_SUMMARY"
+          { echo "| configure npm cache | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -348,10 +344,9 @@ jobs:
           echo "$RUNNER_TEMP/pnpm-prefix/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/pnpm-prefix/bin/pnpm" --version
 
-      # The cache path comes from pnpm ITSELF, not from the env var we set. That distinction is the
-      # finding of this item: with npm_config_store_dir pointing at a host path, two runs reported
-      # that directory empty, so the variable is not a reliable way to choose the store here. Asking
-      # pnpm is authoritative, and it also makes the cache key's path correct by construction.
+      # The cache path comes from pnpm ITSELF, not from an env var. Asking pnpm is authoritative and
+      # makes the cache key's path correct by construction; the env var that was meant to choose the
+      # store turned out not to be honoured at all (see the Configure step).
       # RESOLVE ONLY — this value FEEDS the cache step, so failing here is correct: a silently empty
       # path would make the cache a no-op. Everything observational moved to the report step below,
       # which is non-fatal. (My first version of this step did both and, because GitHub runs bash with
@@ -385,8 +380,8 @@ jobs:
       # carries continue-on-error: it reports numbers, it cannot decide whether the code is correct,
       # so it must not be able to fail the job. Same rule as the archival steps in #35.
       #
-      # This is also where the req-1 finding surfaces every run: pnpm's real store is printed next to
-      # the store dir we asked for, so "is npm_config_store_dir honoured here?" needs no experiment.
+      # This is also where the req-1 facts surface every run: pnpm's real store, its size and file
+      # count, and the cache hit/miss, so a future change is judged against numbers, not belief.
       - name: Report pnpm store state
         if: always()
         continue-on-error: true
@@ -401,7 +396,6 @@ jobs:
             echo ""
             echo "- pnpm store path (from \`pnpm store path\`): \`${STORE:-<unresolved>}\`"
             echo "- size: **${SIZE:-unknown}**, files: **${ENTRIES:-0}**"
-            echo "- npm_config_store_dir we set: \`${npm_config_store_dir:-<unset>}\`"
             echo "- cache-hit: \`${{ steps.pnpm-cache.outputs.cache-hit || 'n/a' }}\`"
           } >> "$GITHUB_STEP_SUMMARY" || true
           echo "pnpm store: ${STORE:-<unresolved>} size=${SIZE:-unknown} files=${ENTRIES:-0} cache-hit=${{ steps.pnpm-cache.outputs.cache-hit || 'n/a' }}"
@@ -422,7 +416,7 @@ jobs:
           START=$(date +%s)
           STATUS=0
           pnpm install --frozen-lockfile || STATUS=$?
-          echo "| install dependencies (--frozen-lockfile) | $(( $(date +%s) - START )) |" >> "$GITHUB_STEP_SUMMARY"
+          { echo "| install dependencies (--frozen-lockfile) | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
           exit $STATUS
 
       - name: Typecheck & Lint
@@ -430,7 +424,7 @@ jobs:
           START=$(date +%s)
           STATUS=0
           pnpm lint || STATUS=$?
-          echo "| typecheck + lint | $(( $(date +%s) - START )) |" >> "$GITHUB_STEP_SUMMARY"
+          { echo "| typecheck + lint | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
           exit $STATUS
 
       - name: Run Frontend Test Suite
@@ -438,7 +432,7 @@ jobs:
           START=$(date +%s)
           STATUS=0
           pnpm test || STATUS=$?
-          echo "| frontend tests | $(( $(date +%s) - START )) |" >> "$GITHUB_STEP_SUMMARY"
+          { echo "| frontend tests | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
           exit $STATUS
 
       - name: Build Frontend Bundles
@@ -446,5 +440,5 @@ jobs:
           START=$(date +%s)
           STATUS=0
           pnpm build || STATUS=$?
-          echo "| frontend build | $(( $(date +%s) - START )) |" >> "$GITHUB_STEP_SUMMARY"
+          { echo "| frontend build | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
           exit $STATUS
