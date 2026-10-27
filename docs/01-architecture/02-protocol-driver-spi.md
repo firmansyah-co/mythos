@@ -425,7 +425,10 @@ pub fn validate_forcing_permitted(&self, tag_uri: &str) -> Result<(), StrucppErr
 ```rust
 if let Some(latched) = quality_gate.get_latched_quality(&binding.tag_uri) {
     if !latched.is_good() {
-        // skip: do not copy a stale value into %IX
+        debug!(
+            "Tag {} has bad quality ({:#x}), skipping write to located memory",
+            binding.tag_uri, latched.0
+        );
         continue;
     }
 }
@@ -513,13 +516,20 @@ pub struct DiscoveryContext {
 pub struct DiscoveredDevice {
     pub device_id: String,
     pub protocol: String,
+    #[serde(default)]
     pub station_name: Option<String>,
+    #[serde(default)]
     pub mac_address: Option<String>,
+    #[serde(default)]
     pub ip_address: Option<String>,
+    #[serde(default)]
     pub modbus_slave_id: Option<u8>,
+    #[serde(default)]
     pub fingerprint_model: Option<String>,
+    #[serde(default)]
     pub vendor: Option<String>,
     pub confidence: f32,
+    #[serde(default)]
     pub properties: HashMap<String, String>,
 }
 ```
@@ -549,7 +559,7 @@ Behaviour of `run_discovery`:
 | :--- | :--- |
 | `Some(id)` where `id` is registered | Runs that discoverer. Propagates its error. |
 | `Some(id)` where `id` is not registered | Returns `DiscoveryError::ProtocolError`. |
-| `None` | Runs every registered discoverer **sequentially**, in `HashMap` iteration order. Skips a failing discoverer with a `tracing::warn!` and continues. Returns `DiscoveryError::Cancelled` immediately if the token is cancelled. |
+| `None` | Runs every registered discoverer **sequentially**, in `HashMap` iteration order. Checks the token before each discoverer and aborts with `DiscoveryError::Cancelled` if it is set. A discoverer that itself returns `DiscoveryError::Cancelled` also aborts the whole sweep (`engine.rs:66-71`). Any other error is logged with `tracing::warn!` and skipped. |
 
 Two consequences:
 
@@ -643,11 +653,11 @@ device.confidence = (device.confidence + best.confidence) / 2.0;
 
 No code path provisions a device from a catalog match. The "single-click commissioning" flow in revision 1.2.0, which allocates tag slots and pre-maps register layouts, does not exist.
 
-### 6.11 Wiring status and one open defect
+### 6.11 Wiring status
 
-`DiscoveryEngine` is constructed in two places: integration tests, and `McpContext::with_discovery_engine`. `crates/mythos-core/src/bin/mythos-server.rs` does not build an engine and registers no discoverer, so the production daemon has no discovery capability.
+`DiscoveryEngine::new()` appears only in integration tests (`crates/mythos-core/tests/discovery_tests.rs`, `profinet_dcp_tests.rs`). `McpContext::with_discovery_engine` (`crates/mythos-mcp/src/context.rs:136`) does not construct an engine; it accepts one the caller supplies, and no production caller supplies one. `crates/mythos-core/src/bin/mythos-server.rs` does not build an engine and registers no discoverer, so the production daemon has no discovery capability.
 
-**Open defect.** The MCP tool `mythos_discover_devices` (`crates/mythos-mcp/src/tools/diag_tools.rs:89`) handles a missing engine by inventing a device:
+**Defect, FIXED.** The MCP tool `mythos_discover_devices` (`crates/mythos-mcp/src/tools/diag_tools.rs:89`) used to handle a missing engine by inventing a device:
 
 ```rust
 } else {
@@ -665,11 +675,30 @@ No code path provisions a device from a catalog match. The "single-click commiss
 }
 ```
 
-An AI agent that calls this tool on a host with no discovery engine receives a Siemens ET200SP at a specific MAC and IP, with confidence 1.0, and no indication that the result is fabricated. This is the same defect class as SYS-REQ-096: a plausible value reported where no measurement exists.
+An AI agent that called this tool on a host with no discovery engine received a Siemens ET200SP at a specific MAC and IP, with confidence 1.0, and no indication that the result was fabricated. This is the same defect class as SYS-REQ-096: a plausible value reported where no measurement exists.
 
 **Reachability: latent, not live.** No crate in the workspace depends on `mythos-mcp`. `Cargo.toml:9` lists it as a workspace member and `Cargo.toml:33` declares it as a workspace dependency. Nothing consumes either. The daemon's MCP surface is a separate hand-rolled handler, `crates/mythos-core/src/api/mcp.rs`, mounted at `crates/mythos-core/src/api/mod.rs:129-130`. That handler advertises two tools, `mythos_read_tag` (`mcp.rs:244`) and `mythos_write_tag` (`mcp.rs:253`), and returns `-32601` for every other name (`mcp.rs:315`, `mcp.rs:326`). No caller reaches `mythos_discover_devices` today.
 
-The defect is latent, not theoretical. It becomes live when `mythos-mcp` is mounted, which Sprint 5 delivers. That timing does not reduce the defect: the fabricated device, the fabricated hardware identity, and the `confidence: 1.0` are what the code returns. Fix it before mounting. The change is code, outside this document's scope.
+The defect was latent, not theoretical: it would have become live when `mythos-mcp` is mounted, which Sprint 5 delivers.
+
+**Fixed on `dev` at `54b8f4c7a28d8e5af6bd9d820d1ff6cdf7ad4275` (PR #32, "never report a discovered device that was not measured").** The fabricated branch is deleted outright rather than gated behind a `cfg` or feature flag, and a missing engine now returns an error carrying a reason, never a device:
+
+```rust
+let Some(engine) = &ctx.discovery_engine else {
+    let result = serde_json::json!({
+        "status": "unavailable",
+        "reason": "no discovery engine is attached to this MCP context; no scan was performed",
+        "interface": iface,
+        "protocol": proto_filter,
+        "count": 0,
+        "devices": [],
+    });
+    return CallToolResult::error_json(&result)
+        .map_err(|e| McpError::InternalError(e.to_string()));
+};
+```
+
+The first code block above is the pre-fix state, kept here because this document is the trace for discovery behaviour. It is no longer what `mythos-mcp` returns. The reachability finding stands unchanged and independently of the fix: `mythos-mcp` still has no dependents, so even the fixed tool is unreachable until Sprint 5 mounts it.
 
 ---
 
@@ -751,9 +780,16 @@ Note that `set_mode` does not validate the transition, and it does not reject a 
 
 ### 7.3 The second gate, and a duplicated enum
 
-`crates/mythos-strucpp/src/quality_gate.rs` declares **its own** `DeviceExecutionMode` with the same two variant names. It has no serde attributes, no `Default`, and no relation to the `mythos-core` type.
+`crates/mythos-strucpp/src/quality_gate.rs` declares **its own** `DeviceExecutionMode` with the same two variant names. It has no `Default` and no relation to the `mythos-core` type. Both enums derive `Serialize` and `Deserialize`, and that is what makes the duplication a real defect rather than a cosmetic one: the two derive **different attributes**, so they serialise under **different wire names**.
 
-Two independent public types with the same name and the same meaning are a drift risk. A value from one cannot be passed to the other, and a future change to one will not reach the other. `mythos-strucpp` does not depend on `mythos-core`, so neither type can absorb the other without a dependency decision.
+| Definition | Derives | Wire name of the first variant |
+| :--- | :--- | :--- |
+| `mythos_core::device::DeviceExecutionMode` (`mode.rs:30`) | `Default`, `Hash`, `#[serde(rename_all = "snake_case")]` | `"physical_hardware"` |
+| `mythos_strucpp::quality_gate::DeviceExecutionMode` (`quality_gate.rs:13`) | no `rename_all`, no `Default` | `"PhysicalHardware"` |
+
+The same concept therefore crosses a serialisation boundary under two different names, and only the `mythos-core` variant has a `Default`, so only it can be deserialised from an absent field.
+
+**The two crates are not separated by a dependency boundary.** `crates/mythos-strucpp/Cargo.toml:16` declares `mythos-core.workspace = true`, so `mythos-strucpp` already depends on `mythos-core` and can use the `mythos-core` enum today. There is no reverse dependency, so collapsing the two would create no cycle. The duplication is a choice, not a constraint. Collapsing it is still an architecture decision, because the wire-name difference means any persisted or transmitted value would need a migration.
 
 `QualityGate` is the runtime gate used by the control scan:
 
