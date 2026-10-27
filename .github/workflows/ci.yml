@@ -352,24 +352,23 @@ jobs:
       # finding of this item: with npm_config_store_dir pointing at a host path, two runs reported
       # that directory empty, so the variable is not a reliable way to choose the store here. Asking
       # pnpm is authoritative, and it also makes the cache key's path correct by construction.
+      # RESOLVE ONLY — this value FEEDS the cache step, so failing here is correct: a silently empty
+      # path would make the cache a no-op. Everything observational moved to the report step below,
+      # which is non-fatal. (My first version of this step did both and, because GitHub runs bash with
+      # `-e -o pipefail`, a `find` on a not-yet-created store directory exited non-zero and reddened
+      # the required check — skipping install, tests and build. A diagnostic must never be able to
+      # do that; that is the #35 archival lesson, relearned the hard way on this very PR.)
       - name: Resolve pnpm Store Path (authoritative)
         id: pnpm-store-path
         shell: bash
         run: |
-          START=$(date +%s)
-          STORE=$(pnpm store path)
+          STORE=$(pnpm store path 2>/dev/null || true)
+          if [ -z "$STORE" ]; then
+            echo "::error::pnpm store path returned nothing; the pnpm cache would be a no-op"
+            exit 1
+          fi
           echo "path=$STORE" >> "$GITHUB_OUTPUT"
           echo "pnpm store path (from pnpm): $STORE"
-          SIZE=$(du -sh "$STORE" 2>/dev/null | cut -f1 || echo unknown)
-          ENTRIES=$(find "$STORE" -type f 2>/dev/null | wc -l | tr -d ' ')
-          echo "store size=$SIZE files=$ENTRIES"
-          {
-            echo "| pnpm store inspect | $(( $(date +%s) - START )) |"
-            echo ""
-            echo "- pnpm store path (from \`pnpm store path\`): \`$STORE\`"
-            echo "- size: **$SIZE**, files: **$ENTRIES**"
-            echo "- npm_config_store_dir we set: \`$npm_config_store_dir\`"
-          } >> "$GITHUB_STEP_SUMMARY"
 
       # REQ 1, retained safety: the store round-trips through actions/cache because persistence to
       # host storage has NOT been demonstrated (see the Configure step). Cost measured at 2 s restore
@@ -382,12 +381,30 @@ jobs:
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
           restore-keys: pnpm-store-${{ runner.os }}-
 
-      # REQ 6 — the hit/miss flag and the authoritative path, in the summary next to the timings.
+      # REQ 6 — OBSERVABILITY ONLY, AND THEREFORE NON-FATAL. Every command is tolerant and the step
+      # carries continue-on-error: it reports numbers, it cannot decide whether the code is correct,
+      # so it must not be able to fail the job. Same rule as the archival steps in #35.
+      #
+      # This is also where the req-1 finding surfaces every run: pnpm's real store is printed next to
+      # the store dir we asked for, so "is npm_config_store_dir honoured here?" needs no experiment.
       - name: Report pnpm store state
         if: always()
+        continue-on-error: true
         shell: bash
         run: |
-          echo "- pnpm cache: cache-hit=${{ steps.pnpm-cache.outputs.cache-hit || 'n/a' }} path=\`${{ steps.pnpm-store-path.outputs.path }}\`" >> "$GITHUB_STEP_SUMMARY"
+          STORE="${{ steps.pnpm-store-path.outputs.path }}"
+          SIZE=$(du -sh "$STORE" 2>/dev/null | cut -f1 || true)
+          ENTRIES=$(find "$STORE" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
+          {
+            echo ""
+            echo "| pnpm store inspect | 0 |"
+            echo ""
+            echo "- pnpm store path (from \`pnpm store path\`): \`${STORE:-<unresolved>}\`"
+            echo "- size: **${SIZE:-unknown}**, files: **${ENTRIES:-0}**"
+            echo "- npm_config_store_dir we set: \`${npm_config_store_dir:-<unset>}\`"
+            echo "- cache-hit: \`${{ steps.pnpm-cache.outputs.cache-hit || 'n/a' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY" || true
+          echo "pnpm store: ${STORE:-<unresolved>} size=${SIZE:-unknown} files=${ENTRIES:-0} cache-hit=${{ steps.pnpm-cache.outputs.cache-hit || 'n/a' }}"
 
       - name: Verify Toolchain Versions
         run: |
