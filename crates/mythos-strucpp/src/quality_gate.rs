@@ -218,16 +218,79 @@ impl QualityGate {
             };
         };
 
-        let visibility = self.publish(tag_uri, prior);
-        info!(
-            "Communication recovered for {tag_uri}. Restored {:#06x} ({}) ({}).",
-            prior.code(),
-            prior.as_str(),
-            describe_visibility(&visibility)
-        );
-        ClearOutcome::Cleared {
-            restored: Some(prior),
-            visibility,
+        // Compare-and-restore: undo *our own* overwrite, and only that.
+        //
+        // Writing `prior` unconditionally would revert a quality another path published while the
+        // latch was held. That is reachable, not hypothetical: `TagSynchronizer::sync_outputs`
+        // rewrites slot quality on every scan. The replay that found this:
+        //
+        //   1) code=68 (UNCERTAIN_SUBSTITUTE) value=42.5
+        //   2) code=24 (BAD_COMM_FAILURE)     value=42.5   <- the latch
+        //   3) code=192 (GOOD)                value=77.25  <- another path's real measurement
+        //   4) code=68 (UNCERTAIN_SUBSTITUTE) value=77.25  <- unconditional restore
+        //
+        // Step 4 labels a measured value as a substitute: the inverse of the lie this slice
+        // removes. So the restore fires only while the slot still carries the word this latch
+        // wrote. If anything else owns the quality now, the gate has nothing to undo and leaves it.
+        match self.peek_slot_quality(tag_uri) {
+            Some(current) if current == latched.code => {
+                let visibility = self.publish(tag_uri, prior);
+                info!(
+                    "Communication recovered for {tag_uri}. Restored {:#06x} ({}) over this gate's \
+                     own {:#06x} ({}) ({}).",
+                    prior.code(),
+                    prior.as_str(),
+                    latched.code.code(),
+                    latched.code.as_str(),
+                    describe_visibility(&visibility)
+                );
+                ClearOutcome::Cleared {
+                    restored: Some(prior),
+                    visibility,
+                }
+            }
+            Some(current) => {
+                // Someone else has taken the slot's quality since we latched. Their value is
+                // fresher than anything we recorded, so ours is stale by definition.
+                warn!(
+                    "Communication recovered for {tag_uri}, but the slot now carries {:#06x} ({}) \
+                     rather than this gate's {:#06x} ({}). Another path owns the quality; the slot \
+                     is left untouched.",
+                    current.code(),
+                    current.as_str(),
+                    latched.code.code(),
+                    latched.code.as_str()
+                );
+                ClearOutcome::Cleared {
+                    restored: None,
+                    visibility: QualityVisibility::ProcessLocalOnly {
+                        reason: format!(
+                            "the slot carries {:#06x} ({}) rather than the {:#06x} ({}) this gate \
+                             latched, so another path owns the quality and nothing was written back",
+                            current.code(),
+                            current.as_str(),
+                            latched.code.code(),
+                            latched.code.as_str()
+                        ),
+                    },
+                }
+            }
+            None => {
+                // Cannot read the slot, so cannot prove the word is still ours. Leave it.
+                warn!(
+                    "Communication recovered for {tag_uri}, but the slot's current quality could \
+                     not be read, so this gate cannot tell whether it still owns the word. Slot \
+                     left untouched."
+                );
+                ClearOutcome::Cleared {
+                    restored: None,
+                    visibility: QualityVisibility::ProcessLocalOnly {
+                        reason: "the slot's current quality could not be read, so this gate could \
+                                 not confirm it still owned the word and wrote nothing back"
+                            .to_string(),
+                    },
+                }
+            }
         }
     }
 
