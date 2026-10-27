@@ -82,10 +82,54 @@ const SAMPLES_PER_THREAD: usize = 20_000;
 /// TSK-010's stated target for read and write.
 const SPEC_P99_NS: u64 = 100;
 
-/// Backstop for regime A (busy poll). Deliberately enormous: that population is dominated by how
-/// long a spinning reader waits for the writer to publish, which is harness and scheduler
-/// behaviour, not engine cost. It exists only to catch a hard hang or a catastrophic regression.
-const BUSY_POLL_BACKSTOP_NS: u64 = 1_000_000;
+/// Gross-breakage backstop for regime A (busy poll): p50, at **10x the worst p50 in the runs this
+/// constant was derived from** (see the table below). Pinned by decision, not recomputed per run —
+/// a later run that measures a higher p50 does not move it, and the comment must not claim it does.
+///
+/// # What this is NOT
+///
+/// This is a **gross-breakage detector, not a performance criterion.** Do not read it as a claim
+/// about engine speed, and do not "tidy" it into one. At 10x it would not catch a 5x regression:
+/// 1220 ns against a worst observed 122 ns leaves a factor of five of slack. That slack is
+/// deliberate — the three retained runs below spread 3.4x on host state alone (p50 36 -> 122 ns at
+/// 1-min load averages 32.8 to 63.9), so anything tighter would flake on load rather than on the
+/// engine. It must be **re-tightened together with the real bound** once five or more runs are
+/// retained; tightening it now, on three runs, would buy a flaky check rather than a stricter one.
+///
+/// # Provenance (do not replace this with a bare number)
+///
+/// Worst observed p50 for regime A = 122 ns (run 40463220645). 10 x 122 = 1220 ns.
+///
+/// ```text
+/// run 40089446143  load 63.85:  A p50=36   B p50=178
+/// run 40450932513  load 32.81:  A p50=63   B p50=449
+/// run 40463220645  load 37.49:  A p50=122  B p50=428
+/// ```
+const REGIME_A_P50_BACKSTOP_NS: u64 = 1_220;
+
+/// Gross-breakage backstop for regime B (swap-acquired, i.e. only updates that took the state-word
+/// CAS): p50, at **10x the worst p50 in the runs this constant was derived from**. Pinned by
+/// decision, not recomputed per run.
+///
+/// Same status as [`REGIME_A_P50_BACKSTOP_NS`]: a gross-breakage detector, not a performance
+/// criterion, to be re-tightened with the real bound once five or more runs exist.
+///
+/// Worst observed p50 for regime B = 449 ns (run 40450932513). 10 x 449 = 4490 ns.
+///
+/// # Why p50 and not p99
+///
+/// A 20x multiple on p99 was the first proposal and it fails the evidence offered in its support:
+/// for regime B it gives 20 x 178 = 3560 ns, while run 40450932513 measured p99 = 4145 ns. The
+/// bound would have failed on the very runs used to derive it. p50 is the population that is
+/// comparatively stable across host state, which is what a backstop has to key on.
+const REGIME_B_P50_BACKSTOP_NS: u64 = 4_490;
+
+/// Where each run's distributions are written, so a series can be retained as a CI artifact.
+///
+/// The bound the board sets after five runs is only possible if those runs are kept from now on;
+/// the three runs quoted above had to be read out of CI logs by hand, and a hand-read number is not
+/// a baseline. Overridable so CI can name the path explicitly rather than rely on the layout below.
+const DISTRIBUTIONS_ENV: &str = "MYTHOS_TSK010_OUT";
 
 fn percentile(sorted: &[u64], p: f64) -> u64 {
     debug_assert!(!sorted.is_empty());
@@ -123,6 +167,101 @@ impl Distribution {
             self.p(0.99),
             self.sorted[self.sorted.len() - 1],
         );
+    }
+}
+
+/// A population's distribution, in the shape the retained record carries.
+struct Retained {
+    name: &'static str,
+    n: usize,
+    p50: u64,
+    p90: u64,
+    p99: u64,
+    max: u64,
+}
+
+impl Retained {
+    fn of(name: &'static str, d: &Distribution) -> Self {
+        Self {
+            name,
+            n: d.sorted.len(),
+            p50: d.p(0.50),
+            p90: d.p(0.90),
+            p99: d.p(0.99),
+            max: d.sorted[d.sorted.len() - 1],
+        }
+    }
+}
+
+/// Write this run's distributions where CI can archive them, and say where.
+///
+/// Hand-built JSON rather than a serialiser: `mythos-shm` has no serde dependency and this is five
+/// fixed fields per population. Printing the path on success and on failure is deliberate — an
+/// artifact that silently did not appear is the same defect class as a check that silently did not
+/// run, and CI uploads nothing when the file is absent.
+fn retain_distributions(run: &[Retained], load: &str) {
+    let dir = match std::env::var(DISTRIBUTIONS_ENV) {
+        Ok(explicit) => std::path::PathBuf::from(explicit),
+        Err(_) => {
+            // Default to the workspace target dir, derived from this crate's manifest location:
+            // <workspace>/crates/mythos-shm -> <workspace>. CI overrides this via the env var.
+            let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(|p| p.parent())
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            workspace.join("target").join("tsk010-p99")
+        }
+    };
+
+    // The load average is a string because the read may fail; keep it a JSON number when it parsed
+    // and an explicit string ("unknown") when it did not, rather than emitting a bogus 0.0.
+    let load_json = if load.parse::<f64>().is_ok() {
+        load.to_string()
+    } else {
+        format!("\"{load}\"")
+    };
+
+    let mut json = String::from("{\n");
+    json.push_str(&format!("  \"loadavg_1min\": {load_json},\n"));
+    json.push_str(&format!(
+        "  \"regime_a_p50_backstop_ns\": {REGIME_A_P50_BACKSTOP_NS},\n"
+    ));
+    json.push_str(&format!(
+        "  \"regime_b_p50_backstop_ns\": {REGIME_B_P50_BACKSTOP_NS},\n"
+    ));
+    json.push_str(&format!("  \"spec_p99_ns\": {SPEC_P99_NS},\n"));
+    json.push_str("  \"populations\": [\n");
+    for (i, r) in run.iter().enumerate() {
+        json.push_str(&format!(
+            "    {{\"name\": \"{}\", \"n\": {}, \"p50\": {}, \"p90\": {}, \"p99\": {}, \
+             \"max\": {}}}{}\n",
+            r.name,
+            r.n,
+            r.p50,
+            r.p90,
+            r.p99,
+            r.max,
+            if i + 1 == run.len() { "" } else { "," }
+        ));
+    }
+    json.push_str("  ]\n}\n");
+
+    match std::fs::create_dir_all(&dir).and_then(|_| {
+        let path = dir.join("distributions.json");
+        std::fs::write(&path, &json).map(|_| path)
+    }) {
+        Ok(path) => println!(
+            "TSK-010 DISTRIBUTIONS RETAINED at {} ({} bytes, {} populations)",
+            path.display(),
+            json.len(),
+            run.len()
+        ),
+        Err(e) => println!(
+            "TSK-010 DISTRIBUTIONS NOT RETAINED: could not write under {} ({e}). This run's numbers \
+             exist only in this log; a series missing this run cannot support the five-run bound.",
+            dir.display()
+        ),
     }
 }
 
@@ -237,6 +376,15 @@ fn report_tsk010_p99_read_write_under_16_concurrent_threads() {
     writes.report();
     println!("TSK-010 target {SPEC_P99_NS} ns p99, 1-min load average at measurement: {load}");
 
+    retain_distributions(
+        &[
+            Retained::of("read_busy_poll", &busy),
+            Retained::of("read_swap_acquired", &swaps),
+            Retained::of("write", &writes),
+        ],
+        &load,
+    );
+
     #[cfg(target_os = "linux")]
     {
         let _ = mythos_pal::PosixShm::unlink(&name);
@@ -270,15 +418,34 @@ fn report_tsk010_p99_read_write_under_16_concurrent_threads() {
         writes.p(0.99)
     );
 
-    // Regime A is reported, never asserted here: it is dominated by how long a busy-polling reader
-    // waits for the writer to publish, which is a property of the harness's polling pattern and of
-    // host scheduling, not of the atomic operation. Gating on it would reproduce the flake this
-    // sprint has been removing. Gross-breakage backstop only, and it says so when it fires.
+    // Gross-breakage backstops, one per regime, on p50. Both fire on an engine that has hung or
+    // regressed by more than an order of magnitude; neither says anything about whether TSK-010 is
+    // met, and neither is a performance criterion. See the constants for their provenance and for
+    // why they cannot be tightened before five runs are retained.
+    //
+    // Regime A p50 is dominated by how long a spinning reader waits for the writer to publish —
+    // harness polling pattern and host scheduling, not the atomic operation — which is why a
+    // backstop, not a gate. Regime B excludes that spin and is closer to operation cost.
+    //
+    // NOTE: the `writes` population has NO backstop, deliberately. The decision that set these two
+    // numbers provided provenance for regimes A and B only, and inventing a third multiple would be
+    // writing a threshold with nothing behind it. Adding one requires its own five-run basis.
     assert!(
-        busy.p(0.99) < BUSY_POLL_BACKSTOP_NS,
-        "regime A p99 ({} ns) exceeded the gross-breakage backstop ({} ns): the engine is \
-         hung or catastrophically regressed. This is NOT the TSK-010 verdict.",
-        busy.p(0.99),
-        BUSY_POLL_BACKSTOP_NS
+        busy.p(0.50) < REGIME_A_P50_BACKSTOP_NS,
+        "regime A p50 ({} ns) exceeded the gross-breakage backstop ({} ns = 10x the {} ns p50 the \
+         bound was derived from): the engine is hung or has regressed by more than an order of \
+         magnitude. This is NOT the TSK-010 verdict, and it is not a performance measurement.",
+        busy.p(0.50),
+        REGIME_A_P50_BACKSTOP_NS,
+        122
+    );
+    assert!(
+        swaps.p(0.50) < REGIME_B_P50_BACKSTOP_NS,
+        "regime B p50 ({} ns) exceeded the gross-breakage backstop ({} ns = 10x the {} ns p50 the \
+         bound was derived from): the engine is hung or has regressed by more than an order of \
+         magnitude. This is NOT the TSK-010 verdict, and it is not a performance measurement.",
+        swaps.p(0.50),
+        REGIME_B_P50_BACKSTOP_NS,
+        449
     );
 }
