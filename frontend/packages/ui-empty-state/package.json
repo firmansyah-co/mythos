@@ -1,0 +1,32 @@
+{
+  "name": "@mythos/ui-empty-state",
+  "version": "0.1.0",
+  "description": "Shared contract for what a MythOS surface shows when it has no authored content",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "vite build && tsc --declaration --declarationDir dist --emitDeclarationOnly",
+    "dev": "vite build --watch",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^19.0.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.1.0",
+    "vitest": "^3.0.5"
+  }
+}
