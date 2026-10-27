@@ -1,70 +1,13 @@
 import React, { useState } from 'react';
 import { FbdBlock, FbdWire, FbdCanvasProps } from './types';
+import { EmptySurface, EMPTY_SURFACE } from '@mythos/ui-empty-state';
 
 
-export const DEFAULT_FBD_BLOCKS: FbdBlock[] = [
-  {
-    id: 'blk-and-1',
-    name: 'AND_1',
-    blockType: 'AND',
-    category: 'LOGIC',
-    x: 60,
-    y: 60,
-    inputs: [
-      { id: 'pin-in-1', name: 'IN1', dataType: 'BOOL', isNegated: false },
-      { id: 'pin-in-2', name: 'IN2', dataType: 'BOOL', isNegated: false },
-    ],
-    outputs: [{ id: 'pin-out-1', name: 'OUT', dataType: 'BOOL' }],
-  },
-  {
-    id: 'blk-timer-1',
-    name: 'TON_1',
-    blockType: 'TON',
-    category: 'TIMER',
-    x: 320,
-    y: 60,
-    inputs: [
-      { id: 'pin-ton-in', name: 'IN', dataType: 'BOOL', isNegated: false },
-      { id: 'pin-ton-pt', name: 'PT', dataType: 'TIME', value: 'T#2S' },
-    ],
-    outputs: [
-      { id: 'pin-ton-q', name: 'Q', dataType: 'BOOL' },
-      { id: 'pin-ton-et', name: 'ET', dataType: 'TIME' },
-    ],
-  },
-  {
-    id: 'blk-pid-1',
-    name: 'PID_Pressure',
-    blockType: 'PID',
-    category: 'CONTROL',
-    x: 600,
-    y: 60,
-    inputs: [
-      { id: 'pin-pid-sp', name: 'SP', dataType: 'REAL', value: '50.0' },
-      { id: 'pin-pid-pv', name: 'PV', dataType: 'REAL', value: '48.2' },
-      { id: 'pin-pid-kp', name: 'KP', dataType: 'REAL', value: '2.5' },
-    ],
-    outputs: [
-      { id: 'pin-pid-mv', name: 'MV', dataType: 'REAL' },
-      { id: 'pin-pid-err', name: 'ERROR', dataType: 'REAL' },
-    ],
-  },
-];
 
-export const DEFAULT_FBD_WIRES: FbdWire[] = [
-  {
-    id: 'wire-1',
-    fromBlockId: 'blk-and-1',
-    fromPinId: 'pin-out-1',
-    toBlockId: 'blk-timer-1',
-    toPinId: 'pin-ton-in',
-    isEnergized: true,
-  },
-];
 
 export const FbdCanvas: React.FC<FbdCanvasProps> = ({
-  blocks = DEFAULT_FBD_BLOCKS,
-  wires = DEFAULT_FBD_WIRES,
+  blocks,
+  wires,
   onAddBlock,
   onDeleteBlock,
   readOnly = false,
@@ -72,8 +15,8 @@ export const FbdCanvas: React.FC<FbdCanvasProps> = ({
   debugActive = false,
   liveTelemetry = {},
 }) => {
-  const [activeBlocks, setActiveBlocks] = useState<FbdBlock[]>(blocks);
-  const [activeWires, setActiveWires] = useState<FbdWire[]>(wires);
+  const [activeBlocks, setActiveBlocks] = useState<FbdBlock[]>(blocks ?? []);
+  const [activeWires, setActiveWires] = useState<FbdWire[]>(wires ?? []);
   const [selectedPin, setSelectedPin] = useState<{
     blockId: string;
     pinId: string;
@@ -201,6 +144,11 @@ export const FbdCanvas: React.FC<FbdCanvasProps> = ({
 
       {/* SVG Canvas for Wires & Connections */}
       <div className="relative w-full h-[650px] border border-neutral-800/60 rounded bg-[var(--bg-base)] overflow-hidden">
+        {activeBlocks.length === 0 && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center p-6">
+            <EmptySurface copy={EMPTY_SURFACE.logic} />
+          </div>
+        )}
         {/* Wire Connections Layer */}
         <svg className="absolute inset-0 w-full h-full pointer-events-none z-0">
           <defs>

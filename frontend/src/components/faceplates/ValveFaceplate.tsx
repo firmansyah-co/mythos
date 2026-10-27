@@ -14,12 +14,7 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
   closedLimit,
   transitFault,
   positionPercent = openLimit ? 100 : closedLimit ? 0 : 50,
-  interlocks = [
-    { id: 'perm_open', name: 'Downstream Pressure Relief OK', isSatisfied: true },
-    { id: 'perm_close', name: 'Tank Level High-High Inhibit Normal', isSatisfied: true },
-    { id: 'air_press', name: 'Instrument Air Supply Pressure > 5.5 bar', isSatisfied: true },
-    { id: 'transit_ok', name: 'Travel Time Within Spec (< 3.0s)', isSatisfied: !transitFault },
-  ],
+  interlocks = [],
   tier = 2,
   alarm = transitFault ? 'MAJOR' : 'NORMAL',
   alarmActive = transitFault,
@@ -284,6 +279,11 @@ export const ValveFaceplate: React.FC<ValveFaceplateProps> = ({
           Valve Permissive Interlocks
         </span>
         <div className="flex flex-col gap-1 mt-1">
+          {interlocks.length === 0 && (
+            <div className="text-xs text-slate-400 py-0.5">
+              No interlock telemetry — none bound to this device.
+            </div>
+          )}
           {interlocks.map((item: InterlockCondition) => (
             <div key={item.id} className="flex items-center justify-between text-xs py-0.5 border-b border-slate-900/50 last:border-0">
               <span className="text-slate-300 truncate max-w-[260px]">{item.name}</span>
