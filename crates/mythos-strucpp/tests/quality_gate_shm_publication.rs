@@ -411,3 +411,175 @@ fn an_unbound_tag_reports_that_it_could_not_be_published() {
 
     let _ = mythos_pal::PosixShm::unlink(&name);
 }
+
+/// Compare-and-restore: a clear must undo only its own overwrite.
+///
+/// The restore in `clear_comm_loss` was unconditional, so if another path published a real
+/// measurement while the latch was held, the clear reverted that measurement's quality. Reachable,
+/// not hypothetical: `TagSynchronizer::sync_outputs` rewrites slot quality on every scan.
+///
+/// The replay that found this (pod_backend.reviewer, #43 re-review):
+///
+/// ```text
+/// 1) code=68 (UNCERTAIN_SUBSTITUTE) value=42.5
+/// 2) code=24 (BAD_COMM_FAILURE)     value=42.5   <- the latch
+/// 3) code=192 (GOOD)                value=77.25  <- another path's real measurement
+/// 4) code=68 (UNCERTAIN_SUBSTITUTE) value=77.25  <- unconditional restore
+/// ```
+///
+/// Step 4 labels a measured value as a substitute — the inverse of the lie this slice removes.
+#[test]
+fn a_clear_leaves_quality_another_path_published_after_the_latch() {
+    let name = segment_name("takenover");
+    let mut writer = ShmWriterHandle::<DefaultShm>::new(&name, MAX_TAGS).unwrap();
+
+    // 1) The slot starts as a substitute value.
+    writer
+        .write_tag(
+            SLOT_ID as usize,
+            TYPE_CODE_REAL,
+            QualityCode::UNCERTAIN_SUBSTITUTE,
+            TagValueRaw::from_f64(42.5),
+            1_700_000_000_000_000,
+            TagFlags::ACCESS_RO,
+        )
+        .unwrap();
+    writer.publish();
+
+    let mut bindings = HashMap::new();
+    bindings.insert(TAG_URI.to_string(), SLOT_ID);
+    let gate = QualityGate::new(DeviceExecutionMode::PhysicalHardware)
+        .with_shm_publication(ShmQualityPublisher::new(writer, bindings));
+
+    // 2) The link drops; the gate latches BAD_COMM_FAILURE.
+    gate.record_comm_loss(TAG_URI);
+    let latched = observe_from_another_process(&name);
+    assert!(
+        latched.contains(&format!("quality={}", QualityCode::BAD_COMM_FAILURE.code())),
+        "control: the latch must be visible before the third path writes, got: {latched}"
+    );
+
+    // 3) Another path publishes a real measurement on the same slot while the latch is held.
+    //
+    // NOTE ON THE SECOND WRITER HANDLE: the TagBus assumes ONE writer per segment, and a second
+    // handle whose bank state has fallen behind trips `Producer write bank mismatch`
+    // (buffer.rs:70, an implementation assertion the reviewer hit in their own harness). This
+    // sequence is safe only because of its ordering: `other` is opened *after* the latch published,
+    // so it starts from the current write bank, and the gate never publishes again once `other` has
+    // written. Do not reorder this as "gate latch, other publish, gate clear publishes, other
+    // publishes again" — that trips the assertion. The real caller must share one handle between
+    // the scan and the gate; see the follow-up row for that constraint.
+    //
+    // This is also why the negative control for this test fails on `buffer.rs:70` rather than on the
+    // assertion below: with the restore unconditional, the clear republishes after `other` moved the
+    // bank, so the engine's own assertion fires first. The test is still a valid detector under
+    // either failure mode — an engine assertion today, a reverted quality if that assertion ever
+    // becomes a real mismatch — but the RED reason is the engine's, and saying otherwise would be
+    // describing a control I did not observe.
+    let mut other = ShmWriterHandle::<DefaultShm>::new(&name, MAX_TAGS).unwrap();
+    other
+        .write_tag(
+            SLOT_ID as usize,
+            TYPE_CODE_REAL,
+            QualityCode::GOOD,
+            TagValueRaw::from_f64(77.25),
+            1_700_000_000_001_000,
+            TagFlags::ACCESS_RO,
+        )
+        .unwrap();
+    other.publish();
+
+    let taken = observe_from_another_process(&name);
+    assert!(
+        taken.contains(&format!("quality={}", QualityCode::GOOD.code())),
+        "control: the third path's GOOD measurement must be visible, got: {taken}"
+    );
+
+    // 4) The link recovers. The clear must NOT overwrite the third path's quality.
+    let outcome = gate.clear_comm_loss(TAG_URI);
+
+    let after = observe_from_another_process(&name);
+    assert!(
+        after.contains(&format!("quality={}", QualityCode::GOOD.code())),
+        "a clear must not revert a quality another path published after the latch, got: {after}"
+    );
+    assert!(
+        after.contains("value=77.25"),
+        "and must not disturb the measured value either, got: {after}"
+    );
+    match &outcome {
+        ClearOutcome::Cleared {
+            restored,
+            visibility,
+        } => {
+            assert_eq!(
+                *restored, None,
+                "nothing was restored, and the outcome must say so rather than claim a restore"
+            );
+            assert!(
+                !visibility.is_cross_process(),
+                "no write happened, so the visibility must not claim one"
+            );
+            match visibility {
+                QualityVisibility::ProcessLocalOnly { reason } => assert!(
+                    reason.contains("another path owns the quality"),
+                    "the reason must name the cause: {reason}"
+                ),
+                other => panic!("expected ProcessLocalOnly, got {other:?}"),
+            }
+        }
+        other => panic!("expected a clear, got {other:?}"),
+    }
+
+    let _ = mythos_pal::PosixShm::unlink(&name);
+}
+
+/// The compare half: while the slot still carries this gate's own word, the restore still fires.
+#[test]
+fn a_clear_still_restores_when_the_gate_still_owns_the_word() {
+    let name = segment_name("stillowns");
+    let mut writer = ShmWriterHandle::<DefaultShm>::new(&name, MAX_TAGS).unwrap();
+    writer
+        .write_tag(
+            SLOT_ID as usize,
+            TYPE_CODE_REAL,
+            QualityCode::BAD_SENSOR_FAILURE,
+            TagValueRaw::from_f64(42.5),
+            1_700_000_000_000_000,
+            TagFlags::ACCESS_RO,
+        )
+        .unwrap();
+    writer.publish();
+
+    let mut bindings = HashMap::new();
+    bindings.insert(TAG_URI.to_string(), SLOT_ID);
+    let gate = QualityGate::new(DeviceExecutionMode::PhysicalHardware)
+        .with_shm_publication(ShmQualityPublisher::new(writer, bindings));
+
+    gate.record_comm_loss(TAG_URI);
+    match gate.clear_comm_loss(TAG_URI) {
+        ClearOutcome::Cleared {
+            restored,
+            visibility,
+        } => {
+            assert_eq!(
+                restored,
+                Some(QualityCode::BAD_SENSOR_FAILURE),
+                "nobody else touched the slot, so the restore must still happen"
+            );
+            assert!(visibility.is_cross_process());
+        }
+        other => panic!("expected a clear, got {other:?}"),
+    }
+
+    let after = observe_from_another_process(&name);
+    assert!(
+        after.contains(&format!(
+            "quality={}",
+            QualityCode::BAD_SENSOR_FAILURE.code()
+        )),
+        "got: {after}"
+    );
+
+    let _ = mythos_pal::PosixShm::unlink(&name);
+}
