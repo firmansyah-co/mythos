@@ -1,5 +1,9 @@
 export * from './stores/useHmiStore';
+export * from './stores/useFaceplateStore';
 export * from './types/hmi';
+export * from './types/faceplate';
+export * from './api/faceplates';
+export * from './components/faceplates/FaceplateTypeDesigner';
 export * from './collab/useCollabStore';
 export { TopBar, type TopBarProps } from './components/TopBar';
 export { MythosLogo, type MythosLogoProps } from './components/icons/MythosLogo';
