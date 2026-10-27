@@ -12,6 +12,13 @@
 # constant (the previous form hardcoded BASE_VERSION="0.1.0", so the workflow would have
 # published v0.1.0 forever).
 #
+# WHAT THE WORKFLOW ACTUALLY CALLS TODAY: `--print` only. The CI job derives and reports; it does
+# not stamp. `--stamp` and `--dry-run-stamp` exist so a promotion can write the manifests from the
+# tag in one place instead of hand-editing seven files, and the agreement test's failure message
+# points here - but no workflow step invokes them yet. Wiring them belongs with the first real
+# version bump, which needs a release commit. Stated explicitly rather than implying a stamping
+# step that does not run.
+#
 # Usage:
 #   scripts/version.sh --print            print BASE_VERSION / BUILD / TAG_NAME (+ GITHUB_OUTPUT)
 #   scripts/version.sh --dry-run-stamp    print the stamping it WOULD apply, write nothing
@@ -22,7 +29,8 @@
 #   GITHUB_REF         refs/heads/<branch> | refs/tags/<tag> | refs/pull/N/merge
 #   GITHUB_REF_NAME    branch or tag name
 #   GITHUB_BASE_REF    PR base branch
-#   GITHUB_RUN_NUMBER  build counter used only when no tag exists yet
+#   (GITHUB_RUN_NUMBER is deliberately NOT used: the build counter must not decrease at the
+#    first tag, so it starts at 0 rather than at a run number.)
 #   GITHUB_OUTPUT      file to append step outputs to
 set -euo pipefail
 

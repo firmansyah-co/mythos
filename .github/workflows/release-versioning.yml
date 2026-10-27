@@ -42,26 +42,27 @@ jobs:
         # name; the manifests are stamped from it on the gated promotion path.
         run: ./scripts/version.sh --print
 
-      - name: Resolve Release Posture
-        id: posture
-        # Executed decision, not a flag asserted in the file. The release step below reads
-        # these outputs, so this step's printed line IS the gate the run obeys.
+      - name: Check Tag Exists (precondition for any release)
+        id: tagexists
+        # A release must never create its own tag. GitHub's create-release API creates a missing
+        # tag from target_commitish, which defaults to the default branch - so without this gate
+        # a push to `release` would tag dev HEAD and publish it as a final, latest release. That
+        # route has no hyphen in it, so the prerelease guard alone never sees it.
         run: |
           TAG="${{ steps.vars.outputs.tag_name }}"
-          if [ "${TAG#*-}" != "$TAG" ]; then
-            echo "create=false"      >> "$GITHUB_OUTPUT"
-            echo "prerelease=true"   >> "$GITHUB_OUTPUT"
-            echo "make_latest=false" >> "$GITHUB_OUTPUT"
-            echo "RELEASE: NONE. No GitHub Release will be created for ${TAG}."
-            echo "REASON: ${TAG} carries a prerelease identifier, so it is a build of the base"
-            echo "version, not a release. Publishing it would present a dev build as shipped."
-            echo "(This is a deliberate skip, not the release step failing to run.)"
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "TAG PRECONDITION: ${TAG} exists at $(git rev-parse --short "refs/tags/${TAG}^{commit}")."
           else
-            echo "create=true"       >> "$GITHUB_OUTPUT"
-            echo "prerelease=false"  >> "$GITHUB_OUTPUT"
-            echo "make_latest=true"  >> "$GITHUB_OUTPUT"
-            echo "RELEASE: CREATE for ${TAG} - final release tag (prerelease=false, make_latest=true)."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "TAG PRECONDITION: ${TAG} does NOT exist in this checkout."
           fi
+
+      - name: Resolve Release Posture
+        id: posture
+        # The whole decision lives in scripts/release-posture.sh so it can be run and checked
+        # outside CI; its printed line IS the gate the release step obeys.
+        run: ./scripts/release-posture.sh "${{ steps.vars.outputs.tag_name }}" "${{ steps.tagexists.outputs.exists }}"
 
       - name: Install Prebuilt git-cliff
         run: |
@@ -116,6 +117,9 @@ jobs:
         if: steps.posture.outputs.create == 'true' && (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref_name == 'release'))
         with:
           tag_name: ${{ steps.vars.outputs.tag_name }}
+          # Defence in depth: even a permitted release points at the commit that was built,
+          # never at whatever the default branch happens to be when the API is called.
+          target_commitish: ${{ github.sha }}
           name: Release ${{ steps.vars.outputs.tag_name }}
           body_path: CHANGELOG.md
           draft: false
