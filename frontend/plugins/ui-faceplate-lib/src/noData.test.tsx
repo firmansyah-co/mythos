@@ -413,3 +413,83 @@ describe('SYS-REQ-096: faceplates never fabricate process values', () => {
     });
   });
 });
+/**
+ * SYS-REQ-096 — a slider's RANGE is a claim about what the device accepts.
+ *
+ * `PidControllerFaceplate` computed its setpoint span as
+ * `spMax ?? (displayable && targetSp !== null ? Math.max(100, targetSp) : 100)`, inventing a
+ * maximum whenever the device reported none — and deriving it from the setpoint being edited, so
+ * the accepted range moved as the operator dragged. An invented maximum is a fabricated *constraint*
+ * rather than a fabricated reading: it can show the operator a value the device will reject, or stop
+ * them short of one it would take.
+ *
+ * These assert on the RANGE. A test that the current value renders correctly passes before and
+ * after this change and proves nothing here.
+ */
+describe('SYS-REQ-096: a setpoint slider never invents the range it accepts', () => {
+  const PID = { tag: 'TIC-800', label: 'Range fixture', pv: 55, cv: 45.2, unit: 'degC', tier: 2 as const };
+
+  /** The opening tag of the setpoint slider, attributes included. */
+  function sliderMarkup(props: Record<string, unknown>): string {
+    const html = normalizeHtml(
+      renderToString(React.createElement(PidControllerFaceplate, { ...PID, ...props, quality: 'GOOD' }))
+    );
+    const start = html.indexOf('data-testid="pid-sp-slider"');
+    expect(start, 'setpoint slider missing').toBeGreaterThan(-1);
+    // The className sits before the attributes, so walk back to the tag's opening bracket.
+    const open = html.lastIndexOf('<input', start);
+    return html.slice(open, html.indexOf('>', start));
+  }
+
+  it('presents no fabricated maximum when the device reports no range', () => {
+    const tag = sliderMarkup({ sp: 42.5 });
+    expect(tag).toContain('data-range-known="false"');
+    // `disabled=""`, not the substring `disabled`: the className carries `disabled:opacity-30`.
+    expect(tag).toContain('disabled=""');
+    // The pre-fix code produced max="100" here.
+    expect(tag).not.toContain('max="100"');
+  });
+
+  it('does not size the range from the setpoint being edited', () => {
+    // The sharper half of the defect: with the old expression a large setpoint produced a large
+    // invented maximum (Math.max(100, 250) === 250), so the accepted range followed the drag.
+    const tag = sliderMarkup({ sp: 250 });
+    expect(tag).toContain('data-range-known="false"');
+    expect(tag).not.toContain('max="250"');
+    expect(tag).not.toContain('max="100"');
+  });
+
+  it('requires BOTH ends before it will offer a span', () => {
+    expect(sliderMarkup({ sp: 42.5, spMax: 90 })).toContain('data-range-known="false"');
+    expect(sliderMarkup({ sp: 42.5, spMin: 10 })).toContain('data-range-known="false"');
+    expect(sliderMarkup({ sp: 42.5, spMin: 10, spMax: 90 })).toContain('data-range-known="true"');
+  });
+
+  it('uses the range the device reported, and only then makes the control usable', () => {
+    const tag = sliderMarkup({ sp: 42.5, spMin: 10, spMax: 90 });
+    expect(tag).toContain('min="10"');
+    expect(tag).toContain('max="90"');
+    expect(tag).not.toContain('disabled=""');
+  });
+
+  it('states the range it will accept, and says so in words when there is none', () => {
+    const known = normalizeHtml(
+      renderToString(
+        React.createElement(PidControllerFaceplate, { ...PID, quality: 'GOOD', sp: 42.5, spMin: 10, spMax: 90 })
+      )
+    );
+    expect(known).toContain('Target Setpoint (10 - 90)');
+
+    const unknown = normalizeHtml(
+      renderToString(React.createElement(PidControllerFaceplate, { ...PID, quality: 'GOOD', sp: 42.5 }))
+    );
+    expect(unknown).toContain('Target Setpoint (----)');
+  });
+
+  it('leaves a degenerate span unusable rather than inviting a write that means nothing', () => {
+    const tag = sliderMarkup({ sp: 42.5, spMin: 42.5, spMax: 42.5 });
+    expect(tag).toContain('data-range-known="false"');
+    // `disabled=""`, not the substring `disabled`: the className carries `disabled:opacity-30`.
+    expect(tag).toContain('disabled=""');
+  });
+});
