@@ -321,4 +321,19 @@ impl CallToolResult {
             is_error: Some(true),
         }
     }
+
+    /// A structured error result: `is_error` is set *and* the body carries a
+    /// machine-readable payload.
+    ///
+    /// Use this where the caller has to tell "the tool could not measure" apart
+    /// from "the tool measured and found nothing" — a plain `error()` string
+    /// forces the text to be parsed, and a plain `ok_json()` body with zero
+    /// results invites the wrong inference.
+    pub fn error_json<T: Serialize>(value: &T) -> Result<Self, serde_json::Error> {
+        let json_str = serde_json::to_string_pretty(value)?;
+        Ok(Self {
+            content: vec![Content::text(json_str)],
+            is_error: Some(true),
+        })
+    }
 }

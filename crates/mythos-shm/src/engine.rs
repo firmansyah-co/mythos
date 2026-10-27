@@ -194,11 +194,17 @@ impl<S: PlatformShm> ShmWriterHandle<S> {
             .write_tag(slot_id, type_code, quality, value, timestamp_ns, flags)
     }
 
+    /// Restore a tag from NVRAM retention.
+    ///
+    /// `type_code` is a parameter rather than a hardcoded `0`: a restored slot that loses its
+    /// declared type is unreadable to every typed consumer (telemetry reports it as
+    /// `UNSPECIFIED`/null), so retention must carry the type across a restart. Passing `0` remains
+    /// possible but now means "unknown", and the caller has to mean it.
     #[inline(always)]
-    pub fn restore_retained_tag(&mut self, slot_id: u32, value: TagValueRaw) {
+    pub fn restore_retained_tag(&mut self, slot_id: u32, type_code: u16, value: TagValueRaw) {
         let _ = self.engine.write_tag(
             slot_id as usize,
-            0,
+            type_code,
             QualityCode::GOOD,
             value,
             0,

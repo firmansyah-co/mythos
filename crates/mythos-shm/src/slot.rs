@@ -101,6 +101,12 @@ impl TagValueRaw {
         }
     }
 
+    /// Store an `f32` widened to `f64`.
+    ///
+    /// Storage is uniform: every type in this union stores its value **widened losslessly to 64
+    /// bits** (integers widen to `i64`/`u64`, floats widen to `f64`). `f32 -> f64 -> f32` is exact,
+    /// so [`TagValueRaw::as_f32`] round-trips. The previous implementation stored `f64` bits but
+    /// read them back as `f32` (the low 4 bytes), which is not an inverse and returned garbage.
     #[inline]
     pub fn from_f32(val: f32) -> Self {
         Self {
@@ -126,6 +132,31 @@ impl TagValueRaw {
     }
 
     #[inline]
+    pub fn as_i16(&self) -> i16 {
+        // Narrowing a value stored wider than the declared type silently truncates
+        // (`from_i32(70000).as_i16()` is 4464). That is a writer/declaration mismatch rather than a
+        // meaningful read, so it is caught in debug builds where the check is free in release.
+        let wide = self.as_i64();
+        debug_assert!(
+            i16::try_from(wide).is_ok(),
+            "as_i16 on a value that does not fit i16 ({wide}); the writer stored wider than the \
+             slot's declared type"
+        );
+        wide as i16
+    }
+
+    #[inline]
+    pub fn as_u16(&self) -> u16 {
+        let wide = self.as_u64();
+        debug_assert!(
+            u16::try_from(wide).is_ok(),
+            "as_u16 on a value that does not fit u16 ({wide}); the writer stored wider than the \
+             slot's declared type"
+        );
+        wide as u16
+    }
+
+    #[inline]
     pub fn as_i32(&self) -> i32 {
         unsafe { self.i32_val }
     }
@@ -136,14 +167,145 @@ impl TagValueRaw {
     }
 
     #[inline]
+    pub fn as_i64(&self) -> i64 {
+        unsafe { self.i64_val }
+    }
+
+    #[inline]
+    pub fn as_u64(&self) -> u64 {
+        unsafe { self.u64_val }
+    }
+
+    /// Read the value back as the `f32` that [`TagValueRaw::from_f32`] stored.
+    ///
+    /// Narrows from the widened `f64`, mirroring how [`TagValueRaw::as_i16`] narrows from `i64`.
+    /// An `f32` widened to `f64` and narrowed back is bit-exact, so this is a true inverse.
+    #[inline]
     pub fn as_f32(&self) -> f32 {
-        unsafe { self.f32_val }
+        unsafe { self.f64_val as f32 }
     }
 
     #[inline]
     pub fn as_f64(&self) -> f64 {
         unsafe { self.f64_val }
     }
+
+    /// Decode this value as the given declared type.
+    ///
+    /// This is the only supported way to turn slot bytes into a number: the type is supplied by
+    /// the slot's `type_code`, never guessed from the bytes. Reading a slot with an accessor that
+    /// does not match how it was written produces a meaningless number, which is why the declared
+    /// type exists.
+    #[inline]
+    pub fn decode_as(&self, data_type: TagDataType) -> DecodedValue {
+        match data_type {
+            TagDataType::Bool => DecodedValue::Bool(self.as_bool()),
+            TagDataType::Byte => DecodedValue::U8(self.as_u8()),
+            TagDataType::Int16 => DecodedValue::I16(self.as_i16()),
+            TagDataType::Uint16 => DecodedValue::U16(self.as_u16()),
+            TagDataType::Int32 => DecodedValue::I32(self.as_i32()),
+            TagDataType::Uint32 => DecodedValue::U32(self.as_u32()),
+            TagDataType::Int64 => DecodedValue::I64(self.as_i64()),
+            TagDataType::Uint64 => DecodedValue::U64(self.as_u64()),
+            TagDataType::Float32 => DecodedValue::F32(self.as_f32()),
+            TagDataType::Float64 => DecodedValue::F64(self.as_f64()),
+        }
+    }
+}
+
+/// Declared data type of a tag's value, from [`TagSlot::type_code`].
+///
+/// The numeric codes are the OPC-style codes the slot layout documents (`1 = BOOL`, `2 = INT`,
+/// `3 = DINT`, `4 = REAL`, `5 = LREAL`), extended with the unsigned and 64-bit codes below.
+/// Codes `0` and any unlisted value mean **unspecified**: a writer either did not declare a type
+/// or used one this build does not know.
+///
+/// `0` is deliberately *not* aliased to `Float64`. The previous telemetry path read every slot as
+/// `f64`, so an integer tag written without a type code surfaced as a denormal and looked like a
+/// broken instrument rather than a configuration omission. [`TagDataType::from_code`] therefore
+/// returns `None` for `0` so callers must decide explicitly what to do with an undeclared type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
+pub enum TagDataType {
+    /// `i8`/`u8` byte value (OPC BYTE).
+    Byte = 10,
+    /// `bool` (OPC BOOL).
+    Bool = 1,
+    /// `i16` (OPC INT).
+    Int16 = 2,
+    /// `i32` (OPC DINT).
+    Int32 = 3,
+    /// `f32` (OPC REAL).
+    Float32 = 4,
+    /// `f64` (OPC LREAL).
+    Float64 = 5,
+    /// `u16` (OPC UINT).
+    Uint16 = 6,
+    /// `u32` (OPC UDINT).
+    Uint32 = 7,
+    /// `i64` (OPC LINT).
+    Int64 = 8,
+    /// `u64` (OPC ULINT).
+    Uint64 = 9,
+}
+
+impl TagDataType {
+    /// Map a raw `type_code` from a slot. `None` means unspecified or unrecognised.
+    pub const fn from_code(code: u16) -> Option<Self> {
+        let parsed = match code {
+            1 => Self::Bool,
+            2 => Self::Int16,
+            3 => Self::Int32,
+            4 => Self::Float32,
+            5 => Self::Float64,
+            6 => Self::Uint16,
+            7 => Self::Uint32,
+            8 => Self::Int64,
+            9 => Self::Uint64,
+            10 => Self::Byte,
+            _ => return None,
+        };
+        Some(parsed)
+    }
+
+    /// The raw `type_code` a writer should pass to store a value of this type.
+    pub const fn code(self) -> u16 {
+        self as u16
+    }
+
+    /// Stable wire name, used wherever the type crosses a process or language boundary.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Byte => "BYTE",
+            Self::Bool => "BOOL",
+            Self::Int16 => "INT",
+            Self::Int32 => "DINT",
+            Self::Float32 => "REAL",
+            Self::Float64 => "LREAL",
+            Self::Uint16 => "UINT",
+            Self::Uint32 => "UDINT",
+            Self::Int64 => "LINT",
+            Self::Uint64 => "ULINT",
+        }
+    }
+}
+
+/// A slot value decoded according to its declared type.
+///
+/// Kept free of any serialisation concern so `mythos-shm` stays a pure layout crate; the API layer
+/// maps it to JSON.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DecodedValue {
+    Bool(bool),
+    U8(u8),
+    I16(i16),
+    U16(u16),
+    I32(i32),
+    U32(u32),
+    I64(i64),
+    U64(u64),
+    F32(f32),
+    F64(f64),
 }
 
 /// OPC DA / IEC 61850 compliant 16-bit quality status word.

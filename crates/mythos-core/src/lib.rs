@@ -9,6 +9,7 @@ pub mod api;
 pub mod auth;
 pub mod catalog;
 pub mod collab;
+pub mod datatype;
 pub mod device;
 pub mod discovery;
 pub mod faceplate;

@@ -6,11 +6,13 @@ on:
       - dev
       - rc
       - release
+  # No `branches` filter: a pull_request trigger that lists base branches runs no
+  # workflow at all for a PR opened against any other base (a stacked PR shows an
+  # empty check list, not a failing one), so review verdicts were being issued on
+  # code nothing had ever compiled. dev/rc/release remain gated by the push filter
+  # above plus their required status checks with strict=true, so merged content is
+  # still gated at the branch boundary; this only closes the PR-review blind spot.
   pull_request:
-    branches:
-      - dev
-      - rc
-      - release
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -167,13 +169,55 @@ jobs:
           fi
           cargo test --release -p mythos-shm --test shm_engine_tests -- --nocapture
 
-      - name: Run SHM Micro-Benchmark Check
+      # TSK-010's criterion is "< 100 ns p99 read/write under 16 concurrent threads". Nothing
+      # computed a p99 until shm_p99_report.rs; the criterion suite below was only ever compiled
+      # (--no-run), so TSK-010 had never actually been measured. Both now run:
+      #   - shm_p99_report: real per-operation p99, 1 writer + 15 readers on a live SHM segment.
+      #   - the criterion suite: executed with reduced sampling so it fits the job budget, and
+      #     archived so the numbers are inspectable rather than guessed.
+      #
+      # REPORT, NOT A GATE. This step previously read "Run SHM p99 Concurrency Gate", which was
+      # green while its own log printed "TSK-010 VERDICT: ... NOT MET" (measured p99 ~1.2-1.3 us
+      # against a 100 ns target). It asserts only a gross-regression backstop, so its name must
+      # not claim the criterion passed. Whether `p99 < 100 ns` should be enforced is a board
+      # scope decision, not a CI threshold; the number is reported and logged on every run.
+      - name: Report SHM p99 under 16 threads (TSK-010, non-gating)
         run: |
           export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
           if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
             source /opt/hostedtoolcache/cargo/env
           fi
-          cargo bench -p mythos-shm --no-run
+          cargo test --release -p mythos-shm --test shm_p99_report -- --nocapture
+
+      - name: Run SHM Micro-Benchmark (criterion, executed)
+        run: |
+          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
+          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
+            source /opt/hostedtoolcache/cargo/env
+          fi
+          cargo bench -p mythos-shm --bench shm_bench -- \
+            --sample-size 10 --measurement-time 1 --warm-up-time 1 --noplot
+
+      # NON-BLOCKING, deliberately. Archival preserves the criterion numbers for later
+      # inspection; it cannot tell anyone whether the code is correct, so it must not be able to
+      # fail the job. It did: on PR #20 (run 40271532287) the upload succeeded — "Uploaded bytes
+      # 6146", "Finished uploading artifact content to blob storage" — and the step then failed at
+      # finalize after 5 attempts, `getaddrinfo EAI_AGAIN results-receiver.actions.githubusercontent.com`,
+      # which reddened the required check for a build whose tests and benchmark had all passed.
+      #
+      # `if: always()` is kept so the step still runs and still archives whenever the upload path
+      # is healthy; `continue-on-error` makes its outcome advisory. This matches `Display sccache
+      # Statistics` below, which was already written defensively with `|| true` — the asymmetry
+      # between the two is what let this through.
+      - name: Archive SHM Benchmark Results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: shm-criterion-results
+          path: target/criterion
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Display sccache Statistics
         if: always()

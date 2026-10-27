@@ -212,6 +212,9 @@ importers:
 
   plugins/ui-inspector:
     dependencies:
+      '@mythos/ui-faceplate-lib':
+        specifier: workspace:*
+        version: link:../ui-faceplate-lib
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
