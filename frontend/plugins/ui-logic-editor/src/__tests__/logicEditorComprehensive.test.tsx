@@ -254,14 +254,15 @@ describe('Monaco Logic Editor & Deployment Pipeline (TSK-307 / SYS-REQ-021)', ()
   });
 
   describe('4. Ladder Diagram & LogicEditorPlugin Integration', () => {
-    it('renders LadderCanvas with industrial rungs and power rails', () => {
+    it('renders an explicit empty canvas rather than an invented program', () => {
+      // The canvas used to default to a sample conveyor interlock program. With no author data
+      // it now says so; the fabricated identifiers must not appear through any path.
       const html = renderClient(<LadderCanvas targetBlock="OB1" />);
       expect(html).toContain('Ladder Diagram (LD)');
-      expect(html).toContain('RUNG 1');
-      expect(html).toContain('RUNG 2');
-      expect(html).toContain('external.DI_StartPB');
-      expect(html).toContain('external.DI_EStop_PB');
-      expect(html).toContain('external.DO_ConveyorRun');
+      expect(html).toContain('No logic in this POU');
+      expect(html).not.toContain('RUNG 1');
+      expect(html).not.toContain('external.DI_StartPB');
+      expect(html).not.toContain('TON_BottleDwell');
     });
 
     it('renders full LogicEditorPlugin with toggle tabs between ST and Ladder Diagram', () => {

@@ -1,36 +1,16 @@
 import React, { useState } from 'react';
 import { DataTypeDefinition, DataTypeEditorProps, ELEMENTARY_DATA_TYPES, StructMember } from './types';
 import { Plus, Trash2, Layers, Check, Copy } from 'lucide-react';
+import { EmptySurface, EMPTY_SURFACE } from '@mythos/ui-empty-state';
 
-export const DEFAULT_SAMPLE_DATA_TYPES: DataTypeDefinition[] = [
-  {
-    id: 'dt-bottle-spec',
-    name: 'DUT_BottleSpec',
-    kind: 'STRUCT',
-    comment: 'Bottling line container dimensional profile',
-    members: [
-      { id: 'm-1', name: 'Height_mm', dataType: 'REAL', initialValue: '250.0', comment: 'Bottle height' },
-      { id: 'm-2', name: 'Diameter_mm', dataType: 'REAL', initialValue: '75.0', comment: 'Outer diameter' },
-      { id: 'm-3', name: 'Volume_ml', dataType: 'DINT', initialValue: '500', comment: 'Nominal volume in ml' },
-      { id: 'm-4', name: 'IsGlass', dataType: 'BOOL', initialValue: 'TRUE', comment: 'Glass vs PET flag' },
-    ],
-  },
-  {
-    id: 'dt-machine-state',
-    name: 'DUT_MachineState',
-    kind: 'ENUM',
-    comment: 'PackML ISA-TR88 Operational Machine States',
-    enumConstants: ['STOPPED', 'STARTING', 'IDLE', 'RUNNING', 'HOLDING', 'HELD', 'ABORTED'],
-  },
-];
 
 export const DataTypeEditor: React.FC<DataTypeEditorProps> = ({
-  dataTypes = DEFAULT_SAMPLE_DATA_TYPES,
+  dataTypes,
   onChange,
   readOnly = false,
   className = '',
 }) => {
-  const [types, setTypes] = useState<DataTypeDefinition[]>(dataTypes);
+  const [types, setTypes] = useState<DataTypeDefinition[]>(dataTypes ?? []);
   const [selectedTypeId, setSelectedTypeId] = useState<string>(types[0]?.id || '');
   const [copiedNotification, setCopiedNotification] = useState(false);
 
@@ -387,8 +367,8 @@ export const DataTypeEditor: React.FC<DataTypeEditorProps> = ({
             </div>
           </div>
         ) : (
-          <div className="flex-1 flex items-center justify-center text-neutral-500 font-mono text-xs">
-            Select or create a data type to view definition
+          <div className="flex-1 flex items-center justify-center p-6">
+            <EmptySurface copy={EMPTY_SURFACE.dataTypes} />
           </div>
         )}
       </div>
