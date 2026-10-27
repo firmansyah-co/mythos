@@ -140,6 +140,23 @@ impl TripleBufferState {
     pub fn peek_read_bank(&self) -> usize {
         ((self.state.load(Ordering::Acquire) >> 4) & 0x03) as usize
     }
+
+    /// The bank holding the most recently published snapshot, whichever slot it sits in.
+    ///
+    /// After a publish the freshest snapshot is the *clean* bank until a reader acquires it; once
+    /// acquired, the freshest is the *read* bank. A caller that needs "the last values the plant
+    /// actually published" — for example an out-of-cycle quality update that must carry the
+    /// existing values forward rather than publish a stale bank — has to check both.
+    #[inline(always)]
+    pub fn latest_published_bank(&self) -> usize {
+        let raw = self.state.load(Ordering::Acquire);
+        let has_new = ((raw >> 6) & 0x01) == 1;
+        if has_new {
+            ((raw >> 2) & 0x03) as usize
+        } else {
+            ((raw >> 4) & 0x03) as usize
+        }
+    }
 }
 
 impl Default for TripleBufferState {

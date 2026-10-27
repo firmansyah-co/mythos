@@ -325,18 +325,81 @@ impl QualityCode {
     pub const GOOD: Self = Self(0x00C0);
 
     #[inline(always)]
-    pub fn is_good(&self) -> bool {
+    pub const fn is_good(&self) -> bool {
         (self.0 & 0x00C0) == 0x00C0
     }
 
     #[inline(always)]
-    pub fn is_bad(&self) -> bool {
+    pub const fn is_bad(&self) -> bool {
         (self.0 & 0x00C0) == 0x0000
     }
 
     #[inline(always)]
-    pub fn is_uncertain(&self) -> bool {
+    pub const fn is_uncertain(&self) -> bool {
         (self.0 & 0x00C0) == 0x0040
+    }
+
+    /// Map a raw quality word to a named code. `None` means unrecognised by this build.
+    ///
+    /// The named constants above are the single source of truth for the code<->name mapping;
+    /// every boundary that carries quality out of the process (telemetry, MCP) uses this and
+    /// [`Self::as_str`] rather than re-deriving a name, so the mapping cannot drift into two
+    /// copies that disagree.
+    pub const fn from_code(code: u16) -> Option<Self> {
+        let candidate = Self(code);
+        if candidate.as_str_inner().is_some() {
+            Some(candidate)
+        } else {
+            None
+        }
+    }
+
+    /// The IANA-style bit class of this code: `"GOOD"`, `"BAD"`, or `"UNCERTAIN"`.
+    ///
+    /// Derived from the two class bits rather than from the specific code, so it is defined for
+    /// every possible 16-bit word, including ones this build does not name.
+    pub const fn class_str(self) -> &'static str {
+        if self.is_good() {
+            "GOOD"
+        } else if self.is_uncertain() {
+            "UNCERTAIN"
+        } else {
+            "BAD"
+        }
+    }
+
+    /// Stable wire name for a recognised code, or `"UNRECOGNIZED"` for any other word.
+    ///
+    /// An unrecognised word is *named as unrecognised*, never folded into a neighbouring code:
+    /// reporting a quality this build cannot interpret as `GOOD` would be the exact defect the
+    /// quality codes exist to prevent. Callers that must distinguish "unknown word" from "a known
+    /// word that happens to be called this" use [`Self::from_code`].
+    pub const fn as_str(self) -> &'static str {
+        match self.as_str_inner() {
+            Some(name) => name,
+            None => "UNRECOGNIZED",
+        }
+    }
+
+    const fn as_str_inner(self) -> Option<&'static str> {
+        Some(match self.0 {
+            0x0000 => "BAD_NON_SPECIFIC",
+            0x0004 => "BAD_CONFIG_ERROR",
+            0x0008 => "BAD_NOT_CONNECTED",
+            0x000C => "BAD_DEVICE_FAILURE",
+            0x0010 => "BAD_SENSOR_FAILURE",
+            0x0018 => "BAD_COMM_FAILURE",
+            0x0044 => "UNCERTAIN_SUBSTITUTE",
+            0x0048 => "UNCERTAIN_INITIAL_VALUE",
+            0x00C0 => "GOOD",
+            _ => return None,
+        })
+    }
+
+    /// The raw 16-bit word as it appears in a [`TagSlot`].
+    #[inline(always)]
+    pub const fn code(self) -> u16 {
+        self.0
     }
 }
 

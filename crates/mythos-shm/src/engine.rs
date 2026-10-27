@@ -127,6 +127,82 @@ impl<S: PlatformShm> TagBusEngine<S> {
         Ok(())
     }
 
+    /// Update **only** the quality word of a slot in the active write bank.
+    ///
+    /// Exists because a quality-only event (a field communication loss, a recovered link) has no
+    /// new value to offer. Writing the whole slot through [`Self::write_tag`] would force the
+    /// caller to invent one, which is how a stale or fabricated process value gets republished
+    /// alongside a real quality change. This preserves the slot's value, declared type, flags and
+    /// timestamp, and bumps the sequence so a reader can tell the slot was touched.
+    ///
+    /// The change is visible to readers only after a [`Self::publish_cycle`] — the triple buffer
+    /// hands out whole banks, not individual slots.
+    #[inline(always)]
+    pub fn set_quality(&mut self, slot_id: usize, quality: QualityCode) -> Result<(), ShmError> {
+        if slot_id >= self.max_tags {
+            return Err(ShmError::SlotOutOfBounds {
+                index: slot_id,
+                max: self.max_tags,
+            });
+        }
+
+        unsafe {
+            let slot_ptr = self.bank_ptr(self.active_write_bank).add(slot_id);
+            let prev_seq = (*slot_ptr).sequence;
+            (*slot_ptr).quality = quality;
+            (*slot_ptr).sequence = prev_seq.wrapping_add(1);
+        }
+        Ok(())
+    }
+
+    /// Publish a quality change for one slot so that readers in **other processes** see it.
+    ///
+    /// `publish_cycle` swaps the write bank with the clean one, so the bank the writer rotates
+    /// into holds whatever was published *two* cycles ago — zeros, on a fresh segment. Setting
+    /// the quality word and publishing would therefore expose a bank in which every other slot
+    /// had reverted to a stale value: a quality event silently rolling process data back, which
+    /// is worse than the defect it fixes. So this copies the most recently published snapshot
+    /// into the write bank first, applies the quality change, then publishes. Only the requested
+    /// field moves; the slot's value, type and flags are carried across untouched.
+    ///
+    /// The copy is `max_tags * 64` bytes (256 KiB at 4096 tags) and runs once per field dropout,
+    /// not once per scan. A writer that already writes every slot each cycle does not need this —
+    /// it should set the quality through [`Self::write_tag`] as part of that cycle.
+    #[inline(always)]
+    pub fn set_quality_and_publish(
+        &mut self,
+        slot_id: usize,
+        quality: QualityCode,
+    ) -> Result<(), ShmError> {
+        if slot_id >= self.max_tags {
+            return Err(ShmError::SlotOutOfBounds {
+                index: slot_id,
+                max: self.max_tags,
+            });
+        }
+
+        let source_bank = self.bank_state().latest_published_bank();
+        let dest_bank = self.active_write_bank;
+
+        unsafe {
+            // The three-bank protocol keeps write, clean and read mutually distinct, so the
+            // source and destination banks can never overlap.
+            if source_bank != dest_bank {
+                let src = self.bank_ptr(source_bank) as *const TagSlot;
+                let dst = self.bank_ptr(dest_bank);
+                std::ptr::copy_nonoverlapping(src, dst, self.max_tags);
+            }
+
+            let slot_ptr = self.bank_ptr(dest_bank).add(slot_id);
+            let prev_seq = (*slot_ptr).sequence;
+            (*slot_ptr).quality = quality;
+            (*slot_ptr).sequence = prev_seq.wrapping_add(1);
+        }
+
+        self.publish_cycle();
+        Ok(())
+    }
+
     /// Atomically publish the current write buffer and advance writer to the new bank.
     /// Guarantees zero allocation and lock-free execution (< 50ns latency).
     #[inline(always)]
@@ -210,6 +286,20 @@ impl<S: PlatformShm> ShmWriterHandle<S> {
             0,
             crate::slot::TagFlags::RETENTION_RETAIN,
         );
+    }
+
+    /// Publish a quality change for one slot and make it visible to every reader.
+    ///
+    /// See [`TagBusEngine::set_quality_and_publish`] for why this carries the last published
+    /// snapshot forward rather than publishing the rotated-in bank untouched: a quality event
+    /// must not roll every other slot back to a two-cycles-old value.
+    #[inline(always)]
+    pub fn set_quality_and_publish(
+        &mut self,
+        slot_id: usize,
+        quality: QualityCode,
+    ) -> Result<(), ShmError> {
+        self.engine.set_quality_and_publish(slot_id, quality)
     }
 
     #[inline(always)]
