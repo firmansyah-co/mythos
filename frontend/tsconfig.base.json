@@ -55,6 +55,12 @@
       ],
       "@mythos/ui-faceplate-lib/*": [
         "./plugins/ui-faceplate-lib/src/*"
+      ],
+      "@mythos/ui-empty-state": [
+        "./packages/ui-empty-state/src/index.tsx"
+      ],
+      "@mythos/ui-empty-state/*": [
+        "./packages/ui-empty-state/src/*"
       ]
     }
   }

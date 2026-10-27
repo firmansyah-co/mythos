@@ -64,7 +64,9 @@ describe('TSK-701..705: LogicEditorPlugin Comprehensive Integration Suite', () =
         ldTab.click();
       });
       expect(container.innerHTML).toContain('Ladder Diagram (LD) Canvas');
-      expect(container.innerHTML).toContain('RUNG 1');
+      // No program is handed to the plugin, so the canvas states that rather than drawing rungs.
+      expect(container.innerHTML).toContain('No logic in this POU');
+      expect(container.innerHTML).not.toContain('RUNG 1');
 
       // Switch to FBD
       const fbdTab = container.querySelector('[data-testid="tab-fbd"]') as HTMLButtonElement;
@@ -73,7 +75,8 @@ describe('TSK-701..705: LogicEditorPlugin Comprehensive Integration Suite', () =
         fbdTab.click();
       });
       expect(container.innerHTML).toContain('Function Block Diagram (FBD)');
-      expect(container.innerHTML).toContain('AND_1');
+      expect(container.innerHTML).toContain('No logic in this POU');
+      expect(container.innerHTML).not.toContain('AND_1');
 
       // Switch to SFC
       const sfcTab = container.querySelector('[data-testid="tab-sfc"]') as HTMLButtonElement;
@@ -82,7 +85,8 @@ describe('TSK-701..705: LogicEditorPlugin Comprehensive Integration Suite', () =
         sfcTab.click();
       });
       expect(container.innerHTML).toContain('Sequential Function Chart (SFC)');
-      expect(container.innerHTML).toContain('Init_Step');
+      expect(container.innerHTML).toContain('No logic in this POU');
+      expect(container.innerHTML).not.toContain('Init_Step');
 
       // Switch to Variables
       const varsTab = container.querySelector('[data-testid="tab-variables"]') as HTMLButtonElement;
@@ -90,7 +94,8 @@ describe('TSK-701..705: LogicEditorPlugin Comprehensive Integration Suite', () =
       flushSync(() => {
         varsTab.click();
       });
-      expect(container.innerHTML).toContain('DI_StartPB');
+      expect(container.innerHTML).toContain('No variables declared');
+      expect(container.innerHTML).not.toContain('DI_StartPB');
 
       // Switch to Data Types
       const dtTab = container.querySelector('[data-testid="tab-datatypes"]') as HTMLButtonElement;
@@ -98,7 +103,8 @@ describe('TSK-701..705: LogicEditorPlugin Comprehensive Integration Suite', () =
       flushSync(() => {
         dtTab.click();
       });
-      expect(container.innerHTML).toContain('DUT_BottleSpec');
+      expect(container.innerHTML).toContain('No data types declared');
+      expect(container.innerHTML).not.toContain('DUT_BottleSpec');
     });
   });
 

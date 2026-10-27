@@ -2,6 +2,9 @@
   "files": [],
   "references": [
     {
+      "path": "./packages/ui-empty-state"
+    },
+    {
       "path": "./packages/ui-shell"
     },
     {
