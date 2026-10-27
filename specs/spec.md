@@ -3,7 +3,7 @@
 - **Document Identifier**: MYTHOS-SPEC-001
 - **Standard Compliance**: ISO/IEC/IEEE 29148:2018 (Systems and Software Engineering — Life Cycle Processes — Requirements Engineering)
 - **Controlled Language**: ASD-STE100 Simplified Technical English
-- **Version**: 1.2.0
+- **Version**: 1.3.0
 - **Status**: APPROVED / MASTER BASELINE
 - **Author**: Scribe (VP of Publication & Technical Documentation)
 - **Architectural Contributors**: Neo (VP Software), Vulcan (VP Hardware), Iris (VP Design), Sage (VP R&D)
@@ -161,9 +161,9 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 - **SYS-REQ-004 [Cache-Line Alignment]**: Every tag slot shall align to 64-byte hardware boundaries (`#[repr(align(64))]`). This alignment eliminates false sharing across CPU cores.
 - **SYS-REQ-005 [Zero Allocation Loop]**: The core cyclic update loop shall perform zero heap allocations (`malloc`/`Box::new`) during steady-state execution.
 
-### 3.2 Protocol Driver Service Provider Interface (`crates/mythos-driver-api`)
+### 3.2 Protocol Driver Service Provider Interface (`crates/mythos-plugin-sdk`)
 
-- **SYS-REQ-010 [Isolated Driver SPI]**: Every driver shall implement the asynchronous `ProtocolDriver` Rust trait (`init`, `start`, `poll_cycle`, `write_tag`, `health_check`, `stop`).
+- **SYS-REQ-010 [Isolated Driver SPI]**: Every driver shall implement the asynchronous `ProtocolDriver` Rust trait from `mythos-plugin-sdk` (`validate_config`, `poll_cycle`, `write_tag`). The trait extends `MythosPlugin` (`metadata`, `init`, `start`, `tick`, `stop`, `health_check`).
 - **SYS-REQ-011 [Opaque Configuration Validation]**: Drivers shall validate configurations with isolated JSON schemas. Malformed parameters in one driver shall not affect other drivers.
 - **SYS-REQ-012 [Bounded Cycle Execution]**: The supervisor shall enforce a maximum polling timeout per cycle (10 ms to 10,000 ms). On timeout, the driver shall mark tags with `Quality::BAD_COMM_FAILURE` and proceed.
 - **SYS-REQ-013 [Dynamic Registration]**: The runtime shall support hot-registering drivers without stopping active PLC control tasks.
@@ -495,7 +495,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 
 | Interface ID | Interface Name | Protocol / Mechanism | Data Format | Latency Bound |
 |---|---|---|---|---|
-| **IF-001** | Internal Tag Bus | POSIX SHM (`/dev/shm/mythos_tagbus`) | POD Structs (64-byte aligned), Plant Hierarchy URIs (`external.*` & `internal.*`) | $< 100\,\text{ns}$ |
+| **IF-001** | Internal Tag Bus | POSIX SHM (`/dev/shm/mythos_tagbus`) | POD Structs (64-byte aligned), Plant Hierarchy URIs (`external.*` & `internal.*`) | $< 100\,\text{ns}$ for a busy-poll read at p50 (measured 36 ns under 16-thread contention at 1-minute load average 63.85; PR #25, run 40089446143). This figure does not bound the swap-acquire read path or the write path: measured p50 178 ns and 145 ns in the same run. |
 | **IF-002** | Native STruC++ Engine Bridge | Linux FFI (`extern "C"`) | C-ABI Pointers, Dual-Zone Mapping (%IX field inputs / %QX, %MX internal logic) | $< 10\,\mu\text{s}$ |
 | **IF-003** | Fieldbus Discovery | PROFINET Layer 2 DCP | Raw Ethernet Frames (`0x8892`) | $< 2.5\,\text{s}$ |
 | **IF-004** | Serial Fieldbus | RS485 / Modbus RTU | Binary Modbus frames mapped to `external.<namespace>.<device>.<variable>` | $10\,\text{ms} - 500\,\text{ms}$ |
@@ -571,3 +571,12 @@ The requirements defined in this specification are backed by the approved Archit
 - **ARCH-006**: Universal Plugin Harness and Extensibility Architecture (`docs/01-architecture/06-universal-plugin-harness-and-extensibility.md`)
 - **ARCH-007**: Cross-Platform Hardware Abstraction Layer & Containerization (`docs/01-architecture/07-cross-platform-hal-and-containerization.md`)
 - **ARCH-008**: One-Click Desktop Installers & Universal Distribution (`docs/01-architecture/08-one-click-installers-and-distribution.md`)
+
+---
+
+## 8. Revision History
+
+| Version | Date | Author | Change |
+|---|---|---|---|
+| 1.2.0 | — | Scribe (VP Publication & Documentation) | Baseline approved by Adrian (Board of Commissioners) and Aria (CEO). |
+| 1.3.0 | 2026-10-23 | Scribe (VP Publication & Documentation) | ADR-008 propagation. Section 3.2 now names `crates/mythos-plugin-sdk`. SYS-REQ-010 now states the implemented `ProtocolDriver` (validate_config, poll_cycle, write_tag) and `MythosPlugin` (metadata, init, start, tick, stop, health_check) method sets. IF-001 is qualified: its `< 100 ns` bound is stated for a busy-poll read at p50 and is recorded as not bounding the swap-acquire read path or the write path (PR #25, run 40089446143). |

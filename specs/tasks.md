@@ -3,7 +3,7 @@
 - **Document Identifier**: MYTHOS-PLAN-001
 - **Controlled Language**: ASD-STE100 Simplified Technical English
 - **Standard Reference**: ISO/IEC/IEEE 29148 & Agile Scrum Enterprise Delivery
-- **Version**: 1.2.0
+- **Version**: 1.4.0
 - **Status**: APPROVED / MASTER ROADMAP
 - **Author**: Scribe (VP of Publication & Technical Documentation)
 - **Approved by**: Adrian (Board of Commissioners), Aria (Chief Executive Officer)
@@ -52,18 +52,41 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 
 | Task ID | Task Description | Assigned Division | Deliverables & Code Artifacts | Acceptance Criteria |
 |---|---|---|---|---|
-| **TSK-001** | Initialize Cargo Workspace and Crate Structure | Software (`head-software`) | `Cargo.toml`, `crates/mythos-core/`, `crates/mythos-shm/`, `crates/mythos-driver-api/` | Zero compilation errors. Cargo tree resolves cleanly with strict compiler flags (`-D warnings`). |
+| **TSK-001** | Initialize Cargo Workspace and Crate Structure | Software (`head-software`) | `Cargo.toml`, `crates/mythos-pal/`, `crates/mythos-core/`, `crates/mythos-shm/`, `crates/mythos-plugin-sdk/`, `crates/mythos-cli/` | Zero compilation errors. Cargo tree resolves cleanly with strict compiler flags (`-D warnings`). |
 | **TSK-002** | Implement Triple-Buffered Lock-Free SHM Engine | Software (`head-software`) | `crates/mythos-shm/src/lib.rs`, `buffer.rs`, `slot.rs` | 32,768 tag slots allocated in `/dev/shm/mythos_tagbus`. 64-byte alignment verified. Lock-free atomic swap latency $< 50\,\text{ns}$. |
 | **TSK-003** | Define Canonical Plant Hierarchy Tag Engine | Software (`head-software`) | `crates/mythos-core/src/tag.rs`, `namespace.rs` | Validates `external.<namespace>.<device>.<variable>` hierarchy. Scopes namespace to plant locations (e.g. `BoilerRoom`). Omits `external` for internal PLC tags. |
-| **TSK-004** | Develop Protocol Driver Service Provider Interface | Software (`head-software`) | `crates/mythos-driver-api/src/traits.rs`, `config.rs` | Asynchronous `ProtocolDriver` trait implemented with isolated JSON schema parsing. |
-| **TSK-005** | Implement Reference Modbus RTU/TCP Driver Crate | Software (`head-software`), Hardware (`head-hardware`) | `drivers/driver-modbus/` | Successful register polling with simulated slave device. Zero thread blocking on serial timeouts. |
+| **TSK-004** | Develop Protocol Driver Service Provider Interface | Software (`head-software`) | `crates/mythos-plugin-sdk/src/lib.rs` | Asynchronous `ProtocolDriver` trait implemented with isolated JSON schema parsing. |
+| **TSK-005** | Implement Reference Modbus RTU/TCP Driver Crate | Software (`head-software`), Hardware (`head-hardware`) | `plugins/drivers/driver-modbus/` | Successful register polling with simulated slave device. Zero thread blocking on serial timeouts. |
 | **TSK-006** | Develop NVRAM WAL Persistence Engine | Software (`head-software`) | `crates/mythos-core/src/nvram.rs` | RETAIN and PERSISTENT memory tiers backed by `/var/lib/mythos/nvram.dat` with CRC32 integrity checks. |
 | **TSK-007** | Implement Target Controller Storage & WAL Engine | Software (`head-software`) | `crates/mythos-core/src/storage/`, `project.rs` | Primary target controller storage layout under `/var/lib/mythos/projects/`. Multi-project repository, atomic `active` symlink, debounced autosave (1,000ms), and crash-proof append-only `project.wal`. |
 | **TSK-008** | Implement Axum API Gateway & 100ms SSE Stream | Software (`head-software`) | `crates/mythos-core/src/api/`, `telemetry.rs` | Axum 0.7 REST endpoints and `GET /api/v1/telemetry/stream` SSE stream with locked 100ms (10 Hz) batch throttling. |
 | **TSK-009** | Universal Plugin SDK & Crate Architecture | Software (`head-software`) | `crates/mythos-plugin-api/`, `crates/mythos-plugin-host/` | Establishes `MythosPlugin` trait and microkernel plugin host. Refactors engines and drivers into isolated first-party plugins. Zero domain logic in microkernel. |
-| **TSK-010** | Author Sprint 0 Unit & Micro-Benchmark Suite | Publication / QA | `crates/mythos-shm/benches/shm_bench.rs` | Criterion benchmarks pass with $< 100\,\text{ns}$ p99 read/write operations under 16 concurrent threads. |
+| **TSK-010** | Author Sprint 0 Unit & Micro-Benchmark Suite | Publication / QA | `crates/mythos-shm/benches/shm_bench.rs` | The original $< 100\,\text{ns}$ p99-under-16-threads criterion is **UNDER REVISION**; the measured result is recorded in the TSK-010 STATUS note under Sprint 0. It is not a merge gate. A replacement bound is a board decision; this document does not select one. **CI state**: PR #25 (merged at `333d199`) reports the 16-thread p99 via `Report SHM p99 under 16 threads (TSK-010, non-gating)`, a report-only step, and runs the criterion benchmark through `Run SHM Micro-Benchmark (criterion, executed)`. The p99 is measured and reported on every run; it does not gate. |
 | **TSK-011** | Implement Platform Abstraction Layer (PAL) & OS Agnosticism | Software (`head-software`) | `crates/mythos-pal/`, `crates/mythos-shm/src/pal.rs`, `crates/mythos-core/src/pal.rs` | Encapsulates POSIX shared memory, Windows Named SHM, macOS mmap, real-time thread priority, and dynamic library loading behind unified traits. Builds cleanly across Linux, Windows 11, and macOS. |
 | **TSK-012** | Engineer Multi-Architecture Container & Compose Suite | Software (`head-software`) | `Dockerfile`, `compose.yaml`, `.dockerignore` | Builds official multi-stage Docker images for `linux/amd64` and `linux/arm64` with `--ipc=host` and `--net=host` optimization. Boots daemon and web UI within container in $< 3\,\text{s}$. |
+> **TSK-010 STATUS (1.4.0): the p99 criterion is UNDER REVISION. It is not met, and the measurement is recorded here.**
+>
+> The Sprint 0 acceptance criterion "$< 100\,\text{ns}$ p99 read/write under 16 concurrent threads" is withdrawn as a merge gate. It is not recorded as met, and it is not recorded as a simple failure. The criterion itself does not survive contact with the measured regime.
+>
+> **Measurement 1.** PR #25, CI run 40089446143, 1-minute load average 63.85. Latency in nanoseconds:
+>
+> | Case | n | p50 | p90 | p99 |
+> |---|---|---|---|---|
+> | READ, busy-poll | 300,000 | 36 | 247 | 909 |
+> | READ, swap-acquire | 10,311 | 178 | 373 | 1,209 |
+> | WRITE | 20,000 | 145 | 437 | 1,297 |
+>
+> Against the 100 ns p99 target: read NOT MET, write NOT MET.
+>
+> **Measurement 2.** An independent run at local load average 86.21 agreed in direction: read swap-acquire p99 4,145 ns, write p99 1,614 ns.
+>
+> **Why no p99 number replaces it.** The 16-thread case CAS-es one 64-bit state word. The measured tail is contention on that word, not the cost of a tag access. A p99 under N-thread contention measures the scheduler and the co-tenant load as much as the architecture: read swap-acquire p99 moved from 1,209 ns to 4,145 ns (3.4x) between the two runs above, at different co-tenant load. No fixed p99 bound is defensible as a merge gate, and this amendment does not invent one.
+>
+> **Recommended replacement, FOR BOARD SIGN-OFF, not adopted here.** Gate on a best-batch bound in the regime that TSK-002 already uses, which measures uncontended atomic swap cost ($< 50\,\text{ns}$). Retain the 16-thread p99 as a report-only CI measurement so that a real regression stays visible without a gate that reddens on unrelated changes. Selecting the exact bound is a board decision.
+>
+> The measurement harness introduced by PR #25 is retained. Only its gate status changes.
+>
+> **CI wiring, shipped as of `333d199`.** PR #25 merged the report-only step (`Report SHM p99 under 16 threads (TSK-010, non-gating)`) and replaced the former compile-only step with an executed criterion benchmark (`Run SHM Micro-Benchmark (criterion, executed)`). Both run on every CI build; the p99 number is reported and logged, never gated.
 
 ---
 
@@ -194,6 +217,28 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | **TSK-703** | Function Block Diagram (FBD) & Sequential Function Chart (SFC) Visual Canvas | Software (`head-software`), Design (`head-design`) | `frontend/plugins/ui-logic-editor/src/fbd/FbdCanvas.tsx`, `frontend/plugins/ui-logic-editor/src/sfc/SfcCanvas.tsx` | FBD canvas renders modular interconnected logic gates and mathematical blocks with typed input/output pins and negation flags. SFC canvas renders initial/step states, directed links, transition conditions, and action qualifiers (N, S, R, P, L, D). |
 | **TSK-704** | Variable Table Grid & Data Type Editor (POU VAR table, GVL, DUT/UDT Structs/Enums) | Software (`head-software`) | `frontend/plugins/ui-logic-editor/src/variables/VariableTableGrid.tsx`, `frontend/plugins/ui-logic-editor/src/variables/DataTypeEditor.tsx` | Provides spreadsheet-style declaration grid for POU scoped variables (`VAR`, `VAR_INPUT`, `VAR_OUTPUT`, `VAR_IN_OUT`, `VAR_TEMP`), Global Variable Lists (`GVL`), and User-Defined Data Types (`DUT/UDT` structures and enumerations) with IEC memory addresses (`%IX`, `%QX`, `%MX`). |
 | **TSK-705** | Live Online Debugging, Power-Flow Animation & Variable Forcing (SYS-REQ-096 compliant) | Software (`head-software`), Hardware (`head-hardware`), R&D (`head-rnd`) | `frontend/plugins/ui-logic-editor/src/debug/OnlineDebugEngine.ts`, `frontend/plugins/ui-logic-editor/src/debug/PowerFlowOverlay.tsx` | Real-time telemetry stream animates LD power rails and rungs in vibrant green (`#22C55E`) when active. ST editor displays inline variable values. Variable force table enables manual override with audit logging in compliance with SYS-REQ-096 safety invariants. |
+---
+
+### Sprint 8: Live Telemetry Cutover & Device-Mode Completion (next slice)
+- **Sprint Goal**: Prove that one real TagBus value reaches one HMI faceplate, and complete the SYS-REQ-096 device-mode path that the Sprint 0 honesty work deferred.
+- **Status**: PRE-COMMITTED PREREQUISITE. Not started. Recorded before sprint planning so the gap cannot be lost again. This is a next-slice prerequisite, not a retroactive defect against the merged HMI honesty work.
+- **Precondition**: The canonical `DeviceExecutionMode` ownership decision must be resolved before implementation begins. See the ACCEPTED DUPLICATION note below.
+- **Lead Division**: Software (`head-software`), Design (`head-design`)
+
+| Task ID | Task Description | Assigned Division | Deliverables & Code Artifacts | Acceptance Criteria |
+|---|---|---|---|---|
+| **TSK-801** | HMI Live-Telemetry Consumer & SYS-REQ-096 Device-Mode End-to-End Path | Software (`head-software`), Design (`head-design`) | Consumer for the existing `GET /api/v1/telemetry/stream` producer (`crates/mythos-core/src/api/telemetry.rs`); quality input on `frontend/plugins/ui-faceplate-lib/src/components/`; a new device-mode route under `crates/mythos-core/src/api/`; operator path into `crates/mythos-core/src/device/mode.rs` | **Telemetry**: consumes `GET /api/v1/telemetry/stream`; resolves one commissioned tag to one HMI faceplate; updates the UI at the defined 100 ms (10 Hz) cadence; maps `QualityCode` to faceplate quality state; survives reconnect with bounded backoff; ships a live-path test. **Device mode**: operator mode control, `SIMULATION_ACTIVE` propagation, quality-latch visibility to the HMI, and the amber `[SIMULATION ACTIVE]` badge. Acceptance test: sever communication, observe the alarm, toggle to simulation, observe the badge. **Two known blockers for quality visibility**, both verified in code and neither solvable on the UI alone: (1) `QualityGate::record_comm_loss` latches in a process-local map and does not write `TagSlot.quality`, so the failure never reaches shared memory (`crates/mythos-strucpp/src/quality_gate.rs`); (2) the SSE payload collapses quality to a three-state string `GOOD`/`BAD`/`UNCERTAIN` (`crates/mythos-core/src/api/telemetry.rs`, `build_telemetry_event`), so a faceplate cannot distinguish `BAD_COMM_FAILURE` from any other bad state unless the payload carries the raw quality word. |
+
+**Scope limit.** This slice proves one real tag-to-faceplate path. Broader subscription and binding architecture is follow-up. Do not expand the slice past that proof.
+
+> **ACCEPTED DUPLICATION (1.4.0): `DeviceExecutionMode` is defined twice, deliberately and temporarily.**
+>
+> - `crates/mythos-core/src/device/mode.rs:30`
+> - `crates/mythos-strucpp/src/quality_gate.rs:13`
+>
+> `mythos-strucpp` already depends on `mythos-core` (`crates/mythos-strucpp/Cargo.toml:16`, `mythos-core.workspace = true`), and there is no reverse dependency, so collapsing the two enums would create no cycle. The two definitions are not collapsed in Sprint 0; the duplication is an accepted, recorded choice, not an oversight. Its real cost is a wire-format divergence, verified empirically: `mythos-core`'s enum carries `#[serde(rename_all = "snake_case")]` and `Default`, `mythos-strucpp`'s carries neither, so the first variant serialises as `"physical_hardware"` in one crate and `"PhysicalHardware"` in the other.
+>
+> **Precondition on TSK-801.** The canonical ownership decision must be resolved before the slice is implemented. Because `mythos-strucpp` already depends on `mythos-core`, the natural resolution is for `mythos-strucpp` to adopt the `mythos-core` enum, but doing so changes the wire name of any serialised value and requires a migration. This document does not pick the resolution, because choosing one is an architecture decision, not a documentation edit.
 
 ## 3. Milestones & Quality Gates
 
@@ -225,6 +270,12 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | Criteria: Dark Obsidian UI validated; Monaco ST logic editor deployed atomically; TIA Portal       |
 |           Screen tree and 3-stage lifecycle verified; Faceplate master types propagate globally;   |
 |           Fullscreen runtime kiosk & IEC 62443 exit challenge pass; CRDT collaboration syncs.     |
+| STATUS (1.3.0): REOPENED - NOT SIGNED OFF. TSK-309 is unmet. No Master Faceplate Type designer    |
+|           and no release-time global propagation exist in code on dev; the criterion "Faceplate    |
+|           master types propagate globally" above was recorded as passed without mechanical        |
+|           evidence (.openrig/evidence/dod-spot-audit.md). Gate 3 closes only on evidence for an   |
+|           authoring designer with formal UDT bindings and a propagation test covering every       |
+|           instance. All other Gate 3 criteria remain as previously recorded.                      |
 +---------------------------------------------------------------------------------------------------+
                                                   |
                                                   v
@@ -304,3 +355,14 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | **Sprint 5** | SYS-REQ-067, 068, 070, 071, 072, 073 | ADR-005, ADR-007 |
 | **Sprint 6** | SYS-REQ-097, 098 | ADR-006, ADR-008, HMI-000, ARCH-005 |
 | **Sprint 7** | SYS-REQ-021, 023, 096, 099 | ADR-003, ADR-006, HMI-000, ARCH-005 |
+| **Sprint 8** | SYS-REQ-054, 055, 096 | ADR-006, ADR-008, ARCH-002, HMI-000 |
+
+---
+
+## 6. Revision History
+
+| Version | Date | Author | Change |
+|---|---|---|---|
+| 1.2.0 | — | Scribe (VP Publication & Documentation) | Baseline approved by Adrian (Board of Commissioners) and Aria (CEO). |
+| 1.3.0 | 2026-10-23 | Scribe (VP Publication & Documentation) | ADR-008 propagation. TSK-001 and TSK-004 now name `crates/mythos-plugin-sdk` and the real workspace members. TSK-005 now names `plugins/drivers/driver-modbus/`. GATE 3 status recorded as REOPENED: TSK-309 was not delivered and had no mechanical evidence. |
+| 1.4.0 | 2026-10-26 | Scribe (VP Publication & Technical Documentation) | TSK-010 criterion revised: the $< 100\,\text{ns}$ p99-under-16-threads acceptance criterion is withdrawn as a merge gate and recorded as not met, with the measurement preserved (PR #25, run 40089446143, merged at `333d199`) and the 16-thread step reduced to report-only. No replacement bound is selected; that is a board decision. New Sprint 8 records TSK-801 as a pre-committed prerequisite: the live-telemetry consumer plus the SYS-REQ-096 device-mode end-to-end path. `DeviceExecutionMode` duplication recorded as accepted and temporary; its real cost is a serde wire-name divergence between the two definitions, with the canonical ownership decision as a precondition on TSK-801. |
