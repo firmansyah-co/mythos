@@ -31,7 +31,9 @@ fn frontend_manifests(root: &Path) -> Vec<PathBuf> {
     let mut out = vec![root.join("frontend/package.json")];
     for group in ["frontend/packages", "frontend/plugins"] {
         let dir = root.join(group);
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let candidate = entry.path().join("package.json");
             if candidate.is_file() {
@@ -44,8 +46,8 @@ fn frontend_manifests(root: &Path) -> Vec<PathBuf> {
 }
 
 fn manifest_version(path: &Path) -> String {
-    let text = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let text =
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
     let json: serde_json::Value = serde_json::from_str(&text)
         .unwrap_or_else(|e| panic!("{} is not valid JSON: {e}", path.display()));
     json.get("version")
