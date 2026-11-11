@@ -70,6 +70,21 @@ Paste the command and its real output into your handoff. If you did not run it,
 say "not run" and say why. A green summary that was never executed is worse than
 an honest red, because it moves the defect downstream to someone who cannot see it.
 
+**A receipt is invalid if another build was live in the same tree.** `dist/` and
+`*.tsbuildinfo` are shared state, not per-run state: two concurrent `pnpm build` runs
+collide and produce `TS6305` ("Output file … has not been built from source file …") on
+a tree that is byte-identical to `origin/dev`. Observed 2026-11-11, when a full gate and
+a `--frontend` run overlapped in the repo root and the full gate reported a red the
+branch could not have caused. Before you run a gate, check whether someone else is
+building there. If a red looks impossible, compare tree hashes against the base before
+believing it:
+
+```bash
+git rev-parse <sha>:frontend origin/dev:frontend   # identical → not your branch
+```
+
+The repo root is one tree every seat can see, but only `dev_gatekeeper` builds in it.
+
 ## 5. Never invent data
 
 An operator looking at a fabricated value cannot tell it is fabricated. This is a
