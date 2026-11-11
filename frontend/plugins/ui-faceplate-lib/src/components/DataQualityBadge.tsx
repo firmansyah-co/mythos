@@ -6,14 +6,26 @@ import { dataQualityLabel, normalizeQuality } from '../processData';
  * DataQualityBadge — explicit ANSI/ISA-101 annunciation of where a faceplate's values come from.
  *
  * Renders nothing for live data. `NOT BOUND` is a configuration state and stays neutral grey;
- * `BAD COMM FAILURE` is abnormal and is the only state that uses a saturated (amber) tone.
+ * `BAD QUALITY` is abnormal and is the only state that uses a saturated (amber) tone.
  * The badge is what makes a quiescent faceplate unmistakably different from a live one.
+ *
+ * `qualityDetail` is the specific wire quality state (e.g. `BAD_COMM_FAILURE`). It changes the
+ * WORDING only. The tone, the tooltip and `data-quality` are all derived from the three-value
+ * class, deliberately: if they keyed off the specific state, a bad cause this build does not name
+ * would drop into the grey `NOT_BOUND` presentation — telling an operator a bound, failing device
+ * has no binding, and filing a live equipment failure as a configuration note. That is two false
+ * statements, and worse than naming the wrong cause.
  */
-export const DataQualityBadge: React.FC<{ quality?: ProcessDataQuality | null; className?: string }> = ({
+export const DataQualityBadge: React.FC<{
+  quality?: ProcessDataQuality | null;
+  qualityDetail?: string | null;
+  className?: string;
+}> = ({
   quality,
+  qualityDetail = null,
   className = '',
 }) => {
-  const label = dataQualityLabel(quality);
+  const label = dataQualityLabel(quality, qualityDetail);
   if (!label) return null;
 
   const resolved = normalizeQuality(quality);

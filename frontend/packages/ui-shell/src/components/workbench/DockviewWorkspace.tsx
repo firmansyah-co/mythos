@@ -441,6 +441,11 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
                   ? { ...comp, quality: liveResolution.quality, live: liveResolution.live }
                   : comp
               );
+              // The specific wire quality, passed only to change the badge WORDING. It never
+              // changes the presentation: `quality` alone drives tone and data-quality, so an
+              // unrecognised bad cause keeps the abnormal amber badge instead of falling into the
+              // grey NOT_BOUND configuration state.
+              const qualityDetail = liveResolution?.qualityDetail ?? null;
               const tier = (config.tier as 1 | 2 | 3 | undefined) ?? (comp.tier as 1 | 2 | 3 | undefined) ?? 2;
 
               if (compType === 'MOTOR' || compType === 'VFD') {
@@ -454,6 +459,7 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
                       tag={tag}
                       label={label}
                       quality={quality}
+                      qualityDetail={qualityDetail}
                       running={values.running as boolean | null | undefined}
                       tripped={values.tripped as boolean | null | undefined}
                       actualSpeed={values.actualSpeed as number | null | undefined}
