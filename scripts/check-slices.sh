@@ -14,6 +14,19 @@ stale=0; total=0
 
 git -C "$ROOT" fetch origin --quiet 2>/dev/null || echo "warning: fetch failed, comparing against local $BASE"
 
+# An enumeration that failed is not "0 stale". Outside a git repo, or if `worktree
+# list` errors, the loop below simply never runs and `stale` stays 0 — which reads
+# as a clean sweep when nothing was checked at all. Exit 2 so a caller can tell
+# "could not look" from "looked and found nothing".
+if ! git -C "$ROOT" worktree list --porcelain >/dev/null 2>&1; then
+    echo "check-slices: cannot enumerate worktrees from $ROOT (not a git repo?)" >&2
+    exit 2
+fi
+if [ "$(git -C "$ROOT" worktree list --porcelain 2>/dev/null | grep -c '^worktree ')" -eq 0 ]; then
+    echo "check-slices: worktree enumeration returned nothing from $ROOT" >&2
+    exit 2
+fi
+
 printf '%-42s %-38s %-8s %-9s %s\n' WORKTREE BRANCH AHEAD BEHIND VERDICT
 printf '%.0s─' {1..120}; printf '\n'
 
