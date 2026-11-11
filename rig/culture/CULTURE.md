@@ -85,6 +85,25 @@ git rev-parse <sha>:frontend origin/dev:frontend   # identical → not your bran
 
 The repo root is one tree every seat can see, but only `dev_gatekeeper` builds in it.
 
+**Run a package-scoped gate from `frontend/`, never from a worktree root.**
+A `pnpm --filter <pkg>` issued from a worktree **root** resolves against the *main
+checkout's* workspace and reports that tree's results under the slice's package name. A seat
+can therefore believe it verified its slice while standing in a different world — the same
+class as working a merged branch. Measured 2026-11-11 from a worktree at
+`.claude/worktrees/docs-topology-provenance`:
+
+```bash
+cd <worktree>            && pnpm --filter @mythos/ui-topology exec node -e "console.log(process.cwd())"
+# -> /home/adrian/Projects/mythos/frontend/plugins/ui-topology      MAIN checkout — wrong tree
+
+cd <worktree>/frontend   && pnpm --filter @mythos/ui-topology exec node -e "console.log(process.cwd())"
+# -> <worktree>/frontend/plugins/ui-topology                        the slice — right tree
+```
+
+Prove which tree ran with `exec node -e "console.log(process.cwd())"`; `exec pwd` resolves
+through `PATH` and is not a reliable witness. The `ui-shell` sweep guard also resolves its
+ROOT off `cwd` and fails `ENOENT` outside `frontend/`.
+
 ## 5. Never invent data
 
 An operator looking at a fabricated value cannot tell it is fabricated. This is a
