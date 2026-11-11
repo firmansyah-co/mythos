@@ -19,7 +19,7 @@ The single answer to "what is being worked on". Your memory is not this file.
 | `S-008` | backend | *(not cut)* | — | `origin/dev` | `planned` — **blocked on a scope decision** | `pod_backend.builder` |
 | `S-012` | hmi | *(not cut)* | — | `origin/dev` | `planned` — **blocked on S-004** | `pod_hmi.builder` |
 | `S-013` | hmi | *(not cut)* | — | `origin/dev` | `planned` | `pod_hmi.builder` |
-| `S-014` | hmi | *(cut requested)* | — | `origin/dev` @ `08245d0` | **CUT REQUESTED** — scoped, §5 decided | `pod_hmi.builder` |
+| `S-014` | hmi | `feat/setpoint-draft-committed` | `.claude/worktrees/setpoint-reconcile` | `origin/dev` @ `08245d0` | `open` — cut 2026-11-11T11:26Z | `pod_hmi.builder` |
 
 **Re-verified against the live world 2026-11-11T06:1xZ, by `pm`, not carried from the
 previous pass.** Corrections this pass: S-004 moved to `pod_hmi` (evidence in its section);
@@ -1534,7 +1534,10 @@ telemetry.rs       grep seq|sequence -> 0                            (NO sequenc
   together with the code it describes.
 - **Verification:** `cd frontend && npx vitest run --no-cache` from `frontend/`. Failing test names,
   not counts.
-- **State:** `planned`, **cut requested** from `origin/dev` @ `08245d0`. Owner `pod_hmi.builder`.
+- **State:** `open` — cut 2026-11-11T11:26Z from `origin/dev` @ `08245d0` as
+  `feat/setpoint-draft-committed` in `.claude/worktrees/setpoint-reconcile`. 0 behind, 0 dirty at
+  cut, and the premise verified rather than assumed: S-004 is on dev (08245d0), which is what
+  unblocked this slice. Owner `pod_hmi.builder`.
 
 ### Sequencing — REWRITTEN 2026-11-11T07:1xZ, because the old block contradicted the table
 
