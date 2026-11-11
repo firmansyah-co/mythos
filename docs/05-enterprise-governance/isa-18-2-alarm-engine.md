@@ -166,12 +166,61 @@ EEMUA 191 defines an **Alarm Flood** as any period where the alarm rate exceeds 
 
 Every alarm point is assigned an immutable risk priority based on Consequence Severity and Maximum Allowable Operator Response Time (MART):
 
-| Priority | Color Hex | Recommended Distribution (EEMUA 191) | Maximum MART | Acoustic Signature | Action Mandate |
+| Priority | Illustrative Color | Recommended Distribution (EEMUA 191) | Maximum MART | Acoustic Signature | Action Mandate |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Critical** | `#D32F2F` (Red) | $\le 5\%$ of total catalog | $< 2$ minutes | Continuous 1 kHz / Hi-Strobe | Immediate safety or shutdown action |
 | **High** | `#F57C00` (Orange) | $\approx 15\%$ of total catalog | $< 10$ minutes | Pulsed 1 Hz / Orange Beacon | Process upset; imminent trip boundary |
 | **Medium** | `#FBC02D` (Yellow) | $\approx 30\%$ of total catalog | $< 30$ minutes | Intermittent chime (5s) | Quality deviation or minor equipment fault |
 | **Low** | `#0288D1` (Blue) | $\approx 50\%$ of total catalog | $> 60$ minutes | Visual only / Silent | Advisory maintenance or efficiency notice |
+
+> **The Color column above is illustrative and is NOT the rendered palette.**
+> This table specifies priority classification, quota distribution and operator response times.
+> The colour values in it are indicative only. They do not match the palette the system renders,
+> and no code in this repository uses them.
+>
+> The operator-facing palette is defined in two places, and these are the authorities:
+> - **Controlled token definition:** [`docs/04-hmi-and-ui/design-tokens-dtcg.json`](../04-hmi-and-ui/design-tokens-dtcg.json)
+>   (W3C DTCG, dual-theme, with per-token ISA-18.2 priority descriptions).
+> - **Implementation:** `frontend/src/tokens.css` — the token file the workbench shell imports
+>   (`frontend/packages/ui-shell/src/index.css:1`). It defines `--alarm-critical`,
+>   `--alarm-major`, `--alarm-minor`, `--alarm-diagnostic`, `--alarm-normal`, `--alarm-shelved`.
+>
+> Do not cite `frontend/src/styles/tokens.css` for this purpose. It is an unimported copy of the
+> token file and is not a source of truth.
+>
+> **What is established and what is not.** The token palette is what the system renders: the DTCG
+> file and `frontend/src/tokens.css` agree on every alarm value. **The values that render are the
+> Dark Obsidian ones.** Both files define a second, Light Clean Slate block with different values
+> for three alarm tokens (`--alarm-major` `#D97706`, `--alarm-normal` `#64748B`, `--alarm-shelved`
+> `#94A3B8`), but no code in this repository applies the `[data-theme='light']` or `.theme-light`
+> selector, so the light block never takes effect. Those values are the intended palette for a
+> theme that is defined and not yet selectable. Which colour scheme ANSI/ISA-18.2
+> requires is **not established in this repository**, because no document here cites the clause
+> that fixes the values. This note therefore records a disagreement between this table and the
+> rendered palette. It does not assert that either one is wrong against the standard. Resolving
+> which is normative is a decision for the alarm specification owner.
+
+### 7.1 Priority Naming: Two Vocabularies in Use
+
+This document and the token definition both use four priorities, but they do not mean the same
+things, and no mapping is written down anywhere. This is not a colour question and must be
+settled separately.
+
+| This document (§7) | Token definition (`design-tokens-dtcg.json`) | Same claim? |
+| :--- | :--- | :--- |
+| Critical — immediate safety or shutdown | Priority 1 — Emergency Shutdown trip alarm | Yes |
+| High — process upset; imminent trip boundary | Priority 2 — High process limit excursion | Yes |
+| Medium — **quality deviation or minor equipment fault** | Priority 3 — **Low warning threshold excursion** | **No.** A quality deviation and a low warning threshold are different events. |
+| Low — **advisory maintenance or efficiency notice** | Priority 4 — **Sensor fault, wire break, communication packet drop** | **No.** An advisory notice and a sensor/communication fault are different events. |
+
+The mismatch is not merely wording. This table has no priority for a sensor or communication
+fault, which the token definition treats as its own class; and the token definition has no
+priority for advisory maintenance, which this table treats as its lowest class. A surface that
+maps the two lists positionally will file sensor faults as advisory maintenance, which is the
+quietest possible place for a failed sensor to land.
+
+Until the two vocabularies are reconciled, any mapping between them is an assumption that is not
+written down in either document.
 
 ---
 
