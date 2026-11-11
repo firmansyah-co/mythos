@@ -200,7 +200,8 @@ The **Topology View** models the exact, physical port-to-port Ethernet and field
   * When a physical device breaks down on the factory floor, a field technician slots in a replacement unit directly out of the box without using a programming laptop.
   * The neighboring switch or controller detects the unconfigured device on the specific port via Link Layer Discovery Protocol (LLDP IEEE 802.1AB), automatically assigns the configured PROFINET device name, and downloads its hardware parameters.
   * **Precondition — the nominal topology must already define the slot.** This replacement workflow is valid only when the project's nominal topology already names the device and its parameters for that physical slot. In that case, discovery supplies the identity of the physical unit. Discovery does not supply the configuration.
-  * **Discovery does not create plant equipment.** A device that discovery finds and the nominal topology does not define is a candidate. It is not plant equipment. It becomes plant equipment only when an authorized operator commissions it (see ADR-009). No discovery response shall cause the system to create a station, an address, or a cable in the plant model. This rule prevents the class of defect removed from the Network View render path by PR #33. A render-path guard for it is proposed in PR #50 (**open, not merged at the time of writing**); this specification does not depend on that PR, and the rule above is normative whether or not it lands.
+  * **Discovery does not create plant equipment.** A device that discovery finds and the nominal topology does not define is a candidate. It is not plant equipment. It becomes plant equipment only when an authorized operator commissions it (see ADR-009). No discovery response shall cause the system to create a station, an address, or a cable in the plant model. This rule prevents the class of defect removed from the Network View render path by PR #33.
+  * **What the frontend enforces, and what it does not.** The render path guards the *claim*, not the plant model: since `c12b5af`, `TopologyClaim` (`ui-topology/src/provenance.tsx`) is a union in which the `DISCOVERED` arm **requires** a `commissioning` state, so "discovered, and therefore plant equipment" is not a state the type can express, and conformance is derived by `deriveConformance` rather than accepted from a caller. That prevents a surface from *presenting* a candidate as commissioned. It does not prevent a discovery response from writing a station, an address, or a cable into the plant model — that is a backend path, and **no such path exists in the merged tree today**: `NetworkTopology::add_node` (`crates/mythos-core/src/topology.rs:237`), `add_edge` (`:266`) and `add_ip_block` (`:312`) have **no production callers at all**; every caller is in `crates/mythos-core/tests/`, and there is no topology route under `crates/mythos-core/src/api/`. So the rule is normative for the whole system, the frontend guard is narrower than the rule, and neither should be read as a guarantee that a discovery response cannot reach the plant model. That guarantee is unbuilt, and saying so is the honest state.
 - **Discrepancy Detection & Online Comparison**:
   * Real-time comparison between **Nominal Topology** (engineered in MythOS) and **Actual Topology** (discovered via LLDP).
   * Mismatches (e.g. cable plugged into Port 3 instead of Port 1) appear in pulsing high-contrast yellow/red dashed lines with guided re-patch instructions.
@@ -351,6 +352,84 @@ export interface TopologyCableEdge {
   };
 }
 
+/**
+ * PROVENANCE — what a topology surface is claiming, and on what basis.
+ *
+ * Three properties, deliberately not one enum. This section previously declared no
+ * provenance contract at all; an earlier draft of the render-path work
+ * (`test/topology-all-view-modes`, commit 52aa7f5) carried a single four-value state,
+ * which mixed a source, a health measurement and a derived conformance claim into one
+ * list. That was split before merge (`21cb9c4`), and the shape below is what landed as
+ * c12b5af — it is the contract a consumer should build against.
+ */
+
+/** AXIS A — on what basis do we assert this device exists? */
+export type TopologySource =
+  | 'UNREAD'      // nothing has been read: no transport exists, so no claim can be made
+  | 'CONFIGURED'  // nominal topology: read from the project's configured topology model
+  | 'DISCOVERED'; // actual topology: seen by discovery (LLDP / DCP)
+
+/** AXIS B — did it answer, and how well? A measurement, not project data. */
+export type TopologyHealth =
+  | 'UNKNOWN'      // not measured
+  | 'REACHABLE'    // answered
+  | 'UNREACHABLE'  // measured, and it did not answer: its state is unknown, not healthy
+  | 'DEGRADED';    // answered, but not cleanly
+
+/**
+ * A property of a DISCOVERED device, not a fourth source value. Both are discovered;
+ * the difference is whether a person accepted the device into the plant. A candidate is
+ * not plant equipment and must never read as though it were.
+ */
+export type TopologyCommissioning = 'CANDIDATE' | 'COMMISSIONED';
+
+/** DERIVED from nominal vs actual. Never an input state — see deriveConformance below. */
+export type TopologyConformance = 'NOT_COMPARED' | 'MATCHES' | 'MISMATCH';
+
+/**
+ * What a view is claiming: the product of the two axes, with commissioning carried
+ * alongside discovery. The union encodes the impossible pairing — nothing read, yet
+ * something measured — so a consumer cannot construct a claim its own data does not
+ * support.
+ */
+export type TopologyClaim =
+  | { readonly source: 'UNREAD'; readonly health: 'UNKNOWN' }
+  | { readonly source: 'CONFIGURED'; readonly health: TopologyHealth }
+  | {
+      readonly source: 'DISCOVERED';
+      readonly health: TopologyHealth;
+      readonly commissioning: TopologyCommissioning;
+    };
+
+export interface NetworkCanvasProps {
+  /**
+   * What these views are claiming and on what basis.
+   *
+   * DELIBERATELY NOT DEFAULTED to 'UNREAD'. UNREAD is true of an empty canvas and false
+   * of a populated one, so omitting this while supplying stations renders NOT_STATED —
+   * the surface says the provenance was not stated, instead of asserting that no claim is
+   * being made while it visibly is. A default here would make a populated canvas announce
+   * that it knows nothing.
+   */
+  claim?: TopologyClaim;
+  /**
+   * The two device-id sets conformance is DERIVED from. A caller may supply
+   * observations; it may not supply a conclusion. There is deliberately no `conformance`
+   * prop: "the caller asserted MATCHES" is not a state this type can express. Both absent
+   * (today's only reachable case) derives NOT_COMPARED.
+   */
+  nominalDeviceIds?: readonly string[];
+  actualDeviceIds?: readonly string[];
+  initialStations?: HardwareStationNode[];
+  initialCables?: TopologyCableEdge[];
+  onSelectStation?: (station: HardwareStationNode | null) => void;
+  onSelectSlot?: (stationId: string, slotNumber: number) => void;
+  onSelectPort?: (stationId: string, port: NetworkPort) => void;
+  className?: string;
+  viewMode?: HardwareViewMode;
+  onViewModeChange?: (mode: HardwareViewMode) => void;
+}
+
 export interface DevicesAndNetworksState {
   activeViewMode: HardwareViewMode;
   selectedStationId: string | null;
@@ -363,6 +442,15 @@ export interface DevicesAndNetworksState {
   selectElement: (stationId: string | null, slotNumber?: number, portId?: string) => void;
 }
 ```
+
+> **Provenance is carried on the view, not on each node.** `HardwareStationNode` has no
+> provenance field, and that is the design rather than an omission: the question "on what
+> basis do we assert this equipment exists" is a property of what the surface read, not of
+> an individual station. A per-node field would allow one canvas to mix provenances and
+> would put the claim where nothing derives it. Per-device health that *is* modelled lives
+> on the node itself — `HardwareStationNode.status: DeviceStatus` (`'RUN' | 'STOP' | 'FAULT' |
+> 'OFFLINE'`, `ui-topology/src/types.ts:18`) — and it answers a different question from
+> `TopologyHealth`: the device's own operating state, not whether this surface could read it.
 
 ---
 
