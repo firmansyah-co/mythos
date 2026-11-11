@@ -32,6 +32,27 @@ A branch that is an ancestor of `origin/dev` is a finished slice, not a workspac
 Six seats in this rig once worked on merged branches and produced a 17,328-line
 deletion. That is the failure this rule exists for.
 
+**Run the cheap decisive check before you form the sentence.** On 2026-11-11 six
+seats, including both orchestrators, stated a property of an artifact they had read
+once and then reasoned from their own summary of it. Every instance was settled by
+one command that took under a second:
+
+- *Is my work still in this branch?* → `git merge-base --is-ancestor <my-sha> HEAD`.
+  Reading a diffstat and inferring "my work was deleted" got it backwards.
+- *Is this commit touching my slice?* → read **every file in the commit**
+  (`git show --stat`), not the one file you happen to open. A seat concluded a pod
+  was unwired from the pod file while the same commit's org spec wired it in both
+  directions.
+- *Is this documented?* → grep the **concept**, not only the identifier you use in
+  one file. `alarm-critical` found nothing because the token document spells it
+  `color.isa101.alarm.critical`.
+- *Did the gate actually read my tree?* → `exec node -e "console.log(process.cwd())"`,
+  never `exec pwd`.
+
+This is not a diligence problem — everyone involved was careful. It is an **ordering**
+problem: the sentence forms before the check runs. When you are about to assert a
+property of something you did not just read in full, run the one command first.
+
 ## 2. Worktrees belong to `dev_gatekeeper`
 
 - **Only `dev_gatekeeper` runs `git worktree add` or `git worktree remove`.**
