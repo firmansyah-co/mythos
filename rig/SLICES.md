@@ -16,7 +16,7 @@ The single answer to "what is being worked on". Your memory is not this file.
 | Slice | Pod | Branch | Worktree | Base | State | Owner |
 |---|---|---|---|---|---|---|
 | `S-001` | uiux | `test/topology-all-view-modes` | `.claude/worktrees/topology-mode-coverage` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `ab93602`; BLOCKED on CI only (PR #50) | `pod_uiux.builder` |
-| `S-002` | — | `chore/rig-harness` | repo root *(pre-existing branch, not cut)* | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #55 @ `dba71c7`; local ahead, unpushed — see S-002) | `dev_gatekeeper` |
+| `S-002` | — | `chore/rig-harness` | repo root *(pre-existing branch, not cut)* | `origin/dev` @ `5b8ee51` | `in-review` @ `dba71c7`; **review assigned**; BLOCKED on CI | `dev_gatekeeper` |
 | `S-003` | backend | `refactor/device-execution-mode-canonical` | `.claude/worktrees/device-execution-mode` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `5cf3984`; BLOCKED on CI (PR #57) | `pod_backend.reviewer` |
 | `S-004` | hmi | `feat/hmi-live-telemetry` | `.claude/worktrees/hmi-live-telemetry` | `origin/dev` @ `5b8ee51` | `in-review` **NO VERDICT** @ `3c683be` (PR #61, +846/−1); connection-count gap open; BLOCKED on CI | `pod_hmi.builder` |
 | `S-005` | — | `policy/decision-defaults` *(exists @ `4f2ac4b`)* | *(not cut — see note)* | `origin/dev` | `planned` **blocked on S-002**; review CHANGES REQUESTED | `dev_gatekeeper` |
@@ -70,10 +70,19 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   ui-shell sweep guard must also run from `frontend/`, because its ROOT resolves off
   cwd and it fails ENOENT on ui-logic-editor paths otherwise.
   `./scripts/check.sh` is **not runnable there** — see blocker B2.
-- **Head:** `21cb9c4`, **two** commits on `origin/dev` (`52aa7f5` + `21cb9c4`
-  `refactor(ui-topology): split provenance and health into the spec's two axes`). The
-  worktree is clean. The two-axis split described below is now committed, so the
-  `52aa7f5` verdict no longer describes the head.
+- **Head: `ab93602`, THREE commits on `origin/dev`.** `52aa7f5` (the original), `21cb9c4`
+  (the two-axis split), and `ab93602` `fix(ui-topology): derive conformance instead of accepting
+  it as an input` — the fix for the one blocking item the re-review raised. Worktree clean,
+  0 behind `origin/dev`.
+  **The conformance prop is GONE, not made optional** — `NetworkCanvas` now takes
+  `nominalDeviceIds` / `actualDeviceIds` and derives, so *"the caller asserted MATCHES"* is not a
+  state the type can express. **That is stronger than the review asked for**, and `dev_gatekeeper`
+  verified it independently.
+  **The test that could not fail was replaced, not patched:** it used to hand
+  `conformance="MISMATCH"` to the canvas and assert `data-derived="true"` — proving only that the
+  component sets an attribute on whatever it is given. It now supplies **data** and asserts the
+  **conclusion** the data implies (same ids → `matches`, different → `mismatch`, one side only →
+  `not-compared`).
 - **Re-review landed 2026-11-11: CHANGES REQUESTED at `21cb9c4`, 1 blocking.**
   Builder row `qitem-20261111062745-7a4f2ed200b8fcf0`, gatekeeper row
   `qitem-20261111062755-2d7a2e58e9184508`. All four earlier items were re-verified **fresh by
@@ -245,6 +254,12 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
 - **Verification:** `rig spec validate` + `rig spec preflight` clean; `bash -n` on both
   scripts; `.gitignore` change hides no tracked file; full `./scripts/check.sh` run from
   the branch (receipt in the PR body).
+- **Review assigned 2026-11-11T07:1xZ: `pod_uiux.reviewer`**,
+  `qitem-20261111071339-4ef08044d92335c9`. **It was the last PR with no reviewer, and it is the
+  one that ADDS the review process** — so its author (`dev_gatekeeper`) cannot sign it, and `pm`
+  cannot either (pm has been editing `rig/SLICES.md` in this very tree all pass, so it is not
+  independent). The review brief names the five checks and the three deliberate deviations so
+  they are not re-opened as findings.
 - **Remote state — measured 2026-11-11T06:1xZ, not carried.** **PR #55 is OPEN**, base `dev`,
   pushed head **`dba71c7`**, `mergeStateStatus: BLOCKED` (no runner — blocker B1), 31 files,
   **+2149/−0**, 30 added + 1 modified + **0 deleted**, `mergeable: MERGEABLE`.
@@ -1215,26 +1230,38 @@ order; they touch disjoint files.
    that creates the reviewer row would close it. Raised by `pod_uiux.reviewer` and `scribe`
    independently; it is `pm`'s to decide.
 
-### Sequencing (decided by `pm`, 2026-11-11 — revised 06:1xZ)
+### Sequencing — REWRITTEN 2026-11-11T07:1xZ, because the old block contradicted the table
 
-1. **S-003** (backend) is independent; review is **APPROVED** at `7d4798c`, awaiting CI only.
-2. **S-001** (uiux) re-review is open at `21cb9c4`. Closes on that verdict.
-3. **S-004** moved to **pod_hmi** and is **cut now** — the S-001 dependency is dropped, because
-   its only rationale was "same pod" and the pod changed. File overlap with S-001 is nil.
-4. **S-009, S-010 and S-011 are all APPROVED** and waiting on CI only. **Every one of them had
-   no reviewer at all until 2026-11-11** — the same gap, three times, plus S-003. That is a
-   pattern in how slices are opened, not four accidents.
-5. **S-008** needs a scope decision before it is a slice.
-6. **S-012** follows **S-004** — S-004 must ship the neutral-label fallback so S-012's absence is
-   honest rather than harmful.
-7. The **device-mode half** of TSK-801 waits on S-003 and is not yet a slice.
-8. **S-005 → S-006** still follow S-002, and S-006 also follows S-005 — **F4 established that
-   `role.md:78-79` cites `DECISION-DEFAULTS.md`, which `mythos-org.yaml` never delivers.** S-006's
-   blocking items are closed by S-005's delivery entry, not by editing the desk role.
+`governance.scribe` caught this: the previous version said "S-001 re-review is open at `21cb9c4`"
+while the table said S-001 was APPROVED, and it said S-003 was approved at `7d4798c` while the
+head was `5cf3984`. **A sequencing block that contradicts the table is worse than no sequencing
+block, because it is the paragraph people read for the plan.** Every line below is checked against
+the table and the PRs, not carried.
 
-The HMI telemetry row `qitem-20261023085422` is `pending`, unclaimed, `blockedOn: null` —
-its block released when the DeviceExecutionMode decision landed. It is carried by **S-004**;
-it is not free work.
+**Six APPROVED and blocked only on CI (B1):**
+`S-001` @ `ab93602` · `S-003` @ `5cf3984` · `S-009` @ `139c263` (re-confirmed after the head moved)
+· `S-010` @ `16c10e3` · `S-011` @ `7e1535e` · `S-007` @ `2bfac2e`
+
+**One in review, no verdict yet:** `S-004` @ `3c683be` (PR #61) — with `pod_hmi.reviewer`, open
+question is the connection-count criterion.
+
+**One with no reviewer at all:** `S-002` / PR #55, the harness itself. It adds the review process,
+so it needs a reviewer who is not its author (`dev_gatekeeper`). **Assigned 2026-11-11 to
+`pod_uiux.reviewer`.**
+
+**Not a slice yet:**
+- `S-005` → `S-006` follow `S-002`; `S-006` also follows `S-005` — **F4 established that
+  `role.md:78-79` cites `DECISION-DEFAULTS.md`, which `mythos-org.yaml` never delivers.** S-006's
+  blocking items are closed by S-005's delivery entry, not by editing the desk role.
+- `S-008` needs a scope decision (who constructs the runtime) before it is a slice.
+- `S-012` follows `S-004` — S-004 ships the neutral-label fallback so S-012's absence is honest
+  rather than harmful. `S-013` waits on nothing.
+
+**The HMI telemetry row has moved.** `qitem-20261023085422` was `pending`/unclaimed when the old
+block was written; it is now **`handed-off` to `pod_hmi.builder` as `qitem-20261111061758`**, which
+is in progress and carried by **S-004**. It is not free work.
+
+**The device-mode half** of TSK-801 waits on S-003 and is not yet a slice.
 
 ---
 
