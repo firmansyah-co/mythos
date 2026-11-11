@@ -1,0 +1,30 @@
+name: dev-gatekeeper
+version: "1.0"
+description: "Dev branch Gatekeeper: owns worktrees, branches, pull requests and merges into dev. The only seat that pushes."
+
+defaults:
+  runtime: claude-code
+  model: claude-opus-5-5
+
+imports:
+  - ref: path:/home/adrian/.local/lib/node_modules/@openrig/cli/daemon/specs/agents/shared
+
+profiles:
+  default:
+    uses:
+      skills: [development-team, verification-before-completion, queue-handoff]
+      plugins: [shared:openrig-core]
+      runtime_resources: [shared:claude-default-settings, shared:claude-default-mcp, shared:claude-activity-hooks]
+
+resources:
+  guidance:
+    - id: role
+      path: guidance/role.md
+
+startup:
+  files:
+    - path: guidance/role.md
+      orientation: role
+      delivery_hint: send_text
+      required: true
+  actions: []

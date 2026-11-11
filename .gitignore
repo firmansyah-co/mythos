@@ -53,3 +53,16 @@ logs/
 bindings/
 **/bindings/
 *.tsbuildinfo
+
+# ==============================================================================
+# OpenRig / agent workspace (never commit runtime state)
+# ==============================================================================
+CLAUDE.local.md
+.claude/
+.openrig/
+.claude/worktrees/
+AGENTS.local.md
+
+# Rig runtime that must never reach a commit
+rig/**/autospin-*
+*.pid
