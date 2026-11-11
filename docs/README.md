@@ -19,6 +19,7 @@ Welcome to the comprehensive technical documentation and system specification re
 - **[ADR-006: Server-Driven UI (SDUI) & Auto-Generated TypeScript Contract](../specs/adr/ADR-006-server-driven-ui-auto-types.md)**: Pure Dumb Frontend paradigm with build-time `ts-rs` type synchronization.
 - **[ADR-007: ISA-18.2 Alarms, ISA-88 Recipes, Historian & Disaster Recovery](../specs/adr/ADR-007-isa18-2-isa88-historian-baseline.md)**: First-Out latching, 4-phase recipe handshakes, Swinging Door Compression in Parquet, and 1-click `.mythos-pkg` restoration.
 - **[ADR-008: Universal Plugin Harness Architecture ("Everything is a Plugin")](../specs/adr/ADR-008-universal-plugin-harness-architecture.md)**: Zero-domain microkernel, capability-based plugin isolation, and both backend engines and frontend GUI modules delivered as plugins.
+- **[ADR-009: Discovery Yields Candidates; Commissioning Is an Explicit Act](../specs/adr/ADR-009-discovery-yields-candidates.md)**: Discovery never writes the plant model; a discovered device is a candidate until an authorized operator commissions it. Source and health are separate axes. **Status: PROPOSED.**
 
 ### 1.3 Technical Architecture Handbooks (`docs/01-architecture/`)
 - **[00-Cargo Workspace and Crates Design](01-architecture/00-cargo-workspace-and-crates-design.md)**: Modular crate layout, internal dependencies, trait interfaces, and compilation invariants.
