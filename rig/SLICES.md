@@ -78,6 +78,16 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   `nominalDeviceIds` / `actualDeviceIds` and derives, so *"the caller asserted MATCHES"* is not a
   state the type can express. **That is stronger than the review asked for**, and `dev_gatekeeper`
   verified it independently.
+  **The seam where a default could have hidden was checked, not assumed** (`governance.scribe`):
+  both replacement inputs are **optional** (`NetworkCanvas.tsx:64-65`), and *two optional inputs
+  deriving a conclusion is exactly where a default `MATCHES` hides* — the same class as the banner
+  that defaulted to `UNKNOWN`. Read the function:
+  ```ts
+  if (!nominal || !actual) return 'NOT_COMPARED';   // provenance.tsx:111-113
+  ```
+  **It does not fabricate.** The banner also renders conformance only when
+  `claim.source !== 'UNREAD'`. So the honesty holds at the one seam where it would have been
+  easiest to lose.
   **The test that could not fail was replaced, not patched:** it used to hand
   `conformance="MISMATCH"` to the canvas and assert `data-derived="true"` — proving only that the
   component sets an attribute on whatever it is given. It now supplies **data** and asserts the
@@ -193,6 +203,44 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   Plugging a cable into `enp86s0` is more likely to fix CI than anything done in k3s, and it is
   a ten-second physical action. This also means **"restore the ARC listener" cannot work** on a
   link losing this many packets — Adrian's recorded answer to that question needs re-scoping.
+
+  **SECOND FAULT, FOUND 2026-11-11T07:12–07:16Z — it appears only once the network recovers.**
+  At 07:10Z the link healed on its own (6/6 requests at 0.03–0.32 s) and the listener stayed up
+  for 106 s with 0 restarts — the first time it had outlived a few seconds all day. The scale-set
+  controller then received the assignment and **scaled to 10 ephemeral runners**. They could not
+  register, and the controller logged, repeatedly:
+
+  ```
+  Failed to create ephemeral runners secret
+  "failed to generate JIT config ... request POST
+   https://broker.actions.githubusercontent.com/rest/_apis/runtime/runnerscalesets/1/
+   generatejitconfig ... 404 ... RunnerScaleSetNotFoundException:
+   No runner scale set found with identifier 1."
+  ```
+
+  **The cause is an ID mismatch, and it is the state the outage left behind.** The listener
+  re-registered itself against **`runnerscalesets/2`** (its own log:
+  `POST .../runnerscalesets/2/sessions`), while the cluster's EphemeralRunnerSet carried
+  `runnerScaleSetId: 1` and the controller kept calling `/runnerscalesets/1/`. GitHub has no scale
+  set 1 any more, so every runner creation 404s and the ephemeral runners sit with no `RUNNERID`.
+  `gh api orgs/firmansyah-co/actions/runner-scale-sets` also returns **404**.
+
+  **Why this matters for the remedy:** the network fix is necessary but **not sufficient**. Once
+  the cable is in, the ARC release must be **re-registered** — the listener's scale-set identity
+  and the EphemeralRunnerSet's `runnerScaleSetId` have to agree, which a pod restart does not do
+  because the stale ID is in the CRD, not the pod. The clean path is to reinstall/re-run the
+  `arc-runner-org` helm release so the listener and its EphemeralRunnerSet are recreated together.
+
+  **Measured state, so the next seat does not re-derive it:** the listener pod cycles
+  (`...-6b8f777f-listener`, age 3–18 s, 0 restarts — it is *replaced*, not crashing), the
+  EphemeralRunnerSet name rotates (`arc-runner-org-s2962` → `arc-runner-org-66jz6`), and
+  `actions/runs?status=in_progress` stayed at **0** for 10 minutes of polling.
+
+  **Acceptance test for the full fix — three gates, not one:** (1) three 15-packet pings at 0%
+  loss with mdev under ~50 ms; (2) the listener pod survives past ~10 minutes; (3) **a runner
+  registers** — `kubectl -n arc-runners get ephemeralrunners` shows a non-empty `RUNNERID`, and
+  a CI run leaves `queued` for `in_progress`. Passing (1) and (2) alone is what 07:10Z looked
+  like, and it was not working.
 
   **Why "restore the ARC listener" will not fix it:** the controller is alive and the
   listener starts cleanly; it dies at the first GitHub API call. Any fix that restarts
