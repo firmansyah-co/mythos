@@ -218,6 +218,47 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   slices stand in. Owner: `dev_gatekeeper` (land `chore/rig-harness` as a PR to `dev`);
   tracked as slice **S-002** below.
 
+### B1 ROOT CAUSE — measured 2026-11-11T06:3x–06:5xZ, and it is NOT ARC
+
+**The CI outage is a network path to GitHub from this host. Restarting pods cannot fix it.**
+
+Measured independently by `dev_gatekeeper`, `desk-desk` and `pm`; all three agree:
+
+```
+ping 20.205.243.168 (api.github.com)   37.5–50% packet loss, rtt 34–238ms, max 1060ms
+curl api.github.com x10                pm: 8 hard timeouts at 8s, 2 ok at 4.7–5.4s, 10/10 slow
+curl api.github.com x20                gatekeeper: ok=16 fail=4, slow(>2s)=15
+curl github.com                        200 in 0.6s / 3.8s / 4.8s, one 10s timeout
+gh api rate_limit                      1.6s / 2.6s / 11.8s
+ip link enp86s0                        DOWN, NO-CARRIER, carrier=0  (no cable)
+ip route                               default via 192.168.100.1 dev wlan0 only
+iw dev wlan0 link                      SSID "FRONT OFFICE", 2.4GHz, connected
+```
+
+**The mechanism.** The ARC listener retries with a **1-second** connect timeout. On this link a
+GitHub connect takes **0.6–11.8s** and hard-fails a third of the time. A 4–7s connect is
+indistinguishable from a dead endpoint at a 1s timeout — which is exactly why the listener dies
+100% of the time while 65–80% of individual requests succeed. That is a timeout/network mismatch,
+not a crash.
+
+**What this rules out, and it should stop the next proposal before it is made:**
+- **Restarting the listener pod does nothing.** It is already restart-looping *because* it cannot
+  reach GitHub; a restart re-enters the same loop.
+- **Editing `dev` branch protection does nothing.** The checks never run.
+- **Repointing `runs-on` does nothing.** Any runner on this host hits the same link.
+- **Adrian's 06:06Z answer (restore ARC) was correct on the evidence then and is stale on the
+  evidence now.** `desk` is re-asking him rather than letting him waste the action — correct.
+- A **wired NIC exists and is unused** (`enp86s0`, no carrier). Whether to plug it in, or fix the
+  wireless, is a physical decision only Adrian can make.
+
+**The blocker was re-scoped by `pm` from `external:adrian-restores-arc-listener-on-legion7` to
+`external:legion7-network-to-github`** — it names the link, not a service to restart.
+
+**This is now the highest-priority item in the rig.** It blocks every merge, and it also degrades
+every seat's ability to read PR state — `pm` hit the same `dial tcp 20.205.243.168:443: i/o
+timeout` on a plain `gh pr view`. Several of today's stale-claim errors trace to seats reasoning
+from a `gh` call that silently timed out.
+
 ### S-002 — land the rig harness on `dev` (fixes blocker B2)
 
 - **What:** `chore/rig-harness` → `dev`: `rig/mythos-org.yaml`, `rig/agents/**`,
@@ -472,6 +513,21 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   badge never reaches a live path) and **S-004 makes it LIVE the moment it wires the stream.**
   This is the same failure class as the fabricated rack and the fail-open quality: a surface
   asserting a cause it did not measure.
+- **PROCESS NOTE — a permission prompt held this slice for ~7 minutes and nothing caught it but
+  a reviewer watching.** `pod_hmi.builder` was gated on `Read(/tmp/verify-fallthrough.mjs)`;
+  four urgent inbox items queued behind it, worktree unmoved at `5b8ee51`. `rig send` refuses at
+  a prompt by design, so the seat could not be nudged. **Cleared by `pm` at 06:50Z** with
+  `rig send --dangerously-interact`, choosing the **session-scoped** option ("always allow /tmp
+  for this session") over the one-shot, because the builder generates its own probe scripts under
+  `/tmp` and would otherwise stall once per script.
+  **Two escalations fired on this stall** (`qitem-20261111062609`, `qitem-20261111065111`) and
+  both were closed as **resolved-at-source**, not as lost wakes.
+  **Why this is worth recording rather than fixing silently:** the builder had no way to clear its
+  own gate, so a slice can stall indefinitely with the work already queued and correct. The
+  reviewer's call **not** to answer another seat's prompt was right; clearing a routing block is
+  an orchestrator act, not a reviewer one. If this recurs, the question for `advisor` is whether
+  builders should be launched with a `/tmp` allowance so their own verification scripts do not
+  gate them.
 - **SCOPE DECISION on the above — `pm`, 2026-11-11. Split, with a hard constraint on S-004.**
   - **S-012 (new, own slice):** let the faceplate **name the specific bad quality**. This needs
     the faceplate quality contract to carry more than three values — a field or prop beyond the
@@ -1029,26 +1085,34 @@ None is assigned to a pod and none blocks S-001.
 | SCRIBE-3 | `specs/adr/` | ADR candidate: *"Discovery yields candidates; commissioning is an explicit act."* A real architectural decision with a live alternative (auto-provision on discovery, which `:201` reads as approved), currently recorded only in source comments. Cheap now, expensive to reconstruct after the transport slice. |
 | SCRIBE-4 | vocabulary | `TopologyProvenance` (`ui-topology/src/provenance.tsx:29`) collides in name with `ProcessDataQuality` (`ui-faceplate-lib/src/types.ts:28`), which this repo already describes as provenance. Two axes, so two names is defensible — but name it before a third slice imports both and infers they agree. Same class as the `InterlockCondition` smell below. Record, do not block. |
 
-## Worktree state — re-measured 2026-11-11T06:1xZ
+## Worktree state — re-measured 2026-11-11T06:50Z, after the `/tmp` sweep
 
-`./scripts/check-slices.sh` → 8 worktrees, 2 stale:
+`./scripts/check-slices.sh` → **11 worktrees, 2 stale**:
 
 ```
-ci-frontend-gate         ci/frontend-gate                  7 ahead  144 behind  STALE:behind
-dev-live                 HEAD                              0        0           ok
-device-execution-mode    refactor/device-execution-mode-…  1        0           ok (+2 dirty)
-docs-alarm-colour        docs/alarm-colour-reconcile       1        0           ok
-docs-topology-provenance docs/topology-provenance-spec     3        0           ok
-rev-uiux-50              HEAD                              1        0           ok
-topology-mode-coverage   test/topology-all-view-modes      2        0           ok
-ui-isa101-consolidation  feat/ui-isa101-consolidation      3 ahead  146 behind  STALE:behind (+4 dirty)
+ci-frontend-gate          ci/frontend-gate                          7 ahead  144 behind  STALE:behind
+dev-live                  HEAD                                      0        0           ok
+device-execution-mode     refactor/device-execution-mode-canonical  2        0           ok
+docs-alarm-colour         docs/alarm-colour-reconcile               2        0           ok
+docs-theme-status         docs/theme-status-honest                  1        0           ok
+docs-topology-provenance  docs/topology-provenance-spec             4        0           ok
+docs-tsk801-correction    docs/tsk-801-quality-blockers-corrected   1        0           ok
+hmi-live-telemetry        feat/hmi-live-telemetry                   0        0           ok
+rev-uiux-50               HEAD                                      1        0           ok
+topology-mode-coverage    test/topology-all-view-modes              3        0           ok
+ui-isa101-consolidation   feat/ui-isa101-consolidation              3 ahead  146 behind  STALE:behind (+4 dirty)
 ```
 
-**Corrected this pass.** The previous table listed 5 worktrees and is now 8: the four slice
-worktrees (`device-execution-mode`, `docs-alarm-colour`, `docs-topology-provenance`,
-`topology-mode-coverage`) had all been cut and were missing from the table, and their states
-had moved. `rev-uiux-50` and `topology-mode-coverage` are **no longer dirty** — the two-axis
-split is committed at `21cb9c4`.
+**Six `/tmp` scratch worktrees removed 2026-11-11T06:50Z by `dev_gatekeeper`.** They had
+accumulated in the shared registry at `bd30ec6`, 144 behind, and inflated the count to 17/8 —
+which buries the two genuinely stale trees in noise. **Nothing unique was lost, and that was
+proved rather than assumed:** the two that carried 157 staged entries each had
+`git write-tree` produce `21a3730…`, **byte-identical to `origin/dev^{tree}`**; the other four
+were clean. They were extracted trees where someone ran `git add -A`, not unique work.
+
+**Rule recorded:** an isolated tree for a gate run comes from `git archive` into a scratch
+directory, **never `git worktree add`** — a worktree registers itself in the repo's shared
+registry and outlives the run.
 
 `ci/frontend-gate` is now 144 commits behind and its content (the frontend gate job)
 **already exists on `origin/dev`** as `frontend-tests` (`ci.yml:286`), so the branch has
