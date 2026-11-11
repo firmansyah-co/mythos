@@ -99,8 +99,14 @@ topology. Discovery never writes the plant model.
    plant equipment, and it is never presented as commissioned.
 3. **Commissioning is an explicit, authorized act.** It records operator identity, timestamp and
    target, consistent with the audit-trail requirement in SYS-REQ-096 (`specs/spec.md:346`).
-4. **Every topology surface states its provenance.** A surface makes a claim by existing; the
-   claim is stated rather than implied.
+4. **Every topology surface states its provenance, and derives it — it is never defaulted.**
+   A surface makes a claim by existing; the claim is stated rather than implied. Stating a
+   provenance that the rendered data contradicts is the same defect as stating none: a banner
+   reading "nothing has been read, so this view makes no claim about the plant" above a canvas
+   that is drawing a station is a false statement, not a cautious one. Where a surface has data
+   it must have a provenance for that data; a caller that supplies stations without saying where
+   they came from is an error, not a default. The transport is the component most likely to
+   supply data and forget the provenance, which is why this is decided before it lands.
 5. **Source and health are separate axes.** Where a claim came from (nominal configuration, or
    discovery) and whether a configured device is answering (reachable, unreachable, degraded) are
    distinct properties and shall not be collapsed into one enumerated value.
@@ -111,6 +117,8 @@ topology. Discovery never writes the plant model.
 
 - An operator can distinguish a commissioned device from a candidate, and can tell "nothing was
   read" from "configured but not answering".
+- Provenance cannot be satisfied by a default, so a populated surface cannot announce that it
+  knows nothing.
 - The decision is recorded in a controlled document, so a future slice cannot reintroduce
   auto-provisioning by reading one sentence of the spec in isolation.
 - The replacement workflow keeps its value without licensing node creation.
