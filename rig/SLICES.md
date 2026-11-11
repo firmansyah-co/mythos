@@ -19,10 +19,7 @@ The single answer to "what is being worked on". Your memory is not this file.
 | `S-008` | backend | *(not cut)* | — | `origin/dev` | `planned` — **blocked on a scope decision** | `pod_backend.builder` |
 | `S-012` | hmi | *(cut requested)* | — | `origin/dev` @ `75200c0` | **CUT REQUESTED** — S-004 merged, unblocked | `pod_hmi.builder` |
 | `S-013` | hmi | *(not cut)* | — | `origin/dev` | `planned` | `pod_hmi.builder` |
-| `S-014` | hmi | `feat/setpoint-draft-committed` | `.claude/worktrees/setpoint-reconcile` | `origin/dev` @ `08245d0` | **APPROVED** @ `b09074b`; merge row `qitem-20261111130520` | `dev_gatekeeper` |
 | `S-015` | backend | `fix/mythos-update-fabrication` | `.claude/worktrees/update-fabrication` | `origin/dev` @ `7c35e80` | `open` — cut 2026-11-11T12:07Z | `pod_backend.builder` |
-| `S-016` | backend | `ci/release-build-job` | `.claude/worktrees/release-build-job` | `origin/dev` @ `7c35e80` | **BUILT** @ `581c2f2` — awaiting the red-direction receipt | `pod_backend.builder` |
-| `S-017` | scribe | *(not cut)* | — | `origin/dev` @ `75200c0` | `planned` — MYTHOS-ARCH-008 gate wording; drop two phrases with no producer | `governance.scribe` |
 | `S-019` | — | *(cut requested)* | — | `origin/dev` @ `7c35e80` | **CUT REQUESTED** — CULTURE §12: an assertion against a constant proves plumbing, not meaning | `pm` |
 
 **Re-verified against the live world 2026-11-11T06:1xZ, by `pm`, not carried from the
@@ -2900,6 +2897,9 @@ starts serialising it.
 | `S-007` | `docs/alarm-colour-reconcile` | #58 | `094d5db` | Alarm colours reconciled; the two priority vocabularies recorded as non-equivalent. |
 | `S-005` | `policy/decision-defaults-s005` | #63 | `f10006a` | Decision-defaults policy + delivery entry. B2's harness made it cuttable. |
 | `S-004` | `feat/hmi-live-telemetry` | #61 | `08245d0` | One live TagBus value to one faceplate. **Refused twice while green without the badge fix**; merged only when the fix was present at the head. |
+| `S-014` | `feat/setpoint-draft-committed` | #68 | `4264713` | Draft-vs-committed setpoint reconcile; doc §5 OPEN→DECIDED. Threshold has **no default** — `isDriftConfigured` rejects absent/null/non-finite/negative. Approval at `b09074b` carried to the merged head by **tree hash** (`frontend/` `cf9c6d47439e` at both), not ancestry: the head moved three times, every time by merging dev forward. |
+| `S-016` | `ci/release-build-job` | #67 | `ce5147e` | The release-build job the `rc→release` gate had no producer for. **Publishes nothing structurally** (`contents: read`). First CI execution was deliberately RED — dispatched on a scratch branch with an injected `bash -n` break, step 8 FAILED with the injected line and step 9 SKIPPED (`run 43026957795`). |
+| `S-017` | `docs/release-gate-wording` | #70 | `3e0cc91` | The release gate now says what it requires and what it does NOT satisfy — soak / IEC SIL / Box-Model / clean-machine installers each recorded as unmet **with evidence**; hot-reload kept because it is measured. |
 | `S-017-adj` | `docs/topology-spec-post-merge` | #64 | `7c35e80` | Topology contract described as merged; four "open, not merged" statements corrected. |
 | — | `ledger-only` | #62 | `75200c0` | The ledger itself, carried to dev so corrections live on the branch rather than in a worktree. |
 | — | `ledger-only` | #65 | `d3502f9` | The ledger again — `dev` now knows every open slice, including the four cut after #62. |
