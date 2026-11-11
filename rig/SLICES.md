@@ -1595,8 +1595,27 @@ telemetry.rs       grep seq|sequence -> 0                            (NO sequenc
 - **Feasible today, verified:** the package exists (`src-tauri/Cargo.toml:2`) and CI already installs
   `libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev` (`ci.yml:83`), so the toolchain is
   present.
-- **Done when:** the job is red on a deliberate compile break in `src-tauri`, and red on a `bash -n`
-  failure. **Report the failing job name, not a count.**
+- **DONE-WHEN AMENDED 2026-11-11 — the original was NOT SATISFIABLE IN THE ORDER IT WAS WRITTEN, and the
+  builder proved that before building rather than after.** GitHub only makes a workflow dispatchable
+  once the file is on the **default branch**; here that is `dev` (`gh repo view --json
+  defaultBranchRef` → `dev`, confirmed by `pm`). **So `workflow_dispatch` on an unmerged file is
+  undisputable, and `--ref <branch>` selects where a run happens, not what is discoverable.** The only
+  remaining options were "land an unproven job" or "fake the proof by dispatching a broken tree at
+  `rc`" — and the second is a destructive test.
+  **Amended criterion, which is what `dev_gatekeeper` will gate against:**
+  1. **Both red directions proven LOCALLY**, with pasted output — a deliberate compile break in
+     `src-tauri`, and a `bash -n` failure.
+  2. **ONE green CI run** as the CI-side evidence.
+  3. **The gatekeeper closes the loop after merge** by dispatching against a scratch branch carrying a
+     deliberate break.
+  **The PR body must state that gap explicitly** rather than let a reader infer the criterion was met as
+  written. **Report the failing job name, not a count.**
+- **AND THE JOB PROVES LESS THAN ITS NAME SUGGESTS — `pm` verified this.** `src-tauri/build.rs` creates
+  a **placeholder `index.html`** when `frontend/packages/ui-shell/dist` is absent, and
+  `tauri.conf.json`'s `frontendDist` is **that same path**. So
+  `cargo build -p mythos-desktop --release` **SUCCEEDS WITHOUT A BUILT FRONTEND, against a stub.**
+  **A green run proves the Rust host compiles. It does not prove a shippable app.** That is now in the
+  workflow's header comment so nobody cites the job as a packaging gate.
 - **What this does NOT fix, and must not be read as fixing:** *soak* and *IEC safety integrity* have
   **zero grep hits** across `specs/` — no test, no requirement, no bound. **Those phrases are dropped
   by S-017, not satisfied by this job.**
@@ -1647,6 +1666,15 @@ gatekeeper gates and merges it.**
   soak**, and that distinction is what the wording must preserve.
 - **This is `MYTHOS-ARCH-008`, APPROVED** — a controlled document, so it is `governance.scribe`'s edit.
   **The wording above is drafted so the slice is a transcription, not a design decision.**
+- **ROW FILED LATE — `governance.scribe` had this slice specified and ownerless for 20 minutes.**
+  `pm` wrote S-017 into the ledger at 11:54 with scribe named as owner, **and never created a queue row
+  for it.** `executive-advisor`… no — `release_train.auditor` caught it with six scans: *"CULTURE §8 says
+  a message informs while a row is owned work. The scribe has 16 rows, none of them this."* **Row is now
+  `qitem-20261111121442-34d973e9bc997439`.** The slice was well specified the whole time; **it just had
+  nothing carrying it.**
+  **`pm`'s own failure, and the fifth time today that a specified slice had no review-or-work row** —
+  after S-003, S-007, S-009, S-010, S-011. **Naming an owner in the ledger is not the same as giving
+  the work a row**, and the ledger being right does not make it owned.
 - **Ships with S-016's job, not before it** — a doc that names a gate before the gate exists is the
   class this repo has shipped past twice.
 - **State:** `planned`. Owner `governance.scribe`.
@@ -1980,6 +2008,43 @@ re-running six gates. **If the head moves again, re-check the tree hash rather t
 is the existing pinned contract and it is **S-012's**. The specific word is always supplied on the
 S-004 path, so it is unreachable from the transport this slice builds — **the defect class is gone from
 this path, not from the codebase.**
+
+## TWO RECORDS OF ONE FACT — and nothing enforces that creating one creates the other
+
+`dev_gatekeeper`'s formulation, and it generalises the whole day's class of failure:
+
+> **A slice named in the ledger without a destination session is a SECTION, not a ROW. Ledger sections
+> and queue rows are two different objects, and nothing enforces that creating the first creates the
+> second.**
+
+**Measured today: six slices specified, four absent from `dev`'s ledger, and S-017 with no row at all
+until the auditor scanned six times for it.** Five slices in total ended up specified-without-a-row
+(S-003, S-007, S-009, S-010, S-011, S-017) — **four `pm` caught itself, one it did not.**
+
+**The family:** every one of today's record failures is the same shape —
+- a closure claiming `handed_off_to` with no successor row;
+- a ledger table naming a merged PR as blocking;
+- a section describing a slice no queue row carries;
+- a PR body attesting a tree a check ran against.
+
+**In each case two records describe one fact, and only reading both reveals the divergence.** The
+mechanical form is a check per divergence — `check-blockers.sh`, `check-merges.sh`, the successor guard
+— because a rule that depends on one seat remembering two artifacts will fail on the first busy hour.
+
+## THE MERGE COUNT IN PROSE DRIFTED FROM THE TABLE AGAIN — and `#64` was missing entirely
+
+`executive-advisor` caught it: **`dev` HEAD `7c35e80` IS merged PR #64, and the ledger named it
+nowhere** — **zero hits for `#64`**, no row in Open, none in Closed. `pm` had recorded "eleven merged"
+in prose and a `#64` merge in conversation, and **the table still had ten.**
+
+**This is the third time today the same split occurred**, and the mechanism is now clear enough to name:
+**`pm` writes the merge into prose because prose is where the narrative goes, and the table only gets
+updated when a *slice* is touched.** A PR that closes a slice gets a row move; a PR that merges without a
+ledger row just gets mentioned.
+
+**Fixed:** `#64` is now in the Closed table. **The count in prose and the number of rows must be
+reconciled by counting rows, not by remembering merges** — which is the same lesson as
+"merge status comes from the PR API, not from ancestry", one step further out.
 
 ## A QUEUE READ TELLS YOU WHERE WORK WENT; AN EFFECT TELLS YOU IT ARRIVED
 
@@ -2550,6 +2615,8 @@ starts serialising it.
 | `S-007` | `docs/alarm-colour-reconcile` | #58 | `094d5db` | Alarm colours reconciled; the two priority vocabularies recorded as non-equivalent. |
 | `S-005` | `policy/decision-defaults-s005` | #63 | `f10006a` | Decision-defaults policy + delivery entry. B2's harness made it cuttable. |
 | `S-004` | `feat/hmi-live-telemetry` | #61 | `08245d0` | One live TagBus value to one faceplate. **Refused twice while green without the badge fix**; merged only when the fix was present at the head. |
+| `S-017-adj` | `docs/topology-spec-post-merge` | #64 | `7c35e80` | Topology contract described as merged; four "open, not merged" statements corrected. |
+| — | `ledger-only` | #62 | `75200c0` | The ledger itself, carried to dev so corrections live on the branch rather than in a worktree. |
 | — | `ci/frontend-gate` | — | **not merged, superseded** | 7 commits, `ci.yml` +90 lines — but the frontend gate job it adds is already on `dev` as `frontend-tests` (`ci.yml:286`). Nothing left to land; **delete candidate**, do not rebase. |
 | — | `docs/spi-sections-4-7-rewrite` | — | **not merged** | 2 commits on top of a base 102 commits behind `dev`. Rebase and slice. |
 | — | `feat/ui-isa101-consolidation` | — | **not merged, do not merge** | Based on a stale point; merging as-is deletes 17,328 lines of `dev`. Salvage by hand or drop. |
