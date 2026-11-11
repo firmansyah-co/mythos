@@ -25,7 +25,12 @@ while IFS= read -r wt; do
     ahead="$(git -C "$wt" rev-list --count "$BASE"..HEAD 2>/dev/null || echo '?')"
     behind="$(git -C "$wt" rev-list --count HEAD.."$BASE" 2>/dev/null || echo '?')"
 
-    if git -C "$wt" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
+    # A worktree sitting exactly on the base is healthy, not shipped. "Already merged"
+    # only means a STRICT ancestor — same distinction the pre-commit hook makes.
+    head_sha="$(git -C "$wt" rev-parse HEAD 2>/dev/null || echo wthead)"
+    base_sha="$(git -C "$ROOT" rev-parse "$BASE" 2>/dev/null || echo base)"
+
+    if git -C "$wt" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null && [ "$head_sha" != "$base_sha" ]; then
         verdict="STALE:merged"
         stale=$((stale + 1))
     elif [ "${behind:-0}" != "0" ] && [ "${behind:-0}" != "?" ]; then

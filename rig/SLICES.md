@@ -33,19 +33,24 @@ The single answer to "what is being worked on". Your memory is not this file.
 
 ---
 
-## Carried over from the previous rig (not yet sliced)
+## Carried over from the previous rig (open queue rows)
 
-These were live queue rows when the previous `mythos-org` was archived. They are
-recorded here so the work is not lost. `pm` decides which become slices.
+`pm` decides which of these become slices. They are recorded so the work is not lost;
+none of them is assigned.
 
-| Origin qitem | Pod | What |
-|---|---|---|
-| `qitem-20261023085422` | uiux | HMI canvas has no live-telemetry path; every faceplate reads NOT BOUND on a real plant. **Needs a scope decision.** |
-| `qitem-20261026053023` | hmi | Operator-writable setpoints vs telemetry re-sync: needs a draft-vs-committed rule before coding. |
-| `qitem-20261026063940` | uiux | Two same-named `InterlockCondition` types in `ui-faceplate-lib` and `ui-inspector`. Naming smell, not a wrong import. |
-| `qitem-20261027083546` | backend | CLI `--version` pinning and `versions --remote`; blocked on the release path producing more than one version. |
+| Origin qitem | Pod | State | What |
+|---|---|---|---|
+| `qitem-20261023085422` | uiux | blocked | HMI canvas has no live-telemetry path; every faceplate reads NOT BOUND on a real plant. **Needs a scope decision** (advisor gate). |
+| `qitem-20261026053023` | hmi | blocked | Operator-writable setpoints vs telemetry re-sync: needs a draft-vs-committed rule before coding. |
+| `qitem-20261026063940` | uiux | blocked | Two same-named `InterlockCondition` types in `ui-faceplate-lib` and `ui-inspector`. Naming smell, not a wrong import. |
+| `qitem-20261027083546` | backend | blocked | CLI `--version` pinning and `versions --remote`; blocked on the release path producing more than one version. Rerouted from the removed `publisher` seat. |
 
----
+## Removed from the ledger
+
+| Row | Why |
+|---|---|
+| `qitem-20261110082629` (worktree sweep) | Executed 2026-11-11: 13 merged worktrees and 8 merged branches removed, 19 → 6 worktrees. Both "dirty" worktrees were already shipped in `origin/dev` (diffs empty), so no review finding was lost. |
+| `qitem-recovery-77ae3bf3` | Synthetic stuck-sweep row for the row above; closed with it. |
 
 ## Closed
 
