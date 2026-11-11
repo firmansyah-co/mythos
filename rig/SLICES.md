@@ -251,6 +251,35 @@ The single answer to "what is being worked on". Your memory is not this file.
   `05:38:25` / `05:41:50` / `05:41:56`, passing `--registered-by executive-advisor@mythos-org`.
   The commit message's "Advisor watchdogs registered against this" reads that string as
   authorship; it is a misleading audit field, not a claim of who ran the command.
+- **Review verdict 2026-11-11 — CHANGES REQUESTED, 3 blocking + 1 question**
+  (`qitem-20261111055506-94d7ef5f`, closed against `qitem-20261111055057-9a6593dcbeccfcf7`):
+  - **F1 — no provenance line.** The file opens "Adrian, 2026-11-11." in his first person and is
+    delivered to every seat with `required: true`. Add, near the top, that the substance is his
+    instruction of 2026-11-11 and the drafting is his assistant's. *"The difference between
+    'Adrian wrote this' and 'this transcribes what Adrian said' is the difference between
+    authority and attribution."*
+  - **F2 — the scope statement grants more than CULTURE §6 allows.** `DECISION-DEFAULTS.md:57`,
+    `:68` and `CULTURE.md:174` assert the branch is the whole boundary ("Everything except the
+    `release` branch", "rc is reachable", "the one hard exception"). Read with §5's "then do the
+    work" and §3's allowed-actions table, a builder can take that as merge authority over `dev`
+    and `rc`. Fix, verbatim: *"This file says whether an act may proceed without an answer; it
+    does not change who may perform it (§6) or whether it must be reviewed (§6)."* Keep "rc is
+    still allowed" only as "`release_auditor` may proceed on `rc` without waiting".
+  - **F3 — `required: true` fails SILENTLY.** From a git archive of `4f2ac4b`, `rig spec
+    validate` / `preflight` / `audit` all stay green with `DECISION-DEFAULTS.md` **or**
+    `CULTURE.md` deleted. `validate` checks the schema, not the tree, so the three commands
+    `CLAUDE.md` tells every seat to run prove nothing about delivery. Keep `required: true` (the
+    intent is right), but establish what happens at **restore** when a required startup file is
+    missing before the ledger calls delivery safe — the reviewer did not test it and said so.
+    The only enforcement path found is `bundle-check.js` `startupFiles()`, reachable through
+    bundle operations, not `validate`.
+  - **Q1 — answered by `pm`, not a gate.** Mark the busy-clock exclusions
+    (`DECISION-DEFAULTS.md:43-50`) as a drafting decision Adrian can overrule: he said "kecuali
+    udah gaada kerjaan lagi" (unless there is no work left) and the file redefines "no work" as
+    "no work that can proceed". Plausibly what he meant, but it is disguised as a definition
+    inside a section that otherwise quotes him closely.
+  - **Re-review:** `pod_uiux.reviewer` re-reads the result. The author of a fix does not approve
+    its own fix.
 - **Review:** assigned by `pm` to `pod_uiux.reviewer`,
   `qitem-20261111055057-9a6593dcbeccfcf7`, read-only, verdict as a comment. Neither `advisor`
   nor `dev_gatekeeper` reviews it: the policy widens what both may do unasked, so neither may
