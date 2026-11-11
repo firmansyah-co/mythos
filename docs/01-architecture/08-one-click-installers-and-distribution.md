@@ -34,7 +34,7 @@ The distribution infrastructure provides three distinct release channels:
 
 | Channel | Identifier | Stability Gate | Update Frequency | Target Audience |
 | :--- | :--- | :--- | :--- | :--- |
-| **Release** | `release` | Strict Production (All CI tests, Box-Model audits & OT sign-offs) | Bi-weekly / Monthly | Production factory floors, production SCADA workstations |
+| **Release** | `release` | Strict Production — see §2.2.1 | Bi-weekly / Monthly | Production factory floors, production SCADA workstations |
 | **Release Candidate** | `rc` | Staging Release (All automated CI and integration tests passed) | Weekly | Pre-production testing, QA engineers, integration staging |
 | **Development** | `dev` | Bleeding edge (Automated continuous build from `dev` branch) | Continuous / Nightly | Field commissioning engineers, active developers |
 
@@ -59,6 +59,53 @@ The distribution infrastructure provides three distinct release channels:
                    |  3. First-Class CLI Utility (mythos-cli)       |
                    +------------------------------------------------+
 ```
+
+#### 2.2.1 What the `release` gate actually requires — and what it does NOT
+
+Promotion to `release` requires **all required checks green, a release-build run, and a recorded human
+sign-off**. Each of those three has a producer:
+
+- **Required checks green** — the CI jobs in `.github/workflows/ci.yml`.
+- **Release build** — `.github/workflows/release-build.yml` compiles the desktop host in `--release` and
+  runs the packaging sanity suite. **It builds and validates; it publishes nothing and creates no tag**
+  (`permissions: contents: read` makes that structural, not a promise). It also does not prove a
+  shippable installer exists: `src-tauri/build.rs` writes a placeholder `index.html` when
+  `frontend/packages/ui-shell/dist` is absent, so a green run can be a green run against a stub
+  frontend. Producing real bundles is `build-installers.sh`'s job and is not wired to CI.
+- **Human sign-off** — a named signer, recorded against the promotion, in the form
+  `ADR-004` describes for field testing: sign-off by an identified person on identified hardware,
+  recorded before the merge that ships it. Not an automated check.
+
+**Criteria that are NOT SATISFIED, and have no producer or requirement in this repository:**
+
+- **Soak / regression-stability testing.** There is no soak test, no endurance run, no stability bound.
+  A search of `specs/` for *soak*, *endurance*, *stability test* or *24-hour* returns nothing. This gate
+  previously implied such testing was part of `release`; it is not, and nothing currently performs it.
+- **IEC safety-integrity verification (SIL).** No safety-integrity requirement exists to verify against.
+  A search of `specs/` for *safety integrity*, *SIL*, *IEC 61508* or *IEC 61511* returns nothing. The
+  project's functional-safety posture is SYS-REQ-096's zero-silent-fallback invariant, which is a
+  behaviour, not a certified integrity level. A `release` build carries **no SIL claim**.
+- **Box-Model audits.** "Box-Model" is a *layout constraint* on the HMI — the CSS box model, specified
+  as spatial and contrast invariants in `docs/04-hmi-and-ui/inspector-drawer-layout.md`, in its
+  "Normative References & Box-Model Constraints" and "Visual Quality Control & Box-Model Verification"
+  sections. It is not an audit with a producer; no script or CI job checks it. (Cited by section title
+  rather than number: that document currently numbers sections 7, 8 and 9 twice each, so a §-number
+  reference there would be ambiguous.)
+- **Clean-machine installer verification for all three platforms.** `SYS-REQ-094` requires `.exe`, `.dmg`
+  and `.AppImage` installs on clean machines. Every workflow runs on a single self-hosted Linux runner
+  (`runs-on: arc-runner-org`) with no matrix, so Windows and macOS artefacts cannot be produced or
+  exercised here at all. That criterion is unverified in this repository, not verified by omission.
+
+**What IS measured — do not read the list above as covering everything:** hot-reload latency.
+`test_hot_reload_sub_50ms_sys_req_023` (`crates/mythos-strucpp/tests/hot_reload_tests.rs`) asserts the
+swap completes in under 50 ms per SYS-REQ-023, and that is a real bound enforced by a real test. It is
+**a test, not a soak**: it measures one swap, once, and says nothing about behaviour over hours. It
+appears here because a reader looking for "stability evidence" will find either thing under that heading,
+and the distinction between them is the difference between a measured property and an unmet criterion.
+
+A reader comparing this section to the CI configuration can check every statement above against the
+workflow files and the searches named. Where a criterion is unmet, this section says so rather than
+leaving its absence to be inferred from the phrase having been deleted.
 
 ---
 
