@@ -66,3 +66,6 @@ AGENTS.local.md
 # Rig runtime that must never reach a commit
 rig/**/autospin-*
 *.pid
+
+# Local MCP server declarations (machine-specific)
+.mcp.json
