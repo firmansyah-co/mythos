@@ -15,7 +15,7 @@ The single answer to "what is being worked on". Your memory is not this file.
 
 | Slice | Pod | Branch | Worktree | Base | State | Owner |
 |---|---|---|---|---|---|---|
-| `S-001` | uiux | `test/topology-all-view-modes` | `.claude/worktrees/topology-mode-coverage` | `origin/dev` @ `5b8ee51` | `in-review` **CHANGES REQUESTED** @ `21cb9c4`; BLOCKED on CI | `pod_uiux.builder` |
+| `S-001` | uiux | `test/topology-all-view-modes` | `.claude/worktrees/topology-mode-coverage` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `ab93602`; BLOCKED on CI only (PR #50) | `pod_uiux.builder` |
 | `S-002` | — | `chore/rig-harness` | repo root *(pre-existing branch, not cut)* | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #55 @ `dba71c7`; local 3 ahead, unpushed) | `dev_gatekeeper` |
 | `S-003` | backend | `refactor/device-execution-mode-canonical` | `.claude/worktrees/device-execution-mode` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `5cf3984`; BLOCKED on CI (PR #57) | `pod_backend.reviewer` |
 | `S-004` | hmi | `feat/hmi-live-telemetry` | `.claude/worktrees/hmi-live-telemetry` | `origin/dev` @ `5b8ee51` | `open` — cut 2026-11-11T06:1xZ | `pod_hmi.builder` |
@@ -37,6 +37,24 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
 
 ### S-001 — topology view-mode claims (PR #50)
 
+- **CURRENT HEAD `ab93602` — APPROVED, and the only non-infrastructure blocker is gone.**
+  Verdict `qitem-20261111064330-f9a58a093310708c`: F1 fixed and proven in both directions
+  (TS2769 rejects an asserted `conformance` prop; two mutations go red on the named test,
+  including the same-caller-different-data case that a happy-path-only test would pass).
+  Diff `origin/dev...HEAD`: 5 files, **+632/−2**, **zero deletions**, all under
+  `frontend/plugins/ui-topology/` except one guard file in `ui-shell`.
+  **Gate run by `dev_gatekeeper` from `frontend/` in the slice worktree** (not the worktree
+  root, per CULTURE §4): `npx vitest run --no-cache` → **48 files, 375 tests, all passed**,
+  exit 0. Worktree clean at `ab93602`, 0 behind `origin/dev`, remote head confirmed by
+  `git ls-remote`.
+  **What still blocks it is B1 only** — no runner, so `mergeStateStatus: BLOCKED`.
+- **The one guard change worth a reviewer's attention, checked by `dev_gatekeeper`:** the
+  `ui-shell` sweep now strips comments before scanning for fixture vocabulary
+  (`DEFAULT_/SAMPLE_/FIXTURE_`). That is a guard weakening, so I mutation-tested it: injecting
+  a real non-comment `const DEFAULT_STATIONS = []` into `NetworkCanvas.tsx` still went red
+  (`plugins/ui-topology/src/NetworkCanvas.tsx: references DEFAULT_STATIONS`). The probe was
+  reverted; the tree is clean at `ab93602`. The weakening is justified — a comment cannot
+  fabricate, and the comment it was tripping over records why `DEFAULT_STATIONS` went.
 - **What:** `ui-topology` states what each network view claims, in four distinct
   states, with a guard that no view renders fabricated devices.
 - **Why:** PR #33 removed fabricated stations from the render path; the guard for the
