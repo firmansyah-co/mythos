@@ -782,18 +782,26 @@ pub struct DeviceModeController {
 
 Note that `set_mode` does not validate the transition, and it does not reject a transition to the mode the device is already in. `DeviceModeError::UnauthorizedTransition` is declared and never constructed.
 
-### 7.3 The second gate, and a duplicated enum
+### 7.3 The second gate, and the enum that used to be duplicated
 
-`crates/mythos-strucpp/src/quality_gate.rs` declares **its own** `DeviceExecutionMode` with the same two variant names. It has no `Default` and no relation to the `mythos-core` type. Both enums derive `Serialize` and `Deserialize`, and that is what makes the duplication a real defect rather than a cosmetic one: the two derive **different attributes**, so they serialise under **different wire names**.
+`crates/mythos-strucpp/src/quality_gate.rs` **used to declare its own** `DeviceExecutionMode`, alongside `mythos_core`'s. Both had the same two variant names, so they agreed everywhere Rust could compare them — and disagreed on the wire, because only the core type carries `#[serde(rename_all = "snake_case")]`. The same concept therefore crossed a serialisation boundary under `"physical_hardware"` in one crate and `"PhysicalHardware"` in the other.
+
+**That duplication was collapsed by #57 (`refactor(strucpp): adopt mythos_core::DeviceExecutionMode, delete the duplicate`, 2026-11-11).** `mythos-strucpp` now re-exports the core type:
+
+```rust
+pub use mythos_core::DeviceExecutionMode;
+```
+
+so `mythos_strucpp::quality_gate::DeviceExecutionMode` still resolves for every existing consumer, and there is exactly one definition in the workspace — verified by `git grep -c "enum DeviceExecutionMode" -- crates/`, which returns one hit, in `crates/mythos-core/src/device/mode.rs`.
 
 | Definition | Derives | Wire name of the first variant |
 | :--- | :--- | :--- |
-| `mythos_core::device::DeviceExecutionMode` (`mode.rs:30`) | `Default`, `Hash`, `#[serde(rename_all = "snake_case")]` | `"physical_hardware"` |
-| `mythos_strucpp::quality_gate::DeviceExecutionMode` (`quality_gate.rs:13`) | no `rename_all`, no `Default` | `"PhysicalHardware"` |
+| `mythos_core::device::DeviceExecutionMode` — the only definition | `Default`, `Hash`, `#[serde(rename_all = "snake_case")]` | `"physical_hardware"` |
+| `mythos_strucpp::quality_gate::DeviceExecutionMode` — a re-export of the above | inherits all of the above | `"physical_hardware"` |
 
-The same concept therefore crosses a serialisation boundary under two different names, and only the `mythos-core` variant has a `Default`, so only it can be deserialised from an absent field.
+`Default` is `PhysicalHardware`, so a device with no explicit mode deserialises to production hardware.
 
-**The two crates are not separated by a dependency boundary.** `crates/mythos-strucpp/Cargo.toml:16` declares `mythos-core.workspace = true`, so `mythos-strucpp` already depends on `mythos-core` and can use the `mythos-core` enum today. There is no reverse dependency, so collapsing the two would create no cycle. The duplication is a choice, not a constraint. Collapsing it is still an architecture decision, because the wire-name difference means any persisted or transmitted value would need a migration.
+**Why the collapse was cheap, and where the seam still is.** `mythos-strucpp` already declared `mythos-core.workspace = true` (`crates/mythos-strucpp/Cargo.toml`), and there is no reverse dependency, so there was no cycle to create — the duplication was a choice, not a constraint. No persisted or transmitted value carried the type, so there was nothing to migrate: the only code that serialises it is #57's own test (`crates/mythos-strucpp/tests/device_execution_mode_identity.rs`). One serialisable structure does carry it — `SimulationAuditEvent` (`mythos-core/src/device/mode.rs`) derives `Serialize` and holds `previous_mode` / `new_mode` — and nothing writes it to storage or the wire today, so the wire form was settled without a migration. Any future audit-trail persistence writes `"physical_hardware"`, and that is the point at which the old divergence would have become a data-format problem rather than a naming one.
 
 `QualityGate` is the runtime gate used by the control scan:
 

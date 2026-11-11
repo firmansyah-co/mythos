@@ -457,7 +457,21 @@ src/components/workbench/
 import { create } from 'zustand';
 
 export type DisplayArchetype = 'PID' | 'INTERACTIVE' | 'POPUP' | 'SIDEBAR';
-export type DeviceExecutionMode = 'PhysicalHardware' | 'ManualSimulation';
+/**
+ * Mirrors `mythos_core::DeviceExecutionMode`, which owns the wire form.
+ *
+ * The Rust enum carries `#[serde(rename_all = "snake_case")]`, so the values that cross the
+ * boundary are `physical_hardware` / `manual_simulation` — not the PascalCase Rust variant
+ * names. The type declares no `alias` and no `deny_unknown_fields`, so a store that sent
+ * `"PhysicalHardware"` would fail deserialisation with an unknown-variant error rather than
+ * being silently accepted: a loud failure, but one that costs a round trip to diagnose.
+ *
+ * No implementation of this store exists in the repository today
+ * (`git grep DeviceExecutionMode -- frontend/` returns nothing), so this is a contract, not a
+ * description of shipped code. It is recorded rather than deleted because the next person to
+ * build the store should not have to rediscover the wire form.
+ */
+export type DeviceExecutionMode = 'physical_hardware' | 'manual_simulation';
 export type TaskCardTab = 'INSTRUCTIONS' | 'HARDWARE_CATALOG' | 'LIBRARIES' | 'LAYOUT_WIDGETS';
 export type InspectorBottomTab = 'GENERAL' | 'IO_ADDRESSES' | 'DIAGNOSTICS' | 'ALARMS' | 'CONSOLE';
 

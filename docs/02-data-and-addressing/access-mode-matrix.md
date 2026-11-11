@@ -320,8 +320,8 @@ When a device is explicitly transitioned to `DeviceExecutionMode::ManualSimulati
      "operator_id": "Adrian",
      "action": "ENABLE_SIMULATION_MODE",
      "target_device": "external.BoilerRoom.PT101",
-     "previous_mode": "PhysicalHardware",
-     "new_mode": "ManualSimulation",
+     "previous_mode": "physical_hardware",
+     "new_mode": "manual_simulation",
      "reason": "Cold loop commissioning prior to field wiring"
    }
    ```
