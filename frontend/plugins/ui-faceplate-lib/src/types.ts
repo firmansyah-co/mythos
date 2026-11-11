@@ -56,6 +56,14 @@ export interface BaseFaceplateProps {
    * numbers as live is the defect SYS-REQ-096 exists to prevent.
    */
   quality: ProcessDataQuality;
+  /**
+   * The specific quality state from the wire (e.g. `BAD_COMM_FAILURE`), when one was supplied.
+   *
+   * Optional, and it changes the badge WORDING only — never the presentation, which follows
+   * `quality`. A state this build does not recognise renders neutral wording rather than a guessed
+   * cause, and omitting the prop entirely preserves the long-standing `BAD COMM FAILURE` wording.
+   */
+  qualityDetail?: string | null;
   /** Mode presentation style */
   mode?: FaceplatePresentationMode;
   /** Alarm severity level */

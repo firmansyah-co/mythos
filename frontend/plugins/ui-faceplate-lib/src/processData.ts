@@ -22,6 +22,28 @@ export const NOT_BOUND_TEXT = 'NOT BOUND';
 export const BAD_QUALITY_TEXT = 'BAD COMM FAILURE';
 
 /**
+ * Quality indicator for a bound component that is failing for a cause this build does not name.
+ *
+ * Names the noun, never a cause it does not know. See `dataQualityLabel`'s three cases.
+ */
+export const BAD_QUALITY_UNNAMED_TEXT = 'BAD QUALITY';
+
+/**
+ * The specific quality states this build is willing to name in the badge.
+ *
+ * Deliberately ONE entry. Naming a cause is a claim about the plant, so this is an allow-list
+ * rather than "any BAD_* word": a wire value that arrives tomorrow and is not listed here shows
+ * neutral wording instead of a guessed cause. Widening this list is the taxonomy work (S-012),
+ * not a UI change.
+ */
+export const KNOWN_QUALITY_DETAILS: readonly string[] = ['BAD_COMM_FAILURE'];
+
+/** True when the wire supplied a specific quality state this build recognises. */
+export function isKnownQualityDetail(detail?: string | null): boolean {
+  return typeof detail === 'string' && KNOWN_QUALITY_DETAILS.includes(detail);
+}
+
+/**
  * Quality assumed when a caller declares nothing.
  *
  * This is deliberately the safe direction. A faceplate with undeclared provenance cannot prove
@@ -50,12 +72,40 @@ export function hasDisplayableValue(quality?: ProcessDataQuality | null): boolea
  * `NOT_BOUND` is a configuration state and stays neutral; `BAD_QUALITY` is abnormal and is the
  * only one that earns a saturated (amber) tone.
  */
-export function dataQualityLabel(quality?: ProcessDataQuality | null): string | null {
+/**
+ * Label for the explicit data-quality annunciation, or `null` when there is nothing to announce.
+ * `NOT_BOUND` is a configuration state and stays neutral; `BAD_QUALITY` is abnormal.
+ *
+ * Three cases, and they are not interchangeable:
+ *
+ *  A  `detail` supplied AND recognised  -> name the cause (`BAD COMM FAILURE`)
+ *  B  `detail` supplied, NOT recognised -> neutral wording (`BAD QUALITY`), never a guessed cause
+ *  C  no `detail` supplied              -> today's behaviour (`BAD COMM FAILURE`), unchanged
+ *
+ * Case C is pinned by existing tests and is deliberately untouched: a bad quality with no specific
+ * state supplied has always read `BAD COMM FAILURE`, and changing that is a taxonomy decision, not
+ * a UI one.
+ *
+ * Case B exists because a failed SENSOR was reading `BAD COMM FAILURE` — a wrong cause, not a
+ * missing one. Neutral wording is the honest answer when the specific state is one this build does
+ * not name. Note that ONLY the wording changes in case B; the tone and tooltip are keyed off the
+ * quality CLASS elsewhere (see `DataQualityBadge`), so an unnamed bad cause keeps the abnormal,
+ * amber, "not reporting usable data" presentation. It must never fall through to the neutral
+ * grey `NOT_BOUND` presentation, which would deny the binding and file a live equipment failure as
+ * a configuration note.
+ */
+export function dataQualityLabel(
+  quality?: ProcessDataQuality | null,
+  detail?: string | null
+): string | null {
   switch (normalizeQuality(quality)) {
     case 'NOT_BOUND':
       return NOT_BOUND_TEXT;
     case 'BAD_QUALITY':
-      return BAD_QUALITY_TEXT;
+      // Case C: nothing was supplied, so the long-standing wording stands unchanged.
+      if (typeof detail !== 'string' || detail.length === 0) return BAD_QUALITY_TEXT;
+      // Case A names the cause; case B names only the noun.
+      return isKnownQualityDetail(detail) ? BAD_QUALITY_TEXT : BAD_QUALITY_UNNAMED_TEXT;
     case 'GOOD':
     default:
       return null;

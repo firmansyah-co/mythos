@@ -217,6 +217,15 @@ export interface ComponentLiveResolution {
    * resolver never has to infer quality from whether a value happens to be present.
    */
   quality: ProcessDataQuality;
+  /**
+   * The specific quality state from the wire for the binding that made this component not-GOOD,
+   * e.g. `BAD_COMM_FAILURE`. `null` when the component is GOOD.
+   *
+   * This changes the badge WORDING only; `quality` still drives the presentation. It is carried
+   * because without it every bad quality renders `BAD COMM FAILURE` and a failed sensor reads as a
+   * comm fault — a wrong cause stated with confidence.
+   */
+  qualityDetail: string | null;
   /** Live process values, keyed by faceplate property. Empty unless every binding is GOOD. */
   live: Record<string, unknown>;
 }
@@ -250,15 +259,27 @@ export function resolveComponentLive(
 
   const live: Record<string, unknown> = {};
   let allGood = true;
+  // The specific state of the FIRST binding that is not GOOD. One named cause is enough for the
+  // badge to avoid stating a wrong one; the faceplate still suppresses every value.
+  let qualityDetail: string | null = null;
 
   for (const [property, uri] of bindings) {
     const sample = tags.get(uri);
     if (!sample || sample.quality !== 'GOOD') {
       allGood = false;
+      if (qualityDetail === null) {
+        // A missing sample has no name to report: the badge falls to neutral wording rather than
+        // asserting a cause nobody observed.
+        qualityDetail = sample?.qualityName || null;
+      }
       continue;
     }
     live[property] = sample.value;
   }
 
-  return { quality: allGood ? 'GOOD' : 'BAD_QUALITY', live: allGood ? live : {} };
+  return {
+    quality: allGood ? 'GOOD' : 'BAD_QUALITY',
+    qualityDetail: allGood ? null : qualityDetail,
+    live: allGood ? live : {},
+  };
 }
