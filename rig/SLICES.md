@@ -17,8 +17,9 @@ The single answer to "what is being worked on". Your memory is not this file.
 |---|---|---|---|---|---|---|
 | `S-001` | uiux | `test/topology-all-view-modes` | `.claude/worktrees/topology-mode-coverage` | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** | `pod_uiux.builder` |
 | `S-002` | — | `chore/rig-harness` | repo root *(pre-existing branch, not cut)* | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #55) | `dev_gatekeeper` |
-| `S-003` | backend | `refactor/device-execution-mode-canonical` | `.claude/worktrees/device-execution-mode` | `origin/dev` @ `5b8ee51` | `open` | `pod_backend.builder` |
+| `S-003` | backend | `refactor/device-execution-mode-canonical` | `.claude/worktrees/device-execution-mode` | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #57) | `dev_gatekeeper` |
 | `S-004` | uiux | *(cut after S-001)* | — | `origin/dev` | `planned` | `pod_uiux.builder` |
+| `S-005` | — | `policy/decision-defaults` *(exists @ `4f2ac4b`)* | *(not cut — see note)* | `origin/dev` | `planned` **blocked on S-002** | `dev_gatekeeper` |
 
 ### S-001 — topology view-mode claims (PR #50)
 
@@ -186,7 +187,10 @@ The single answer to "what is being worked on". Your memory is not this file.
 - **Out of scope:** `specs/tasks.md`'s ACCEPTED DUPLICATION note. That is a controlled
   document; `scribe` retires it after this lands, so the note is retired by the change that
   makes it false rather than in advance of it.
-- **State:** `open` — branch `refactor/device-execution-mode-canonical`, worktree
+- **State:** `in-review` — **PR #57**, head `7d4798c`, +126/−9, 2 files,
+  `mergeStateStatus: BLOCKED` (no runner). Verified by `dev_gatekeeper`: one
+  `enum DeviceExecutionMode` left repo-wide, no alias/newtype, 27 tests pass, forced clippy
+  re-check clean, fmt clean, both mutations reproduce. Branch `refactor/device-execution-mode-canonical`, worktree
   `.claude/worktrees/device-execution-mode`, cut by `dev_gatekeeper` from `origin/dev` @
   `5b8ee51` on 2026-11-11. Owner `pod_backend.builder`.
 
@@ -220,6 +224,46 @@ The single answer to "what is being worked on". Your memory is not this file.
 - **Sequencing:** after **S-001** closes. Same pod, and S-001 is the uiux slice in review.
   S-004 does not depend on S-003; the device-mode half does.
 - **State:** `planned`.
+
+### S-005 — the operator's decision-defaults policy
+
+- **What:** `rig/culture/DECISION-DEFAULTS.md` (112 lines), the `mythos-org.yaml` delivery
+  entry that ships it to every seat, and `CULTURE.md` §10–§11.
+- **Why:** Adrian's standing instruction: when a question goes unanswered, execute the recorded
+  recommendation rather than stalling the team.
+- **Provenance — verified, not asserted.** `dev_gatekeeper` re-read Adrian's own CLI session
+  rather than accepting two seats' reports:
+  `/home/adrian/.claude/projects/-home-adrian/7993c305-0d9e-493b-9811-e36ce18f0152.jsonl`,
+  line 4037, ts `2026-11-11T05:36:35.779Z`, `userType: external`, `entrypoint: cli`:
+  *"kalau ada pertanyaan aku mau advisor memicu question bisa? tapi kalau misalnya lama ga
+  kujawab dia jalankan sesuai rekomendasinya secara otomatis"*. Recorded answers at
+  `05:40:51.404Z`: **stacking several questions; 24h limit; 2h idle when no work remains;
+  everything except the `release` branch, `rc` still allowed.**
+- **What is his and what was drafted for him.** His words cover stacking, 24h, 2h idle,
+  everything-except-release and rc-allowed. Added by the drafting agent and **not** in his
+  answers: the release-tag and published-artifact exclusions; the force-push and
+  deleting-another-seat's-work exclusions; sections 4–6; and CULTURE §11. Every addition narrows
+  or disciplines the grant; none widens it. The PR body states this split, and the file carries a
+  provenance line: substance his, drafted by his assistant, because first-person voice is not
+  authorship.
+- **Watchdog correction:** the three watchdogs were registered by **Adrian's own session**, at
+  `05:38:25` / `05:41:50` / `05:41:56`, passing `--registered-by executive-advisor@mythos-org`.
+  The commit message's "Advisor watchdogs registered against this" reads that string as
+  authorship; it is a misleading audit field, not a claim of who ran the command.
+- **Review:** assigned by `pm` to `pod_uiux.reviewer`,
+  `qitem-20261111055057-9a6593dcbeccfcf7`, read-only, verdict as a comment. Neither `advisor`
+  nor `dev_gatekeeper` reviews it: the policy widens what both may do unasked, so neither may
+  approve it. Any clause that **widens** the grant rather than narrowing it is blocking.
+- **Sequencing — why it is not cut yet.** `rig/culture/CULTURE.md` does not exist on
+  `origin/dev`; S-002 adds it. Sections 10–11 are additions to that same file, so an S-005 cut
+  from `origin/dev` today would add `CULTURE.md` in full and collide with PR #55 by
+  construction. S-005 therefore follows S-002, at which point its diff is just the policy file,
+  the yaml entry and §10–§11. A worktree was cut to confirm this and removed again — an empty
+  worktree ahead of its slice is a defect, not a placeholder. The work is preserved on branch
+  `policy/decision-defaults` at `4f2ac4b`.
+- **Force:** no running seat has the file in its startup files yet, so the policy has no
+  operational force anywhere until it merges and seats are restored. That is the correct state
+  for it to be reviewed in.
 
 ### Sequencing (decided by `pm`, 2026-11-11)
 
