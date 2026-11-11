@@ -2021,6 +2021,13 @@ this path, not from the codebase.**
 until the auditor scanned six times for it.** Five slices in total ended up specified-without-a-row
 (S-003, S-007, S-009, S-010, S-011, S-017) — **four `pm` caught itself, one it did not.**
 
+**The mechanical form, one line each way** (`dev_gatekeeper`):
+```
+a queue row with no ledger section   -> work nobody can find in the plan
+a ledger section with no destination -> a plan nobody is doing
+```
+**Same divergence read from opposite directions. Both were live today.**
+
 **The family:** every one of today's record failures is the same shape —
 - a closure claiming `handed_off_to` with no successor row;
 - a ledger table naming a merged PR as blocking;
@@ -2042,9 +2049,50 @@ in prose and a `#64` merge in conversation, and **the table still had ten.**
 updated when a *slice* is touched.** A PR that closes a slice gets a row move; a PR that merges without a
 ledger row just gets mentioned.
 
-**Fixed:** `#64` is now in the Closed table. **The count in prose and the number of rows must be
-reconciled by counting rows, not by remembering merges** — which is the same lesson as
-"merge status comes from the PR API, not from ancestry", one step further out.
+**Fixed:** `#64` is now in the Closed table, and so is `#62` — which `pm`'s own sweep found missing in
+the same pass, the ledger's own PR with no row in the ledger it carried.
+
+**The mechanical check, `/tmp/check-merges.sh`, and its first run is the part worth keeping.** It
+asserted every merged PR on `dev` had a row and reported **38 of 54 missing** — because it swept the
+whole history back to PR #3, and **the ledger covers the rig era, not the pre-rig sprints.** That number
+was wrong as a result, and **informative as a fact**: it is the only place anything records where the
+ledger's coverage begins.
+
+> **A check whose scope was wrong once, and says so, is more trustworthy than one that has only ever
+> been green** (`dev_gatekeeper`'s argument for keeping the number rather than replacing it with the
+> green result — the same argument as keeping the wrong version of the `TopologyGraph` name).
+
+**Scoped to merges since 2026-11-11 it reports green.** Both numbers now live here, because the green
+alone hides why the scope is what it is.
+
+## CHECK WITH SOMETHING THAT COULD DISAGREE — the day's actual method lesson
+
+Arrived at between `pm` and `dev_gatekeeper`, and it is sharper than the version either started with.
+
+**The wrong version:** *"check twice."* **Two runs of the same check on the same input cannot return
+different answers, so their agreement is not evidence.**
+
+**The right version:** *"check with something that could disagree."* **A verification that cannot return
+a different answer is not a verification** — the same sentence as *"a verification that returns the same
+answer for every row is a constant,"* one level up.
+
+**Every finding that actually moved something today had a second instrument that could disagree:**
+
+| primary check | second instrument | why it caught what the first could not |
+|---|---|---|
+| `git merge-base --is-ancestor` (ancestry) | `git rev-parse <head>:frontend` (tree hash) | squash-merge and re-commit break ancestry while content holds — **different failure modes** |
+| single `ping` sample | second endpoint + control host | one host cannot distinguish a sick endpoint from a sick path |
+| `grep "no topology route"` (returns 0) | enumerate all 25 routes | **a grep for an absence can only ever return zero**; only an enumeration can return 25 |
+| check scoped to all history | check scoped to the rig era | the wrong scope **failed loudly (38/54)** where a correct one was green |
+
+**And the controls that were worthless:** two seats reading the same function with the same question.
+That is nearer a **spell-check** than a second opinion — it establishes that the code says what both
+readers think it says, not that the ruling about it is right.
+
+**`pm`'s own instance:** the `check-merges.sh` first run reported **38 of 54** because its scope spanned
+pre-ledger sprints. It was *wrong as a result and informative as a fact* — and a correct-scope check
+could never have produced that number. **A check that fails differently is worth more than one that
+agrees.**
 
 ## A QUEUE READ TELLS YOU WHERE WORK WENT; AN EFFECT TELLS YOU IT ARRIVED
 
