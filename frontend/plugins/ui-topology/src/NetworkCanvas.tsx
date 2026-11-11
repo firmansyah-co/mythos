@@ -28,7 +28,12 @@ import { IndustrialStationNode, IndustrialStationNodeData } from './IndustrialSt
 import { IndustrialBusEdge } from './IndustrialBusEdge';
 import { INDUSTRIAL_CATALOG } from './catalogData';
 import { EmptySurface, EMPTY_SURFACE } from '@mythos/ui-empty-state';
-import { TopologyProvenanceBanner, type TopologyProvenance } from './provenance';
+import {
+  TopologyProvenanceBanner,
+  TOPOLOGY_CLAIM_UNREAD,
+  type TopologyClaim,
+  type TopologyConformance,
+} from './provenance';
 import {
   Plus,
   Maximize2,
@@ -42,11 +47,17 @@ import {
 
 export interface NetworkCanvasProps {
   /**
-   * What these views are claiming and on what basis. Defaults to UNKNOWN because nothing has been
-   * read — that is the honest state until a transport exists. See ./provenance for why the three
-   * device-standing states are not three flavours of blank.
+   * What these views are claiming and on what basis: source × health, with commissioning carried
+   * alongside discovery. See ./provenance for why the axes are separate.
+   *
+   * DELIBERATELY NOT DEFAULTED to "unread". UNREAD is true of an empty canvas and false of a
+   * populated one, so leaving this out while supplying stations renders NOT_STATED — the surface
+   * says the provenance was not stated instead of asserting that no claim is being made while it
+   * visibly is.
    */
-  provenance?: TopologyProvenance;
+  claim?: TopologyClaim;
+  /** DERIVED, never asserted: compare nominal and actual ids once both are readable. */
+  conformance?: TopologyConformance;
   initialStations?: HardwareStationNode[];
   initialCables?: TopologyCableEdge[];
   onSelectStation?: (station: HardwareStationNode | null) => void;
@@ -80,7 +91,8 @@ const edgeTypes = {
  * cable. If a view has nothing to draw, it says so; see ./provenance.
  */
 const NetworkCanvasInner: React.FC<NetworkCanvasProps> = ({
-  provenance = 'UNKNOWN',
+  claim,
+  conformance,
   initialStations,
   initialCables,
   onSelectStation,
@@ -277,8 +289,17 @@ const NetworkCanvasInner: React.FC<NetworkCanvasProps> = ({
         </div>
       </div>
 
-      {/* What these views claim, and on what basis. Always stated: silence is a claim of its own. */}
-      <TopologyProvenanceBanner provenance={provenance} />
+      {/*
+        What these views claim, and on what basis. Always stated: silence is a claim of its own.
+
+        Derived, not defaulted. With nothing on screen, "nothing has been read" is true. With
+        devices on screen and no stated source it would be false, so that case renders NOT_STATED —
+        a null claim — rather than telling the operator no claim is being made while one is.
+      */}
+      <TopologyProvenanceBanner
+        claim={claim ?? (stations.length > 0 ? null : TOPOLOGY_CLAIM_UNREAD)}
+        conformance={conformance}
+      />
 
       {/* Main xyflow Canvas Viewport */}
       <div className="flex-1 w-full h-full relative">
