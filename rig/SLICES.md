@@ -62,7 +62,7 @@ The single answer to "what is being worked on". Your memory is not this file.
   context, no `docker`, no runner process.
 - **B2 · The verification gate is not on `origin/dev`.** `scripts/check.sh`,
   `scripts/check-slices.sh`, `rig/SLICES.md` and `rig/culture/CULTURE.md` exist only on
-  `chore/rig-harness` (**4** commits ahead of `origin/dev`, unmerged). Every slice worktree
+  `chore/rig-harness` (ahead of `origin/dev`, unmerged; head `238c5b8`). Every slice worktree
   is cut from `origin/dev`, so no builder or reviewer can run the command the ledger
   names. `scripts/check.sh` itself is a good gate — it just is not in the tree the
   slices stand in. Owner: `dev_gatekeeper` (land `chore/rig-harness` as a PR to `dev`);
@@ -85,13 +85,23 @@ The single answer to "what is being worked on". Your memory is not this file.
 - **Verification:** `rig spec validate` + `rig spec preflight` clean; `bash -n` on both
   scripts; `.gitignore` change hides no tracked file; full `./scripts/check.sh` run from
   the branch (receipt in the PR body).
-- **Remote state:** branch **not yet pushed**; PR opens when the gate is green.
+- **Remote state:** branch **not yet pushed**; PR opens when the gate is green. Head
+  `238c5b8`. Deliberately **no commit count** here: it changed twice while this row was
+  being written, and a number that self-stales teaches readers to distrust the rest of
+  the row. Cite the SHA.
 
   > `chore/rig-harness` predates this rig and is checked out in the **repo root**, not a
   > slice worktree. I am not re-cutting it: the work already exists on that branch, and
   > `git worktree add` cannot check out a branch that is already checked out. The
   > one-slice-one-worktree rule is satisfied in substance (one branch, one working tree,
   > no sharing) and the deviation is recorded here rather than hidden.
+  >
+  > **HAZARD while this row is in review (raised by `pod_backend.builder`):** the repo
+  > root is also the primary cwd of every seat in this rig. Nothing mechanical stops a
+  > seat from editing a file in its cwd and thereby dirtying S-002's slice. Until S-002
+  > merges, **no seat writes to the repo root**; a seat whose cwd is the repo root owns no
+  > slice, and `CULTURE.md` §2 already requires it to escalate rather than edit. This
+  > paragraph is that instruction, made explicit.
 
 ---
 
