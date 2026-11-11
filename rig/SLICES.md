@@ -16,7 +16,9 @@ The single answer to "what is being worked on". Your memory is not this file.
 | Slice | Pod | Branch | Worktree | Base | State | Owner |
 |---|---|---|---|---|---|---|
 | `S-001` | uiux | `test/topology-all-view-modes` | `.claude/worktrees/topology-mode-coverage` | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** | `pod_uiux.builder` |
-| `S-002` | — | `chore/rig-harness` | repo root *(pre-existing branch, not cut)* | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** | `dev_gatekeeper` |
+| `S-002` | — | `chore/rig-harness` | repo root *(pre-existing branch, not cut)* | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #55) | `dev_gatekeeper` |
+| `S-003` | backend | `refactor/device-execution-mode-canonical` | `.claude/worktrees/device-execution-mode` | `origin/dev` @ `5b8ee51` | `open` | `pod_backend.builder` |
+| `S-004` | uiux | *(cut after S-001)* | — | `origin/dev` | `planned` | `pod_uiux.builder` |
 
 ### S-001 — topology view-mode claims (PR #50)
 
@@ -145,6 +147,91 @@ The single answer to "what is being worked on". Your memory is not this file.
   > slice, and `CULTURE.md` §2 already requires it to escalate rather than edit. This
   > paragraph is that instruction, made explicit.
 
+### S-003 — canonical `DeviceExecutionMode` ownership
+
+- **What:** `mythos-strucpp` adopts `mythos_core::DeviceExecutionMode` and deletes its own
+  duplicate definition.
+- **Why:** `specs/tasks.md:225`/`:241` name canonical ownership as a precondition on TSK-801
+  (Sprint 8, the pre-committed next slice). The duplication is live and the wire forms
+  diverge: core's enum carries `#[serde(rename_all = "snake_case")]` + `Default`
+  (`mythos-core/src/device/mode.rs:30`); strucpp's carries neither
+  (`mythos-strucpp/src/quality_gate.rs:15`), so the first variant serialises as
+  `"physical_hardware"` versus `"PhysicalHardware"`.
+- **Verification of the citation:** `git show origin/dev:crates/mythos-strucpp/src/quality_gate.rs`
+  — `:15` is `pub enum DeviceExecutionMode`; `:14` is the derive line, which has no
+  `rename_all`. Checked by `dev_gatekeeper` at cut time, not carried from the report.
+- **Decision:** option A, decided by `executive-advisor` 2026-11-11 on
+  `qitem-20261111053553-2c552e0be9d571fd`, not escalated to Adrian — crate ownership of a
+  type is a delegated technical call. Principle recorded: **for safety-relevant state, one
+  definition**; agreeing only on the wire (option C) is rejected on principle, not cost.
+- **Done when:**
+  1. `mythos-strucpp/src/lib.rs` re-exports core's type, so the existing public path
+     (`mythos_strucpp::quality_gate::DeviceExecutionMode` and the `lib.rs:22-25` re-export)
+     still compiles unchanged for every consumer.
+  2. strucpp's own `enum DeviceExecutionMode` is **deleted**, not left behind. No orphan
+     definition, no shim alias that keeps two types alive.
+  3. A wire-form test pins `physical_hardware` and `manual_simulation`. Nothing asserts the
+     wire form today — repo-wide grep for both strings over `crates/` returns zero hits, so
+     the test is genuinely missing rather than merely untested.
+  4. A test proves it is **one type**: a `mythos_core` value passed into `QualityGate` with
+     no conversion.
+  5. `Default` stays `PhysicalHardware`.
+- **Verification:** `cargo test -p mythos-strucpp` in the slice worktree, plus
+  `cargo clippy -p mythos-strucpp --all-targets -- -D warnings`. Report **failing test
+  names, not counts** — a count is a function of how much was reverted.
+  `./scripts/check.sh` is not runnable from a dev-cut worktree until S-002 lands; say the
+  gate script was absent rather than substituting silence.
+- **Sequencing:** ahead of the device-mode half of TSK-801, as advised. **It does not
+  block the telemetry half** — the tag-to-faceplate proof has no dependency on this.
+- **Out of scope:** `specs/tasks.md`'s ACCEPTED DUPLICATION note. That is a controlled
+  document; `scribe` retires it after this lands, so the note is retired by the change that
+  makes it false rather than in advance of it.
+- **State:** `open` — branch `refactor/device-execution-mode-canonical`, worktree
+  `.claude/worktrees/device-execution-mode`, cut by `dev_gatekeeper` from `origin/dev` @
+  `5b8ee51` on 2026-11-11. Owner `pod_backend.builder`.
+
+### S-004 — HMI live-telemetry consumer (telemetry half of TSK-801)
+
+- **What:** Prove one real TagBus value reaches one HMI faceplate. Consume the existing
+  `GET /api/v1/telemetry/stream` producer, resolve one commissioned tag to one faceplate,
+  map `QualityCode` to the faceplate quality enum, survive reconnect with bounded backoff,
+  ship a live-path test.
+- **Why:** `qitem-20261023085422-f459118d847f001d`. The HMI tells the truth today and shows
+  nothing, on every screen, forever. This is the pre-committed next slice
+  (`specs/tasks.md`, Sprint 8 / TSK-801) and the only thing that makes the HMI demonstrably
+  work at all.
+- **Scope limit, from the spec:** ONE tag to ONE faceplate. Broader subscription and binding
+  architecture is follow-up. Do not expand past that proof.
+- **Constraints:** do not change `resolveComponentData`'s contract or the faceplate quality
+  contract; do not edit `DockviewWorkspace.tsx` tab routing; no mock data on the path.
+- **Two known blockers for quality visibility, both outside the UI** (recorded in TSK-801,
+  both need backend work — do not paper over them on the frontend):
+  1. `QualityGate::record_comm_loss` latches in a process-local map and does not write
+     `TagSlot.quality`, so the failure never reaches shared memory.
+  2. `build_telemetry_event` collapses quality to `GOOD`/`BAD`/`UNCERTAIN`, so a faceplate
+     cannot distinguish `BAD_COMM_FAILURE` from any other bad state unless the payload
+     carries the raw quality word.
+- **Done when:** one integration test shows a tag published to the TagBus arriving at a
+  rendered faceplate with GOOD quality and the expected value, end to end; and a negative
+  test drops the stream mid-render and asserts the faceplate degrades to BAD_QUALITY —
+  never to a stale value presented as live, never to a fabricated one (SYS-REQ-096).
+- **Verification:** `cd frontend && npx vitest run --no-cache`, run from `frontend/` — never
+  from a worktree root (see CULTURE.md §4). Report failing test names, not counts.
+- **Sequencing:** after **S-001** closes. Same pod, and S-001 is the uiux slice in review.
+  S-004 does not depend on S-003; the device-mode half does.
+- **State:** `planned`.
+
+### Sequencing (decided by `pm`, 2026-11-11)
+
+1. **S-001** (uiux, in review) closes first — same pod as S-004.
+2. **S-004** is cut after S-001.
+3. **S-003** (backend) is independent and is cut now.
+4. The **device-mode half** of TSK-801 waits on S-003 and is not yet a slice.
+
+The HMI telemetry row `qitem-20261023085422` is `pending`, unclaimed, `blockedOn: null` —
+its block released when the DeviceExecutionMode decision landed. It is carried by **S-004**;
+it is not free work.
+
 ---
 
 ## Documentation rows raised by `governance.scribe` (2026-11-11)
@@ -215,10 +302,15 @@ follow-up.
 `DeviceExecutionMode`, which `specs/tasks.md:225` and `:241` name as a precondition on
 TSK-801 and explicitly decline to resolve. It was **untracked until 2026-11-11** — raised
 as `qitem-20261111053553-2c552e0be9d571fd` to `advisor` → Adrian, recommendation A.
+**Resolved 2026-11-11:** `executive-advisor` decided **option A** — `mythos-strucpp` adopts
+`mythos_core::DeviceExecutionMode` and deletes its own. Not escalated to Adrian; crate
+ownership of a type is a delegated technical call. Principle recorded: **for safety-relevant
+state, one definition**; agreeing only on the wire (option C) is rejected on principle, not
+on cost. The work is slice **S-003**, cut from `origin/dev`.
 
 The duplication is live and the wire forms genuinely diverge:
 `mythos-core/src/device/mode.rs:30` carries `#[serde(rename_all = "snake_case")]` +
-`Default`; `mythos-strucpp/src/quality_gate.rs:13` carries neither, so the first variant
+`Default`; `mythos-strucpp/src/quality_gate.rs:15` carries neither, so the first variant
 serialises as `"physical_hardware"` versus `"PhysicalHardware"`. `pm` checked whether the
 migration cost the spec warns about is real today: it is **not** — strucpp's enum is used
 only in memory (`RwLock` field, equality, two `match` arms) and nothing repo-wide
