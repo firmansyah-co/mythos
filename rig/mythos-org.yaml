@@ -1,0 +1,177 @@
+version: "0.2"
+name: mythos-org
+summary: >-
+  MythOS engineering rig. 11 seats: executive funnel, slice governance, a single
+  integration gatekeeper, and three builder/reviewer pods.
+
+culture_file: culture/CULTURE.md
+
+# Verification receipts must reach a reviewer before a merge. `standard` runs
+# everything except create_pr, publish, merge, force_push and the destructive
+# class, which ask. The gatekeeper is the one seat allowed to integrate.
+permission_policy: builtin:standard
+
+managed_blocks:
+  claude-code: CLAUDE.local.md
+
+startup:
+  files:
+    - path: SLICES.md
+      delivery_hint: guidance_merge
+      required: false
+  actions: []
+
+pods:
+  - id: executive
+    label: "Executive Interface"
+    members:
+      - id: advisor
+        agent_ref: path:/home/adrian/Projects/mythos/rig/agents/advisor
+        profile: default
+        runtime: claude-code
+        cwd: /home/adrian/Projects/mythos
+        label: "Advisor (Opus 5.5)"
+        restore_policy: resume_if_possible
+
+  - id: governance
+    label: "Engineering Governance"
+    members:
+      - id: pm
+        agent_ref: path:/home/adrian/Projects/mythos/rig/agents/pm-lead
+        profile: default
+        runtime: claude-code
+        cwd: /home/adrian/Projects/mythos
+        label: "PM Lead (Opus 5.5)"
+        restore_policy: resume_if_possible
+      - id: scribe
+        agent_ref: path:/home/adrian/Projects/mythos/rig/agents/scribe
+        profile: default
+        runtime: claude-code
+        cwd: /home/adrian/Projects/mythos
+        label: "Scribe (Opus 5.5)"
+        restore_policy: resume_if_possible
+
+  - id: gateway
+    label: "Dev Gateway"
+    members:
+      - id: dev_gatekeeper
+        agent_ref: path:/home/adrian/Projects/mythos/rig/agents/dev-gatekeeper
+        profile: default
+        runtime: claude-code
+        cwd: /home/adrian/Projects/mythos
+        label: "Dev Gatekeeper (Opus 5.5)"
+        restore_policy: resume_if_possible
+        # The only seat permitted to push, open PRs and squash-merge into dev.
+        permission_policy: builtin:yolo
+
+  - id: release_train
+    label: "Release Train"
+    members:
+      - id: auditor
+        agent_ref: path:/home/adrian/Projects/mythos/rig/agents/release-auditor
+        profile: default
+        runtime: claude-code
+        cwd: /home/adrian/Projects/mythos
+        label: "Release Auditor (Fable 5.1)"
+        restore_policy: resume_if_possible
+
+  - id: pod_uiux
+    label: "Feature Pod: UI/UX & Shell"
+    members:
+      - id: builder
+        agent_ref: path:/home/adrian/Projects/mythos/rig/agents/ui-builder
+        profile: default
+        runtime: claude-code
+        cwd: /home/adrian/Projects/mythos
+        label: "UI/UX Builder (Opus 5.5)"
+        restore_policy: resume_if_possible
+      - id: reviewer
+        agent_ref: path:/home/adrian/Projects/mythos/rig/agents/ui-reviewer
+        profile: default
+        runtime: claude-code
+        cwd: /home/adrian/Projects/mythos
+        label: "UI/UX Reviewer (Opus 5.5)"
+        restore_policy: resume_if_possible
+    edges:
+      - kind: delegates_to
+        from: builder
+        to: reviewer
+
+  - id: pod_hmi
+    label: "Feature Pod: HMI & Process"
+    members:
+      - id: builder
+        agent_ref: path:/home/adrian/Projects/mythos/rig/agents/hmi-builder
+        profile: default
+        runtime: claude-code
+        cwd: /home/adrian/Projects/mythos
+        label: "HMI Builder (Opus 5.5)"
+        restore_policy: resume_if_possible
+      - id: reviewer
+        agent_ref: path:/home/adrian/Projects/mythos/rig/agents/hmi-reviewer
+        profile: default
+        runtime: claude-code
+        cwd: /home/adrian/Projects/mythos
+        label: "HMI Reviewer (Opus 5.5)"
+        restore_policy: resume_if_possible
+    edges:
+      - kind: delegates_to
+        from: builder
+        to: reviewer
+
+  - id: pod_backend
+    label: "Feature Pod: Backend & Core"
+    members:
+      - id: builder
+        agent_ref: path:/home/adrian/Projects/mythos/rig/agents/backend-builder
+        profile: default
+        runtime: claude-code
+        cwd: /home/adrian/Projects/mythos
+        label: "Backend Builder (Opus 5.5)"
+        restore_policy: resume_if_possible
+      - id: reviewer
+        agent_ref: path:/home/adrian/Projects/mythos/rig/agents/backend-reviewer
+        profile: default
+        runtime: claude-code
+        cwd: /home/adrian/Projects/mythos
+        label: "Backend Reviewer (Opus 5.5)"
+        restore_policy: resume_if_possible
+    edges:
+      - kind: delegates_to
+        from: builder
+        to: reviewer
+
+edges:
+  - kind: delegates_to
+    from: executive.advisor
+    to: governance.pm
+  - kind: delegates_to
+    from: executive.advisor
+    to: governance.scribe
+  - kind: delegates_to
+    from: governance.pm
+    to: gateway.dev_gatekeeper
+  - kind: delegates_to
+    from: governance.pm
+    to: pod_uiux.builder
+  - kind: delegates_to
+    from: governance.pm
+    to: pod_hmi.builder
+  - kind: delegates_to
+    from: governance.pm
+    to: pod_backend.builder
+  - kind: delegates_to
+    from: pod_uiux.builder
+    to: gateway.dev_gatekeeper
+  - kind: delegates_to
+    from: pod_hmi.builder
+    to: gateway.dev_gatekeeper
+  - kind: delegates_to
+    from: pod_backend.builder
+    to: gateway.dev_gatekeeper
+  - kind: delegates_to
+    from: gateway.dev_gatekeeper
+    to: release_train.auditor
+  - kind: escalates_to
+    from: governance.pm
+    to: executive.advisor
