@@ -16,16 +16,16 @@ The single answer to "what is being worked on". Your memory is not this file.
 | Slice | Pod | Branch | Worktree | Base | State | Owner |
 |---|---|---|---|---|---|---|
 | `S-001` | uiux | `test/topology-all-view-modes` | `.claude/worktrees/topology-mode-coverage` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `ab93602`; BLOCKED on CI only (PR #50) | `pod_uiux.builder` |
-| `S-002` | — | `chore/rig-harness` | repo root *(pre-existing branch, not cut)* | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #55 @ `dba71c7`; local 3 ahead, unpushed) | `dev_gatekeeper` |
+| `S-002` | — | `chore/rig-harness` | repo root *(pre-existing branch, not cut)* | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #55 @ `dba71c7`; local ahead, unpushed — see S-002) | `dev_gatekeeper` |
 | `S-003` | backend | `refactor/device-execution-mode-canonical` | `.claude/worktrees/device-execution-mode` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `5cf3984`; BLOCKED on CI (PR #57) | `pod_backend.reviewer` |
 | `S-004` | hmi | `feat/hmi-live-telemetry` | `.claude/worktrees/hmi-live-telemetry` | `origin/dev` @ `5b8ee51` | `open` — cut 2026-11-11T06:1xZ | `pod_hmi.builder` |
 | `S-005` | — | `policy/decision-defaults` *(exists @ `4f2ac4b`)* | *(not cut — see note)* | `origin/dev` | `planned` **blocked on S-002**; review CHANGES REQUESTED | `dev_gatekeeper` |
 | `S-006` | — | `feat/desk-seat` *(exists @ `3995106`; main copy `4496ce0`)* | *(not cut — see note)* | `origin/dev` | `planned` **CHANGES REQUESTED**; blocked on S-002 + S-005 | `dev_gatekeeper` |
-| `S-007` | — | `docs/alarm-colour-reconcile` | `.claude/worktrees/docs-alarm-colour` | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #58) | `governance.scribe` |
+| `S-007` | — | `docs/alarm-colour-reconcile` | `.claude/worktrees/docs-alarm-colour` | `origin/dev` @ `5b8ee51` | `in-review` **NO REVIEWER ASSIGNED** @ `2bfac2e`; BLOCKED on CI (PR #58) | `governance.scribe` |
 | `S-008` | backend | *(not cut)* | — | `origin/dev` | `planned` — **blocked on a scope decision** | `pod_backend.builder` |
-| `S-009` | scribe | `docs/topology-provenance-spec` | `.claude/worktrees/docs-topology-provenance` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `72630ad`; BLOCKED on CI (PR #56) | `governance.scribe` |
-| `S-010` | scribe | `docs/theme-status-honest` | `.claude/worktrees/docs-theme-status` | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #59 @ `16c10e3`); review assigned | `governance.scribe` |
-| `S-011` | scribe | `docs/tsk-801-quality-blockers-corrected` | *(not cut — branch pushed directly)* | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `7e1535e`; BLOCKED on CI (PR #60) | `governance.scribe` |
+| `S-009` | scribe | `docs/topology-provenance-spec` | `.claude/worktrees/docs-topology-provenance` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `72630ad`, head now `139c263`; **re-confirm requested**; BLOCKED on CI (PR #56) | `governance.scribe` |
+| `S-010` | scribe | `docs/theme-status-honest` | `.claude/worktrees/docs-theme-status` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `16c10e3`; BLOCKED on CI only (PR #59) | `governance.scribe` |
+| `S-011` | scribe | `docs/tsk-801-quality-blockers-corrected` | `.claude/worktrees/docs-tsk801-correction` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `7e1535e`; BLOCKED on CI (PR #60) | `governance.scribe` |
 | `S-012` | hmi | *(not cut)* | — | `origin/dev` | `planned` — **blocked on S-004** | `pod_hmi.builder` |
 
 **Re-verified against the live world 2026-11-11T06:1xZ, by `pm`, not carried from the
@@ -169,6 +169,15 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   (46–234 ms avg, max 821 ms), so it is not GitHub-specific at all. **`ip link show enp86s0`
   → `NO-CARRIER`, `carrier=0`, no cable; `wlan0` is the only real uplink** and its carrier is
   up. The host is on WiFi to a lossy access point.
+
+  **TODAY'S METHOD LESSON, and it is the sharpest one: one sample is not a measurement, including
+  when the sample supports you.** `dev_gatekeeper`'s first diagnosis rested on a **single**
+  `github.com` sample (0.73 s) that happened to look healthy, and used it as evidence that the
+  endpoint was fine. `desk-desk` measured the same host **twenty** times and got **14 of 20
+  connects over 1 s**. The error was **nested inside the control**, not absent from it — worse
+  than having no control, because it produces confidence. Recorded next to the S-001 guard, the
+  fail-open table and the desk's deadline: **four seats, four variants of one failure, every one
+  caught by a cheap second check.**
 
   **Consequence that changes the remedy: there is a wired NIC sitting unused on this machine.**
   Plugging a cable into `enp86s0` is more likely to fix CI than anything done in k3s, and it is
@@ -521,6 +530,18 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   `/tmp` and would otherwise stall once per script.
   **Two escalations fired on this stall** (`qitem-20261111062609`, `qitem-20261111065111`) and
   both were closed as **resolved-at-source**, not as lost wakes.
+  **The prompts were measured, and they were not risky operations.** Every prompt cleared today
+  was **`/tmp` path access** — `Read(/tmp/verify-fallthrough.mjs)` and an overwrite of the same
+  file: the builder writing and re-reading its own probe scripts, which is correct practice and
+  what the slice's verification needs. **Not one was a genuinely risky operation.** So the narrow
+  fix is a permission **allowlist**, not a mode change — raised to `advisor` as
+  `qitem-20261111065512`, with a member-level custom policy (`surface: config`, an `/tmp` allow)
+  recommended over `builtin:auto`: it widens nothing, and because config-surface rules are picked
+  up from settings rather than at launch it needs **no relaunch**.
+  **Two constraints on that decision, both from `dev_gatekeeper`:** the seat that benefits must
+  not be the seat that approves it (the S-005 rule), and `pm` is a builder's proxy this pass, so
+  neither decides it.
+
   **Why this is worth recording rather than fixing silently:** the builder had no way to clear its
   own gate, so a slice can stall indefinitely with the work already queued and correct. The
   reviewer's call **not** to answer another seat's prompt was right; clearing a routing block is
@@ -988,6 +1009,31 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   the fourth time today** (S-003, S-009, S-011, S-010). That is a pattern, not four accidents:
   a branch gets pushed and nobody creates the row that makes its verdict owned. `pm`'s own
   check for the next pass: **for every open PR, is there a slice row AND a reviewer row?**
+- **Review verdict 2026-11-11: APPROVED** at `16c10e3`, `pod_uiux.reviewer`, row to
+  `dev_gatekeeper` `qitem-20261111070021-e427c68e130901c2`. All four criteria re-measured rather
+  than taken from the row: 9 grep hits all CSS definitions with **zero apply sites**; no
+  unmerged-work references (`S-0xx`/`PR #`/`qitem-`/`rig/SLICES`/`DECISION-DEFAULTS` all absent);
+  docs only, 4 files; and the **token-file trap was avoided** — none of the three `tokens.css`
+  copies is touched. "Not selectable", never "unsupported".
+- **The diff carries a SECOND claim `pm`'s row did not describe, and the reviewer verified it
+  rather than waving it through:** an implementation-status note in `access-mode-matrix.md` §6.3
+  about the simulation path, with all five assertions checked (fn at `:395`, both match arms, no
+  `/api/v1/simulation/` route, `ErrSimulationModeDisabled` absent, no task schedules an inject
+  endpoint). It correctly tells implementers that `POST /api/v1/simulation/inject` is **design
+  intent, not a shipped API**.
+- **Non-blocking finding, deliberately not blocked — and the judgement is the point:** the note
+  says the lockout *"is implemented"* and `validate_forcing_permitted` *"is the enforcement
+  point"*. True of the code, but **the gate is never constructed in production**:
+  `QualityGate::new` 11 hits all under `tests/`, `StrucppRuntime::new` 0 hits anywhere,
+  `validate_forcing_permitted` called only from `tests/sync_and_gating_tests.rs:90,116` — **verified
+  by `pm`**. So the lockout is **defined, tested and UNWIRED**. The reviewer did not block,
+  reasoning that (a) the function is genuinely where enforcement would live, so an implementer is
+  pointed at the right place, and (b) the note itself says there is no HTTP endpoint, so nothing
+  can force today either way. **"Blocking a net-honesty docs PR over one word is the over-rigour
+  failure, not the care one."** Recommended one-clause fix: *"is implemented"* → *"is defined and
+  tested"*, or add *"the gate is not yet constructed by any runtime"*.
+  **This is the same fact behind S-011/TSK-801's blocker (1)** — the sharper truth is that the
+  gate never runs at all. **S-008** is that gap as a slice.
 - **Two traps recorded for the builder:** `./scripts/check.sh` is absent at this base (blocker
   B2), so the receipt says "not run and not runnable" rather than substituting silence. And the
   three token-file copies are a trap for a reviewer who asks "also fix the light block" —
@@ -1062,8 +1108,9 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
 2. **S-001** (uiux) re-review is open at `21cb9c4`. Closes on that verdict.
 3. **S-004** moved to **pod_hmi** and is **cut now** — the S-001 dependency is dropped, because
    its only rationale was "same pod" and the pod changed. File overlap with S-001 is nil.
-4. **S-009** and **S-011** are APPROVED and waiting on CI only. **S-010**'s review was assigned
-   2026-11-11 to `pod_uiux.reviewer` (`qitem-20261111065743`) — it had no owner at all until then.
+4. **S-009, S-010 and S-011 are all APPROVED** and waiting on CI only. **Every one of them had
+   no reviewer at all until 2026-11-11** — the same gap, three times, plus S-003. That is a
+   pattern in how slices are opened, not four accidents.
 5. **S-008** needs a scope decision before it is a slice.
 6. **S-012** follows **S-004** — S-004 must ship the neutral-label fallback so S-012's absence is
    honest rather than harmful.
