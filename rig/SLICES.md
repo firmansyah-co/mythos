@@ -24,7 +24,7 @@ The single answer to "what is being worked on". Your memory is not this file.
 | `S-007` | — | `docs/alarm-colour-reconcile` | `.claude/worktrees/docs-alarm-colour` | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #58) | `governance.scribe` |
 | `S-008` | backend | *(not cut)* | — | `origin/dev` | `planned` — **blocked on a scope decision** | `pod_backend.builder` |
 | `S-009` | scribe | `docs/topology-provenance-spec` | `.claude/worktrees/docs-topology-provenance` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `72630ad`; BLOCKED on CI (PR #56) | `governance.scribe` |
-| `S-010` | scribe | `docs/theme-status-honest` | `.claude/worktrees/docs-theme-status` | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #59 @ `16c10e3`) | `governance.scribe` |
+| `S-010` | scribe | `docs/theme-status-honest` | `.claude/worktrees/docs-theme-status` | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #59 @ `16c10e3`); review assigned | `governance.scribe` |
 | `S-011` | scribe | `docs/tsk-801-quality-blockers-corrected` | *(not cut — branch pushed directly)* | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `7e1535e`; BLOCKED on CI (PR #60) | `governance.scribe` |
 | `S-012` | hmi | *(not cut)* | — | `origin/dev` | `planned` — **blocked on S-004** | `pod_hmi.builder` |
 
@@ -492,6 +492,26 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   **Not a fourth blocking item** — the failure is in the safe direction. But it is **in scope**:
   S-004 is what makes multi-panel telemetry reachable at all, so the first slice that opens the
   stream is where the connection count gets decided.
+  **Why "one tag to one faceplate" does not exclude it:** that constraint is about **binding
+  architecture breadth** — do not build a general subscription/registration system. **Connection
+  count is not that.** It is the difference between a stream lifecycle that is right and one
+  known wrong at the moment it first becomes reachable.
+  **THE CRITERION — TWO PROPERTIES, NOT ONE, and a test for only the first passes on a broken
+  fix.** The builder's own harness already supports both: `liveTelemetryPath.test.tsx:41` defines
+  `static instances: FakeEventSource[]` pushed in the constructor, so counting connections is an
+  assertion on an array that already exists.
+  | property | test | mutation that must redden it |
+  |---|---|---|
+  | **(a) teardown isolation** | mount two panels, unmount one, assert the survivor's tags remain and its faceplates still resolve `GOOD` | remove the refcount/hoist → survivor goes `BAD_QUALITY` |
+  | **(b) connection count** | mount two panels, assert `FakeEventSource.instances.length === 1` (or whatever the chosen design states) | revert to per-instance `useSseTelemetry` → length becomes 2 |
+  **They fail independently.** A fix for (a) alone — e.g. refcounting the `clear()` — **leaves the
+  double connection intact and looks green.** Refcounting is the smaller change and the
+  temptation will be to stop there, which is exactly why the row states both.
+  **Not acceptable as coverage: a single-panel test.** Every existing test in that file mounts
+  one panel, so all of them pass on both defects. Only the two shapes above can fail for these
+  bugs.
+  **Either fix shape passes** — (b) hoist makes both properties trivial, and a correct refcount
+  also passes. The review is against the **properties**, not the shape.
 - **PROCESS NOTE — a permission prompt held this slice for ~7 minutes and nothing caught it but
   a reviewer watching.** `pod_hmi.builder` was gated on `Read(/tmp/verify-fallthrough.mjs)`;
   four urgent inbox items queued behind it, worktree unmoved at `5b8ee51`. `rig send` refuses at
@@ -963,6 +983,11 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   all three are independently reviewable now, they touch disjoint files so there is no ordering
   hazard, and withholding decided work does not restore a runner. It trades a durable record for
   a tidier queue.
+- **Review assigned 2026-11-11: `pod_uiux.reviewer`**, row
+  `qitem-20261111065743-b96efc4fec2251ae`. **PR #59 was open with no slice row and no reviewer —
+  the fourth time today** (S-003, S-009, S-011, S-010). That is a pattern, not four accidents:
+  a branch gets pushed and nobody creates the row that makes its verdict owned. `pm`'s own
+  check for the next pass: **for every open PR, is there a slice row AND a reviewer row?**
 - **Two traps recorded for the builder:** `./scripts/check.sh` is absent at this base (blocker
   B2), so the receipt says "not run and not runnable" rather than substituting silence. And the
   three token-file copies are a trap for a reviewer who asks "also fix the light block" —
@@ -1037,7 +1062,8 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
 2. **S-001** (uiux) re-review is open at `21cb9c4`. Closes on that verdict.
 3. **S-004** moved to **pod_hmi** and is **cut now** — the S-001 dependency is dropped, because
    its only rationale was "same pod" and the pod changed. File overlap with S-001 is nil.
-4. **S-009** and **S-011** are APPROVED and waiting on CI only. **S-010** is still unreviewed.
+4. **S-009** and **S-011** are APPROVED and waiting on CI only. **S-010**'s review was assigned
+   2026-11-11 to `pod_uiux.reviewer` (`qitem-20261111065743`) — it had no owner at all until then.
 5. **S-008** needs a scope decision before it is a slice.
 6. **S-012** follows **S-004** — S-004 must ship the neutral-label fallback so S-012's absence is
    honest rather than harmful.
