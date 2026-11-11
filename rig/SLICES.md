@@ -132,15 +132,30 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   It cannot mint a registration token, so the pod is recreated — which is why every
   restart has a **fresh pod UID** (a container crash-loop keeps its UID).
 
-  **The fault is this host's egress to `api.github.com`.** Measured from a normal shell,
-  20 requests to `https://api.github.com/rate_limit`: **13 ok, 7 outright failures, 7 of
-  the 13 slow (>2s)** — roughly a 35% failure rate. Connect times on success ranged
-  `0.03s … 7.2s`; some returned `000` with `time_connect 0.000000` (never completed).
-  It is **GitHub-API-specific, not general connectivity**: `github.com` → 200 in 0.73s,
-  `ghcr.io/v2/` → 401 in 0.37s, both reliable. `api.github.com` resolves only to
-  `20.205.243.168` (single APAC endpoint, no failover); `ping` shows 0% loss but
-  74–232 ms RTT with high jitter; route is `dev wlan0` — a lossy radio link fits the
-  pattern. The same fault caused a `gh` GraphQL timeout observed in this session.
+  **The fault is the WIRELESS LINK, not one GitHub endpoint.** Corrected 2026-11-11T06:46Z —
+  my first reading ("GitHub-API-specific") did not survive a control, and `desk-desk` caught
+  it. Measured from a normal shell, 20 requests to `https://api.github.com/rate_limit`:
+  **13 ok, 7 outright failures, 7 of the 13 slow (>2s)** — roughly a 35% failure rate.
+  Connect times on success ranged `0.03s … 7.2s`; some returned `000` with
+  `time_connect 0.000000` (never completed).
+
+  **The control that overturns "one endpoint":** `github.com` is *as bad as* `api.github.com`
+  from this host — `desk-desk` measured 14 of 20 connects over 1s with 2 outright failures,
+  against 13 of 20 and 4 failures for `api.github.com`. A single sick endpoint would have left
+  `github.com` near 0.73 s. `pm` independently measured `github.com` at 3.8 s / 0.58 s / 4.8 s
+  with one 10 s timeout, and `gh api` at 11.8 s. So the whole path to GitHub is degraded.
+
+  **Packet loss and carrier, the direct evidence:** `ping` to `20.205.243.168` across three
+  15-packet runs gave **13% / 0% / 0% loss with RTT 28 ms → 520 ms (max 1036 ms, mdev 277)**;
+  `desk-desk` measured **50% loss** on a 10-packet run. `ping 1.1.1.1` is equally bad
+  (46–234 ms avg, max 821 ms), so it is not GitHub-specific at all. **`ip link show enp86s0`
+  → `NO-CARRIER`, `carrier=0`, no cable; `wlan0` is the only real uplink** and its carrier is
+  up. The host is on WiFi to a lossy access point.
+
+  **Consequence that changes the remedy: there is a wired NIC sitting unused on this machine.**
+  Plugging a cable into `enp86s0` is more likely to fix CI than anything done in k3s, and it is
+  a ten-second physical action. This also means **"restore the ARC listener" cannot work** on a
+  link losing this many packets — Adrian's recorded answer to that question needs re-scoping.
 
   **Why "restore the ARC listener" will not fix it:** the controller is alive and the
   listener starts cleanly; it dies at the first GitHub API call. Any fix that restarts
@@ -155,14 +170,15 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   used and no cluster state was changed. **Do not retry sudo from another seat** — it is
   not needed for diagnosis.
 
-  **What would actually fix it** (host/network changes; Adrian's call): (A) wired ethernet
-  instead of `wlan0`, or move the host off the lossy link — highest chance if the jitter is
-  radio; (B) check whether `20.205.243.168` is throttled/blackholed and consider pinning
-  `api.github.com` to a reachable endpoint via `/etc/hosts`; (C) raising the listener's
-  HTTP timeout is a **mitigation only** — it converts "always fails" into "sometimes
-  works" and leaves CI flaky. **Acceptance test for any fix:** the 20-request loop above
-  shows ~0 failures, the listener pod survives past a few minutes, and a CI run leaves
-  `queued`.
+  **What would actually fix it** (host/network changes; Adrian's call, in order of likely
+  effect): (A) **plug an ethernet cable into `enp86s0`** — the NIC is present and
+  `NO-CARRIER`; this is the highest-probability fix and costs ten seconds; (B) if WiFi must
+  stay, move closer to / change the access point, since 50% loss at 238 ms avg is a radio
+  problem, not a routing one; (C) raising the listener's HTTP timeout is a **mitigation only**
+  — it converts "always fails" into "sometimes works" and leaves CI flaky. **Acceptance test
+  for any fix:** three 15-packet pings to `20.205.243.168` at 0% loss with mdev under ~50 ms,
+  the 20-request loop shows ~0 failures, the listener pod survives past a few minutes, and a
+  CI run leaves `queued`.
 
   **A correction to `pm`'s own evidence.** `gh api .../actions/runners` →
   `total_count: 0` is **not proof on its own**: scale-set runners are ephemeral and
@@ -444,17 +460,70 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
     enum — so it touches `types.ts`, `processData.ts`, `DataQualityBadge` and every faceplate.
     That is **wider than "one tag to one faceplate"** and is explicitly outside S-004's
     constraints, so it cannot ride along. Not cut; `planned`.
-  - **S-004, required:** it **must not make the wrong cause reachable.** Specifically, the
-    consumer passes the specific quality through, and the badge **prefers it when present and
-    falls back to a NEUTRAL label** — never to `'BAD COMM FAILURE'` — when the specific cause
-    is unknown to it. Asserting comm failure by default is the defect; a neutral "BAD QUALITY"
-    is honest.
-    **Do not widen this into redesigning the enum in S-004.** The neutral fallback is the
-    smallest change that keeps the surface truthful, and it is in scope because **S-004 is what
-    makes the wrong diagnosis live**.
-  - **Test that must exist:** a payload with `quality_name: 'BAD_SENSOR_FAILURE'` must render
-    something that does **not** claim a communication failure. Mutation-prove it: restore the
-    hardcoded string and that test must go red.
+  - **S-004, required:** it **must not make the wrong cause reachable.** The consumer passes the
+    specific quality through, and the badge distinguishes **supplied-but-unrecognised** from
+    **not supplied at all**. **Do not widen this into redesigning the enum in S-004.**
+  - **THE THREE-CASE RULE — `pm`'s first wording was self-contradictory and the reviewer caught
+    it. This is the rule to build to.** `pm` wrote "falls back to a neutral label when the cause
+    is unknown" *and* "`noData.test.tsx:126` / `honestCanvas.test.tsx:131` stay green". **Both
+    cannot hold**: those two tests render with **no specific quality supplied at all**
+    (`noData.test.tsx:119` passes `quality: 'BAD_QUALITY'` and nothing else;
+    `honestCanvas.test.tsx:118` renders a bound component with bindings and no payload), so under
+    the naive rule the cause is "unknown" in both, both fall back to neutral, both stop rendering
+    `BAD COMM FAILURE`, and **both go red** — the opposite of what `pm` said. Verified by `pm` at
+    `origin/dev`.
+    | case | detail | badge |
+    |---|---|---|
+    | **A** | supplied **and** recognised | name it — `BAD COMM FAILURE`, `SENSOR FAILURE`, … |
+    | **B** | supplied but **not** recognised | neutral wording (`BAD QUALITY`) — **never names a cause** |
+    | **C** | **not** supplied at all | today's behaviour, `BAD COMM FAILURE`, **unchanged** |
+    **Case B is the defect S-004 makes reachable and must never name a cause. Case C is the
+    existing pinned contract and stays green untouched.** Case C is also **not reachable from
+    S-004's live path**, because the consumer always supplies `quality_name` — so the honest path
+    is fully honest without changing the legacy contract.
+    **`pm` considered making case C neutral too and rejected it for S-004 — recorded with the
+    trade-off, because it is defensible:** a bound device with no payload genuinely has no known
+    cause, so `BAD COMM FAILURE` there is itself a guess. But it changes the contract for all
+    four faceplates and **reds two existing tests**, which is **S-012's blast radius, not
+    S-004's**. If that is wanted, it belongs in S-012, not here.
+  - **The enum is not touched, and that is verified mechanics, not an opinion:** `DataQualityBadge`'s
+    props are **inline and already optional** (`DataQualityBadge.tsx:12`), `BaseFaceplateProps.quality`
+    stays `ProcessDataQuality` (`types.ts:58`), and adding one optional passthrough
+    (`qualityDetail?: string | null`) is additive — the faceplates that do not thread it keep
+    compiling and keep their behaviour. So S-004 touches the badge, one label function, and the
+    **one** faceplate it wires. "One tag to one faceplate" is satisfiable.
+  - **THE WORD "NEUTRAL" WAS AMBIGUOUS AND THE REVIEWER PINNED IT — this is the exact criterion
+    to build to.** `pm` wrote "neutral label"; `pod_hmi.reviewer` pointed out that in
+    `DataQualityBadge.tsx` **the tone and tooltip key off the three-value enum, not the label**
+    (verified by `pm` at `origin/dev`):
+    ```tsx
+    const isBadQuality = resolved === 'BAD_QUALITY';
+    const tone = isBadQuality ? 'bg-amber-950/70 …' : 'bg-neutral-800/80 …';  // amber : grey
+    title={ isBadQuality ? 'The bound device is not reporting usable data.' : 'No device binding.' }
+    ```
+    The **grey** branch is the `NOT_BOUND` **configuration** presentation. If the builder keys
+    the fallback off the specific quality instead of the class, an unrecognised **bad** cause
+    falls into it and an operator at a genuinely failing bound device gets **grey badge +
+    "No device binding" + `data-quality="NOT_BOUND"`** — **two false statements at once**: it
+    denies the binding exists *and* files a live equipment failure as a configuration note.
+    **That is worse than the bug being fixed**, because "BAD COMM FAILURE" at least says the
+    device is failing.
+    **The rule, verbatim from the reviewer:** a bound device with an unrecognised bad quality
+    must keep the **ABNORMAL** presentation — `data-quality="BAD_QUALITY"`, amber tone, the
+    "not reporting usable data" tooltip — and change **only the wording** (e.g. `BAD QUALITY`),
+    never naming a cause it does not know. **The class still comes from the three-value enum;
+    the specific quality supplies only the noun.**
+  - **Test that must exist, and it must not pass on a technicality:** a payload with
+    `quality_name: 'BAD_SENSOR_FAILURE'` renders (a) text that does **not** claim a communication
+    failure, **and** (b) `data-quality="BAD_QUALITY"` with the abnormal tone — **not**
+    `NOT_BOUND`. **A test that only asserts the text would go green while the badge quietly
+    became a configuration state.** Mutation-prove it: restore the hardcoded string and the test
+    must go red.
+  - **The test that must NOT be written:** "bad quality renders BAD COMM FAILURE". That asserts
+    the defect, and it is exactly the shape an existing suite tempts a builder to copy —
+    `noData.test.tsx:126` and `honestCanvas.test.tsx:131` already do it for the **generic** bad
+    case. Those assertions are **correct for an UNNAMED bad quality and stay**; they must not be
+    reused for the named-sensor case.
 - **Pod: `pod_hmi`, decided 2026-11-11 — not `pod_uiux`.** Evidence, not preference:
   `hmi-builder/guidance/role.md:3` puts `ui-faceplate-lib` in hmi's focus; `ui-builder`'s
   focus is `ui-shell/`, tokens, layout, UX flows and does **not** include `ui-faceplate-lib`.
