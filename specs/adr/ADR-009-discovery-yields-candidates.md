@@ -20,13 +20,17 @@ removed a fabricated station from the Network View render path: a `PLC_RACK_01` 
 `DEFAULT_CABLES` parameter defaults so that a demonstration would have a node to draw. It was
 presented as the operator's own commissioned plant.
 
-PR #50 replaces those defaults with explicit provenance states and states the rule in the render
-path: *never auto-create a node from discovery; discovery yields candidates, commissioning is an
-explicit act.*
+PR #50 (**open, not merged at the time of writing**) proposes to replace those defaults with
+explicit provenance states and to state the rule in the render path: *never auto-create a node
+from discovery; discovery yields candidates, commissioning is an explicit act.* At the time of
+writing, `origin/dev` contains neither that module nor any render-path guard for the rule, so
+nothing in the merged tree currently enforces it. That gap is part of why this ADR exists: the
+decision should not depend on one open pull request landing.
 
-That rule is currently recorded only in source comments
-(`ui-topology/src/NetworkCanvas.tsx`, `ui-topology/src/provenance.tsx`). It has a live
-alternative that a controlled document still appears to permit:
+That rule is, as of this writing, recorded only in the source comments of PR #50's branch
+(`ui-topology/src/NetworkCanvas.tsx`, `ui-topology/src/provenance.tsx`). It appears nowhere in
+the merged tree and nowhere in a controlled document. It has a live alternative that a
+controlled document still appears to permit:
 `docs/04-hmi-and-ui/network-topology-view-spec.md` §4.3 describes a neighbouring switch or
 controller that "automatically assigns the configured PROFINET device name, and downloads its
 hardware parameters" on discovery. Read without its precondition, that sentence licenses the
@@ -124,4 +128,9 @@ topology. Discovery never writes the plant model.
   (TypeScript Interface Contracts)
 - `specs/adr/ADR-004-layer2-dcp-discovery-topology.md` (Layer 2 DCP discovery)
 - `specs/spec.md` SYS-REQ-096 (zero silent fallback), NFR-003 (discovery timing)
-- PR #33 (removal of fabricated stations), PR #50 (provenance states and the render-path guard)
+- **Merged:** PR #33 (`fix(ui): stop workbench surfaces fabricating authored content`,
+  2026-10-27) — removed the fabricated stations from the Network View render path.
+- **Proposed, not merged at the time of writing:** PR #50 — provenance states and a
+  render-path guard for the decision in §4. Referenced here as intent, not as shipped
+  enforcement. `origin/dev` contains neither `ui-topology/src/provenance.tsx` nor any
+  render-path guard for this rule.
