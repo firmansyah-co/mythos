@@ -1,0 +1,14 @@
+id: desk
+label: "Adrian's Desk"
+summary: >-
+  The waiting room. Presents every open human decision as a clickable question and
+  records the answer back onto its queue row. Decides nothing.
+members:
+  - id: desk
+    agent_ref: path:/home/adrian/Projects/mythos/rig/agents/desk
+    profile: default
+    runtime: claude-code
+    cwd: /home/adrian/Projects/mythos
+    label: "Desk (Opus 5.5)"
+    restore_policy: resume_if_possible
+edges: []
