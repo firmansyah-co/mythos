@@ -19,6 +19,13 @@ startup:
     - path: SLICES.md
       delivery_hint: guidance_merge
       required: false
+    # The operator's answer for what to do when a question goes unanswered. Delivered to
+    # every seat on fresh start AND restore, because it changes what every seat may do
+    # without an answer. `required: true` states the intent; note that `rig spec validate`
+    # checks the schema, not the tree, so it does not verify this file is present.
+    - path: culture/DECISION-DEFAULTS.md
+      delivery_hint: send_text
+      required: true
   actions: []
 
 pods:
