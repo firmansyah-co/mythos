@@ -189,7 +189,12 @@ Every alarm point is assigned an immutable risk priority based on Consequence Se
 > token file and is not a source of truth.
 >
 > **What is established and what is not.** The token palette is what the system renders: the DTCG
-> file and `frontend/src/tokens.css` agree on every alarm value. Which colour scheme ANSI/ISA-18.2
+> file and `frontend/src/tokens.css` agree on every alarm value. **The values that render are the
+> Dark Obsidian ones.** Both files define a second, Light Clean Slate block with different values
+> for three alarm tokens (`--alarm-major` `#D97706`, `--alarm-normal` `#64748B`, `--alarm-shelved`
+> `#94A3B8`), but no code in this repository applies the `[data-theme='light']` or `.theme-light`
+> selector, so the light block never takes effect. Those values are the intended palette for a
+> theme that is defined and not yet selectable. Which colour scheme ANSI/ISA-18.2
 > requires is **not established in this repository**, because no document here cites the clause
 > that fixes the values. This note therefore records a disagreement between this table and the
 > rendered palette. It does not assert that either one is wrong against the standard. Resolving
