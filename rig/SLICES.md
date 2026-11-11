@@ -18,7 +18,7 @@ The single answer to "what is being worked on". Your memory is not this file.
 | `S-001` | uiux | `test/topology-all-view-modes` | `.claude/worktrees/topology-mode-coverage` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `ab93602`; BLOCKED on CI only (PR #50) | `pod_uiux.builder` |
 | `S-002` | — | `chore/rig-harness` | repo root *(pre-existing branch, not cut)* | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #55 @ `dba71c7`; local ahead, unpushed — see S-002) | `dev_gatekeeper` |
 | `S-003` | backend | `refactor/device-execution-mode-canonical` | `.claude/worktrees/device-execution-mode` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `5cf3984`; BLOCKED on CI (PR #57) | `pod_backend.reviewer` |
-| `S-004` | hmi | `feat/hmi-live-telemetry` | `.claude/worktrees/hmi-live-telemetry` | `origin/dev` @ `5b8ee51` | `in-review` @ `3c683be` (+846/−1, 5 files); not pushed | `pod_hmi.builder` |
+| `S-004` | hmi | `feat/hmi-live-telemetry` | `.claude/worktrees/hmi-live-telemetry` | `origin/dev` @ `5b8ee51` | `in-review` **NO VERDICT** @ `3c683be` (PR #61, +846/−1); connection-count gap open; BLOCKED on CI | `pod_hmi.builder` |
 | `S-005` | — | `policy/decision-defaults` *(exists @ `4f2ac4b`)* | *(not cut — see note)* | `origin/dev` | `planned` **blocked on S-002**; review CHANGES REQUESTED | `dev_gatekeeper` |
 | `S-006` | — | `feat/desk-seat` *(exists @ `3995106`; main copy `4496ce0`)* | *(not cut — see note)* | `origin/dev` | `planned` **CHANGES REQUESTED**; blocked on S-002 + S-005 | `dev_gatekeeper` |
 | `S-007` | — | `docs/alarm-colour-reconcile` | `.claude/worktrees/docs-alarm-colour` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `2bfac2e`; BLOCKED on CI only (PR #58) | `governance.scribe` |
