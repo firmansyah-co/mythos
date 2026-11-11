@@ -29,6 +29,11 @@ import { IndustrialBusEdge } from './IndustrialBusEdge';
 import { INDUSTRIAL_CATALOG } from './catalogData';
 import { EmptySurface, EMPTY_SURFACE } from '@mythos/ui-empty-state';
 import {
+  TopologyProvenanceBanner,
+  TOPOLOGY_CLAIM_UNREAD,
+  type TopologyClaim,
+} from './provenance';
+import {
   Plus,
   Maximize2,
   ZoomIn,
@@ -40,6 +45,24 @@ import {
 } from 'lucide-react';
 
 export interface NetworkCanvasProps {
+  /**
+   * What these views are claiming and on what basis: source × health, with commissioning carried
+   * alongside discovery. See ./provenance for why the axes are separate.
+   *
+   * DELIBERATELY NOT DEFAULTED to "unread". UNREAD is true of an empty canvas and false of a
+   * populated one, so leaving this out while supplying stations renders NOT_STATED — the surface
+   * says the provenance was not stated instead of asserting that no claim is being made while it
+   * visibly is.
+   */
+  claim?: TopologyClaim;
+  /**
+   * The two device-id sets conformance is DERIVED from. A caller may supply observations; it may
+   * not supply a conclusion. There is deliberately no `conformance` prop: conformance is computed
+   * by this component via `deriveConformance`, so "the caller asserted MATCHES" is not a state the
+   * type can express. Both absent (today's only reachable case) derives NOT_COMPARED.
+   */
+  nominalDeviceIds?: readonly string[];
+  actualDeviceIds?: readonly string[];
   initialStations?: HardwareStationNode[];
   initialCables?: TopologyCableEdge[];
   onSelectStation?: (station: HardwareStationNode | null) => void;
@@ -61,7 +84,21 @@ const edgeTypes = {
 // Default Sample Stations
 
 
+/**
+ * THE RULE, recorded where the invented rack used to live:
+ *
+ *   NEVER auto-create a node from discovery. Discovery yields CANDIDATES; commissioning is an
+ *   explicit act.
+ *
+ * `DEFAULT_STATIONS` / `DEFAULT_CABLES` were removed from this file because a demo needed a node
+ * and one was invented — a `PLC_RACK_01` at 192.168.1.10 with Siemens article numbers, presented as
+ * the operator's own commissioned plant. Nothing here may synthesise a station, an address or a
+ * cable. If a view has nothing to draw, it says so; see ./provenance.
+ */
 const NetworkCanvasInner: React.FC<NetworkCanvasProps> = ({
+  claim,
+  nominalDeviceIds,
+  actualDeviceIds,
   initialStations,
   initialCables,
   onSelectStation,
@@ -257,6 +294,19 @@ const NetworkCanvasInner: React.FC<NetworkCanvasProps> = ({
           </button>
         </div>
       </div>
+
+      {/*
+        What these views claim, and on what basis. Always stated: silence is a claim of its own.
+
+        Derived, not defaulted. With nothing on screen, "nothing has been read" is true. With
+        devices on screen and no stated source it would be false, so that case renders NOT_STATED —
+        a null claim — rather than telling the operator no claim is being made while one is.
+      */}
+      <TopologyProvenanceBanner
+        claim={claim ?? (stations.length > 0 ? null : TOPOLOGY_CLAIM_UNREAD)}
+        nominalDeviceIds={nominalDeviceIds}
+        actualDeviceIds={actualDeviceIds}
+      />
 
       {/* Main xyflow Canvas Viewport */}
       <div className="flex-1 w-full h-full relative">
