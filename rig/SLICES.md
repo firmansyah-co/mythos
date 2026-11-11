@@ -21,9 +21,9 @@ The single answer to "what is being worked on". Your memory is not this file.
 | `S-004` | hmi | `feat/hmi-live-telemetry` | `.claude/worktrees/hmi-live-telemetry` | `origin/dev` @ `5b8ee51` | `open` — cut 2026-11-11T06:1xZ | `pod_hmi.builder` |
 | `S-005` | — | `policy/decision-defaults` *(exists @ `4f2ac4b`)* | *(not cut — see note)* | `origin/dev` | `planned` **blocked on S-002**; review CHANGES REQUESTED | `dev_gatekeeper` |
 | `S-006` | — | `feat/desk-seat` *(exists @ `3995106`; main copy `4496ce0`)* | *(not cut — see note)* | `origin/dev` | `planned` **CHANGES REQUESTED**; blocked on S-002 + S-005 | `dev_gatekeeper` |
-| `S-007` | — | `docs/alarm-colour-reconcile` | `.claude/worktrees/docs-alarm-colour` | `origin/dev` @ `5b8ee51` | `in-review` **NO REVIEWER ASSIGNED** @ `2bfac2e`; BLOCKED on CI (PR #58) | `governance.scribe` |
+| `S-007` | — | `docs/alarm-colour-reconcile` | `.claude/worktrees/docs-alarm-colour` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `2bfac2e`; BLOCKED on CI only (PR #58) | `governance.scribe` |
 | `S-008` | backend | *(not cut)* | — | `origin/dev` | `planned` — **blocked on a scope decision** | `pod_backend.builder` |
-| `S-009` | scribe | `docs/topology-provenance-spec` | `.claude/worktrees/docs-topology-provenance` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `72630ad`, head now `139c263`; **re-confirm requested**; BLOCKED on CI (PR #56) | `governance.scribe` |
+| `S-009` | scribe | `docs/topology-provenance-spec` | `.claude/worktrees/docs-topology-provenance` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `139c263` (carried forward from `72630ad`); BLOCKED on CI only (PR #56) | `governance.scribe` |
 | `S-010` | scribe | `docs/theme-status-honest` | `.claude/worktrees/docs-theme-status` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `16c10e3`; BLOCKED on CI only (PR #59) | `governance.scribe` |
 | `S-011` | scribe | `docs/tsk-801-quality-blockers-corrected` | `.claude/worktrees/docs-tsk801-correction` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `7e1535e`; BLOCKED on CI (PR #60) | `governance.scribe` |
 | `S-012` | hmi | *(not cut)* | — | `origin/dev` | `planned` — **blocked on S-004** | `pod_hmi.builder` |
@@ -955,6 +955,15 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
 - **Not to be confused with** the SCRIBE queue rows: SCRIBE-1 (`qitem-…53040-6c7ac449`) and
   SCRIBE-3 (`qitem-…53047-1585f8fe`) are still `blocked` in the queue while this PR
   implements them. Closing them is `scribe`'s call, on merge — not in advance of it.
+- **VERDICT IS STALE — the head moved past it.** The approval says "Reviewed at head
+  `72630ad`"; the current head is **`139c263`** (the ADR-header commit `scribe` made in response
+  to the reviewer's non-blocking note). **The approval does not cover the diff as it stands.**
+  Filed by `scribe` as `qitem-20261111070221` with two resolutions and a recommendation
+  (**A: the S-009 reviewer re-reads the one changed line at `139c263`**). `pm` accepts A —
+  it is one line, it keeps the approval honest, and B (revert the commit, new slice) would throw
+  away a correct fix to avoid a two-minute re-read.
+  **This is the pattern the merge rule above exists for:** an `APPROVED` that names a head SHA
+  must be read against the current head, not taken as a property of the PR.
 - **State:** `in-review`, **review APPROVED at `72630ad`** — but the branch has moved since.
   **The branch moved after the verdict: `139c263`** — a one-line ADR header change
   (`Deciders (proposed — to be recorded at acceptance)`) made in response to the reviewer's
@@ -1124,6 +1133,39 @@ its block released when the DeviceExecutionMode decision landed. It is carried b
 it is not free work.
 
 ---
+
+## MERGE RULE — "does this PR have a verdict?" is not answerable from the obvious command
+
+Found independently by `governance.scribe` and `pm` on 2026-11-11, after both ran a PR sweep and
+got the wrong answer.
+
+**`gh pr view <n> --json reviews` returns `[]` even when a verdict exists.** Verdicts in this repo
+are posted as **issue comments**, not PR reviews — because the `gh` account is the PR author, so
+`request-changes` and `approve` are rejected. Measured: PR #56 → 1 issue comment, 0 reviews;
+PR #57 → 2 issue comments, 0 reviews.
+
+**And a verdict may not be on the PR at all.** S-010 (PR #59) is APPROVED, and that verdict exists
+**only** in its review queue row (`qitem-20261111070021`, closed `done` to `dev_gatekeeper`).
+`gh api …/issues/59/comments` → **0**. So a merger checking the PR alone sees an unreviewed slice.
+
+**The rule — check both, in this order:**
+```bash
+gh api repos/:owner/:repo/issues/<n>/comments --jq '[.[]|select(.body|test("APPROVED|CHANGES REQUESTED"))]'
+rig queue list --json   # find the slice's review row; is it closed with a verdict?
+```
+**A verdict counts if it is in EITHER place, at the CURRENT head.** Three distinct states a merger
+must not confuse:
+
+| state | example | what it looks like | what it is |
+|---|---|---|---|
+| verdict on the PR, current head | #57 @ `5cf3984`, #60 @ `7e1535e` | comment present | **clean** |
+| verdict on the PR, STALE head | #56 — approved @ `72630ad`, head now `139c263` | comment present | **stale** — does not cover the diff |
+| verdict only in the queue | #59 (S-010) | **no PR comment at all** | **approved, but invisible on the PR** |
+
+**Why this matters more than it looks:** `mergeable: MERGEABLE` plus "docs only" plus no visible
+review is exactly the shape a merger waves through. Three of four docs PRs were in one of the two
+bad states when this was found. **The ledger's `APPROVED` must name the head SHA it was given at**,
+which is why every approval recorded today carries one.
 
 ## Documentation rows raised by `governance.scribe` (2026-11-11)
 
