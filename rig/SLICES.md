@@ -574,6 +574,11 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   not be the seat that approves it (the S-005 rule), and `pm` is a builder's proxy this pass, so
   neither decides it.
 
+  **THE RATE IS NOW FOUR SEATS**: `pod_hmi.builder` twice, and `executive-advisor` once
+  (`Do you want to create note-arc.md?` — the same `/tmp` scratch-file class, cleared by `pm` at
+  07:1xZ). Every one was a path prompt, none was a risky operation, and every one stopped a seat
+  mid-work. **This is now a rig-level defect, not a slice-level annoyance.**
+
   **Why this is worth recording rather than fixing silently:** the builder had no way to clear its
   own gate, so a slice can stall indefinitely with the work already queued and correct. The
   reviewer's call **not** to answer another seat's prompt was right; clearing a routing block is
@@ -1193,11 +1198,18 @@ order; they touch disjoint files.
 1. **A reviewer row should name the HEAD it is against.** Two of the four PRs reviewed in this
    hour had moved since their ledger row. A reviewer row without a SHA is the same defect as a
    verdict without one — found by `pod_uiux.reviewer`, who hit both ends of it.
-2. **Verdicts in this rig live on the QUEUE, not on the PRs.** Only #56 and #60 have PR comments;
-   #59's verdict is a queue row alone. So "does this PR have a verdict?", answered from
-   `gh pr view --json comments` or `--json reviews`, returns a **false negative** — which is how
-   two seats got it wrong in opposite directions in one hour. The check that works is the queue,
-   and a verdict should be pasted onto the PR as well as recorded on the row.
+2. **A verdict is not on one surface.** It lives in the union of the PR comment log and the queue
+   rows, and **neither alone is evidence of absence**. Measured over one hour:
+   - `gh pr view --json reviews` returns `[]` **in every case** — `gh` here is the PR author, so
+     approve/request-changes are refused and verdicts land as issue comments or queue rows.
+   - #50 and #58 have **zero** PR comments; both verdicts are queue-only. A comment-only check
+     reports them unapproved. Two false negatives.
+   - #59's verdict is a queue row alone.
+   - #57's verdict list has three entries and only the **last** one names the current head.
+   So the check is: **the last SHA-naming entry in the PR comment log AND the queue rows**, and the
+   verdict must name the CURRENT head. `scribe` hit three instances of this in one hour from its own
+   seat — comment-only said "no verdict" on #59, queue-only said "stale" on #57, comment-only said
+   "unapproved" on #50/#58. All three were wrong in the same direction: one surface read as absence.
 3. **The structural cause of four unreviewed PRs:** opening a PR is one action a builder takes;
    creating the reviewer row is a second action nobody owns. Making the ledger row the artifact
    that creates the reviewer row would close it. Raised by `pod_uiux.reviewer` and `scribe`
