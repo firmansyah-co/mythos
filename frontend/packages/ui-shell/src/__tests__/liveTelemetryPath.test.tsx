@@ -28,7 +28,12 @@ import {
   readComponentBindings,
   type WireTelemetryBatch,
 } from '../stores/useTagStore';
-import { useSseTelemetry, MIN_RECONNECT_DELAY_MS, MAX_RECONNECT_DELAY_MS } from '../hooks/useSseTelemetry';
+import {
+  useSseTelemetry,
+  MIN_RECONNECT_DELAY_MS,
+  MAX_RECONNECT_DELAY_MS,
+  __resetTelemetryConnectionForTests,
+} from '../hooks/useSseTelemetry';
 import { HmiScreenCanvasPanel } from '../components/workbench/DockviewWorkspace';
 
 // ---------------------------------------------------------------------------------------------
@@ -159,8 +164,61 @@ function batch(updates: Array<Partial<Record<string, unknown>>>): WireTelemetryB
   return { timestamp_ms: 1_700_000_000_000, batch_window_ms: 100, updates: updates as never };
 }
 
+/**
+ * Render TWO canvas panels on one screen, which is the operator's normal case: a screen is a
+ * dockview tab and more than one can be open.
+ *
+ * A single-panel test passes against both multi-panel defects, so only a two-panel test can fail
+ * for them. `FakeEventSource.instances` assertions elsewhere in this file are reconnect-backoff
+ * assertions on a single panel — green, correct, and not coverage for this.
+ */
+const SECOND_SCREEN: ScreenDescriptor = {
+  ...MOTOR_SCREEN,
+  id: 'screen_live_probe_2',
+} as ScreenDescriptor;
+
+function mountTwoScreens() {
+  useHmiStore.setState({
+    screens: [MOTOR_SCREEN, SECOND_SCREEN],
+    draftScreens: new Map([
+      [MOTOR_SCREEN.id, MOTOR_SCREEN.canvasData],
+      [SECOND_SCREEN.id, SECOND_SCREEN.canvasData],
+    ]),
+    activeScreens: new Map(),
+    activeScreenId: MOTOR_SCREEN.id,
+    activeSubscreenId: null,
+  } as never);
+}
+
+/**
+ * Render N panels inside a STABLE wrapper.
+ *
+ * The wrapper matters: changing the root's element type between renders (a div, then a bare
+ * panel) makes React unmount the whole subtree and remount it, which tears the connection down
+ * and back up. That is a harness artefact, not the property under test — it would fail this suite
+ * against correct code. Keeping one wrapper means a change in child count unmounts exactly the
+ * panel that went away.
+ */
+function renderPanels(screenIds: string[]): void {
+  flushSync(() => {
+    root.render(
+      React.createElement(
+        'div',
+        null,
+        ...screenIds.map((screenId) =>
+          React.createElement(HmiScreenCanvasPanel, { key: screenId, params: { screenId } } as never)
+        )
+      )
+    );
+  });
+}
+
+const renderTwoPanels = () => renderPanels([MOTOR_SCREEN.id, SECOND_SCREEN.id]);
+const renderOnlyFirstPanel = () => renderPanels([MOTOR_SCREEN.id]);
+
 describe('S-004: a real TagBus value reaches a rendered faceplate', () => {
   beforeEach(() => {
+    __resetTelemetryConnectionForTests();
     FakeEventSource.instances = [];
     vi.stubGlobal('EventSource', FakeEventSource as unknown as typeof EventSource);
     container = document.createElement('div');
@@ -206,8 +264,96 @@ describe('S-004: a real TagBus value reaches a rendered faceplate', () => {
   });
 });
 
+describe('S-004: many panels share ONE stream, and one panel closing does not disturb another', () => {
+  beforeEach(() => {
+    __resetTelemetryConnectionForTests();
+    FakeEventSource.instances = [];
+    vi.stubGlobal('EventSource', FakeEventSource as unknown as typeof EventSource);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    useHmiStore.getState().resetToEmptyProject();
+    useTagStore.getState().clear();
+    useTagStore.getState().setConnection('IDLE');
+    mountTwoScreens();
+  });
+
+  afterEach(() => {
+    flushSync(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  // Property (b): connection count. Two panels at 10 Hz each would parse the full catalog twice
+  // and replace the whole Map twice per tick, racing last-writer-wins on every frame.
+  it('opens exactly ONE EventSource for two mounted panels', () => {
+    renderTwoPanels();
+    expect(
+      FakeEventSource.instances.length,
+      'two panels must share one telemetry stream, not open one each'
+    ).toBe(1);
+  });
+
+  it('still opens exactly one stream for three panels', () => {
+    const third = { ...MOTOR_SCREEN, id: 'screen_live_probe_3' } as ScreenDescriptor;
+    useHmiStore.setState({
+      screens: [MOTOR_SCREEN, SECOND_SCREEN, third],
+      draftScreens: new Map([
+        [MOTOR_SCREEN.id, MOTOR_SCREEN.canvasData],
+        [SECOND_SCREEN.id, SECOND_SCREEN.canvasData],
+        [third.id, MOTOR_SCREEN.canvasData],
+      ]),
+      activeScreens: new Map(),
+      activeScreenId: MOTOR_SCREEN.id,
+      activeSubscreenId: null,
+    } as never);
+    renderPanels([MOTOR_SCREEN.id, SECOND_SCREEN.id, third.id]);
+    expect(FakeEventSource.instances.length, 'connection count must not scale with panel count').toBe(1);
+  });
+
+  // Property (a): teardown isolation. A healthy panel must not go BAD_QUALITY because a
+  // different panel closed, and must not depend on waiting for the next 100ms frame to recover.
+  it('keeps the surviving panel live when another panel unmounts', () => {
+    renderTwoPanels();
+    FakeEventSource.instances[0].open();
+    FakeEventSource.instances[0].emit('tag_update', batch([wireUpdate()]));
+    renderTwoPanels();
+    expect(container.innerHTML).toContain('1450');
+
+    // Close the second panel. The first is still open and still healthy.
+    renderOnlyFirstPanel();
+
+    // No new frame is delivered after the unmount: the survivor must still be GOOD.
+    const badge = container.querySelector('[data-testid="faceplate-no-data"]');
+    expect(
+      badge,
+      'a healthy panel must not degrade because a DIFFERENT panel closed'
+    ).toBeNull();
+    expect(faceplateText()).toContain('1450');
+    expect(useTagStore.getState().tags.has(TAG_URI), 'the cache must survive one panel unmounting').toBe(
+      true
+    );
+  });
+
+  it('closes the shared stream only when the LAST panel unmounts', () => {
+    renderTwoPanels();
+    const source = FakeEventSource.instances[0];
+    source.open();
+
+    renderOnlyFirstPanel();
+    expect(source.closed, 'one of two panels unmounting must not close the shared stream').toBe(false);
+
+    // The last panel goes away: now the stream should be closed and the cache dropped.
+    flushSync(() => root.render(React.createElement('div', null)));
+    expect(source.closed, 'the last panel unmounting must close the stream').toBe(true);
+    expect(useTagStore.getState().tags.size, 'no panel remains, so no value may be claimed').toBe(0);
+  });
+});
+
 describe('S-004: the stream dropping never leaves a stale value presented as live', () => {
   beforeEach(() => {
+    __resetTelemetryConnectionForTests();
     FakeEventSource.instances = [];
     vi.stubGlobal('EventSource', FakeEventSource as unknown as typeof EventSource);
     container = document.createElement('div');
