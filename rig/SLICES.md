@@ -21,6 +21,7 @@ The single answer to "what is being worked on". Your memory is not this file.
 | `S-004` | uiux | *(cut after S-001)* | — | `origin/dev` | `planned` | `pod_uiux.builder` |
 | `S-005` | — | `policy/decision-defaults` *(exists @ `4f2ac4b`)* | *(not cut — see note)* | `origin/dev` | `planned` **blocked on S-002** | `dev_gatekeeper` |
 | `S-006` | — | `feat/desk-seat` *(exists @ `3995106`; main copy `4496ce0`)* | *(not cut — see note)* | `origin/dev` | `planned` **blocked on S-002** | `dev_gatekeeper` |
+| `S-007` | — | `docs/alarm-colour-reconcile` | `.claude/worktrees/docs-alarm-colour` | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #58) | `governance.scribe` |
 
 ### S-001 — topology view-mode claims (PR #50)
 
@@ -325,6 +326,40 @@ The single answer to "what is being worked on". Your memory is not this file.
 - **State:** `planned`, blocked on S-002 for the same reason as S-005. Work preserved at
   `4496ce0` (on local `chore/rig-harness`) and `3995106` (`feat/desk-seat`, cherry-picked onto
   `origin/dev`). Neither is pushed.
+
+### S-007 — alarm colour and priority reconciliation (PR #58)
+
+- **What:** `docs/05-enterprise-governance/isa-18-2-alarm-engine.md` §7 relabelled so its colour
+  column reads "Illustrative Color", a note naming the two authorities (DTCG as controlled
+  definition, `frontend/src/tokens.css` as implementation), and a new §7.1 recording that the two
+  priority vocabularies do not agree. +45/−1, docs only.
+- **Why:** the engine doc's table contradicts the rendered palette on all four values
+  (`#D32F2F`/`#DC2626`, `#F57C00`/`#EA580C`+`#D97706`, `#FBC02D`/`#CA8A04`, `#0288D1`/`#2563EB`)
+  and its four hexes appear in **no code**. The DTCG file and the token file agree on every alarm
+  value, so the engine doc is the lone outlier.
+- **The real finding, §7.1:** the vocabularies are not positionally equivalent. Engine doc
+  Medium = "quality deviation or minor equipment fault"; DTCG Priority 3 = "low warning threshold
+  excursion". Engine doc Low = "advisory maintenance or efficiency notice"; DTCG Priority 4 =
+  "sensor fault, wire break, communication packet drop". The engine doc has **no class for a
+  sensor or communication fault**. A positional mapping files sensor faults as advisory
+  maintenance — the quietest place a failed sensor can land. Recorded, not resolved: choosing a
+  taxonomy is not a documentation call.
+- **What it does not claim, deliberately:** that either scheme is wrong against ANSI/ISA-18.2.
+  Neither document cites the clause that fixes the values, so the note says which scheme renders
+  and that which is normative is "not established in this repository".
+- **Verification:** gate **not run and not runnable** — no `scripts/check.sh` on `origin/dev`
+  (S-002). Docs-only. Executed instead: diff touches only `docs/`, no deletions, the relative
+  DTCG link resolves, §7.1 numbered under §7, and all four quoted DTCG priority descriptions
+  match the token file verbatim. `dev_gatekeeper` additionally checked all six cited token names
+  against `frontend/src/tokens.css`.
+- **Related hygiene finding, recorded not fixed:** there are **three** tracked copies of the token
+  file and only one is imported — `frontend/src/tokens.css` (172 lines, imported by
+  `ui-shell/src/index.css:1`), `frontend/src/styles/tokens.css` (154, zero references) and
+  `frontend/plugins/ui-faceplate-lib/src/tokens.css` (154, declared export, nothing imports it).
+  The two unimported copies are byte-identical. `git grep "tokens.css" origin/dev -- frontend/`
+  returns exactly one import in the whole tree, so editing the wrong copy silently changes
+  nothing. Needs its own repo-hygiene row.
+- **State:** `in-review`, PR #58, `mergeStateStatus: BLOCKED` (no runner).
 
 ### Sequencing (decided by `pm`, 2026-11-11)
 
