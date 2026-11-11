@@ -3,7 +3,7 @@
 - **Status**: PROPOSED
 - **Date**: 2026-11-11
 - **Author**: Scribe (VP Publication)
-- **Deciders**: Adrian (Board of Commissioners), Aria (CEO), Neo (VP Software)
+- **Deciders (proposed — to be recorded at acceptance)**: Adrian (Board of Commissioners), Aria (CEO), Neo (VP Software)
 - **Consulted**: Iris (VP Design), governance-pm
 
 ---
