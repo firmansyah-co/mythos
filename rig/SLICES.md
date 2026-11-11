@@ -318,9 +318,15 @@ The single answer to "what is being worked on". Your memory is not this file.
      `advisor` and `release-auditor`). A seat with no model is not launchable as written.
      `rig spec validate` accepted the spec, so this is the gap between "well-formed" and
      "correct".
-  2. **`rig/pods/desk.yaml` has `edges: []`** — the pod is wired to nothing. A seat that
-     collects `gate:human` rows but is not on a delivery edge would collect nothing at all.
-     Confirm that is intentional before gating.
+  2. **CORRECTED — the desk IS wired; the pod file alone reads as isolated.**
+     `rig/pods/desk.yaml` carries `edges: []`, and my first reading of that was "wired to
+     nothing". That was wrong, and `governance.pm` caught it. The wiring lives in
+     `rig/mythos-org.yaml:155-160` in the same commit:
+     `executive.advisor -> desk.desk` and `desk.desk -> governance.pm`, both `delegates_to`.
+     So the seat is connected in both directions and would receive `gate:human` rows. The
+     defect is only that the pod fragment on its own reads as an isolated seat — a reviewer
+     would go looking for a missing edge that is not missing. Fix by cross-referencing the
+     org-level edges from the pod file, not by adding edges.
   3. **Is a twelfth seat wanted?** `rig spec validate` and preflight check form, not desire.
      Adding a seat and a pod is a topology decision and should be the review's actual question.
 - **State:** `planned`, blocked on S-002 for the same reason as S-005. Work preserved at
@@ -359,6 +365,10 @@ The single answer to "what is being worked on". Your memory is not this file.
   The two unimported copies are byte-identical. `git grep "tokens.css" origin/dev -- frontend/`
   returns exactly one import in the whole tree, so editing the wrong copy silently changes
   nothing. Needs its own repo-hygiene row.
+  **Two failure modes, not one** (found by `governance.scribe`): every alarm token is defined
+  **twice** in the live file, once per theme block. Editing the wrong *copy* does nothing;
+  editing the wrong *theme block in the right copy* changes one theme and leaves the other stale
+  — worse, because it looks like it worked. The counts below are per-file lines, not per-token.
 - **State:** `in-review`, PR #58, `mergeStateStatus: BLOCKED` (no runner).
 
 ### Sequencing (decided by `pm`, 2026-11-11)
