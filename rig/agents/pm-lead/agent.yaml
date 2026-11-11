@@ -4,7 +4,7 @@ description: "Technical Project Manager & Slice Lead. Owns the slice ledger, cut
 
 defaults:
   runtime: claude-code
-  model: claude-opus-5-5
+  model: claude-opus-5.5
 
 imports:
   - ref: path:/home/adrian/.local/lib/node_modules/@openrig/cli/daemon/specs/agents/shared
