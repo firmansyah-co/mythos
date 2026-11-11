@@ -186,10 +186,44 @@ none of them is assigned.
 
 | Origin qitem | Pod | State | What |
 |---|---|---|---|
-| `qitem-20261023085422` | uiux | blocked | HMI canvas has no live-telemetry path; every faceplate reads NOT BOUND on a real plant. **Needs a scope decision** (advisor gate). |
+| `qitem-20261023085422` | uiux | blocked — **premises corrected** | HMI canvas has no live-telemetry path; every faceplate reads NOT BOUND on a real plant. **The gap is real; two premises in the row were stale.** See below. |
 | `qitem-20261026053023` | hmi | blocked | Operator-writable setpoints vs telemetry re-sync: needs a draft-vs-committed rule before coding. |
 | `qitem-20261026063940` | uiux | blocked | Two same-named `InterlockCondition` types in `ui-faceplate-lib` and `ui-inspector`. Naming smell, not a wrong import. |
 | `qitem-20261027083546` | backend | blocked | CLI `--version` pinning and `versions --remote`; blocked on the release path producing more than one version. Rerouted from the removed `publisher` seat. |
+
+### The HMI telemetry gap — corrected 2026-11-11
+
+**Still true:** no live process values reach an HMI faceplate. At `origin/dev` the only
+`EventSource` in `ui-shell` is `useFaceplateStore.ts:277`, and it listens for
+`FACEPLATE_PROPAGATED` only — a library re-read, carrying no process values.
+`resolveComponentData` is called at `DockviewWorkspace.tsx:423` but nothing populates
+`comp.live` from the TagBus. There is no telemetry value store (`stores/` is
+`useFaceplateStore` and `useHmiStore`).
+
+**No longer true — "no task in the roadmap covers it".** `TSK-801` exists in
+`specs/tasks.md` under *Sprint 8: Live Telemetry Cutover & Device-Mode Completion*,
+marked PRE-COMMITTED PREREQUISITE, and scopes exactly this — including two code-verified
+quality blockers: `QualityGate::record_comm_loss` does not write `TagSlot.quality`
+(`mythos-strucpp/src/quality_gate.rs`), and `build_telemetry_event` collapses quality to
+`GOOD`/`BAD`/`UNCERTAIN` (`mythos-core/src/api/telemetry.rs`).
+
+**No longer true — "needs a scope decision".** It is scoped. The scope limit is explicit:
+prove **one** real tag-to-faceplate path; broader subscription and binding architecture is
+follow-up.
+
+**The real blocker, replacing `external:sprint-8-open`:** the canonical ownership of
+`DeviceExecutionMode`, which `specs/tasks.md:225` and `:241` name as a precondition on
+TSK-801 and explicitly decline to resolve. It was **untracked until 2026-11-11** — raised
+as `qitem-20261111053553-2c552e0be9d571fd` to `advisor` → Adrian, recommendation A.
+
+The duplication is live and the wire forms genuinely diverge:
+`mythos-core/src/device/mode.rs:30` carries `#[serde(rename_all = "snake_case")]` +
+`Default`; `mythos-strucpp/src/quality_gate.rs:13` carries neither, so the first variant
+serialises as `"physical_hardware"` versus `"PhysicalHardware"`. `pm` checked whether the
+migration cost the spec warns about is real today: it is **not** — strucpp's enum is used
+only in memory (`RwLock` field, equality, two `match` arms) and nothing repo-wide
+serialises it. So the decision is cheap now and gets more expensive the moment something
+starts serialising it.
 
 ## Removed from the ledger
 
