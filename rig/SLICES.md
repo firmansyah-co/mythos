@@ -18,7 +18,7 @@ The single answer to "what is being worked on". Your memory is not this file.
 | `S-001` | uiux | `test/topology-all-view-modes` | `.claude/worktrees/topology-mode-coverage` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `ab93602`; BLOCKED on CI only (PR #50) | `pod_uiux.builder` |
 | `S-002` | — | `chore/rig-harness` | repo root *(pre-existing branch, not cut)* | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #55 @ `dba71c7`; local ahead, unpushed — see S-002) | `dev_gatekeeper` |
 | `S-003` | backend | `refactor/device-execution-mode-canonical` | `.claude/worktrees/device-execution-mode` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `5cf3984`; BLOCKED on CI (PR #57) | `pod_backend.reviewer` |
-| `S-004` | hmi | `feat/hmi-live-telemetry` | `.claude/worktrees/hmi-live-telemetry` | `origin/dev` @ `5b8ee51` | `open` — cut 2026-11-11T06:1xZ | `pod_hmi.builder` |
+| `S-004` | hmi | `feat/hmi-live-telemetry` | `.claude/worktrees/hmi-live-telemetry` | `origin/dev` @ `5b8ee51` | `in-review` @ `3c683be` (+846/−1, 5 files); not pushed | `pod_hmi.builder` |
 | `S-005` | — | `policy/decision-defaults` *(exists @ `4f2ac4b`)* | *(not cut — see note)* | `origin/dev` | `planned` **blocked on S-002**; review CHANGES REQUESTED | `dev_gatekeeper` |
 | `S-006` | — | `feat/desk-seat` *(exists @ `3995106`; main copy `4496ce0`)* | *(not cut — see note)* | `origin/dev` | `planned` **CHANGES REQUESTED**; blocked on S-002 + S-005 | `dev_gatekeeper` |
 | `S-007` | — | `docs/alarm-colour-reconcile` | `.claude/worktrees/docs-alarm-colour` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `2bfac2e`; BLOCKED on CI only (PR #58) | `governance.scribe` |
@@ -27,6 +27,7 @@ The single answer to "what is being worked on". Your memory is not this file.
 | `S-010` | scribe | `docs/theme-status-honest` | `.claude/worktrees/docs-theme-status` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `16c10e3`; BLOCKED on CI only (PR #59) | `governance.scribe` |
 | `S-011` | scribe | `docs/tsk-801-quality-blockers-corrected` | `.claude/worktrees/docs-tsk801-correction` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `7e1535e`; BLOCKED on CI (PR #60) | `governance.scribe` |
 | `S-012` | hmi | *(not cut)* | — | `origin/dev` | `planned` — **blocked on S-004** | `pod_hmi.builder` |
+| `S-013` | hmi | *(not cut)* | — | `origin/dev` | `planned` | `pod_hmi.builder` |
 
 **Re-verified against the live world 2026-11-11T06:1xZ, by `pm`, not carried from the
 previous pass.** Corrections this pass: S-004 moved to `pod_hmi` (evidence in its section);
@@ -521,6 +522,37 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   bugs.
   **Either fix shape passes** — (b) hoist makes both properties trivial, and a correct refcount
   also passes. The review is against the **properties**, not the shape.
+- **BUILT 2026-11-11T07:04Z — `feat/hmi-live-telemetry` @ `3c683be`**, one commit on
+  `origin/dev` @ `5b8ee51`, **+846/−1, 5 files**. Not pushed (`dev_gatekeeper`'s). Gate from
+  `frontend/` in the worktree: `pnpm lint` exit 0, `pnpm build` all 6 packages,
+  `npx vitest run --no-cache` → **49 files / 382 tests passed** against a **48/366 baseline**, so
+  the 16 new tests are additive and nothing regressed. Mutation-proved with each injection
+  asserted to have landed and reverted.
+  **The commit body is the standard I want on every slice:** it states the fail-open table it
+  measured, why the mapping keys on the specific name rather than two class strings, and a
+  **"WHAT THIS DOES NOT PROVE"** section naming the frontend-only negative test, the
+  `UNCERTAIN_*` → `BAD COMM FAILURE` label limit, and that no staleness deadline exists because
+  none is published. **A slice that says what it does not prove is worth more than one that
+  proves more.**
+- **Three things `pm` verified rather than took on trust:**
+  1. **The fail-open is unreachable from this path** — `resolveComponentLive` returns a
+     `ProcessDataQuality`, so `asQuality()` accepts it, `:149` returns it, `:160` never runs.
+     **Deferral accepted; S-013 opened for the module hardening.** `pm`'s ruling that it belonged
+     in S-004 assumed the fix was needed to stop the defect going live; it is provably
+     unreachable here, so the ruling's purpose is met without the change.
+  2. **The badge names a wrong cause, and this is S-012's justification arriving live.** The
+     consumer maps to the class and does **not** pass the specific quality, so the badge is in
+     case C and shows `BAD COMM FAILURE` — **an operator at a failed sensor reads "BAD COMM
+     FAILURE"**. Values are suppressed, so this is a wrong label and not a fabricated reading.
+     **Correct per `pm`'s own case C ruling, wrong in outcome, and recorded in the commit body
+     rather than hidden.**
+  3. **Connection count NOT met.** `DockviewWorkspace.tsx:64` still calls `useSseTelemetry()`
+     **inside** `HmiScreenCanvasPanel`; `useSseTelemetry.ts` has no refcount and no module-level
+     singleton; `liveTelemetryPath.test.tsx` has **no** `instances.length === 1` assertion and no
+     two-panel teardown test. So two open screens still open two `EventSource`s against one
+     module-global store. **`pm` sent this at 06:56:41 and the commit is 07:04:15**, so it is an
+     absorbed-too-late rather than a refusal — recorded as `pm`'s timing, not the builder's error.
+     **Raised to the reviewer as the one open question for the verdict.**
 - **PROCESS NOTE — a permission prompt held this slice for ~7 minutes and nothing caught it but
   a reviewer watching.** `pod_hmi.builder` was gated on `Read(/tmp/verify-fallthrough.mjs)`;
   four urgent inbox items queued behind it, worktree unmoved at `5b8ee51`. `rig send` refuses at
@@ -1081,6 +1113,33 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   **No reviewer assigned yet** — this row exists because PR #60 was open with no slice row at
   all, which is the defect S-009 and S-003 both had. Assignment is `pm`'s next action.
   **A controlled-document amendment does not merge on "docs only" without a named verdict.**
+
+### S-013 — the resolver fails open on an unrecognised quality (deferred from S-004)
+
+- **What:** `resolveComponentQuality` returns `GOOD` for **any** unrecognised quality string when
+  the payload carries a value. One line at `componentData.ts:160` plus a test.
+- **Why it is deferred rather than in S-004:** `pm` ruled it in scope; `pod_hmi.builder` showed it
+  is **provably unreachable from S-004's path**, and the reasoning is right:
+  `resolveComponentLive` returns a `ProcessDataQuality`, so `{...comp, quality:
+  liveResolution.quality}` is a value `asQuality()` accepts, `:149` returns it, and `:160` never
+  runs. **`pm` verified this and accepted the deferral** — the ruling's purpose (stop the defect
+  becoming live) is met without the change.
+- **Why it is still a slice:** the defect is real and the next caller that passes a **raw wire
+  quality string** through will hit it. Measured against the resolver extracted verbatim from
+  `origin/dev`: `quality: "BAD"` + value → `GOOD`, `quality: "UNCERTAIN"` + value → `GOOD`,
+  `quality: "BAD_COMM_FAILURE"` + value → `GOOD`. **A comm failure with a stale value in the slot
+  renders as a live reading.**
+- **The rule to implement:** a payload that **carries** a quality key whose value the module does
+  not recognise must resolve to `BAD_QUALITY`. **A payload with no quality key stays `GOOD`** —
+  `componentData.test.ts:41` pins that and it stays green.
+- **Done when:** a test using the wire's real vocabulary (`quality: 'BAD'`, `'UNCERTAIN'`,
+  `quality_name: 'BAD_COMM_FAILURE'`, each **with a value present**) asserts `BAD_QUALITY` and
+  **empty values**; mutation-prove by reverting `:160` and the stale-value case goes red.
+  **Test with a bound component** — my first probe omitted `bindings`, got `NOT_BOUND` for every
+  case, and would have "proved" the path honest.
+- **Verification:** `cd frontend && npx vitest run --no-cache` from `frontend/`. Failing test names,
+  not counts.
+- **State:** `planned`. Owner `pod_hmi.builder`. Not cut — it is small and waits on nothing.
 
 ### S-012 — the faceplate cannot name the specific bad quality (found 2026-11-11)
 
