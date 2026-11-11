@@ -41,11 +41,20 @@ fn wire_form_is_snake_case_for_both_variants() {
     );
 }
 
-/// The wire form is readable back through this crate's path, in both directions.
+/// A value survives serialisation through this crate's path, and core-written bytes are readable here.
 ///
-/// The original defect was asymmetric: core wrote `"physical_hardware"` and this crate expected
-/// `"PhysicalHardware"`. Round-tripping through the re-export catches a divergence in either
-/// direction, which a one-way serialisation assertion would not.
+/// **This test does not pin the wire form, and must not be read as doing so.** Since both sides
+/// are one type, a round trip is symmetric by construction: whatever spelling the enum emits, it
+/// can also read back. Measured, not assumed — dropping `#[serde(rename_all = "snake_case")]` from
+/// `mythos_core` leaves this test GREEN while the wire form silently becomes `"PhysicalHardware"`.
+/// The load-bearing assertion is the pinned literal in `wire_form_is_snake_case_for_both_variants`;
+/// that one goes red on the same mutation.
+///
+/// What this test does earn: a value survives a full serde round trip (catching a lossy or custom
+/// `Deserialize` that mangles the value), and bytes written by `mythos_core` are readable through
+/// this crate's path with no adapter — the cross-crate case the duplicate broke. The original
+/// defect was asymmetric: core wrote `"physical_hardware"` while this crate expected
+/// `"PhysicalHardware"`, so the value could not cross the boundary at all.
 #[test]
 fn wire_form_round_trips_through_the_strucpp_path() {
     for mode in [
