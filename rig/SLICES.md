@@ -314,7 +314,7 @@ The single answer to "what is being worked on". Your memory is not this file.
   changes does not make them one slice.
 - **Three things for the review, found by `dev_gatekeeper` reading the files:**
   1. **`rig/agents/desk/agent.yaml:7` declares `model:` with an EMPTY value.** Every one of
-     the eleven existing seats declares a model (`claude-opus-5.5`, or `claude-fable-5.2` for
+     the eleven existing seats declares a model (`claude-opus-5.5`, or `claude-fable-5.1` for
      `advisor` and `release-auditor`). A seat with no model is not launchable as written.
      `rig spec validate` accepted the spec, so this is the gap between "well-formed" and
      "correct".
