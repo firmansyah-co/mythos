@@ -24,6 +24,13 @@ In addition, faceplates can be authored as **Reusable Nested Sub-Canvases** on b
 - **ISO 9241-110:2020**: *Ergonomics of human-system interaction — Principles of interaction*.
 - **W3C Design Tokens Community Group (DTCG)**: *2025.10 Specification (Dual Theme: Dark Obsidian & Light Clean Slate)*.
 
+> **Theme status — read before using any "Light Mode" value below.** The token set defines two
+> themes, Dark Obsidian and Light Clean Slate. Only Dark Obsidian is reachable at runtime: no code
+> in this repository applies the `[data-theme='light']` or `.theme-light` selectors defined in
+> `frontend/src/tokens.css`, so the light block never takes effect. Light Mode values in this
+> document are the **intended** palette, defined and not yet selectable — not what an operator
+> sees today. No task in `specs/tasks.md` currently schedules a theme selector.
+
 ---
 
 ## 3. The 4-Mode Faceplate Presentation Mapping Model & Screen Roles
@@ -49,7 +56,7 @@ In accordance with Adrian's architectural mandate, the 4 Faceplate presentation 
 - **Target Context**: Level 1 (Plant Overview) and Level 2 (Unit Overview) SCADA screens.
 - **Visual Design**:
   * Ultra-clean SVG vector iconography adhering strictly to ISA-101 monochrome guidelines.
-  * Vessels, heat exchangers, valves, and centrifugal pumps render with slate neutral outlines (`#64748B` in Dark Mode, `#94A3B8` in Light Mode) and muted structural backgrounds (`#1E293B` dark, `#E2E8F0` light).
+  * Vessels, heat exchangers, valves, and centrifugal pumps render with slate neutral outlines (`#64748B` in Dark Mode, `#94A3B8` in Light Mode) and muted structural backgrounds (`#1E293B` dark, `#E2E8F0` light). Dark Mode is what renders today; the Light Mode values are the intended palette for a theme that is defined but not yet selectable (see the theme-status note in §2).
   * **Zero Color In Quiescent Nominal State**: An energized motor or open valve does not shine bright saturated green; it displays an elevated neutral tone or subdued cyan (`#0284C7`), preserving bright red (`#DC2626`) and orange (`#EA580C` dark / `#D97706` light) strictly for active alarms.
 - **Alarm Annunciation**:
   * If the bound FB has an active alarm, a prominent 2px pulsing border and an ISA-18.2 priority symbol (Square for Critical, Triangle for Major, Inverted Triangle for Minor) renders adjacent to the symbol.

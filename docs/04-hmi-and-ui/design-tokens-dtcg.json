@@ -1,7 +1,7 @@
 {
   "$schema": "https://design-tokens.github.io/community-group/format/2025.10/schema.json",
   "name": "MythOS High-Performance SCADA Design Tokens",
-  "description": "W3C DTCG-compliant multi-theme design token suite for MythOS Mission-Critical Edge SCADA. Supports Dark Obsidian Mode (ANSI/ISA-101.01-2015 High-Performance HMI, ANSI/ISA-18.2-2016 Alarm Management, ISO 9241-110 Ergonomics) and Light Clean Slate Mode (High-contrast outdoor sunlight readability for industrial tablets and day shift plant operations).",
+  "description": "W3C DTCG-compliant multi-theme design token suite for MythOS Mission-Critical Edge SCADA. Defines Dark Obsidian Mode (ANSI/ISA-101.01-2015 High-Performance HMI, ANSI/ISA-18.2-2016 Alarm Management, ISO 9241-110 Ergonomics) and Light Clean Slate Mode (High-contrast outdoor sunlight readability for industrial tablets and day shift plant operations). THEME STATUS: the Dark Obsidian palette is the one the workbench renders. Light Clean Slate values are defined here and in frontend/src/tokens.css but are NOT currently selectable — no code in this repository applies the [data-theme='light'] or .theme-light selectors, so the light block never takes effect at runtime. Both palettes are defined; one is reachable.",
   "version": "2.0.0",
   "$themes": {
     "dark": {

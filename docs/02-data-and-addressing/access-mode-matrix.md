@@ -6,6 +6,17 @@
 - **Status**: APPROVED / SPECIFICATION
 - **Language**: ASD-STE100 Technical English
 
+> **Implementation status of the simulation path — read before building against §6.3.**
+> The hardware-mode lockout described in this document is implemented, but not where this
+> document's wording implies. `QualityGate::validate_forcing_permitted`
+> (`crates/mythos-strucpp/src/quality_gate.rs:395`) returns
+> `Err(StrucppError::ManualForcingRejected)` in `PhysicalHardware` mode and `Ok(())` in
+> `ManualSimulation`; that is the enforcement point. There is **no HTTP injection endpoint**:
+> no route under `/api/v1/simulation/` is registered anywhere in `crates/`, and
+> `ErrSimulationModeDisabled` — the error named in §6.3 — exists nowhere in the code. No task
+> in `specs/tasks.md` schedules one. Read the `POST /api/v1/simulation/inject` reference in
+> §6.3 as design intent, not as a shipped API.
+
 ---
 
 ## 1. Scope and Objective
