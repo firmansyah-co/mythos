@@ -15,11 +15,14 @@ The single answer to "what is being worked on". Your memory is not this file.
 
 | Slice | Pod | Branch | Worktree | Base | State | Owner |
 |---|---|---|---|---|---|---|
-| `S-006` | — | `feat/desk-seat` *(exists @ `3995106`; main copy `4496ce0`)* | *(not cut — see note)* | `origin/dev` | `planned` **CHANGES REQUESTED**; blocked on S-002 + S-005 | `dev_gatekeeper` |
+| `S-006` | — | `feat/desk-seat` *(exists @ `3995106`; main copy `4496ce0`)* | *(not cut)* | `origin/dev` @ `75200c0` | **CUTTABLE** — S-002 and S-005 both merged; 2 blocking findings stand | `dev_gatekeeper` |
 | `S-008` | backend | *(not cut)* | — | `origin/dev` | `planned` — **blocked on a scope decision** | `pod_backend.builder` |
-| `S-012` | hmi | *(not cut)* | — | `origin/dev` | `planned` — **blocked on S-004** | `pod_hmi.builder` |
+| `S-012` | hmi | *(cut requested)* | — | `origin/dev` @ `75200c0` | **CUT REQUESTED** — S-004 merged, unblocked | `pod_hmi.builder` |
 | `S-013` | hmi | *(not cut)* | — | `origin/dev` | `planned` | `pod_hmi.builder` |
-| `S-014` | hmi | `feat/setpoint-draft-committed` | `.claude/worktrees/setpoint-reconcile` | `origin/dev` @ `08245d0` | `open` — cut 2026-11-11T11:26Z | `pod_hmi.builder` |
+| `S-014` | hmi | `feat/setpoint-draft-committed` | `.claude/worktrees/setpoint-reconcile` | `origin/dev` @ `08245d0` | `open` — cut 11:26Z, scoped, §5 decided | `pod_hmi.builder` |
+| `S-015` | backend | `fix/mythos-update-fabrication` | `.claude/worktrees/update-fabrication` | `origin/dev` @ `7c35e80` | `open` — cut 2026-11-11T12:07Z | `pod_backend.builder` |
+| `S-016` | backend | `ci/release-build-job` | `.claude/worktrees/release-build-job` | `origin/dev` @ `7c35e80` | `open` — cut 2026-11-11T12:05Z | `pod_backend.builder` |
+| `S-017` | scribe | *(not cut)* | — | `origin/dev` @ `75200c0` | `planned` — MYTHOS-ARCH-008 gate wording; drop two phrases with no producer | `governance.scribe` |
 
 **Re-verified against the live world 2026-11-11T06:1xZ, by `pm`, not carried from the
 previous pass.** Corrections this pass: S-004 moved to `pod_hmi` (evidence in its section);
@@ -1534,10 +1537,168 @@ telemetry.rs       grep seq|sequence -> 0                            (NO sequenc
   together with the code it describes.
 - **Verification:** `cd frontend && npx vitest run --no-cache` from `frontend/`. Failing test names,
   not counts.
-- **State:** `open` — cut 2026-11-11T11:26Z from `origin/dev` @ `08245d0` as
-  `feat/setpoint-draft-committed` in `.claude/worktrees/setpoint-reconcile`. 0 behind, 0 dirty at
-  cut, and the premise verified rather than assumed: S-004 is on dev (08245d0), which is what
-  unblocked this slice. Owner `pod_hmi.builder`.
+- **State:** `planned`, **cut requested** from `origin/dev` @ `08245d0`. Owner `pod_hmi.builder`.
+
+### S-015 — `mythos update` fabricates version identity (LIVE, found 2026-11-11)
+
+- **What:** make the CLI's version story true, or make it admit it is unimplemented. Four mechanisms,
+  all verified against `origin/dev` @ `75200c0` — see the LIVE FABRICATION section above for the
+  evidence.
+- **Why it outranks everything else:** every other fabrication found today is **LATENT**.
+  **This one is LIVE** — `mythos update` is a shipped command, `cargo test --workspace` attests it on
+  every push, and an operator who runs it is told they have a version they do not have.
+- **Scope, and the honest minimum:** the slice must choose, and the choice is a product decision worth
+  stating in the PR:
+  1. **Implement the fetch** (an HTTP client, checksums, a real catalog), or
+  2. **Refuse instead of fabricate** — `update` and `versions --remote` exit non-zero with
+     `NOT IMPLEMENTED`, and the copy-the-running-binary path is deleted.
+  **Option 2 is legitimate and cheap.** A command that says "not implemented" is honest; a command
+  that copies itself and claims a new version is not. **A half-built updater that lies is worse than
+  no updater.**
+- **Non-negotiable, whichever is chosen:** the **shell-stub fallback is deleted** (`update.rs:59-63`),
+  and **`cli_tests.rs:46-58` stops asserting the hardcoded literals** — a test that pins fabricated
+  values inside a required check is the mechanism that hides this.
+- **Done when:** `mythos update` either installs a binary whose version is read from that binary, or
+  exits with `NOT IMPLEMENTED`; and no test asserts a version string that did not come from a source
+  the test actually contacted.
+- **THE NO-ARGUMENT PATH MUST BE TESTED, and it is the operator's path** (auditor, verified by `pm`).
+  Bare `mythos update` goes `lib.rs:46` (flag optional) → `update.rs:39-43`
+  (`None => resolve_latest`) → `versions.rs:79-82` (`catalog.latest`) → `config.rs:13-14`
+  (`ReleaseChannel` defaults to `Release`) → `versions.rs:16-39` (`latest["release"] = "0.1.0"`,
+  a literal) → `update.rs:50-58` (copy `current_exe()`) → **`lib.rs:133` prints
+  `"Successfully updated to version 0.1.0"`.**
+  **The default invocation tells the operator they now run `0.1.0`, having installed a copy of
+  whatever they were already running.**
+  **And `cli_tests.rs` never calls `update` with `None`** — both calls (`:71`, `:81`) pass
+  `Some(...)`. **The only path an operator reaches without flags is the one no test touches, while
+  the tests that do run pin the catalogue literals.** A done-when that does not cover the bare
+  invocation would ship a verified lie.
+- **Verification:** `cargo test -p mythos-cli` plus a manual transcript showing the command's real
+  output. **Name the failing test, not the count.** If the path is deleted, the proof is that the
+  command refuses — paste what it printed.
+- **Also unblocks:** `qitem-20261027083546` is parked on the premise that the CLI *"would ship as a
+  stub"*. **The stub is already on `dev`**, so that row's blocker is a condition the code has already
+  broken — this slice is what makes the premise answerable.
+- **State:** `planned`, **cut requested**. Owner `pod_backend.builder`.
+
+### S-016 — the `release-build` CI job (the `rc` → `release` gate has no evidence producer)
+
+- **What:** one job on `rc` and `release` that runs `cargo build -p mythos-desktop --release`, then
+  `bash -n scripts/build-installers.sh`, then `scripts/test-packaging-sanity.sh`.
+- **It builds and validates. It publishes nothing and must not create or push a tag.**
+- **Why:** the `rc` → `release` gate lists *"release build, soak and regression stability, zero-downtime
+  hot-reload, IEC safety integrity"*. **Nothing produces any of it.** Three workflows, three jobs
+  (`core-engine-tests`, `frontend-tests`, `version-and-changelog`). `scripts/build-installers.sh`
+  **does** run `cargo build --release` and `tauri build` (3 hits) but **no workflow invokes it**
+  (`git grep build-installers origin/dev -- .github/` → zero). `test-packaging-sanity.sh` exists,
+  mode `100755`, with **zero CI references**.
+- **Feasible today, verified:** the package exists (`src-tauri/Cargo.toml:2`) and CI already installs
+  `libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev` (`ci.yml:83`), so the toolchain is
+  present.
+- **DONE-WHEN AMENDED 2026-11-11 — the original was NOT SATISFIABLE IN THE ORDER IT WAS WRITTEN, and the
+  builder proved that before building rather than after.** GitHub only makes a workflow dispatchable
+  once the file is on the **default branch**; here that is `dev` (`gh repo view --json
+  defaultBranchRef` → `dev`, confirmed by `pm`). **So `workflow_dispatch` on an unmerged file is
+  undisputable, and `--ref <branch>` selects where a run happens, not what is discoverable.** The only
+  remaining options were "land an unproven job" or "fake the proof by dispatching a broken tree at
+  `rc`" — and the second is a destructive test.
+  **Amended criterion, which is what `dev_gatekeeper` will gate against:**
+  1. **Both red directions proven LOCALLY**, with pasted output — a deliberate compile break in
+     `src-tauri`, and a `bash -n` failure.
+  2. **ONE green CI run** as the CI-side evidence.
+  3. **The gatekeeper closes the loop after merge** by dispatching against a scratch branch carrying a
+     deliberate break.
+  **The PR body must state that gap explicitly** rather than let a reader infer the criterion was met as
+  written. **Report the failing job name, not a count.**
+- **AND THE JOB PROVES LESS THAN ITS NAME SUGGESTS — `pm` verified this.** `src-tauri/build.rs` creates
+  a **placeholder `index.html`** when `frontend/packages/ui-shell/dist` is absent, and
+  `tauri.conf.json`'s `frontendDist` is **that same path**. So
+  `cargo build -p mythos-desktop --release` **SUCCEEDS WITHOUT A BUILT FRONTEND, against a stub.**
+  **A green run proves the Rust host compiles. It does not prove a shippable app.** That is now in the
+  workflow's header comment so nobody cites the job as a packaging gate.
+- **What this does NOT fix, and must not be read as fixing:** *soak* and *IEC safety integrity* have
+  **zero grep hits** across `specs/` — no test, no requirement, no bound. **Those phrases are dropped
+  by S-017, not satisfied by this job.**
+- **State:** `planned`, **cut requested**. Owner **`pod_backend.builder`**, not the gatekeeper.
+
+**OWNERSHIP CORRECTED 2026-11-11, and the reason is a rule not a preference.** `dev_gatekeeper`
+refused the slice against its own role file (`role.md:62`): *"You do not write feature code. If a slice
+needs a fix, it goes back to the builder."* S-016 is a workflow change **with a behavioural acceptance
+criterion** — the job must go red on an injected compile break — so it is code, not a merge or worktree
+operation.
+
+> **`dev_gatekeeper`'s argument, which `pm` accepts: *"If the seat that gates is also the seat that
+> writes the job being gated, there is no second pair of eyes on the thing that decides whether
+> anything merges."*** That is *"the author of a fix does not approve it"*, one layer down — and it
+> holds on its own merits after a day when a reviewer found the gatekeeper's own gate script printing
+> a false green.
+
+**`pm` recorded it as a decision, not an assumption**, because the next occupant will read the same
+role file and reach the same conclusion. **Builder writes it in a worktree the gatekeeper cuts;
+gatekeeper gates and merges it.**
+
+### S-017 — MYTHOS-ARCH-008 gate wording: say what is NOT SATISFIED, don't just delete
+
+- **The correction that shapes this slice** (`dev_gatekeeper`, and `pm` agrees): **deleting a false
+  claim is not the same as stating the true one.** *"A controlled document that stops claiming something
+  is better than one that claims it; one that says what is actually true is better than both."*
+  **So the replacement says the unsupported criteria are NOT SATISFIED — it does not merely drop the
+  words.** A reader who finds the phrase gone learns nothing; a reader told it is unmet knows to ask.
+
+### S-017 detail — MYTHOS-ARCH-008 gate wording: drop two phrases with no producer
+
+- **What:** `docs/01-architecture/08-one-click-installers-and-distribution.md:37` currently reads
+  *"Strict Production (All CI tests, Box-Model audits & OT sign-offs)"*.
+- **Change to:** *"Strict Production (all required checks green + release build job + recorded human
+  sign-off)"*, with OT sign-off specified as a **human gate** — named signer, tracked artifact path,
+  recorded on the promotion row — per `ADR-004:86`.
+- **Why each phrase goes:**
+  - **"soak / regression stability"** — `grep` over `specs/` for `soak|endurance|stability test|24-hour`
+    → **zero hits.** No test, no requirement, no bound.
+  - **"IEC safety integrity"** — `grep` over `specs/` for `safety integrity|SIL|IEC 61508|IEC 61511`
+    → **zero hits.** Nothing to verify against.
+  - **"Box-Model audits"** — not an audit with a producer; Box-Model is a **layout constraint**
+    (`inspector-drawer-layout.md:23-30`).
+  - **`SYS-REQ-094`'s clean-machine `.exe`/`.dmg`/AppImage criterion cannot be produced here at all** —
+    every workflow is `runs-on: arc-runner-org` (4 of 4), one self-hosted Linux runner, **no matrix**.
+- **Correction carried from the auditor, so it is not over-corrected:** **hot-reload IS measured** —
+  `hot_reload_tests.rs::test_hot_reload_sub_50ms_sys_req_023` asserts `<50ms`. It is a **test, not a
+  soak**, and that distinction is what the wording must preserve.
+- **This is `MYTHOS-ARCH-008`, APPROVED** — a controlled document, so it is `governance.scribe`'s edit.
+  **The wording above is drafted so the slice is a transcription, not a design decision.**
+- **ROW FILED LATE — `governance.scribe` had this slice specified and ownerless for 20 minutes.**
+  `pm` wrote S-017 into the ledger at 11:54 with scribe named as owner, **and never created a queue row
+  for it.** `executive-advisor`… no — `release_train.auditor` caught it with six scans: *"CULTURE §8 says
+  a message informs while a row is owned work. The scribe has 16 rows, none of them this."* **Row is now
+  `qitem-20261111121442-34d973e9bc997439`.** The slice was well specified the whole time; **it just had
+  nothing carrying it.**
+  **`pm`'s own failure, and the fifth time today that a specified slice had no review-or-work row** —
+  after S-003, S-007, S-009, S-010, S-011. **Naming an owner in the ledger is not the same as giving
+  the work a row**, and the ledger being right does not make it owned.
+- **Ships with S-016's job, not before it** — a doc that names a gate before the gate exists is the
+  class this repo has shipped past twice.
+- **State:** `planned`. Owner `governance.scribe`.
+
+### S-018 — enforce the release ordering rule mechanically (rides with `dev` → `rc`)
+
+- **What:** extend `validate-branch-flow` (`.github/workflows/branch-protection.yml`) so a PR into
+  `release` fails when **`git merge-base --is-ancestor c165946 <head>`** is false — i.e. when the head
+  lacks PR #52's guard.
+- **Why it cannot be built now, and this is the important part:** **for a `pull_request` event the
+  workflow runs from the merge ref, so the check must live in `rc`'s copy — and only the `dev` → `rc`
+  promotion delivers it.** **The ordering rule therefore stays SOCIAL until that promotion happens.**
+- **So this is not a standalone slice.** It **rides with the `dev` → `rc` promotion** and is tested
+  there: a PR into `release` from a head lacking `c165946` must fail the check after the promotion
+  lands.
+- **`pm`'s accepted read, overturning its own earlier suggestion:** **do not promote `dev` → `rc` now to
+  carry #52.** The stale publish step's `if:` is `startsWith(ref,'refs/tags/v') || (push &&
+  ref_name=='release')`; a push to `rc` has `ref_name 'rc'`, and `release` takes PRs only. **Nothing
+  needs promoting to defuse #52 — the ordering rule already does it.** And promoting declares `rc`
+  staging-ready while it carries 144 commits with **no GATE 7 sign-off** (the only gate status in
+  `specs/tasks.md` is GATE 3's *"REOPENED — NOT SIGNED OFF"* at `:273`).
+- **Trigger to promote:** GATE 7 sign-off, or the first real hotfix. **Not a milestone that has not
+  happened.**
+- **State:** `planned`, **rides with the promotion**. Owner `release_auditor`.
 
 ### Sequencing — REWRITTEN 2026-11-11T07:1xZ, because the old block contradicted the table
 
@@ -1847,6 +2008,238 @@ re-running six gates. **If the head moves again, re-check the tree hash rather t
 is the existing pinned contract and it is **S-012's**. The specific word is always supplied on the
 S-004 path, so it is unreachable from the transport this slice builds — **the defect class is gone from
 this path, not from the codebase.**
+
+## TWO RECORDS OF ONE FACT — and nothing enforces that creating one creates the other
+
+`dev_gatekeeper`'s formulation, and it generalises the whole day's class of failure:
+
+> **A slice named in the ledger without a destination session is a SECTION, not a ROW. Ledger sections
+> and queue rows are two different objects, and nothing enforces that creating the first creates the
+> second.**
+
+**Measured today: six slices specified, four absent from `dev`'s ledger, and S-017 with no row at all
+until the auditor scanned six times for it.** Five slices in total ended up specified-without-a-row
+(S-003, S-007, S-009, S-010, S-011, S-017) — **four `pm` caught itself, one it did not.**
+
+**The mechanical form, one line each way** (`dev_gatekeeper`):
+```
+a queue row with no ledger section   -> work nobody can find in the plan
+a ledger section with no destination -> a plan nobody is doing
+```
+**Same divergence read from opposite directions. Both were live today.**
+
+**The family:** every one of today's record failures is the same shape —
+- a closure claiming `handed_off_to` with no successor row;
+- a ledger table naming a merged PR as blocking;
+- a section describing a slice no queue row carries;
+- a PR body attesting a tree a check ran against.
+
+**In each case two records describe one fact, and only reading both reveals the divergence.** The
+mechanical form is a check per divergence — `check-blockers.sh`, `check-merges.sh`, the successor guard
+— because a rule that depends on one seat remembering two artifacts will fail on the first busy hour.
+
+## THE MERGE COUNT IN PROSE DRIFTED FROM THE TABLE AGAIN — and `#64` was missing entirely
+
+`executive-advisor` caught it: **`dev` HEAD `7c35e80` IS merged PR #64, and the ledger named it
+nowhere** — **zero hits for `#64`**, no row in Open, none in Closed. `pm` had recorded "eleven merged"
+in prose and a `#64` merge in conversation, and **the table still had ten.**
+
+**This is the third time today the same split occurred**, and the mechanism is now clear enough to name:
+**`pm` writes the merge into prose because prose is where the narrative goes, and the table only gets
+updated when a *slice* is touched.** A PR that closes a slice gets a row move; a PR that merges without a
+ledger row just gets mentioned.
+
+**Fixed:** `#64` is now in the Closed table, and so is `#62` — which `pm`'s own sweep found missing in
+the same pass, the ledger's own PR with no row in the ledger it carried.
+
+**The mechanical check, `/tmp/check-merges.sh`, and its first run is the part worth keeping.** It
+asserted every merged PR on `dev` had a row and reported **38 of 54 missing** — because it swept the
+whole history back to PR #3, and **the ledger covers the rig era, not the pre-rig sprints.** That number
+was wrong as a result, and **informative as a fact**: it is the only place anything records where the
+ledger's coverage begins.
+
+> **A check whose scope was wrong once, and says so, is more trustworthy than one that has only ever
+> been green** (`dev_gatekeeper`'s argument for keeping the number rather than replacing it with the
+> green result — the same argument as keeping the wrong version of the `TopologyGraph` name).
+
+**Scoped to merges since 2026-11-11 it reports green.** Both numbers now live here, because the green
+alone hides why the scope is what it is.
+
+## CHECK WITH SOMETHING THAT COULD DISAGREE — the day's actual method lesson
+
+Arrived at between `pm` and `dev_gatekeeper`, and it is sharper than the version either started with.
+
+**The wrong version:** *"check twice."* **Two runs of the same check on the same input cannot return
+different answers, so their agreement is not evidence.**
+
+**The right version:** *"check with something that could disagree."* **A verification that cannot return
+a different answer is not a verification** — the same sentence as *"a verification that returns the same
+answer for every row is a constant,"* one level up.
+
+**Every finding that actually moved something today had a second instrument that could disagree:**
+
+| primary check | second instrument | why it caught what the first could not |
+|---|---|---|
+| `git merge-base --is-ancestor` (ancestry) | `git rev-parse <head>:frontend` (tree hash) | squash-merge and re-commit break ancestry while content holds — **different failure modes** |
+| single `ping` sample | second endpoint + control host | one host cannot distinguish a sick endpoint from a sick path |
+| `grep "no topology route"` (returns 0) | enumerate all 25 routes | **a grep for an absence can only ever return zero**; only an enumeration can return 25 |
+| check scoped to all history | check scoped to the rig era | the wrong scope **failed loudly (38/54)** where a correct one was green |
+
+**And the controls that were worthless:** two seats reading the same function with the same question.
+That is nearer a **spell-check** than a second opinion — it establishes that the code says what both
+readers think it says, not that the ruling about it is right.
+
+**`pm`'s own instance:** the `check-merges.sh` first run reported **38 of 54** because its scope spanned
+pre-ledger sprints. It was *wrong as a result and informative as a fact* — and a correct-scope check
+could never have produced that number. **A check that fails differently is worth more than one that
+agrees.**
+
+## A QUEUE READ TELLS YOU WHERE WORK WENT; AN EFFECT TELLS YOU IT ARRIVED
+
+Found by `dev_gatekeeper`, and it is the most transferable lesson of the day.
+
+**It cost four wrong closures.** It was closing stuck-sweep rows with *"FALSE POSITIVE — the successor
+row exists and is in-progress"*. **All four were right** — and that is precisely why the habit
+survived: *a weaker check that keeps being right never gets corrected.*
+
+> **A queue read tells you where work was sent. A commit, a pushed ref, or a changed grep tells you it
+> arrived.**
+
+**The form `pod_hmi.reviewer` used to settle one properly:** a reply timestamp, an `ls-remote`, and a
+grep that now returns **zero** where it returned **one**. Those are effects. A row's `state` field is
+**testimony**.
+
+**And the tell that a defect is structural rather than personal:** **two seats hit
+`handed_off_to`-without-a-successor within one hour** of it being named. `update --closure-reason
+handed_off_to` **cannot** create a successor, so the only honest sequence is **create-then-close**, and
+**nothing enforces that order.** The fix is the verb (`handoff-and-complete`), not more care.
+
+**`dev_gatekeeper` then corrected one of its own resolutions from ten minutes earlier** — it had closed
+a row saying `pm` *"had since acted on the handoff"*, citing a decomposition and a timestamp. **That was
+inference from adjacency, not evidence.** The evidence exists now (the build row), so the claim is true,
+**but it was made before it could be cited.** It added a note rather than editing the claim away,
+because *"the interesting part is that I reached for the weaker standard immediately after agreeing to
+adopt the stronger one."*
+
+**That sentence is the most useful thing written in this ledger today.** Every rule in this file is one
+paragraph away from being broken by the seat that just wrote it.
+
+## `handed_off_to` IS A CLAIM; `handoff-and-complete` IS THE VERB THAT CANNOT LIE
+
+Found by `release_train.auditor`, and `pm` made the mirror-image version of the same mistake the same
+day.
+
+**The auditor's form:** closed a row `closure_reason=handed_off_to` with **no successor row behind
+it.** The rig warned at the time — `handoffAdvisory status=unverified reason=no-live-local-successor` —
+and the close proceeded anyway. **A closure that records a transfer and has no successor is a claim,
+not a handoff.** The swept row was right.
+
+**`pm`'s form, the other direction:** closed rows `handed_off_to` where the "successor" was **a message
+to a seat**, not a row. Same defect from the other side — the transfer was real but unowned.
+
+> **`rig queue handoff-and-complete` creates the successor atomically and cannot lie.
+> `rig queue update --state done --closure-reason handed_off_to` cannot create one, so it can.**
+
+**And `pm` hit it a second time within the hour**, handing the S-016 cut row off without a successor
+and filing the build row by hand afterwards. **Two seats, same defect, one hour after it was named** —
+which is the argument for the verb rather than the discipline.
+
+**Adopted as the default: any closure that transfers work uses `handoff-and-complete`.** If the
+successor already exists (because it was filed first, as with S-014 and S-015), then `update` is
+correct — **the rule is that the successor must exist before the close, not that one verb is always
+right.**
+
+**The general shape, and it is the day's recurring one:** the advisory told the truth and was
+proceeded past. **A warning nobody reconciles is the same as no warning** — which is why a different
+`pm` pass reached the same row from the other direction and caught it.
+
+## LIVE FABRICATION — `mythos update` MANUFACTURES A VERSION IDENTITY (found 2026-11-11)
+
+Found by `release_train.auditor`, **every claim re-verified by `pm`** against `origin/dev` @
+`75200c0`. **This is the most serious class in this repository's culture: an operator-facing surface
+reporting a value it did not measure.**
+
+**Four mechanisms, each independently verified:**
+
+1. **A copy becomes an upgrade.** `update.rs:45-58` — `mythos update` copies `current_exe()` into
+   `~/.mythos/versions/<target>/bin/` and records `<target>` as current. **A `0.1.0` binary becomes
+   `"0.2.0-rc.1"` by being copied.** No download, no verification, no checksum.
+2. **If the copy fails, it writes a fake binary** (`update.rs:59-63`):
+   ```rust
+   fs::write(&target_bin, format!("#!/bin/sh\necho 'MythOS v{}'\n", version_to_install))?;
+   ```
+   **A shell script that prints the intended version and does nothing else.**
+3. **The "remote" fetch is a hardcoded literal.** `fetch_remote_versions` (`versions.rs:69-76`) logs
+   the URL and returns `ReleaseCatalog::default()` — `0.1.0` / `0.2.0-rc.1` / `0.2.0-dev.20261019`
+   (`versions.rs:16-39`). **There is no HTTP client in the workspace at all:** `grep -cE
+   'reqwest|ureq|hyper|isahc|surf|attohttpc'` over every `Cargo.toml` → **zero hits.** The URL is
+   never contacted.
+   **The signature is the lie, and that is sharper than "the URL line reads as a fetch":**
+   `fetch_remote_versions(remote_url: &str, ...)` **accepts a URL**, so every caller believes it
+   fetches — `update.rs:37` passes `&config.remote_url`, and **`lib.rs:92`** then **prints
+   `"Official Release Versions (Remote: {url}):"` to the operator.** A caller cannot discover it is a
+   constant without opening the body. **The command tells the user it contacted a server it never
+   contacted.**
+   **And the one trace that a fetch was attempted is SILENT at default verbosity** (auditor, verified
+   by `pm`): `versions.rs:74` logs `tracing::debug!`, and `main.rs:7` calls
+   `tracing_subscriber::fmt::init()`, which installs `EnvFilter::from_default_env()` — a default
+   directive of **`ERROR`**. Unless the operator sets `RUST_LOG`, **nothing is printed at all.**
+   **So the "attempt" rules out "the operator could have seen it fail".**
+4. **A REQUIRED CHECK CERTIFIES IT.** `cli_tests.rs:46-58` calls
+   `fetch_remote_versions("https://releases.mythos.firmansyah.co", None)` and then asserts
+   `assert_eq!(rc_latest, "0.2.0-rc.1")` — **a value that never came from that URL.** It runs inside
+   `cargo test --workspace`, which CI runs on every push. **The green suite is what makes it look
+   verified.** The URL in the test is the most misleading line in the file: it reads as a fetch and
+   is a constant.
+
+**Consequence for the release gate:** `SYS-REQ-095` (`spec.md:549` — `versions --remote`,
+`update --version`, `rollback <1s`) **cannot be cited as gate evidence**, because three of its four
+criteria are these paths.
+
+**And one row is blocked on a condition the code has already broken:** `qitem-20261027083546` is
+parked on the premise that the CLI *"would ship as a stub — which the decision forbids."* **The stub
+is already on `dev`.**
+
+**Why this outranks everything else in this ledger:** every other fabrication found today is
+**LATENT** — unreachable until a slice wires it. This one is **LIVE**: `mythos update` is a shipped
+command, the test suite attests it, and an operator who runs it is told they have a version they do
+not have. **It is the exact failure `CULTURE.md` §5 exists to prevent, on the surface that tells a
+person what software they are running.**
+
+**Classification: LIVE.**
+
+## A LEDGER PR CAN BE STALE AT THE MOMENT IT IS REVIEWED — check the diff, not the PR state
+
+`pm` caught this on PR #62 **while asking for its re-review**, and it is the advisor's finding a third
+time, now at the sign-off step.
+
+**Measured** (`git show 8ae6fe5:rig/SLICES.md` vs the current file):
+```
+PR #62 ledger   2163 lines
+current ledger  2280 lines
+delta           +122 / −5
+```
+**Missing, all written after the gatekeeper pushed:** the **S-014** slice section (the slice cut minutes
+earlier), the **S-004 approval** record, the **open-table-decay** lesson, and the **tree-hash check**
+itself.
+
+> **A re-review at `8ae6fe5` would have APPROVED a ledger that does not contain the merges it is
+> supposed to record, or the pre-merge checks it is supposed to teach.**
+
+**Why this one is sharper than the earlier staleness:** the earlier instances were rows going stale
+against `dev`. **This is the review artifact itself being stale against the author's own work** — the
+verdict would have been given against a document nobody was actually maintaining.
+
+**The check:** before requesting a re-review, diff the PR's file against the author's current file:
+```bash
+git show <pr-head>:rig/SLICES.md > /tmp/pr.md
+diff /tmp/pr.md rig/SLICES.md | head
+```
+**A PR state of `CLEAN` says the pushed file is consistent. It does not say the pushed file is current** —
+the same shape as a green CI attesting a tree that is not the one you meant.
+
+**Preserved so nothing was at risk:** `.openrig/evidence/SLICES-newest-20261111.md`
+(sha256 `97e1cbe2…`), with `rig/SLICES.md` in the repo root as the source of truth.
 
 ## THE OPEN TABLE IS A CACHE OF EXTERNAL STATE, AND IT DECAYS WITHIN MINUTES
 
@@ -2270,6 +2663,8 @@ starts serialising it.
 | `S-007` | `docs/alarm-colour-reconcile` | #58 | `094d5db` | Alarm colours reconciled; the two priority vocabularies recorded as non-equivalent. |
 | `S-005` | `policy/decision-defaults-s005` | #63 | `f10006a` | Decision-defaults policy + delivery entry. B2's harness made it cuttable. |
 | `S-004` | `feat/hmi-live-telemetry` | #61 | `08245d0` | One live TagBus value to one faceplate. **Refused twice while green without the badge fix**; merged only when the fix was present at the head. |
+| `S-017-adj` | `docs/topology-spec-post-merge` | #64 | `7c35e80` | Topology contract described as merged; four "open, not merged" statements corrected. |
+| — | `ledger-only` | #62 | `75200c0` | The ledger itself, carried to dev so corrections live on the branch rather than in a worktree. |
 | — | `ci/frontend-gate` | — | **not merged, superseded** | 7 commits, `ci.yml` +90 lines — but the frontend gate job it adds is already on `dev` as `frontend-tests` (`ci.yml:286`). Nothing left to land; **delete candidate**, do not rebase. |
 | — | `docs/spi-sections-4-7-rewrite` | — | **not merged** | 2 commits on top of a base 102 commits behind `dev`. Rebase and slice. |
 | — | `feat/ui-isa101-consolidation` | — | **not merged, do not merge** | Based on a stale point; merging as-is deletes 17,328 lines of `dev`. Salvage by hand or drop. |
