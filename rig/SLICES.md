@@ -26,9 +26,35 @@ The single answer to "what is being worked on". Your memory is not this file.
   shape was never added, so the class could come back silently.
 - **Done when:** the state set is honest against the spec's axes and the guard goes red
   on an injected fabricated device.
-- **Verification:** `pnpm --filter @mythos/ui-topology test` in the slice worktree.
+- **Verification:** `cd frontend && npx vitest run --no-cache` in the slice worktree.
+  **Not** `pnpm --filter @mythos/ui-topology test`: a reviewer's first run of that
+  reported 2 of 5 tests in `noFabricatedDevices.test.tsx` and PASSED — a stale
+  transform cache, not skips. `--no-cache` runs all 5. A reviewer who trusts the
+  filtered command can sign off a file where three of five tests never ran. The
+  ui-shell sweep guard must also run from `frontend/`, because its ROOT resolves off
+  cwd and it fails ENOENT on ui-logic-editor paths otherwise.
   `./scripts/check.sh` is **not runnable there** — see blocker B2.
-- **Head:** `52aa7f5`, one commit on `origin/dev`.
+- **Head:** `52aa7f5`, one commit on `origin/dev`. Builder has begun the two-axis
+  split in the worktree (3 files modified, uncommitted).
+- **Review verdict 2026-11-11: CHANGES REQUESTED, 4 items** — `qitem-20261111053255-6f321ed4`
+  to `pod_uiux.builder`. CI recorded as UNAVAILABLE, never as passing. Local gate on
+  `52aa7f5`: lint exit 0, 48 files / 369 tests passed, build exit 0.
+  Two findings proven by execution, not reading:
+  - **The "visibly distinct" guard cannot fail for its stated defect.** It compares the
+    tone *constant* (`presentation.tone`), never the rendered class. The reviewer made
+    `TONE_CLASSES.warning` byte-identical to `TONE_CLASSES.alarm`; the suite stayed
+    5/5 GREEN while `DISCOVERED_UNCOMMISSIONED` and `UNREACHABLE` render the same CSS.
+    Verified by `pm` at `noFabricatedDevices.test.tsx:124-125` — the assertion is
+    `expect(presentation.tone).not.toBe(other.tone)`, on the enum member, not the DOM.
+  - **The banner defaults to `UNKNOWN`.** Render a canvas WITH real stations and no
+    provenance prop: it draws the device while the banner says "nothing has been read …
+    these views make no claim about the plant." A surface contradicting itself — the
+    same class as the invented rack.
+- **Reviewer's addition to the two-axis case:** `NetworkCanvas` already carries a
+  per-device health signal — `IndustrialStationNodeData.station.status`
+  (`RUN|FAULT|STOP`), consumed by `nodeColor` (`NetworkCanvas.tsx:297`). Health is
+  already modelled per device; the four-value enum puts it on the view as well. That
+  strengthens the split beyond the spec's authority alone.
 - **Open question carried from review — ANSWERED 2026-11-11.** `UNREACHABLE` is a
   health claim, not a provenance claim. The spec already publishes both axes, so this
   is not a new design:
@@ -53,13 +79,29 @@ The single answer to "what is being worked on". Your memory is not this file.
 
 - **B1 · CI cannot run at all.** All three checks on PR #50 are `CANCELLED` after
   queueing exactly 24h with `runner_name: ""` and `steps: []` — no job ever reached a
-  runner. `gh api repos/.../actions/runners` → `total_count: 0`; org runners → `0`;
-  org runner group `Default` → `0`. No workflow run has *started* since
-  `2026-10-27T12:28Z` (15 days). Every workflow in this repo requires
-  `runs-on: arc-runner-org`, and `dev` requires both CI checks with `strict=true`, so
-  **no slice can merge on any branch until ARC is restored**. Owner: `advisor` → Adrian.
-  Not diagnosable from this host: the ARC cluster is not local, `kubectl` has no
-  context, no `docker`, no runner process.
+  runner. No workflow run has *started* since `2026-10-27T12:28Z` (15 days). Every
+  workflow in this repo requires `runs-on: arc-runner-org`, and `dev` requires both CI
+  checks with `strict=true`, so **no slice can merge on any branch until ARC is
+  restored**.
+
+  **Cause, measured by `advisor` (correcting `pm`'s first report).** ARC is neither
+  remote nor gone: k3s runs on this host and the ARC controller is alive. The listener
+  pod `arc-systems/arc-runner-org-6b8f777f-listener` is **restart-looping — 2,712 pod
+  starts** in the k3s journal since 06:46 WIB today. *Why* it exits is **NOT MEASURED**:
+  pod logs and the kubeconfig are root-only and Adrian declined a sudo probe from the
+  advisor's seat. Do not retry sudo from another seat.
+
+  **A correction to `pm`'s own evidence.** `gh api .../actions/runners` →
+  `total_count: 0` is **not proof on its own**: scale-set runners are ephemeral and
+  register only while a job runs. The proof is the 24h queue with empty `runner_name`
+  and zero steps, plus the listener restart-loop. The earlier "no runner is registered"
+  reading was an overstatement of what that call shows.
+  Owner: `advisor` → Adrian (`qitem-20261111052721-b32df883eeb54ab0`; `pm`'s
+  `qitem-20261111052947-4cf2c1bd2c7ae528` superseded into it, not abandoned).
+  **Decided, not a gate:** no change to `dev` branch protection, no repoint of
+  `runs-on`, merges hold until a run executes on `arc-runner-org`. Review verdicts,
+  local gates and S-002 authoring continue. **Do not push commits to PR #50 to shake CI
+  loose** — nothing is scheduling.
 - **B2 · The verification gate is not on `origin/dev`.** `scripts/check.sh`,
   `scripts/check-slices.sh`, `rig/SLICES.md` and `rig/culture/CULTURE.md` exist only on
   `chore/rig-harness` (ahead of `origin/dev`, unmerged; head `238c5b8`). Every slice worktree
