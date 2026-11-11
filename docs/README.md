@@ -46,7 +46,7 @@ Welcome to the comprehensive technical documentation and system specification re
 
 ### 1.6 Human-Machine Interface & Visual Systems (`docs/04-hmi-and-ui/`)
 - **[00-Frontend Application Architecture](04-hmi-and-ui/00-frontend-application-architecture.md)**: React 19 SPA, Dockview shell, Zustand stores, 100ms SSE telemetry consumer, in-canvas logic editor, and Yjs CRDT real-time collaboration.
-- **[Design Tokens (W3C DTCG)](04-hmi-and-ui/design-tokens-dtcg.json)**: Dual-theme W3C DTCG tokens (SCADA Obsidian & Light Clean Slate) and calibrated ISA-101/ISA-18.2 semantic alarm colors.
+- **[Design Tokens (W3C DTCG)](04-hmi-and-ui/design-tokens-dtcg.json)**: Dual-theme W3C DTCG tokens (SCADA Obsidian & Light Clean Slate) and calibrated ISA-101/ISA-18.2 semantic alarm colors. Dark Obsidian is the palette that renders; Light Clean Slate is defined and not yet selectable.
 - **[Network Topology View Specification](04-hmi-and-ui/network-topology-view-spec.md)**: xyflow canvas node types, gestures, and color-coded bus routing.
 - **[Faceplate Binding Specification](04-hmi-and-ui/faceplate-binding-spec.md)**: 4-Mode presentation mapping (P&ID, Interactive, Popup, Sidebar), nested sub-canvases, asset importer (SVG/JPEG/GIF), and zero manual wire binding.
 - **[Inspector Drawer Layout](04-hmi-and-ui/inspector-drawer-layout.md)**: Modular drag-and-drop inspector architecture with fixed 384px constant width, stackable card widgets (@dnd-kit), bounded grid canvas engine (1920x1080 / 4K), and asset import pipeline.
