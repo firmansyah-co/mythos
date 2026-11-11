@@ -4,6 +4,22 @@ This file is committed and applies to every session, agent or human, whether or 
 it is running inside the OpenRig rig. The rig's own rules live in
 [`rig/culture/CULTURE.md`](rig/culture/CULTURE.md) — read it before your first edit.
 
+## First run on a fresh clone
+
+Two things are **local git configuration**, not tracked files, so a fresh clone does
+not have them. Run these once:
+
+```bash
+pnpm install --frozen-lockfile     # from frontend/
+git config core.hooksPath .githooks  # enables the pre-commit guard
+```
+
+`.githooks/pre-commit` is committed and mode `755`, but git only looks in `.git/hooks`
+unless `core.hooksPath` points elsewhere. Without the second line the hook is **inert
+and silent** — it does not run, and nothing tells you. Its own header calls it a
+"mechanical guard against the two failures that produced this repo's mess"; on a fresh
+clone it guards neither until you opt in.
+
 ## The four rules that matter most
 
 1. **`origin/dev` is the source of truth — not the tree you are standing in.**
