@@ -4,20 +4,24 @@ use crate::error::StrucppError;
 use mythos_pal::DefaultShm;
 use mythos_shm::slot::QualityCode;
 use mythos_shm::ShmWriterHandle;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{info, warn};
 
-/// Explicit per-device operational execution mode (SYS-REQ-096).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DeviceExecutionMode {
-    /// Physical production hardware: direct field I/O, manual forcing locked.
-    PhysicalHardware,
-    /// Manual bench simulation: manual slider injection and variable forcing unlocked.
-    ManualSimulation,
-}
+/// Operational execution mode for an industrial device (SYS-REQ-096), owned by `mythos-core`.
+///
+/// **Re-exported, not redefined.** This crate used to declare its own `DeviceExecutionMode`
+/// alongside `mythos_core::DeviceExecutionMode`. Both had the same variants, so they agreed
+/// everywhere Rust could compare them — and disagreed on the wire, because core's carries
+/// `#[serde(rename_all = "snake_case")]` (emitting `"physical_hardware"`) while this one's derive
+/// did not (emitting `"PhysicalHardware"`). Two definitions of safety-relevant state that are
+/// interchangeable inside the process and incompatible across a boundary is the failure this
+/// re-export removes. There is now one definition; see `mythos_core::device::mode`.
+///
+/// The `mythos_strucpp::quality_gate::DeviceExecutionMode` path is preserved for existing
+/// consumers, as is the crate-root re-export in `lib.rs`.
+pub use mythos_core::DeviceExecutionMode;
 
 /// Where a latched quality landed, and therefore who can see it.
 ///
