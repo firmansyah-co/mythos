@@ -15,17 +15,18 @@ The single answer to "what is being worked on". Your memory is not this file.
 
 | Slice | Pod | Branch | Worktree | Base | State | Owner |
 |---|---|---|---|---|---|---|
-| `S-001` | uiux | `test/topology-all-view-modes` | `.claude/worktrees/topology-mode-coverage` | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #50 @ `21cb9c4`) | `pod_uiux.builder` |
+| `S-001` | uiux | `test/topology-all-view-modes` | `.claude/worktrees/topology-mode-coverage` | `origin/dev` @ `5b8ee51` | `in-review` **CHANGES REQUESTED** @ `21cb9c4`; BLOCKED on CI | `pod_uiux.builder` |
 | `S-002` | — | `chore/rig-harness` | repo root *(pre-existing branch, not cut)* | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #55 @ `dba71c7`; local 3 ahead, unpushed) | `dev_gatekeeper` |
 | `S-003` | backend | `refactor/device-execution-mode-canonical` | `.claude/worktrees/device-execution-mode` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `5cf3984`; BLOCKED on CI (PR #57) | `pod_backend.reviewer` |
 | `S-004` | hmi | `feat/hmi-live-telemetry` | `.claude/worktrees/hmi-live-telemetry` | `origin/dev` @ `5b8ee51` | `open` — cut 2026-11-11T06:1xZ | `pod_hmi.builder` |
 | `S-005` | — | `policy/decision-defaults` *(exists @ `4f2ac4b`)* | *(not cut — see note)* | `origin/dev` | `planned` **blocked on S-002**; review CHANGES REQUESTED | `dev_gatekeeper` |
-| `S-006` | — | `feat/desk-seat` *(exists @ `3995106`; main copy `4496ce0`)* | *(not cut — see note)* | `origin/dev` | `planned` **blocked on S-002 and S-005** | `dev_gatekeeper` |
+| `S-006` | — | `feat/desk-seat` *(exists @ `3995106`; main copy `4496ce0`)* | *(not cut — see note)* | `origin/dev` | `planned` **CHANGES REQUESTED**; blocked on S-002 + S-005 | `dev_gatekeeper` |
 | `S-007` | — | `docs/alarm-colour-reconcile` | `.claude/worktrees/docs-alarm-colour` | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #58) | `governance.scribe` |
 | `S-008` | backend | *(not cut)* | — | `origin/dev` | `planned` — **blocked on a scope decision** | `pod_backend.builder` |
 | `S-009` | scribe | `docs/topology-provenance-spec` | `.claude/worktrees/docs-topology-provenance` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `72630ad`; BLOCKED on CI (PR #56) | `governance.scribe` |
 | `S-010` | scribe | `docs/theme-status-honest` | `.claude/worktrees/docs-theme-status` | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #59 @ `16c10e3`) | `governance.scribe` |
-| `S-011` | scribe | `docs/tsk-801-quality-blockers-corrected` | *(not cut — branch pushed directly)* | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #60 @ `7e1535e`); **no reviewer** | `governance.scribe` |
+| `S-011` | scribe | `docs/tsk-801-quality-blockers-corrected` | *(not cut — branch pushed directly)* | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `7e1535e`; BLOCKED on CI (PR #60) | `governance.scribe` |
+| `S-012` | hmi | *(not cut)* | — | `origin/dev` | `planned` — **blocked on S-004** | `pod_hmi.builder` |
 
 **Re-verified against the live world 2026-11-11T06:1xZ, by `pm`, not carried from the
 previous pass.** Corrections this pass: S-004 moved to `pod_hmi` (evidence in its section);
@@ -421,6 +422,39 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
     asserts the faceplate shows `BAD_QUALITY`/`NOT_BOUND` — **not the previous value** —
     *before any reconnect happens*. Bounded backoff means the delay is capped and
     **observable**, not "we call `close()` and reopen immediately".
+- **NEW BLOCKING HAZARD for S-004 — the faceplate would name the WRONG CAUSE.** Found by
+  `pod_hmi.reviewer` while reviewing PR #60; verified by `pm` on `origin/dev` @ `5b8ee51`.
+  - `ProcessDataQuality` has **three** values: `'GOOD' | 'BAD_QUALITY' | 'NOT_BOUND'`
+    (`types.ts:33`). Both `BAD_COMM_FAILURE` and `BAD_SENSOR_FAILURE` collapse into
+    `BAD_QUALITY`.
+  - `BAD_QUALITY_TEXT = 'BAD COMM FAILURE'` (`processData.ts:22`) is returned for **every**
+    bad quality by `dataQualityLabel` (`:53-63`), which has one hardcoded string for the whole
+    case. `DataQualityBadge.tsx:16` renders it directly.
+  - `git grep quality_name|quality_code origin/dev -- frontend/` → **zero hits.** The frontend
+    never reads the fields that carry the distinction.
+  **So an operator looking at a failed SENSOR would read "BAD COMM FAILURE".** That is not a
+  missing diagnosis, it is a **wrong** one — and on a safety HMI a confident wrong cause is
+  worse than an honest absence. **It is LATENT today** (nothing populates `comp.live`, so the
+  badge never reaches a live path) and **S-004 makes it LIVE the moment it wires the stream.**
+  This is the same failure class as the fabricated rack and the fail-open quality: a surface
+  asserting a cause it did not measure.
+- **SCOPE DECISION on the above — `pm`, 2026-11-11. Split, with a hard constraint on S-004.**
+  - **S-012 (new, own slice):** let the faceplate **name the specific bad quality**. This needs
+    the faceplate quality contract to carry more than three values — a field or prop beyond the
+    enum — so it touches `types.ts`, `processData.ts`, `DataQualityBadge` and every faceplate.
+    That is **wider than "one tag to one faceplate"** and is explicitly outside S-004's
+    constraints, so it cannot ride along. Not cut; `planned`.
+  - **S-004, required:** it **must not make the wrong cause reachable.** Specifically, the
+    consumer passes the specific quality through, and the badge **prefers it when present and
+    falls back to a NEUTRAL label** — never to `'BAD COMM FAILURE'` — when the specific cause
+    is unknown to it. Asserting comm failure by default is the defect; a neutral "BAD QUALITY"
+    is honest.
+    **Do not widen this into redesigning the enum in S-004.** The neutral fallback is the
+    smallest change that keeps the surface truthful, and it is in scope because **S-004 is what
+    makes the wrong diagnosis live**.
+  - **Test that must exist:** a payload with `quality_name: 'BAD_SENSOR_FAILURE'` must render
+    something that does **not** claim a communication failure. Mutation-prove it: restore the
+    hardcoded string and that test must go red.
 - **Pod: `pod_hmi`, decided 2026-11-11 — not `pod_uiux`.** Evidence, not preference:
   `hmi-builder/guidance/role.md:3` puts `ui-faceplate-lib` in hmi's focus; `ui-builder`'s
   focus is `ui-shell/`, tokens, layout, UX flows and does **not** include `ui-faceplate-lib`.
@@ -565,11 +599,15 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   1. **`rig/agents/desk/agent.yaml:7` declares `model:` with an EMPTY value**, while the pod
      label says "Desk (Opus 5.5)" and `rig ps` reports "configured not-declared". **A label
      asserting a model that is not configured.**
-     **CORRECTED — do not carry the original claim.** This text said "a seat with no model is
-     not launchable as written". **Falsified by observation:** `desk.desk` is running now and
-     launched from this spec. The defect is the **label/configuration mismatch**, not
-     launchability. `rig spec validate` accepts it — the gap between "well-formed" and
-     "correct".
+     **CORRECTED TWICE — and the second correction is the important one.** This text first said
+     "a seat with no model is not launchable as written". `pm` then called that **falsified by
+     observation**, because `desk.desk` is running. **That was wrong, and `dev_gatekeeper`
+     withdrew it:** the running seat was launched from the **populated working tree**, so it
+     proves nothing about `9e42e46`. The observation does not distinguish the two trees.
+     **Correct state: the claim is UNPROVEN, not falsified.** What survives, measured at the
+     commit, is the **label/configuration mismatch** — the pod label asserts "Desk (Opus 5.5)"
+     and the committed spec declares no model. `rig spec validate` accepts it: the gap between
+     "well-formed" and "correct".
      **Reading hazard:** the model-id value is stripped from agent tool output in this rig;
      `sed`/`grep`/`git diff` render the line with the value silently gone. Use
      `sed -n '7p' f | od -An -c`.
@@ -842,17 +880,49 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   all, which is the defect S-009 and S-003 both had. Assignment is `pm`'s next action.
   **A controlled-document amendment does not merge on "docs only" without a named verdict.**
 
+### S-012 — the faceplate cannot name the specific bad quality (found 2026-11-11)
+
+- **What:** let a faceplate say *which* bad quality it is showing. Today it can only say "bad".
+- **Why — and it is a wrong-diagnosis hazard, not a missing feature.** `ProcessDataQuality` has
+  three values (`types.ts:33`), so `BAD_COMM_FAILURE` and `BAD_SENSOR_FAILURE` both become
+  `BAD_QUALITY`. `BAD_QUALITY_TEXT = 'BAD COMM FAILURE'` (`processData.ts:22`) is returned for
+  **every** bad quality by `dataQualityLabel` (`:53-63`) and rendered by
+  `DataQualityBadge.tsx:16`. **An operator at a failed sensor reads "BAD COMM FAILURE".** A
+  confident wrong cause on a safety HMI is worse than an honest absence.
+- **Why it is not S-004:** it needs the quality contract to carry more than three values — a
+  field or prop beyond the enum — so it touches `types.ts`, `processData.ts`,
+  `DataQualityBadge` and every faceplate. That is wider than "one tag to one faceplate", which is
+  S-004's explicit scope limit. Found by `pod_hmi.reviewer` while reviewing PR #60, verified by
+  `pm`; `git grep quality_name|quality_code origin/dev -- frontend/` → **zero hits**, so the
+  frontend never reads the fields that carry the distinction.
+- **The interim obligation sits in S-004, not here:** S-004 must not make the wrong cause
+  reachable — it passes the specific quality through and the badge falls back to a **neutral**
+  label, never to `'BAD COMM FAILURE'`, when the cause is unknown to it. See S-004.
+- **Done when:** a faceplate driven by `quality_name: 'BAD_SENSOR_FAILURE'` names a sensor fault
+  and a faceplate driven by `'BAD_COMM_FAILURE'` names a communication failure, neither
+  asserting the other; and a faceplate with no specific quality renders a neutral label rather
+  than a guess.
+- **Verification:** `cd frontend && npx vitest run --no-cache` from `frontend/` (never a worktree
+  root). Failing test names, not counts. Mutation-prove the fallback: restore the hardcoded
+  string and the sensor-fault test must go red.
+- **Sequencing:** after **S-004** lands — it is S-004 that makes the wrong diagnosis live, and
+  S-004's neutral fallback is what makes this slice's absence honest rather than harmful.
+- **State:** `planned`. Owner `pod_hmi.builder`. Not cut.
+
 ### Sequencing (decided by `pm`, 2026-11-11 — revised 06:1xZ)
 
 1. **S-003** (backend) is independent; review is **APPROVED** at `7d4798c`, awaiting CI only.
 2. **S-001** (uiux) re-review is open at `21cb9c4`. Closes on that verdict.
 3. **S-004** moved to **pod_hmi** and is **cut now** — the S-001 dependency is dropped, because
    its only rationale was "same pod" and the pod changed. File overlap with S-001 is nil.
-4. **S-009** (docs) needs a named reviewer before it can merge.
+4. **S-009** and **S-011** are APPROVED and waiting on CI only. **S-010** is still unreviewed.
 5. **S-008** needs a scope decision before it is a slice.
-6. The **device-mode half** of TSK-801 waits on S-003 and is not yet a slice.
-7. **S-005 → S-006** still follow S-002, and S-006 also follows S-005 (the desk role cites
-   `DECISION-DEFAULTS.md`).
+6. **S-012** follows **S-004** — S-004 must ship the neutral-label fallback so S-012's absence is
+   honest rather than harmful.
+7. The **device-mode half** of TSK-801 waits on S-003 and is not yet a slice.
+8. **S-005 → S-006** still follow S-002, and S-006 also follows S-005 — **F4 established that
+   `role.md:78-79` cites `DECISION-DEFAULTS.md`, which `mythos-org.yaml` never delivers.** S-006's
+   blocking items are closed by S-005's delivery entry, not by editing the desk role.
 
 The HMI telemetry row `qitem-20261023085422` is `pending`, unclaimed, `blockedOn: null` —
 its block released when the DeviceExecutionMode decision landed. It is carried by **S-004**;
