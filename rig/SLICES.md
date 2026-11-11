@@ -218,47 +218,6 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   slices stand in. Owner: `dev_gatekeeper` (land `chore/rig-harness` as a PR to `dev`);
   tracked as slice **S-002** below.
 
-### B1 ROOT CAUSE — measured 2026-11-11T06:3x–06:5xZ, and it is NOT ARC
-
-**The CI outage is a network path to GitHub from this host. Restarting pods cannot fix it.**
-
-Measured independently by `dev_gatekeeper`, `desk-desk` and `pm`; all three agree:
-
-```
-ping 20.205.243.168 (api.github.com)   37.5–50% packet loss, rtt 34–238ms, max 1060ms
-curl api.github.com x10                pm: 8 hard timeouts at 8s, 2 ok at 4.7–5.4s, 10/10 slow
-curl api.github.com x20                gatekeeper: ok=16 fail=4, slow(>2s)=15
-curl github.com                        200 in 0.6s / 3.8s / 4.8s, one 10s timeout
-gh api rate_limit                      1.6s / 2.6s / 11.8s
-ip link enp86s0                        DOWN, NO-CARRIER, carrier=0  (no cable)
-ip route                               default via 192.168.100.1 dev wlan0 only
-iw dev wlan0 link                      SSID "FRONT OFFICE", 2.4GHz, connected
-```
-
-**The mechanism.** The ARC listener retries with a **1-second** connect timeout. On this link a
-GitHub connect takes **0.6–11.8s** and hard-fails a third of the time. A 4–7s connect is
-indistinguishable from a dead endpoint at a 1s timeout — which is exactly why the listener dies
-100% of the time while 65–80% of individual requests succeed. That is a timeout/network mismatch,
-not a crash.
-
-**What this rules out, and it should stop the next proposal before it is made:**
-- **Restarting the listener pod does nothing.** It is already restart-looping *because* it cannot
-  reach GitHub; a restart re-enters the same loop.
-- **Editing `dev` branch protection does nothing.** The checks never run.
-- **Repointing `runs-on` does nothing.** Any runner on this host hits the same link.
-- **Adrian's 06:06Z answer (restore ARC) was correct on the evidence then and is stale on the
-  evidence now.** `desk` is re-asking him rather than letting him waste the action — correct.
-- A **wired NIC exists and is unused** (`enp86s0`, no carrier). Whether to plug it in, or fix the
-  wireless, is a physical decision only Adrian can make.
-
-**The blocker was re-scoped by `pm` from `external:adrian-restores-arc-listener-on-legion7` to
-`external:legion7-network-to-github`** — it names the link, not a service to restart.
-
-**This is now the highest-priority item in the rig.** It blocks every merge, and it also degrades
-every seat's ability to read PR state — `pm` hit the same `dial tcp 20.205.243.168:443: i/o
-timeout` on a plain `gh pr view`. Several of today's stale-claim errors trace to seats reasoning
-from a `gh` call that silently timed out.
-
 ### S-002 — land the rig harness on `dev` (fixes blocker B2)
 
 - **What:** `chore/rig-harness` → `dev`: `rig/mythos-org.yaml`, `rig/agents/**`,
@@ -513,6 +472,26 @@ from a `gh` call that silently timed out.
   badge never reaches a live path) and **S-004 makes it LIVE the moment it wires the stream.**
   This is the same failure class as the fabricated rack and the fail-open quality: a surface
   asserting a cause it did not measure.
+- **WIP ARCHITECTURAL FINDING — one connection per panel against one module-global store.**
+  Found by `pod_hmi.reviewer` reading the in-progress diff; verified by `pm` at the dirty tree.
+  - `DockviewWorkspace.tsx:64` calls `useSseTelemetry()` **inside** `HmiScreenCanvasPanel`
+    (`:47`), and `useTagStore` is a **module-global** zustand store (`useTagStore.ts:163`).
+    Panel ids are per-screen (`:700`), so **two open screens = two instances = two
+    `EventSource`s** to the same endpoint.
+  - The hook's cleanup calls `useTagStore.getState().clear()` **unconditionally**
+    (`useSseTelemetry.ts:109,128`). **Close one screen tab while another is open and the
+    surviving panel's store is wiped** — its faceplates resolve to `BAD_QUALITY` while its
+    stream is healthy. Safe direction (values suppressed, never fabricated), but an operator
+    watches a live screen go dark for no reason.
+  - Mirror case: two feeds, and `applyBatch` replaces the whole `Map` from whichever fired last,
+    so they overwrite each other's snapshot.
+  **Fix, either is cheap now and awkward after tests pin per-instance behaviour:** (a) refcount
+  subscribers and clear only at zero; or (b) **hoist the hook above `DockviewReact`** so one
+  panel set shares one connection — cleaner, matches "one stream per station", and makes the
+  negative test simpler because there is exactly one connection to drop.
+  **Not a fourth blocking item** — the failure is in the safe direction. But it is **in scope**:
+  S-004 is what makes multi-panel telemetry reachable at all, so the first slice that opens the
+  stream is where the connection count gets decided.
 - **PROCESS NOTE — a permission prompt held this slice for ~7 minutes and nothing caught it but
   a reviewer watching.** `pod_hmi.builder` was gated on `Read(/tmp/verify-fallthrough.mjs)`;
   four urgent inbox items queued behind it, worktree unmoved at `5b8ee51`. `rig send` refuses at
@@ -1122,11 +1101,13 @@ line for it below ("Rebase and slice") is superseded by this. `dev-live` sits ex
 `merge-base --is-ancestor HEAD origin/dev` check in the role description flags it falsely;
 `check-slices.sh` distinguishes strict-ancestor from equal-to-base and is the correct check.
 
-**`device-execution-mode` carries 2 uncommitted files** (`mythos-core/src/device/mode.rs`,
-`mythos-strucpp/src/quality_gate.rs`) — mutation-test residue from the S-003 review, left on
-a branch whose PR is APPROVED at `7d4798c`. It is not a defect in the slice, but **a gate run
-in that worktree would measure a mutated tree**, not the PR. `dev_gatekeeper` owns cleaning
-it; nobody should verify S-003 there until it is clean.
+**`device-execution-mode` is now CLEAN at `5cf3984`** (verified 2026-11-11T06:5xZ). It carried
+2 uncommitted mutation-test files earlier in the pass, which is why a gate run there measured a
+mutated tree; that is resolved and the PR head moved to `5cf3984` with the docstring commit.
+**The lesson survives the resolution:** a review that mutation-tests **in the slice worktree**
+makes every subsequent gate result there ambiguous, and two seats doing it concurrently made it
+worse. **Mutate in an isolated `git archive` copy** — both reviewers now do, and it is why their
+receipts are trustworthy.
 
 ### Repo root is DIRTY — an unclaimed edit, not a PR-integrity problem
 
@@ -1266,30 +1247,3 @@ starts serialising it.
 
 14 seat conversations from the old `mythos-org` (archived on the rebuild) are not
 resumed. Their open work is the table above; anything not in this file is gone.
-
-## Hygiene finding — 6 scratch worktrees under `/tmp` (2026-11-11T06:3xZ)
-
-`./scripts/check-slices.sh` reports **17 worktrees, 8 stale**. Six of the 17 are not slice
-worktrees at all — they are scratch checkouts under `/tmp`, all detached at `bd30ec6`,
-**1 ahead / 144 behind** `origin/dev`, and each carrying ~20 files:
-
-```
-/tmp/tmp.KF3HkZjrHm/rc     /tmp/tmp.Lh4Sk3tX8e/r      /tmp/tmp.mIBX3qsrhl/wt
-/tmp/tmp.qfd4b7moq5/m      /tmp/tmp.xSmwmpeLez/m      /tmp/tmp.yja88VLdik/rel
-```
-
-They appeared during this pass (the count was 8 worktrees at 06:1xZ). Two of them are also
-**dirty** (+157 entries each). Cause is almost certainly `git worktree add` used to get an
-isolated tree for a verification run — the right instinct, the wrong mechanism: `git archive`
-into a fresh directory gives the same isolation and registers nothing.
-
-**Why this matters and is not cosmetic:** they live in the repo's shared worktree registry, so
-every seat's `check-slices.sh` run now reports 8 stale instead of 2. That buries the two real
-stale worktrees (`ci-frontend-gate`, `ui-isa101-consolidation`) in noise, which is how a real
-stale worktree goes unnoticed. It also keeps `bd30ec6` reachable, which hides whether that
-commit is still wanted.
-
-**Not removed by `pm`** — only `dev_gatekeeper` runs `git worktree remove`, and a scratch tree
-may be live under a running verification. `dev_gatekeeper` should confirm none is in use, then
-`git worktree prune` / remove each. **Any seat that needs an isolated tree for a gate run: use
-`git archive`, not `git worktree add`.** That rule now applies to every slice's verification.
