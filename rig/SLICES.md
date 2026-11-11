@@ -20,6 +20,7 @@ The single answer to "what is being worked on". Your memory is not this file.
 | `S-003` | backend | `refactor/device-execution-mode-canonical` | `.claude/worktrees/device-execution-mode` | `origin/dev` @ `5b8ee51` | `in-review` **BLOCKED** (PR #57) | `dev_gatekeeper` |
 | `S-004` | uiux | *(cut after S-001)* | — | `origin/dev` | `planned` | `pod_uiux.builder` |
 | `S-005` | — | `policy/decision-defaults` *(exists @ `4f2ac4b`)* | *(not cut — see note)* | `origin/dev` | `planned` **blocked on S-002** | `dev_gatekeeper` |
+| `S-006` | — | `feat/desk-seat` *(exists @ `3995106`; main copy `4496ce0`)* | *(not cut — see note)* | `origin/dev` | `planned` **blocked on S-002** | `dev_gatekeeper` |
 
 ### S-001 — topology view-mode claims (PR #50)
 
@@ -264,6 +265,37 @@ The single answer to "what is being worked on". Your memory is not this file.
 - **Force:** no running seat has the file in its startup files yet, so the policy has no
   operational force anywhere until it merges and seats are restored. That is the correct state
   for it to be reviewed in.
+
+### S-006 — the desk seat (waits for S-002)
+
+- **What:** a twelfth seat, `rig/agents/desk/` (agent.yaml + guidance/role.md) and
+  `rig/pods/desk.yaml` ("Adrian's Desk — presents every open human decision as a clickable
+  question and records the answer back onto its queue row. Decides nothing"), plus the
+  `mythos-org.yaml` wiring.
+- **Provenance — verified, not asserted.** Adrian's own CLI session
+  `7993c305-0d9e-493b-9811-e36ce18f0152`, `userType: external`, request at
+  `2026-11-11T05:45:32.699Z`: *"aku suka mekanisme claude questions (pilihan ganda
+  selectible)… gimana caranya biar aku bisa lihat dan jawab semua pertanyaan yang datang ke
+  aku tanpa harus cari-cari lagi?"* — the desk seat is his own build answering his own
+  request. Authored `adrianaryaputra`, `4496ce0`, 2026-11-11 12:52 +0700.
+- **Why it is not cut yet:** it modifies `rig/mythos-org.yaml`, which does not exist on
+  `origin/dev` — S-002 adds it. Same ordering constraint as S-005. It is also separable from
+  S-005 even though both arrived inside the single commit `4496ce0`: one commit containing two
+  changes does not make them one slice.
+- **Three things for the review, found by `dev_gatekeeper` reading the files:**
+  1. **`rig/agents/desk/agent.yaml:7` declares `model:` with an EMPTY value.** Every one of
+     the eleven existing seats declares a model (`claude-opus-5.5`, or `claude-fable-5.2` for
+     `advisor` and `release-auditor`). A seat with no model is not launchable as written.
+     `rig spec validate` accepted the spec, so this is the gap between "well-formed" and
+     "correct".
+  2. **`rig/pods/desk.yaml` has `edges: []`** — the pod is wired to nothing. A seat that
+     collects `gate:human` rows but is not on a delivery edge would collect nothing at all.
+     Confirm that is intentional before gating.
+  3. **Is a twelfth seat wanted?** `rig spec validate` and preflight check form, not desire.
+     Adding a seat and a pod is a topology decision and should be the review's actual question.
+- **State:** `planned`, blocked on S-002 for the same reason as S-005. Work preserved at
+  `4496ce0` (on local `chore/rig-harness`) and `3995106` (`feat/desk-seat`, cherry-picked onto
+  `origin/dev`). Neither is pushed.
 
 ### Sequencing (decided by `pm`, 2026-11-11)
 
