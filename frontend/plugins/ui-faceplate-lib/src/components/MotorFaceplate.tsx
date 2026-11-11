@@ -33,6 +33,7 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
   interlocks = [],
   tier = 2,
   quality,
+  qualityDetail = null,
   alarm,
   alarmActive,
   alarmUnacknowledged,
@@ -164,7 +165,7 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
       <span className="font-mono text-[10px] text-slate-400">
         {displayable ? (running === true ? `${speedText} RPM` : stateText) : NO_DATA_TEXT}
       </span>
-      <DataQualityBadge quality={quality} className="mt-0.5" />
+      <DataQualityBadge quality={quality} qualityDetail={qualityDetail} className="mt-0.5" />
     </div>
   );
 
@@ -190,7 +191,7 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
           <span className="text-xs text-slate-400 truncate max-w-[170px]" title={label}>{label}</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <DataQualityBadge quality={quality} />
+          <DataQualityBadge quality={quality} qualityDetail={qualityDetail} />
           {announcedMode && (
             <span
               data-testid="motor-mode"
@@ -321,7 +322,7 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
           <span className="text-xs text-slate-400">{label}</span>
         </div>
         <div className="flex items-center gap-2">
-          <DataQualityBadge quality={quality} />
+          <DataQualityBadge quality={quality} qualityDetail={qualityDetail} />
           <button
             onClick={() => handleTierSwitch(2)}
             className="text-slate-400 hover:text-slate-200 text-sm p-1 rounded hover:bg-slate-800"

@@ -16,6 +16,8 @@ import {
   resolveComponentData,
 } from '@mythos/ui-faceplate-lib';
 import { useHmiStore, isCanvasEqual } from '../../stores/useHmiStore';
+import { useTagStore, resolveComponentLive } from '../../stores/useTagStore';
+import { useSseTelemetry } from '../../hooks/useSseTelemetry';
 import { APP_CHANNEL, APP_VERSION } from '../../lib/appVersion';
 import { FaceplateTypeDesigner } from '../faceplates/FaceplateTypeDesigner';
 import { Plus, Layers, FileCode2, Network, Save, Rocket, Undo2, Loader2 } from 'lucide-react';
@@ -56,6 +58,11 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
   const currentProject = useHmiStore((s) => s.currentProject);
   const screenSaveStatus = useHmiStore((s) => s.screenSaveStatus);
   const setSelectedContextItem = useHmiStore((s) => s.setSelectedContextItem);
+
+  // The telemetry stream is opened here, once, for the canvas that consumes it. The store holds
+  // the most recent batch; nothing on this surface fabricates a value when it is empty.
+  useSseTelemetry();
+  const liveTags = useTagStore((s) => s.tags);
 
   // Screen & Subscreen resolution
   const baseId = screenId.includes('::') ? screenId.split('::')[0] : screenId;
@@ -420,7 +427,25 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
               // default value on this path: a component with no binding and no stored value
               // resolves to `NOT_BOUND`, and the faceplate renders a quiescent no-data state.
               // SYS-REQ-096 — never substitute a plausible process value here.
-              const { quality, values, config } = resolveComponentData(comp);
+              //
+              // Live telemetry, when the component is bound: the tag store resolves the binding
+              // against the most recent batch and supplies BOTH the live payload and a declared
+              // quality. The declared quality is essential, not decorative — the resolver's
+              // inference fails OPEN on a wire quality string it does not recognise (see
+              // `useTagStore`), so passing the payload alone would render a comm failure as a
+              // live reading. An unbound component resolves to `null` here and is left untouched,
+              // which keeps `NOT_BOUND` the honest answer for it.
+              const liveResolution = resolveComponentLive(comp, liveTags);
+              const { quality, values, config } = resolveComponentData(
+                liveResolution
+                  ? { ...comp, quality: liveResolution.quality, live: liveResolution.live }
+                  : comp
+              );
+              // The specific wire quality, passed only to change the badge WORDING. It never
+              // changes the presentation: `quality` alone drives tone and data-quality, so an
+              // unrecognised bad cause keeps the abnormal amber badge instead of falling into the
+              // grey NOT_BOUND configuration state.
+              const qualityDetail = liveResolution?.qualityDetail ?? null;
               const tier = (config.tier as 1 | 2 | 3 | undefined) ?? (comp.tier as 1 | 2 | 3 | undefined) ?? 2;
 
               if (compType === 'MOTOR' || compType === 'VFD') {
@@ -434,6 +459,7 @@ export const HmiScreenCanvasPanel: React.FC<IDockviewPanelProps<{ screenId?: str
                       tag={tag}
                       label={label}
                       quality={quality}
+                      qualityDetail={qualityDetail}
                       running={values.running as boolean | null | undefined}
                       tripped={values.tripped as boolean | null | undefined}
                       actualSpeed={values.actualSpeed as number | null | undefined}
