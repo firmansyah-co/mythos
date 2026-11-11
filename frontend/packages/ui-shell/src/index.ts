@@ -1,5 +1,7 @@
 export * from './stores/useHmiStore';
 export * from './stores/useFaceplateStore';
+export * from './stores/useTagStore';
+export * from './hooks/useSseTelemetry';
 export * from './types/hmi';
 export * from './types/faceplate';
 export * from './api/faceplates';
