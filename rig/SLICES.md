@@ -1111,6 +1111,39 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   S-004's neutral fallback is what makes this slice's absence honest rather than harmful.
 - **State:** `planned`. Owner `pod_hmi.builder`. Not cut.
 
+### Merge readiness — 2026-11-11T07:05Z
+
+**Every open PR now has a verdict at its current head, or a stated reason it does not.**
+That is the first time today that sentence has been true.
+
+| PR | Slice | Head | Verdict | Blocked by |
+|---|---|---|---|---|
+| #50 | S-001 | `ab93602` | **APPROVED** at head | B1 only |
+| #56 | S-009 | `139c263` | **APPROVED** at head (carried from `72630ad`) | B1 only |
+| #57 | S-003 | `5cf3984` | **APPROVED** at head (carried from `7d4798c`) | B1 only |
+| #58 | S-007 | `2bfac2e` | **APPROVED** at head | B1 only |
+| #59 | S-010 | `16c10e3` | **APPROVED** at head | B1 only |
+| #60 | S-011 | `7e1535e` | **APPROVED** at head | B1 only |
+| #55 | S-002 | `dba71c7` | no reviewer — it is the harness that adds the review process | B1, plus its own review |
+
+**B1 is the only blocker for six of the seven.** When the link is fixed they can merge in any
+order; they touch disjoint files.
+
+**Two process findings from the hour, both worth carrying forward:**
+
+1. **A reviewer row should name the HEAD it is against.** Two of the four PRs reviewed in this
+   hour had moved since their ledger row. A reviewer row without a SHA is the same defect as a
+   verdict without one — found by `pod_uiux.reviewer`, who hit both ends of it.
+2. **Verdicts in this rig live on the QUEUE, not on the PRs.** Only #56 and #60 have PR comments;
+   #59's verdict is a queue row alone. So "does this PR have a verdict?", answered from
+   `gh pr view --json comments` or `--json reviews`, returns a **false negative** — which is how
+   two seats got it wrong in opposite directions in one hour. The check that works is the queue,
+   and a verdict should be pasted onto the PR as well as recorded on the row.
+3. **The structural cause of four unreviewed PRs:** opening a PR is one action a builder takes;
+   creating the reviewer row is a second action nobody owns. Making the ledger row the artifact
+   that creates the reviewer row would close it. Raised by `pod_uiux.reviewer` and `scribe`
+   independently; it is `pm`'s to decide.
+
 ### Sequencing (decided by `pm`, 2026-11-11 — revised 06:1xZ)
 
 1. **S-003** (backend) is independent; review is **APPROVED** at `7d4798c`, awaiting CI only.
