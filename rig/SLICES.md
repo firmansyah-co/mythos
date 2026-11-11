@@ -15,19 +15,11 @@ The single answer to "what is being worked on". Your memory is not this file.
 
 | Slice | Pod | Branch | Worktree | Base | State | Owner |
 |---|---|---|---|---|---|---|
-| `S-001` | uiux | `test/topology-all-view-modes` | `.claude/worktrees/topology-mode-coverage` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `ab93602`; BLOCKED on CI only (PR #50) | `pod_uiux.builder` |
-| `S-002` | — | `chore/rig-harness` | repo root *(pre-existing branch, not cut)* | `origin/dev` @ `5b8ee51` | `in-review` @ `dba71c7`; **review assigned**; BLOCKED on CI | `dev_gatekeeper` |
-| `S-003` | backend | `refactor/device-execution-mode-canonical` | `.claude/worktrees/device-execution-mode` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `5cf3984`; BLOCKED on CI (PR #57) | `pod_backend.reviewer` |
-| `S-004` | hmi | `feat/hmi-live-telemetry` | `.claude/worktrees/hmi-live-telemetry` | `origin/dev` @ `5b8ee51` | `in-review` **NO VERDICT** @ `3c683be` (PR #61, +846/−1); connection-count gap open; BLOCKED on CI | `pod_hmi.builder` |
-| `S-005` | — | `policy/decision-defaults` *(exists @ `4f2ac4b`)* | *(not cut — see note)* | `origin/dev` | `planned` **blocked on S-002**; review CHANGES REQUESTED | `dev_gatekeeper` |
 | `S-006` | — | `feat/desk-seat` *(exists @ `3995106`; main copy `4496ce0`)* | *(not cut — see note)* | `origin/dev` | `planned` **CHANGES REQUESTED**; blocked on S-002 + S-005 | `dev_gatekeeper` |
-| `S-007` | — | `docs/alarm-colour-reconcile` | `.claude/worktrees/docs-alarm-colour` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `2bfac2e`; BLOCKED on CI only (PR #58) | `governance.scribe` |
 | `S-008` | backend | *(not cut)* | — | `origin/dev` | `planned` — **blocked on a scope decision** | `pod_backend.builder` |
-| `S-009` | scribe | `docs/topology-provenance-spec` | `.claude/worktrees/docs-topology-provenance` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `139c263` (carried forward from `72630ad`); BLOCKED on CI only (PR #56) | `governance.scribe` |
-| `S-010` | scribe | `docs/theme-status-honest` | `.claude/worktrees/docs-theme-status` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `16c10e3`; BLOCKED on CI only (PR #59) | `governance.scribe` |
-| `S-011` | scribe | `docs/tsk-801-quality-blockers-corrected` | `.claude/worktrees/docs-tsk801-correction` | `origin/dev` @ `5b8ee51` | `in-review` **APPROVED** @ `7e1535e`; BLOCKED on CI (PR #60) | `governance.scribe` |
 | `S-012` | hmi | *(not cut)* | — | `origin/dev` | `planned` — **blocked on S-004** | `pod_hmi.builder` |
 | `S-013` | hmi | *(not cut)* | — | `origin/dev` | `planned` | `pod_hmi.builder` |
+| `S-014` | hmi | `feat/setpoint-draft-committed` | `.claude/worktrees/setpoint-reconcile` | `origin/dev` @ `08245d0` | `open` — cut 2026-11-11T11:26Z | `pod_hmi.builder` |
 
 **Re-verified against the live world 2026-11-11T06:1xZ, by `pm`, not carried from the
 previous pass.** Corrections this pass: S-004 moved to `pod_hmi` (evidence in its section);
@@ -285,6 +277,105 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
   slices stand in. Owner: `dev_gatekeeper` (land `chore/rig-harness` as a PR to `dev`);
   tracked as slice **S-002** below.
 
+### FIRST MERGE SINCE 2026-10-27 — PR #60 landed at 2026-11-11T08:08:30Z
+
+`origin/dev` moved `5b8ee51` → **`6dad46a`** (`docs(tasks): correct TSK-801's two stale quality
+blockers (#60)`). **The release train has moved for the first time in fifteen days.** Verified by
+`pm` on the remote, not from a report.
+
+**Two consequences, both immediate:**
+
+1. **Every open PR is now BEHIND.** `S-004` (PR #61) reports `mergeStateStatus: BEHIND`, not
+   `CLEAN` — its checks are green at `3c683be`, but **a green receipt does not cover a rebased
+   branch.** Rebase → re-gate → verdict at the NEW head. This is precisely the case where a stale
+   receipt looks valid, and it is why every approval in this ledger names a head SHA.
+2. **The merge queue is real now.** Six more PRs are approved at their current heads. Each needs the
+   stale-claim check before merging: does the verdict name the **current** head, and is it on the PR
+   or in the queue (both count, neither alone is evidence)?
+
+**B1 has not been fixed — it has been outrun.** `enp86s0` still has no cable and the uplink is still
+`wlan0`. **A merge that lands during a good window is a merge that passed on a good window.** See the
+flakiness note below: a flaky gate that FAILS is safe; a flaky gate that PASSES is the risk.
+
+### B1 — CI IS EXECUTING AGAIN, 2026-11-11T07:3xZ. The blocker is now FLAKY, not DOWN.
+
+**Measured by `pm` directly, not carried:**
+```
+run 42977515106  feat/hmi-live-telemetry @ 3c683be  (S-004 / PR #61)
+  Rust Workspace Test Suite & Lints          success, 17/17 steps
+  Frontend Web Workbench Test Suite & Lints  in_progress, 13/17 steps
+run 42980085256  chore/rig-harness @ e27263d (S-002 / PR #55)   queued
+run 42974401479  docs/topology-provenance-spec @ 139c263 (S-009) completed/failure
+```
+**First workflow execution on this repo since 2026-10-27.**
+`kubectl -n arc-systems get pods` → listener **1/1 Running, 0 restarts, 24m**;
+`autoscalingrunnersets` → **10 current runners**; `arc-runner-org-66jz6` → pods **Running**.
+
+**S-009's red is INFRA, not the slice.** `gh api .../runs/42974401479/jobs` → the Frontend job's
+**only** failed step is **`Set up job` (step 1)**. Nothing checked out, nothing ran. **Do not read
+it as a docs defect** — and do not record S-009 as broken on it.
+
+**THE ASYMMETRY THAT MATTERS, raised by `desk-desk` and it is a safety point, not bookkeeping:**
+**a flaky gate that FAILS is safe — it stops merges. A flaky gate that PASSES is not**, because it
+lets a bad commit through and looks identical to a green one. On a lossy link a run can now succeed
+by landing in a good window, and nothing in the verdict distinguishes "passed on a good link" from
+"passed".
+**So: merges during the intermittent period carry a known, unmeasured risk, and the ledger says so
+rather than only saying CI works.** The mitigations available today are all weak — a re-run adds
+samples but does not bound the risk, and the durable fix is the cable. **Do not read a green check
+during this period as a property of the commit; read it as a property of the window it ran in.**
+
+**What this changes operationally.** B1 was "no runner, every merge holds". It is now **"the runner
+is intermittent"** — which is a different instruction: **retry a queued or failed-infra run rather
+than waiting, and re-check `in_progress` with a real runner before concluding anything.** Seven PRs
+are approved and the merge queue can actually move.
+
+**What is still true, re-measured 2026-11-11T07:5xZ:** the underlying fault was never fixed, only
+outrun.
+```
+enp86s0   DOWN  <NO-CARRIER>  carrier=0, no address
+ip route get 20.205.243.168 -> via 192.168.100.1 dev wlan0 src 192.168.100.95
+```
+**The cable is still not in.** The link healed on its own over wifi and CI started. So the cable is
+still the durable fix — **but it no longer gates merges; it gates whether this stays true.**
+
+**Adrian answered "plug in the ethernet cable" at 06:44Z**, superseding his earlier "restore ARC"
+answer (right on the 06:06Z evidence, wrong on the 07:3xZ evidence — the row records it as
+superseded, not withdrawn). **Nothing to re-ask him; the answer is still correct, the urgency
+dropped.**
+
+### LOCAL BRANCH DIVERGENCE — accepted, not fixed (2026-11-11)
+
+`chore/rig-harness` local is **diverged from its remote**: 21 ahead / 2 behind `e27263d`. The repo
+root has it checked out, so **the next push from there will fail or force.**
+
+**Deliberately not reset.** `dev_gatekeeper` attempted `git reset --hard e27263d`; the permission
+layer denied it, and checking first showed **why that denial was right**:
+```
+git show e27263d:rig/agents/desk/agent.yaml   ->  fatal: path does not exist
+git status                                    ->  " M rig/agents/desk/agent.yaml"
+```
+**The desk model fix is not in the pushed tree at all** (S-006 territory, deliberately kept out of
+PR #55), so a hard reset would have deleted **the only copy of a correct fix**. `pm` withdrew the
+conditional approval it had given before that finding — *a conditional approval that predates the
+finding does not survive it.*
+
+**Preserved instead of destroyed:**
+| what | where |
+|---|---|
+| ledger content | `7599cb9`, durable ref `backup/pm-ledger-7599cb9` |
+| S-005/S-006 commits | durable ref `backup/rig-harness-local-e9eca69` |
+| the desk model fix | `/tmp/gk/desk-agent-populated.yaml` (sha256 `ad5fd626…`), `/tmp/gk/desk-model-fix.patch` |
+
+**Why leaving it diverged is safe:** the PR head is `e27263d` on the remote; nothing pushes from the
+repo root without running the pre-push checklist; and the checklist catches exactly this —
+`git diff --name-only <pr-head>..HEAD` against the local branch returns the four
+desk/`DECISION-DEFAULTS` files. **A destructive command that buys only tidiness is not worth a
+shared branch that is eleven seats' cwd.**
+
+**For whoever cuts S-006:** a reviewed-in-principle fix for the empty `model:` line already exists at
+the paths above. Do not rediscover the defect from scratch.
+
 ### S-002 — land the rig harness on `dev` (fixes blocker B2)
 
 - **What:** `chore/rig-harness` → `dev`: `rig/mythos-org.yaml`, `rig/agents/**`,
@@ -302,12 +393,141 @@ exists at `dba71c7` while the row still said "not yet pushed" at head `238c5b8`.
 - **Verification:** `rig spec validate` + `rig spec preflight` clean; `bash -n` on both
   scripts; `.gitignore` change hides no tracked file; full `./scripts/check.sh` run from
   the branch (receipt in the PR body).
+
+- **PRE-PUSH CHECKLIST — first item is mechanical, not judgement.**
+  1. **`git diff --name-only <pr-head>..HEAD`** before any push to a PR branch. This one command
+     has now mattered twice: it is what stopped the S-005/S-006 contamination
+     (`d7ae80d`/`23bf7c5`/`9e42e46` carrying the desk seat and `DECISION-DEFAULTS.md` into a
+     35-file PR), and it is the check `pod_uiux.reviewer` sent as a STOP. **Both of us ran it
+     after the decision, not before** — the honest record is "caught at the last possible moment
+     from two directions", not "caught".
+  2. If a push would carry another slice: build it in a **scratch worktree detached at the PR
+     head** and take the blobs, rather than pushing the local branch. A local branch accumulates
+     other seats' commits; the PR must not.
+  3. Verify byte-identity of the taken blobs (`sha256sum`) against the commits the reviewer
+     signed, so the approval transfers on measurement rather than on trust.
+  4. **A commit attribution is a claim.** `ba6051a + e9eca69` collapsed into one row produced a
+     wrong commit for `CLAUDE.md` — the reviewer caught it. Name the commit for each file.
 - **Review assigned 2026-11-11T07:1xZ: `pod_uiux.reviewer`**,
   `qitem-20261111071339-4ef08044d92335c9`. **It was the last PR with no reviewer, and it is the
   one that ADDS the review process** — so its author (`dev_gatekeeper`) cannot sign it, and `pm`
   cannot either (pm has been editing `rig/SLICES.md` in this very tree all pass, so it is not
   independent). The review brief names the five checks and the three deliberate deviations so
   they are not re-opened as findings.
+- **REVIEW VERDICT 2026-11-11: CHANGES REQUESTED — one blocking item, four-line fix.**
+  `pod_uiux.reviewer`, row `qitem-20261111071649-34c66c66b72a32af` to `dev_gatekeeper` (author).
+  **`check.sh` prints "VERDICT: PASS — every gate green" when a gate never ran.** `pm`
+  reproduced it by execution against the script extracted from `dba71c7`:
+  ```
+  $ ./scripts/check.sh --frontend        # frontend/node_modules absent
+  frontend/node_modules missing: run pnpm install --frozen-lockfile
+  VERDICT: PASS — every gate green
+  EXIT=0
+  ```
+  **Zero tests ran and the gate said every gate was green.**
+  **Cause, four lines:** `set -uo pipefail` **without `-e`**; `run_rust`/`run_frontend` `return 1`
+  on a missing precondition, and the `case` dispatch **discards that status**. `fail` is only ever
+  set inside `step()`, so a precondition failure is invisible to the verdict.
+  **Why this is blocking and not a follow-up — the reviewer's reasoning, and it is right:** a
+  worktree cut from `origin/dev` **has no `frontend/node_modules`**, and `CULTURE.md` §4 tells
+  every seat to run `./scripts/check.sh` and paste the output. **The first run in a fresh
+  worktree — the exact scenario S-002 exists to create — prints "every gate green" before a single
+  frontend test has run.** On a UI slice that is every test that matters, and the seat then pastes
+  it as a receipt.
+  **`CULTURE.md:88-89`, in this same commit:** *"A green summary that was never executed is worse
+  than an honest red, because it moves the defect downstream to someone who cannot see it."*
+  **The script contradicts the culture file it ships.**
+  **The trade, stated plainly:** land the harness today with a gate that fabricates green and every
+  receipt from tomorrow is worth less; or hold it one cycle for a four-line fix and land a gate
+  that is trustworthy from its first run. **This session alone produced three separate "a check
+  answered a different question than the one asked" failures, so the first option is not
+  available.**
+  **Fix is with `dev_gatekeeper` (author); the reviewer re-reviews rather than signing its own
+  request.**
+- **OWNERSHIP, because `pm` got this wrong once in a message and the ledger must not inherit it:**
+  **`dev_gatekeeper` authored the `check.sh` fix.** `pod_uiux.reviewer` reviewed the **working-tree
+  candidate** and reported it correct; it has **not** signed it and will not, because the author of
+  a fix does not approve it and it is the reviewer of record on the PR containing it.
+  **The sequence is: author commits → reviewer verifies the COMMIT → verdict moves.** `pm` referred
+  to "check.sh (yours…)" in a message to the reviewer, meaning "the one you reviewed"; that reads
+  as authorship and was corrected. **A verdict is never given against a working tree.**
+- **THE FIX CANDIDATE, measured by `pm` at the working tree (not yet committed):** a `skip()`
+  helper that sets `fail` **and** appends to `failed[]` **and** prints the label — so a skipped gate
+  becomes a **failed** gate that **names itself**. Reproduced against the same two failure modes:
+  ```
+  $ ./scripts/check.sh --frontend      # node_modules absent
+  frontend/node_modules missing: run pnpm install --frozen-lockfile
+  FAIL pnpm (not run)
+  VERDICT: FAIL — 1 gate(s) red: pnpm (frontend/node_modules missing: …)   EXIT=1
+
+  $ ./scripts/check.sh --rust          # cargo absent
+  VERDICT: FAIL — 1 gate(s) red: cargo (not installed)                     EXIT=1
+  ```
+  **Not "add `-e`"** — which is what `pm` half-expected. The verdict line names the gate *and* the
+  reason, which is what a receipt needs. **Green path still `PASS`/exit 0** — the fix does not break
+  the working case.
+  **All THREE cannot-run shapes measured, not assumed** (reviewer, re-confirmed by `pm`):
+  | shape | result | exit |
+  |---|---|---|
+  | `cargo` absent | `FAIL cargo (not run)` → `VERDICT: FAIL — 1 red: cargo (not installed)` | 1 |
+  | `node_modules` absent | `FAIL pnpm (not run)` → `VERDICT: FAIL — 1 red: pnpm (…)` | 1 |
+  | `pnpm` absent, `node_modules` present | `FAIL pnpm lint/test/build` → `VERDICT: FAIL — 3 red` | 1 |
+  The third is caught by `step()`, which already handled it — checked so that "all preconditions
+  covered" is a measurement rather than a claim.
+- **A SECOND INSTANCE OF THE SAME CLASS, found while checking: `check-slices.sh` reports
+  `0 worktree(s), 0 stale` with exit 0 outside a git repo.** Reproduced by `pm` in an extracted
+  tree: `fatal: not a git repository` prints, then **`0 worktree(s), 0 stale`, exit 0** — it
+  enumerated nothing and `stale` is its only gate signal. **The reviewer hit this in practice
+  today** and had to notice the number was meaningless.
+  **Calibration, and the reviewer's judgement is right:** **not blocking.** The `fatal` is
+  **visibly printed**, unlike `check.sh`'s clean `PASS` with nothing above it; `check.sh` is what
+  every receipt depends on, `check-slices.sh` is a diagnostic; and S-002 is the last PR holding B2
+  open for every builder. Two lines in the same pass is recommended; taking it now or as a
+  follow-up row is `dev_gatekeeper`'s call.
+- **REVIEW VERDICT 2026-11-11T07:31Z: APPROVED — at the COMMITS, not the working tree.**
+  `pod_uiux.reviewer` verified `ba6051a` and `e9eca69` by execution:
+  ```
+  node_modules absent  -> VERDICT: FAIL — 1 red: pnpm (…),        EXIT=1
+  cargo absent         -> VERDICT: FAIL — 1 red: cargo (not installed), EXIT=1
+  --all, both absent   -> VERDICT: FAIL — 2 red,                  EXIT=1
+  check-slices outside a repo -> "cannot enumerate worktrees…",   EXIT=2
+  check-slices in a real clone -> unchanged,                      EXIT=0
+  ```
+  `e9eca69` documents `git config core.hooksPath .githooks` in a **"First run on a fresh clone"**
+  section and says the hook is *"inert and silent"* without it. **Correct and honest**:
+  `core.hooksPath` lives in `.git/config` and **cannot be committed**, so documenting is the only
+  right answer. `pm` read the change and agrees — a guard nobody knows to enable guards nothing,
+  and the file says so instead of implying protection it does not provide.
+  **Note the second instance of the same class fixed here too:** `check-slices.sh` now exits **2**
+  outside a repo instead of reporting `0 worktree(s), 0 stale` with exit 0. **The non-blocking
+  finding was taken, and taken in this PR.**
+- **PUSH HAZARD — LIVE, and it is the defect this rig has refused all day.** The PR head is still
+  **`dba71c7`**; the branch is **20 commits ahead** of it. **Pushing HEAD would grow PR #55 from
+  31 files/+2149 to 35 files/+3519** (`pm` measured it) and drag in:
+  ```
+  rig/culture/DECISION-DEFAULTS.md   (S-005)
+  rig/agents/desk/**                 (S-006)
+  rig/pods/desk.yaml                 (S-006)
+  plus the desk member and both edges in mythos-org.yaml
+  ```
+  **That is S-005 and S-006 riding into S-002 — three slices in one PR.**
+  **The reviewer's path, recommended to `dev_gatekeeper`:** cut from `dba71c7`, cherry-pick
+  `ba6051a` + `e9eca69`, push that, retarget or replace #55.
+  **And the reviewer stated the consequence of getting it wrong, which `pm` endorses:** *"if they
+  push HEAD instead, my approval does not carry — a review of 31 files is not an approval of 35,
+  and the grown diff needs its own verdict."* **An approval is scoped to the diff it was given
+  against, which is the same rule as naming the head SHA.**
+- **SEQUENCING CONSEQUENCE, recorded because it would otherwise be discovered after the fact:** if
+  the push goes out with all 20 commits, **S-005 and S-006 land unreviewed** and their rows must say
+  so rather than continuing to report `planned`/blocked-on-S-002. Nothing about the *order* changes
+  — S-005 and S-006 still follow S-002 — but the order only holds if S-002 is pushed as **two
+  commits**, not twenty.
+- **FOUR CHECKS CLEAN, on the record** (reviewer, not `pm`): additive only (31 files, +2149, −0,
+  30 A / 1 M / 0 D); `.gitignore` hides no tracked file (552 force-added, 0 matching);
+  `bash -n` clean on all three scripts and `check.sh`'s steps match the ledger; `CULTURE.md` holds
+  up against every claim made about it; `spec validate` + `preflight` clean **with the caveat that
+  `agent_ref` paths are absolute, so validation is not fully hermetic**. Also: `check-slices.sh`'s
+  strict-ancestor rule is correct — `dev-live` reads `ok`, not `STALE:merged`.
 - **Remote state — measured 2026-11-11T06:1xZ, not carried.** **PR #55 is OPEN**, base `dev`,
   pushed head **`dba71c7`**, `mergeStateStatus: BLOCKED` (no runner — blocker B1), 31 files,
   **+2149/−0**, 30 added + 1 modified + **0 deleted**, `mergeable: MERGEABLE`.
@@ -1278,6 +1498,47 @@ order; they touch disjoint files.
    that creates the reviewer row would close it. Raised by `pod_uiux.reviewer` and `scribe`
    independently; it is `pm`'s to decide.
 
+### S-014 — draft-vs-committed setpoint reconcile (scoped 2026-11-11, now unblocked)
+
+- **What:** a draft-vs-committed reconcile rule for the operator-writable setpoints —
+  `MotorFaceplate.inputSpeed` and the PID panel's `targetSp`/`targetCv`/`tuneKp`/`tuneTn`/`tuneTv` —
+  plus the amendment that turns `docs/04-hmi-and-ui/operator-setpoint-reconcile-rule.md` §5 from
+  **OPEN** to **DECIDED**.
+- **Why now:** it was parked on the HMI telemetry gap. **S-004 landed (#61 @ `08245d0`), so the
+  transport exists** and these surfaces become reachable for the first time. The rule doc still says
+  §5 is blocked on a transport decision that no longer exists — that staleness is itself part of this
+  slice.
+
+**All six open questions are resolved below, grounded in the wire as measured by `pm`. None is left as
+a promise.**
+```
+telemetry.rs:63    TagValueUpdate.timestamp_ns = slot.timestamp_ns   (the SLOT's write stamp)
+telemetry.rs:106   TelemetryBatch.timestamp_ms = SystemTime::now()   (the SERVER's clock)
+telemetry.rs       grep seq|sequence -> 0                            (NO sequence on the wire)
+```
+
+| # | question | ruling |
+|---|---|---|
+| **O1** | wire-level staleness | **Use CONSUMER-OBSERVED ARRIVAL AGE**, not the wire timestamp. `performance.now()` at apply time is one clock on one side, so "silence since last frame" is exact with no clock-sync assumption. **No device-side age may be displayed** — `timestamp_ns` is the slot writer's clock and the consumer is a browser, and nothing establishes their agreement. **No sequence means loss is undetectable**: the clock measures silence, not loss, and the rule must not claim otherwise. |
+| **O2** | echo vs independent change | **NOT ANSWERABLE — strike "or on echo" from R4.** Value equality is the only signal and a device can land on the same value independently; an equality test **silently closes an episode on a coincidence**, the worst kind of wrong because it looks like the rule working. Reconciles on **commit / cancel / observed drift beyond a stated bound** only. Returns with a transport that carries an ack or sequence, tested against it. |
+| **O3** | central vs per-field staleness | **Answered by the implementation.** The server enumerates the whole catalog each tick and emits only readable slots, so absent = unreadable, never unchanged; the cache replaces per batch. **Staleness is resolved centrally — the rule defers to the transport rather than restating it.** |
+| **O4** | drift threshold policy | **Out of scope — plant policy.** The threshold is a **named, REQUIRED configuration value with NO default.** Unconfigured renders `NOT CONFIGURED` and drift detection is inactive. **No plausible-looking seed number** — that is the fabricated-bound defect in a new costume. |
+| **O5** | do tuning params come back? | **Per-field, per-plant, decided at runtime.** `kp` **is** in `PROCESS_KEYS` (`componentData.ts:59`) so it *can* arrive live — but `inputSpeed` is a process value the device reports while `kp`/`tn`/`tv` are stored configuration it may never report. **Conflating them is the defect this question exists to prevent.** An unreported tuning field shows the draft labelled uncommitted with the device value **UNKNOWN**, never seeded at mount. |
+| **O6** | draft lifetime across a re-key | **`pm`'s call: a re-key DISCARDS the draft, with a visible notice.** Surviving a re-key carries a draft across an identity change onto a different device; preventing the re-key is a UI lock and scope creep; silent discard is what this rule exists to prevent. **Visible discard is honest; silent discard is a fabricated success.** |
+
+- **Done when:** an edit made before a telemetry frame either survives that frame or is discarded with
+  a **visible reason**; and each of O1–O6 is either implemented or explicitly excluded in the doc.
+- **Anti-coverage clause:** **a test that only covers the no-telemetry case proves nothing** and must
+  not be accepted as coverage.
+- **Doc amendment ships with the slice, not before it** — a controlled-document change reviewed
+  together with the code it describes.
+- **Verification:** `cd frontend && npx vitest run --no-cache` from `frontend/`. Failing test names,
+  not counts.
+- **State:** `open` — cut 2026-11-11T11:26Z from `origin/dev` @ `08245d0` as
+  `feat/setpoint-draft-committed` in `.claude/worktrees/setpoint-reconcile`. 0 behind, 0 dirty at
+  cut, and the premise verified rather than assumed: S-004 is on dev (08245d0), which is what
+  unblocked this slice. Owner `pod_hmi.builder`.
+
 ### Sequencing — REWRITTEN 2026-11-11T07:1xZ, because the old block contradicted the table
 
 `governance.scribe` caught this: the previous version said "S-001 re-review is open at `21cb9c4`"
@@ -1290,12 +1551,21 @@ the table and the PRs, not carried.
 `S-001` @ `ab93602` · `S-003` @ `5cf3984` · `S-009` @ `139c263` (re-confirmed after the head moved)
 · `S-010` @ `16c10e3` · `S-011` @ `7e1535e` · `S-007` @ `2bfac2e`
 
-**One in review, no verdict yet:** `S-004` @ `3c683be` (PR #61) — with `pod_hmi.reviewer`, open
-question is the connection-count criterion.
+**`S-004` / PR #61 — CHANGES REQUESTED at `3c683be`, and now BEHIND `dev`.** Two blocking items, both
+small and independent: (1) the **connection count** — two `EventSource`s from two panels against one
+module-global store, with per-instance reconnect and a shared `connection` field; (2) the **badge
+passthrough** — `resolveComponentLive` returns no `qualityName`, so every bad quality renders
+"BAD COMM FAILURE" and an operator at a failed **sensor** reads a **comm** fault. **Item 2 is `pm`'s
+own unkept ruling, not the builder's oversight.** Rebase onto `6dad46a`, re-gate, verdict at the new
+head.
 
-**One with no reviewer at all:** `S-002` / PR #55, the harness itself. It adds the review process,
-so it needs a reviewer who is not its author (`dev_gatekeeper`). **Assigned 2026-11-11 to
-`pod_uiux.reviewer`.**
+**`S-002` / PR #55 — APPROVED at `ba6051a` + `e9eca69`, and UNPUSHED.** It had no reviewer at all
+until 2026-11-11 (it adds the review process, so its author cannot sign it). `pod_uiux.reviewer`
+found that **`check.sh` printed "VERDICT: PASS — every gate green" when no gate ran**, blocked it,
+and approved the fix after verifying it **at the commits**. **PR #55's head is still `dba71c7` and
+the branch is 20 commits ahead** — pushing HEAD would grow the diff from 31 files to 35 and carry
+S-005 and S-006 in with it. **The push must be the two reviewed commits, cherry-picked onto
+`dba71c7`; if it is HEAD, the approval does not carry and S-005/S-006 land unreviewed.**
 
 **Not a slice yet:**
 - `S-005` → `S-006` follow `S-002`; `S-006` also follows `S-005` — **F4 established that
@@ -1312,6 +1582,466 @@ is in progress and carried by **S-004**. It is not free work.
 **The device-mode half** of TSK-801 waits on S-003 and is not yet a slice.
 
 ---
+
+## RELEASE-PATH HAZARD — `rc` → `release` can publish `v0.1.0` from `dev` HEAD (LATENT)
+
+Raised by `release_train.auditor` on fresh start, `qitem-20261111080023`; **all load-bearing
+claims re-verified by `pm`** against the remote refs, not taken from the report.
+
+**The mechanism.** `rc` carries the **pre-#52** versioning workflow; `release` has **no `.github`
+at all**; `dev` carries the guarded one. Guard counts, `pm`'s own grep:
+
+| guard | dev | rc |
+|---|---|---|
+| `scripts/version.sh` | 2 | **0** |
+| `target_commitish` | 2 | **0** |
+| `VERSION_TAG_PUSH_ENABLED` | 4 | **0** |
+
+`git merge-base --is-ancestor c165946 origin/rc` → **NO**. PR #52, *"a release may not create its
+own tag, and it points at the built commit"*, **never reached `rc`**.
+
+So the **first** promotion that brings `rc`'s tree into `release` also brings the unguarded
+workflow **and runs it on that same push**. Its publish step on `rc` (read by `pm`):
+```yaml
+- name: Create or Update GitHub Release
+  uses: softprops/action-gh-release@v2
+  if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref_name == 'release')
+  with:
+    tag_name: ${{ steps.vars.outputs.tag_name }}     # v0.1.0
+    draft: false
+    prerelease: ${{ startsWith(...,'v') && contains(...,'-') }}   # FALSE for v0.1.0
+```
+On a push to `release` the `if:` is **true**, the tag is **`v0.1.0`**, `draft: false`, and
+`prerelease` is **false** because `v0.1.0` contains no hyphen. **No `target_commitish`**, so
+GitHub creates the tag at the **default branch (`dev`)**, not at the built commit. That is exactly
+the defect #52 fixed, on the branch that never received it.
+
+**MITIGATION IS ORDERING, NOT CODE — and ordering is `pm`'s call, so this is the rule:**
+> **Always promote `dev` → `rc` BEFORE `rc` → `release`.** The `dev` → `rc` merge carries `dev`'s
+> hardened workflow into `rc`, so `rc` then holds every guard. **Promoting `rc` → `release` without
+> first promoting `dev` → `rc` is the unsafe order and must not be done, however urgent.**
+
+**SECOND FINDING, and it is the one that matters more: the `rc` → `release` gate has no evidence
+producer.** The auditor's role requires release build, soak and regression stability, zero-downtime
+hot-reload and IEC safety integrity for that gate. **No workflow produces any of it** — three
+workflows, three jobs (`core-engine-tests`, `frontend-tests`, `version-and-changelog`), and
+`scripts/build-installers.sh` **does** run `cargo build --release` and `tauri build` (3 hits) but
+**no workflow invokes it** (`git grep build-installers origin/dev -- .github/` → **zero hits**).
+`docs/01-architecture/08-one-click-installers-and-distribution.md:37` states the gate as *"Strict
+Production (All CI tests, Box-Model audits & OT sign-offs)"* and **no OT sign-off artifact exists.**
+
+**A gate whose evidence nothing can produce is not a gate — it is an aspiration that will be signed
+off on judgement and then recorded as if it were measured.** That is the fabricated-value class one
+level up, and it is `release_auditor`'s and Adrian's to resolve, not `pm`'s to paper over.
+
+**Blast radius today: nil, because nothing can reach `release`.** That is the only reason this is
+LATENT rather than LIVE — and it is why it must be recorded now, before the merge queue moves.
+
+## RECORDED, NOT SCHEDULED — the two `InterlockCondition` types (decided 2026-11-11)
+
+`pm` decision on `qitem-20261026063940`, handed over by `pod_uiux.builder`. **No slice cut.**
+
+**Verified by `pm` at `origin/dev` @ `6dad46a`:** two definitions exist
+(`ui-faceplate-lib/src/types.ts:30`, used at `:98`/`:118`; `ui-inspector/src/types.ts:20`, used at
+`:82`), **nothing imports both** (checked every file mentioning the name for both package imports),
+and the types are **structurally incompatible**, so a value of one **cannot** be silently passed
+where the other is expected — the failure is a **compile error**, not a wrong-import.
+
+**Why not now:** a rename-only slice across two packages needs a worktree, branch, PR, reviewer and
+re-gate **for zero behavioural change**, while six PRs sit approved and the merge queue has only just
+started moving. That spends the rig's scarcest resource — review attention — on a cosmetic fix with
+no live defect. **And acting on a trigger that did not correspond to anything real is the exact
+complaint the row itself made.**
+
+**The trigger that failed, recorded so it is not reused:** the row was parked on *another seat's
+review verdict*, which reaches terminal state when the **review completes**, not when the slice lands
+and not when anything about the types changes. It auto-unparked at `08:13:57` for that reason alone —
+**a review closing is not a slice landing and is not a precondition.**
+
+**New trigger, checkable in one command:**
+```bash
+for f in $(git grep -l InterlockCondition origin/dev -- frontend/ | sed 's|^origin/dev:||'); do
+  git show origin/dev:$f | grep -q ui-faceplate-lib &&   git show origin/dev:$f | grep -q ui-inspector && echo "TRIGGER: $f"
+done
+```
+**Fires only when a file imports BOTH packages** — the condition that makes the collision dangerous.
+Verified **zero** today. Row re-parked on it.
+
+**The general rule this produced:** **a blocker must name a condition that can be observed, not
+another seat's queue row.** A row blocked on a review verdict wakes when the review finishes, which
+may have nothing to do with the work being parked.
+
+## S-005 CUT AND AUTHORED (2026-11-11)
+
+Unblocked when S-002 landed: `CULTURE.md` is on `dev` (`9639acf`), `DECISION-DEFAULTS.md` is absent,
+and `CULTURE.md` ends at §9 so §10–§11 append without editing existing text.
+
+**Cut:** `policy/decision-defaults-s005` at `.claude/worktrees/policy-decision-defaults`, from
+`origin/dev` @ `cdebf3e`.
+
+**Authored by `pm`, committed `bf92e97`** — 3 files, **+159/−0**, zero deletions:
+- `rig/culture/DECISION-DEFAULTS.md` (new) — the reviewed text with **F1 and F2 applied to it**, not
+  a blob copy of the rejected version
+- `rig/culture/CULTURE.md` — **§10 and §11 appended**
+- `rig/mythos-org.yaml` — **the delivery entry, which had never existed.** The row claimed it since
+  it was written; `grep -rn DECISION-DEFAULTS rig/` returned only the ledger and desk prose.
+  **Without it the policy had no operational force anywhere** — the live risk `dev_gatekeeper` found.
+
+**Receipt:** `rig spec validate` → *Rig spec valid*; `preflight` → *Preflight ready*;
+`./scripts/check.sh --rust` → **VERDICT: PASS**; `--frontend` → **VERDICT: FAIL** on missing
+`node_modules`, **which is the `skip()` fix working, not a red** — the slice is docs-and-config with
+no frontend change, and `pm` did not install dependencies in a docs worktree to manufacture a green.
+
+**A grep trap worth recording:** F2's sentence **wraps across two lines**, so
+`grep -c "does not change who may perform"` returns **0**. It gave `pm` a false negative and nearly
+caused a fix to be reported missing. Verified with `tr`. **A multi-line assertion is not a grep.**
+
+**No reference to `rig/SLICES.md`, a slice id or a `qitem` appears in the policy file** — the
+`fbaaa4d` defect. Checked.
+
+**PUSHED: PR #63.** The head has moved **twice** since authoring — `cf0d3d6` then `190fec2`, both
+`Merge branch 'dev'` — **fourth head divergence of the day.** The content is unchanged through them,
+verified by blob rather than by SHA:
+```
+git rev-parse 190fec2:rig/culture/DECISION-DEFAULTS.md  -> 5381057…
+git rev-parse bf92e97:rig/culture/DECISION-DEFAULTS.md  -> 5381057…   identical
+```
+**Compare content, not SHAs** — a rebase moves the head without touching the tree, and a squash-merge
+leaves the branch tip outside `dev` entirely.
+
+**Review row: `qitem-20261111103343-be5b41cf9c161f55` → `pod_uiux.reviewer`** — created *after*
+`pm` had created the same row for five other slices and not for its own. See the observable-blocker
+section below.
+
+### VERDICT: APPROVED at `190fec2`, no conditions
+
+`pod_uiux.reviewer` re-verified all four checks **fresh** rather than assuming its own fixes landed:
+- **F1 HOLDS** — the provenance blockquote. *"transcribes what he said; it is not his authorship"* is
+  the exact claim the original version lacked.
+- **F2 HOLDS, and the wrapping trap is real** — `grep -c` returns **0**, joined with `tr` it is
+  verbatim. The reviewer said they would have reported their own fix missing without the warning.
+- **The `rc` claim HOLDS, and better than the fix that was asked for.** "rc is reachable" is gone;
+  *"`release_auditor` may proceed on `rc` without waiting for me; `release` is not reachable by
+  default, by anyone."* The phrase *"the one hard exception is the `release` branch"* **survives** in
+  CULTURE §10 — but is no longer the defect, because the sentence after it names the misreading
+  and closes it. **That is a better fix than deleting the sentence**, and the reviewer recorded the
+  distinction between "satisfied in substance" and "satisfied literally" rather than scoring it.
+- **The delivery entry HOLDS**, tested: yaml parses, `startup.files` has 2 entries, this one
+  `required: true`. And they **verified the comment's own limitation** — deleted
+  `DECISION-DEFAULTS.md` from an extracted tree, re-ran validate, still *"Rig spec valid"*. So **F3
+  stays open by design, documented at the delivery entry, not silently assumed closed.**
+  *"A comment that states its own limitation is worth more than one that implies coverage."*
+
+**The twice-shipped defect is clean here:** no `S-0xx`, `PR #`, `qitem-`, `rig/SLICES` or `SLICES.md`
+reference in the policy file or the §10–§11 additions.
+
+**What the reviewer did NOT run, recorded honestly:** no `./scripts/check.sh --rust`. The diff is two
+Markdown files and one YAML — a green from it would say nothing about this diff, *"and after this
+session, a gate that answers a question other than the one asked is the specific thing I have been
+blocking."* That is the right call.
+
+**Handed to `qitem-20261111104621-1b0eb972739d6da0` → `dev_gatekeeper` for the merge.** After merge
+the policy has operational force **for the first time**, but only on the **next restore** — no running
+seat has it in its startup files yet, which is the correct state.
+
+## A SAFETY GUARD WAS LOOSENED BY A MERGE — KNOWN, ACCEPTED NARROWING (decided 2026-11-11)
+
+Found by `pod_hmi.reviewer` **inside PR #61's review window**; verified by `pm` at `c12b5af`.
+
+`frontend/packages/ui-shell/src/__tests__/noFabricatedDefaultsSweep.test.ts` — the SYS-REQ-096
+fixture-vocabulary guard — now **strips comments before matching**. The rationale is defensible and
+is in the code: `NetworkCanvas` gained a comment recording that `DEFAULT_STATIONS` was removed, and
+the guard was flagging **the record instead of the code**. A comment cannot fabricate.
+**PR #50 was not wrong to do it.**
+
+### The strip does NOT merely skip comments — it truncates the line
+
+The reviewer and `advisor` probed the regexes rather than eyeballing them, and `pm` reproduced the
+result:
+```
+const u = "http://x/DEFAULT_THING";        -> CAUGHT   (":" before // is not whitespace)
+const u = "see // DEFAULT_THING";          -> MISSED   strips to 'const u = "see '
+const s = "prefix // DEFAULT_DEVICES x";   -> MISSED   strips to 'const s = "prefix '
+const t = "x\t// DEFAULT_CABLES";          -> MISSED   (tab counts as \s)
+const x = DEFAULT_STATIONS;                -> CAUGHT
+// DEFAULT_STATIONS was removed             -> MISSED   (the intent)
+```
+**A whitespace-preceded `//` inside a STRING LITERAL truncates the rest of the line** — closing quote
+and everything after it — so the matcher never sees it. Not just identifiers: the whole line tail.
+
+### The row was CANCELLED rather than pinned, and that is the decision
+
+`pm` wrote an acceptance criterion ("pin a `//` inside a string is not eaten"). It was **wrong twice**,
+and both corrections mattered:
+
+1. **Unbuildable.** The guard is one `it()` that `readFileSync`s real files over a hardcoded
+   `surfaces` array — **no injectable source**, so there is nothing to feed. The only way to redden it
+   is to commit a fixture into a real component. `pod_hmi.reviewer` caught this.
+2. **Would have certified a bug as correct.** The buildable version asserted
+   `fixtureVocabularyIn("see // DEFAULT_THING")` → `null`. That does not pin a property — **it
+   enshrines line truncation inside a string as intended behaviour**, and would make a correct future
+   fix look like a regression. `pod_hmi.reviewer` retracted this too, having first generalised from
+   the URL case that happened to pass.
+
+**The real options were never "pin it" or "leave it unpinned."** They are **(a)** accept the strip with
+its narrow quirk and record it, or **(b)** replace the regex with something that knows whether `//` is
+inside a string — a tokenizer, i.e. real machinery for a test-only guard.
+**Decision: (a).** Row `qitem-20261111095028` **cancelled**.
+
+**Accepted exposure, stated exactly:** the truncation needs a whitespace-preceded `//` inside a string
+literal, in a listed surface, **on the same line as a fixture identifier**. Narrow and contrived.
+**The guard still fails on the defect class** — real reintroduction trips in every form, the
+motivating comment case is clean, `DEFAULT_ON`/`OFF` exemption intact.
+**Classification: known accepted narrowing. Not a behaviour defect, not a phantom task.**
+
+## S-004 APPROVED AT `333f753` — AND MY OWN PRE-MERGE CHECK WAS THE WRONG INSTRUMENT
+
+`pod_hmi.reviewer` approved. Both blocking items closed:
+- **Item 1 carried** from `2c3f242` — `useSseTelemetry.ts` byte-identical (`5d7aebac`), so the earlier
+  mutation proof still describes this tree.
+- **Item 2 mutation-proved at the live head**, in a fresh extraction:
+  restore the hardcoded `'BAD COMM FAILURE'` → **7 red**; key presentation off the specific detail
+  instead of the class → **6 red**; control after restore → **30/30 green**. **The second mutation is
+  the one that matters — it is the exact trap, and the suite catches it rather than only catching the
+  wording.**
+- **Gate: PASS on all six, exit 0** — **the first full `check.sh` receipt on any slice in this repo.**
+  Concurrent-build check run first, exit code read from the script and not through a pipe.
+
+### `pm` ruled the merge gate wrongly, and the reviewer's test is better
+
+`pm` ruled: *"do not merge #61 unless `cd57db1` is an ancestor of the head."* **At `333f753` that
+check FAILS** — and yet the badge fix **is** present. It was **re-committed as `040d2ea`** rather than
+fast-forwarded, and `cd57db1` now lives only on `origin/backup/s004-badge-cd57db1`.
+
+> **An ancestor test asserts a particular COMMIT is in the history. What needs to be true is that the
+> CONTENT is in the tree.** A re-commit breaks the first while the second still holds.
+
+**The strongest check, and it costs one command — `pod_hmi.reviewer`'s, better than `pm`'s pair:**
+```bash
+git rev-parse "${head}:frontend"     # compare against the head the gate was actually run at
+```
+**Measured: `cd57db1`, `040d2ea`, `333f753` and the MERGED `08245d0` all give `a4916f72`.** The entire
+frontend is byte-identical across the commit the reviewer reviewed, the commit that was pushed, the
+remote head, and what landed on `dev`.
+
+**Why the tree hash beats both alternatives:** an **ancestry** check would have **blocked a correct
+merge** (content is present after a re-commit). A **marker grep** would have **passed at a head where
+someone re-added the files with different content** — it confirms a string exists, not that it is the
+right string. **One `rev-parse` on a tree is stronger than both and costs the same.**
+
+**And the rule that survives all of it:** **ancestry FAILING is a signal to check content — never a
+verdict that content is gone.**
+**Same correction `advisor` gave `pm` about merge status hours earlier** (`merge-base` vs the PR API):
+a test answering *"is this commit in the history"* is not answering *"is this content in the tree."*
+**`pm` has now made that mistake in two different forms in one day.**
+
+### The reviewer's pre-verdict check, adopted
+
+**Frontend tree hash identical at `040d2ea` and `333f753` → `a4916f72`.** That is what makes a gate
+receipt **portable across a merge commit** — it proves the gated tree is the merged tree without
+re-running six gates. **If the head moves again, re-check the tree hash rather than re-running.**
+
+### Residual, recorded and not blocking
+
+**Case C still renders `'BAD COMM FAILURE'` when NO detail is supplied** (`processData.ts:104`). That
+is the existing pinned contract and it is **S-012's**. The specific word is always supplied on the
+S-004 path, so it is unreachable from the transport this slice builds — **the defect class is gone from
+this path, not from the codebase.**
+
+## THE OPEN TABLE IS A CACHE OF EXTERNAL STATE, AND IT DECAYS WITHIN MINUTES
+
+`executive-advisor` caught the same defect **twice in 40 minutes** — first five merged PRs marked as
+blocking, then S-003/#57 and S-007/#58 the same way. **Both times the prose was current and the table
+was stale.**
+
+**The diagnosis `pm` got wrong the first time:** this is not carelessness. **The table is a cache of
+state that four other seats change without touching it.** Every merge moves a row's truth and nothing
+notifies the row. Updating it "carefully" cannot keep up — S-005 went from cut to merged *while `pm`
+was mid-pass on the same file*.
+
+**The mechanical check, which is the actual fix:**
+```bash
+# Every PR merged today. Any OPEN row citing one of these is a stale cache entry.
+awk '/^## Open/{f=1} /^## Closed/{f=0} f&&/^\| `S-/{print}' rig/SLICES.md   # the open rows
+gh pr view <n> --json state,mergedAt                                        # the truth
+```
+Run before any pass that reports state. **`pm` ran it against all eight merged PRs and five open rows
+— clean.** A written rule was not enough last time; this is a command, and it takes one invocation.
+
+**The second-order lesson:** `pm` moved five rows to Closed, wrote a section about how the table is
+the authority, and **still** left S-003 and S-007 stale — because the pass had fixed the rows the
+merge queue had already reported and stopped. **The check must be mechanical precisely because the
+author of the rule is the one who skips it.**
+
+## THE STALENESS WINDOW IS THE HANDOFF — a split workflow cannot be atomic
+
+Found by `governance.scribe` after its worktree went behind `dev` a **third** time:
+> *"every rebase that completes can go stale before it is committed. The only shape that survives the
+> race is rebase + commit + push in one continuous step, whoever performs it."*
+
+**`pm`'s refinement, which is the general form:** it is not that `dev` moves too fast — it is that
+**the rebase and the push are performed by different seats.** `scribe` rebases and commits; only
+`dev_gatekeeper` pushes. So for `scribe`, every rebase is necessarily **rebase-without-push**, which is
+**exactly the shape that goes stale**. Scribe was right not to reverse its own commitment, and
+reversing it would not have helped: it would have rebased into `094d5db` and been behind again the
+moment the next PR landed.
+
+**The rule:** **any workflow where step A is one seat and step B is another has a staleness window
+equal to the handoff.** Either one seat does both, or the second step starts from a ref the first step
+just confirmed.
+
+**Verified clean this time** (`pm`): worktree at `792d139`, 1 behind `094d5db`;
+`git log 792d139..origin/dev` over the two files → **empty**; and `094d5db` touches exactly one file
+(`isa-18-2-alarm-engine.md`, +50/−1).
+
+## S-004 — A GREEN PR WOULD HAVE MERGED THE BLOCKING DEFECT (caught 2026-11-11T11:0xZ)
+
+Found by `pod_hmi.reviewer`, verified independently by `pm`. **This is the sharpest near-miss of the
+day:** every check on the PR was green and the PR body was accurate — and the merge would have
+shipped the exact defect `pm` ruled blocking.
+
+**Measured:**
+```
+remote head  feat/hmi-live-telemetry : a711928
+git grep qualityDetail a711928 -- frontend/   -> ZERO hits
+git grep qualityDetail cd57db1  -- frontend/  -> 16 hits across 5 files
+git merge-base --is-ancestor cd57db1 a711928  -> NO
+```
+**Cause, from parentage:** the badge fix is stacked on an **unpushed** `Merge branch 'dev'` commit
+(`cd57db1`, on parent `aada47f`) while the pushed line runs through `d8d9046`. **The same
+connection-fix commit message appears on two different commits** — one pushed, one not.
+
+**Why it is dangerous rather than merely untidy:** PR #61's green CI and its PR body describe the
+**connection fix only**. A merger reading a green PR would be reading a true attestation of *a
+different tree* than the one that would have landed. **Cost of the miss: a faceplate where a failed
+SENSOR reads BAD COMM FAILURE — the item ruled blocking three hours earlier.**
+
+**The check that catches it, and it is not the PR state:**
+```bash
+git merge-base --is-ancestor cd57db1 <head-being-merged>   # must be YES
+git grep -c qualityDetail <head>:frontend/                 # must be non-zero
+```
+**A green check says the pushed tree passed. It never says the pushed tree is the tree you meant.**
+
+**The content itself is correct** — `pm` verified it, so this is a **push problem, not a code
+problem**:
+- `DataQualityBadge.tsx:31-34` — presentation keys off `normalizeQuality` (the three-value class);
+  `qualityDetail` reaches **only** the label function. **The invariant is written in the file's own
+  doc comment (`:12-13`)** rather than left implicit.
+- `qualityDetailBadge.test.tsx:58-67` — asserts **both halves** for `BAD_SENSOR_FAILURE`: text
+  contains no `COMM`, `data-quality="BAD_QUALITY"`, `isAmber` true with the message *"an unnamed bad
+  cause must stay amber, not grey"*, `isGrey` false. **That is the criterion `pm` set, met.**
+
+**Ruling: do not merge #61 at any head that is not a descendant of `cd57db1`.**
+
+## THE DISCOVERY-TO-PLANT WRITE PATH DOES NOT EXIST — verified 2026-11-11
+
+Found by `governance.scribe` while correcting ADR-009, and **widened by `pm`**: the honest state of a
+safety guarantee is stronger than the document first claimed.
+
+**The claim that was almost shipped:** *"that write happens in the backend, and nothing in the
+frontend can refuse it."* That asserts a backend write path.
+
+**Measured on `origin/dev` @ `094d5db`:**
+```
+TopologyGraph::add_node      (mythos-core/src/topology.rs:237)  -> callers only in tests/
+TopologyGraph::add_edge      (:266)                             -> ZERO production callers
+TopologyGraph::add_ip_block  (:312)                             -> ZERO production callers
+```
+**There is no discovery-to-plant-model write path for a node, an edge, or an IP block. The guarantee
+is UNBUILT, not enforced.**
+
+**What actually holds, and it is real:** `TopologyClaim` is a **discriminated union**
+(`provenance.tsx:87`) with `commissioning` **required** (no `?`) on the `DISCOVERED` arm (`:93`). So
+*"discovered therefore plant equipment"* is **inexpressible in the type** — a surface cannot present a
+candidate as commissioned. That is a **shape** guarantee, not a runtime check.
+
+**The distinction that must survive edits** (it was the scribe's own overclaim, caught by acting on
+`pm`'s warning):
+- the **union type** prevents an unsupported **CLAIM** on a **surface**;
+- it does **NOT** prevent a backend path from writing a station into the **plant model**;
+- **and no such backend path exists today.**
+
+**Collapse those three into "the rule is enforced" and it reads as a backend guarantee that does not
+exist.** That is the same class as the fabricated rack: a document asserting protection the code does
+not provide.
+
+## A BLOCKER MUST BE OBSERVABLE — AND I BROKE MY OWN RULE ON S-005
+
+`pm` recorded this rule earlier today, then broke it on the one row `pm` owns.
+
+**What happened.** S-005 was parked with `blockedOn: pod_uiux-reviewer@mythos-org` — **a seat**. A
+seat never reaches a terminal state, so the row kept reading as an **open obligation**: the watchdog
+woke `pm` for it three times, each time on work that was authored, committed, pushed and simply
+waiting for a verdict nobody had been given a row to deliver.
+
+**The fix:** the review is now **owned work** — `qitem-20261111103343-be5b41cf9c161f55` →
+`pod_uiux.reviewer` — and S-005 blocks on **that qitem**. **A qitem reaching terminal state is
+observable; a seat is not.**
+
+**How it was missed:** PR #63 was the **fifth slice today** open with **no review row** (after
+S-003, S-007, S-009, S-010, S-011). `pm` created rows for all five and then did not create one for
+itself. **The pattern is in how slices are opened, not in the reviewers** — and the author of the
+pattern is as exposed to it as anyone.
+
+**The rule, restated because it cost three wake cycles to relearn:** a blocker must name *something
+that can be observed to change*. A row, a SHA, a command output, a file on `dev`. Not a seat, not an
+intention, not "someone will look at it".
+
+## MERGE STATUS COMES FROM THE PR API, NEVER FROM BRANCH ANCESTRY
+
+`executive-advisor` found this while checking the same stale rows, and it is the more important half
+of that finding.
+
+**`git merge-base --is-ancestor origin/<branch> origin/dev` reports "open" for a branch that has
+merged.** It measured `chore/rig-harness` and `docs/topology-provenance-spec` as open **after** both
+had landed. The reason is mechanical: **this repo squash-merges**, so the merge creates a **new
+commit** and the merged branch's tip is **never** an ancestor of `dev`.
+
+**The check that works:**
+```bash
+gh pr view <n> --json state,mergedAt,mergeCommit
+```
+**Merge status is a property of the PR, not of the commit graph.** Branch ancestry answers a
+different question — "is this exact tree in `dev`" — and squash-merging makes it answer "no" for work
+that shipped.
+
+**This is the same failure shape as everything else today:** a command that ran, returned a clean
+answer, and answered a question nobody asked. `CULTURE.md` §1's cheap decisive checks are
+`merge-base --is-ancestor` for *"is my work still in this branch"* — which is correct for its stated
+purpose — but **not** for *"did this PR merge".*
+
+## THE TABLE IS THE AUTHORITY, AND I LET IT GO STALE
+
+`executive-advisor` caught this: the ledger's **prose sections** said five PRs had merged while the
+**table** still said `in-review`/blocked. Verified against `origin/dev`:
+
+```
+6dad46a #60   9639acf #55 (B2 CLOSED)   c12b5af #50   cdebf3e #56   3eaccd6 #59
+```
+
+**How it happened:** `pm` updated the narrative five times and the table once. **A reader who trusts
+the table — which is the thing that is supposed to be authoritative — got the old world.**
+
+**Worse in the same hour:** `rig/SLICES.md` **lost 334 lines** when the repo root moved to a fresh
+branch from `dev`, including the release-path hazard and the B1 correction. `pm` caught it because a
+grep for a section written minutes earlier returned **0**, restored from PR #62's branch, and
+re-applied what was missing.
+
+**The rule, and it is `pm`'s own:** **the table changes first, before any prose reports a state.** And
+**a ledger read in a worktree is not the ledger** — `SLICES.md` was not on `origin/dev` until an hour
+ago, so which tree it is read from has always mattered more than it looks.
+
+## TWO FALSE SIGNALS CAUGHT IN ONE MINUTE, BOTH FROM A PIPE
+
+1. **`./scripts/check.sh | tail` printed `[exited with code 0]` while the verdict line said `FAIL`.**
+   The pipe's exit code is **`tail`'s**, not the script's. The script exited 1 correctly.
+2. **`git ls-remote … | tail` printed `fatal: Failed to connect…` followed by `[exited with code 0]`**
+   — the same shape, `pm`'s own command, minutes later.
+
+**The rule: never take an exit code through a pipe, and never take a red or a green without checking
+what else was running in that tree.** `CULTURE.md` §4 already requires the concurrent-build check; the
+pipe half was not written down and now is.
 
 ## MERGE RULE — "does this PR have a verdict?" is not answerable from the obvious command
 
@@ -1531,6 +2261,15 @@ starts serialising it.
 | — | `test/faceplate-dirty-gate-clears` | #44 | in `dev` | |
 | — | `perf/ci-wall-time` | #54 | in `dev` | |
 | — | `feat/channel-identity` | #53 | in `dev` | |
+| `S-001` | `test/topology-all-view-modes` | #50 | `c12b5af` | Network view claims; conformance prop GONE, not optional. |
+| `S-002` | `chore/rig-harness` | #55 | `9639acf` | **B2 CLOSED.** The harness, gate, culture and ledger are on dev. |
+| `S-009` | `docs/topology-provenance-spec` | #56 | `cdebf3e` | Discovery precondition + ADR-009 (PROPOSED). |
+| `S-010` | `docs/theme-status-honest` | #59 | `3eaccd6` | Light theme defined but not selectable. |
+| `S-011` | `docs/tsk-801-quality-blockers-corrected` | #60 | `6dad46a` | TSK-801's two stale quality blockers corrected. |
+| `S-003` | `refactor/device-execution-mode-canonical` | #57 | `792d139` | One `DeviceExecutionMode`; strucpp adopts core's. |
+| `S-007` | `docs/alarm-colour-reconcile` | #58 | `094d5db` | Alarm colours reconciled; the two priority vocabularies recorded as non-equivalent. |
+| `S-005` | `policy/decision-defaults-s005` | #63 | `f10006a` | Decision-defaults policy + delivery entry. B2's harness made it cuttable. |
+| `S-004` | `feat/hmi-live-telemetry` | #61 | `08245d0` | One live TagBus value to one faceplate. **Refused twice while green without the badge fix**; merged only when the fix was present at the head. |
 | — | `ci/frontend-gate` | — | **not merged, superseded** | 7 commits, `ci.yml` +90 lines — but the frontend gate job it adds is already on `dev` as `frontend-tests` (`ci.yml:286`). Nothing left to land; **delete candidate**, do not rebase. |
 | — | `docs/spi-sections-4-7-rewrite` | — | **not merged** | 2 commits on top of a base 102 commits behind `dev`. Rebase and slice. |
 | — | `feat/ui-isa101-consolidation` | — | **not merged, do not merge** | Based on a stale point; merging as-is deletes 17,328 lines of `dev`. Salvage by hand or drop. |
