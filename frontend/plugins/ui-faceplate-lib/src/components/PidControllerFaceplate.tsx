@@ -8,7 +8,13 @@ import {
   processBarPercent,
 } from '../processData';
 import { DataQualityBadge } from './DataQualityBadge';
-import { useOperatorDraft, useTuningDraft } from '../useOperatorDraft';
+import {
+  useOperatorDraft,
+  useTuningDraft,
+  COMMITTED_UNKNOWN_TEXT,
+  DRIFT_NOT_CONFIGURED_TEXT,
+  isDriftConfigured,
+} from '../useOperatorDraft';
 
 /**
  * PidControllerFaceplate — ISA-101 3-Tier Closed Loop Controller
@@ -387,6 +393,27 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
             />
           </div>
         </div>
+        {/* R8/R6: the trio is one episode, so one band states it once rather than three times. */}
+        {tuneDraft.isDraftOpen && (
+          <div data-testid="pid-tune-draft" className="text-[10px] text-cyan-300 font-mono">
+            DRAFT — uncommitted. Device reports{' '}
+            {(['kp', 'tn', 'tv'] as const)
+              .map((k) => `${k}=${tuneDraft.committed[k] === null ? COMMITTED_UNKNOWN_TEXT : tuneDraft.committed[k]}`)
+              .join(' ')}
+            {tuneDraft.diverged ? ' (changed since this edit began)' : ''}
+          </div>
+        )}
+        {/* O4: no threshold configured means drift is not being watched, and that must be said. */}
+        {tuneDraft.isDraftOpen && !isDriftConfigured(driftThreshold) && (
+          <div data-testid="pid-tune-drift-status" className="text-[10px] text-slate-400 font-mono">
+            Drift: {DRIFT_NOT_CONFIGURED_TEXT}
+          </div>
+        )}
+        {tuneDraft.notice && (
+          <div data-testid="pid-tune-draft-notice" className="text-[10px] text-amber-300 font-mono">
+            {tuneDraft.notice}
+          </div>
+        )}
         <button
           onClick={handleTuningSave}
           className="mt-1 py-1 px-3 rounded bg-sky-700 hover:bg-sky-600 text-white font-medium transition-colors"

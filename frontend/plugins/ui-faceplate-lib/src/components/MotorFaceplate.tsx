@@ -9,7 +9,12 @@ import {
   processBarPercent,
 } from '../processData';
 import { DataQualityBadge } from './DataQualityBadge';
-import { useOperatorDraft, COMMITTED_UNKNOWN_TEXT } from '../useOperatorDraft';
+import {
+  useOperatorDraft,
+  COMMITTED_UNKNOWN_TEXT,
+  DRIFT_NOT_CONFIGURED_TEXT,
+  isDriftConfigured,
+} from '../useOperatorDraft';
 
 /**
  * MotorFaceplate — ISA-101 3-Tier Motor / VFD Component
@@ -398,12 +403,24 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
           <span className="font-mono font-bold text-sky-400">{displayable ? `${speedDraft.value ?? COMMITTED_UNKNOWN_TEXT} RPM` : NO_DATA_TEXT}</span>
         </div>
         {/* R6: an open draft is always visibly uncommitted, and the committed value is shown beside
-            it so the operator can see the device move underneath the edit. */}
+            it so the operator can see the device move underneath the edit.
+
+            O4: when no drift threshold is configured this MUST say so. Without the statement, an
+            operator cannot tell "unconfigured, drift not being watched" from "configured, nothing
+            has drifted" — the absence of a divergence warning is otherwise indistinguishable from
+            a clean comparison. It is scoped to the draft band because that is the only state in
+            which a divergence would have been announced, so it is exactly where the ambiguity is;
+            an idle faceplate carries no drift claim to qualify. */}
         {speedDraft.isDraftOpen && (
           <div data-testid="motor-speed-draft" className="text-[10px] text-cyan-300 font-mono">
             DRAFT — uncommitted. Device reports{' '}
             {speedDraft.committed === null ? COMMITTED_UNKNOWN_TEXT : `${speedDraft.committed} RPM`}
             {speedDraft.diverged ? ' (changed since this edit began)' : ''}
+          </div>
+        )}
+        {speedDraft.isDraftOpen && !isDriftConfigured(driftThreshold) && (
+          <div data-testid="motor-speed-drift-status" className="text-[10px] text-slate-400 font-mono">
+            Drift: {DRIFT_NOT_CONFIGURED_TEXT}
           </div>
         )}
         {/* R7/O6: a discard is never silent. */}
@@ -412,19 +429,43 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
             {speedDraft.notice}
           </div>
         )}
-        <input
-          type="range"
-          min="0"
-          max={rangeMax ?? 0}
-          step="10"
-          value={speedDraft.value ?? 0}
-          disabled={!live || rangeMax === null || operatingMode !== 'MANUAL' || isLocked}
-          onChange={(e) => handleSpeedCommit(Number(e.target.value))}
-          onPointerUp={handleSpeedCommitEnd}
-          onKeyUp={handleSpeedCommitEnd}
-          onBlur={handleSpeedCommitEnd}
-          className="w-full accent-sky-500 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-        />
+        {/* A range input always draws a thumb, and a thumb is a position. With no reported value
+            and no draft there is no position to draw, and falling back to 0 would put the thumb
+            where nobody measured anything — so the control is not rendered at all until there is a
+            value. Its absence is the honest statement; a parked thumb is not. */}
+        {speedDraft.value === null ? (
+          <div
+            data-testid="motor-speed-slider-absent"
+            className="text-[10px] text-slate-500 font-mono py-1"
+          >
+            {NO_DATA_TEXT} — no setpoint reported
+          </div>
+        ) : rangeMax === null ? (
+          /* O4 on the BOUND, not just the value: `rangeMax ?? 0` would turn "I do not know the
+             range" into "the range ends at zero" — a plausible-looking seed where a value is
+             missing, which is the defect O4 forbids. A control with no known span has no honest
+             scale to draw, so it is not drawn. */
+          <div
+            data-testid="motor-speed-range-absent"
+            className="text-[10px] text-slate-500 font-mono py-1"
+          >
+            Setpoint range {NO_DATA_TEXT} — cannot scale an unreported range
+          </div>
+        ) : (
+          <input
+            type="range"
+            min="0"
+            max={rangeMax}
+            step="10"
+            value={speedDraft.value}
+            disabled={!live || operatingMode !== 'MANUAL' || isLocked}
+            onChange={(e) => handleSpeedCommit(Number(e.target.value))}
+            onPointerUp={handleSpeedCommitEnd}
+            onKeyUp={handleSpeedCommitEnd}
+            onBlur={handleSpeedCommitEnd}
+            className="w-full accent-sky-500 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+          />
+        )}
       </div>
 
       {/* Interlock Safety Matrix Checklist */}
