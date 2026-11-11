@@ -64,6 +64,15 @@ export interface BaseFaceplateProps {
    * cause, and omitting the prop entirely preserves the long-standing `BAD COMM FAILURE` wording.
    */
   qualityDetail?: string | null;
+  /**
+   * How far the committed value may move from the value an open draft started from before the
+   * divergence is announced.
+   *
+   * REQUIRED configuration with NO DEFAULT (setpoint reconcile rule, O4). `null`/absent means
+   * unconfigured: drift detection is inactive, because a plausible-looking default here would be a
+   * fabricated bound and an operator cannot tell a chosen bound from a measured one.
+   */
+  driftThreshold?: number | null;
   /** Mode presentation style */
   mode?: FaceplatePresentationMode;
   /** Alarm severity level */

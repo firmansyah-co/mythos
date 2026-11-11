@@ -8,6 +8,13 @@ import {
   processBarPercent,
 } from '../processData';
 import { DataQualityBadge } from './DataQualityBadge';
+import {
+  useOperatorDraft,
+  useTuningDraft,
+  COMMITTED_UNKNOWN_TEXT,
+  DRIFT_NOT_CONFIGURED_TEXT,
+  isDriftConfigured,
+} from '../useOperatorDraft';
 
 /**
  * PidControllerFaceplate — ISA-101 3-Tier Closed Loop Controller
@@ -37,6 +44,7 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
   lowLowLimit = null,
   tier = 2,
   quality,
+  driftThreshold = null,
   alarmActive,
   alarmUnacknowledged,
   operatingMode,
@@ -48,11 +56,27 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
   className = '',
 }) => {
   const [activeTier, setActiveTier] = useState<FaceplateTier>(tier);
-  const [targetSp, setTargetSp] = useState<number | null>(sp ?? null);
-  const [targetCv, setTargetCv] = useState<number | null>(cv ?? null);
-  const [tuneKp, setTuneKp] = useState<number | null>(kp ?? null);
-  const [tuneTn, setTuneTn] = useState<number | null>(tn ?? null);
-  const [tuneTv, setTuneTv] = useState<number | null>(tv ?? null);
+  // R1/R2: none of these is seeded at mount. The committed values are read from props every render;
+  // a draft exists only inside an episode. `targetSp` and `targetCv` are each their own episode
+  // (R8); the tuning trio is ONE episode with one Apply.
+  const spDraft = useOperatorDraft({
+    committed: sp ?? null,
+    isLive: isLiveQuality(quality),
+    identity: tag,
+    driftThreshold,
+  });
+  const cvDraft = useOperatorDraft({
+    committed: cv ?? null,
+    isLive: isLiveQuality(quality),
+    identity: tag,
+    driftThreshold,
+  });
+  const tuneDraft = useTuningDraft({
+    committed: { kp: kp ?? null, tn: tn ?? null, tv: tv ?? null },
+    isLive: isLiveQuality(quality),
+    identity: tag,
+    driftThreshold,
+  });
 
   const live = isLiveQuality(quality);
   const displayable = hasDisplayableValue(quality);
@@ -75,7 +99,7 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
   const showUnacknowledged = live && (alarmUnacknowledged ?? exceedsLimit);
 
   const pvText = formatProcessValue(pv, quality, 1);
-  const spText = formatProcessValue(targetSp, quality, 1);
+  const spText = formatProcessValue(spDraft.value, quality, 1);
   const cvText = formatProcessValue(cv, quality, 1);
   const cvBarPercent = processBarPercent(cv, quality, 100, 0);
   // A setpoint span the device has not reported is NOT invented. A slider's range is a claim
@@ -107,18 +131,21 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
     onModeToggle?.(m);
   };
 
+  // R4: the change itself is the boundary for these sliders; the episode closes at end of gesture.
   const handleSpCommit = (val: number) => {
-    setTargetSp(val);
+    spDraft.update(val);
     onSpChange?.(val);
   };
 
   const handleCvCommit = (val: number) => {
-    setTargetCv(val);
+    cvDraft.update(val);
     onCvChange?.(val);
   };
 
+  // R4/R8: Apply is the explicit boundary for the trio, which closes as one episode.
   const handleTuningSave = () => {
-    onTuneUpdate?.(tuneKp, tuneTn, tuneTv);
+    onTuneUpdate?.(tuneDraft.value.kp, tuneDraft.value.tn, tuneDraft.value.tv);
+    tuneDraft.commit();
   };
 
   // Tier 1: Vector P&ID Symbol
@@ -251,7 +278,7 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
           min={spRangeMin ?? 0}
           max={spRangeMax ?? 0}
           step="0.5"
-          value={live ? targetSp ?? spRangeMin ?? 0 : spRangeMin ?? 0}
+          value={live ? spDraft.value ?? spRangeMin ?? 0 : spRangeMin ?? 0}
           disabled={!canCommandSp}
           title={canCommandSp ? undefined : 'Device has not reported a usable setpoint range'}
           onChange={(e) => handleSpCommit(Number(e.target.value))}
@@ -312,7 +339,7 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
           <div className="flex justify-between text-xs text-amber-300">
             <span>Manual Output (CV Override)</span>
             <span className="font-mono font-bold">
-              {displayable ? `${formatProcessValue(targetCv, quality, 1)} %` : NO_DATA_TEXT}
+              {displayable ? `${formatProcessValue(cvDraft.value, quality, 1)} %` : NO_DATA_TEXT}
             </span>
           </div>
           <input
@@ -320,7 +347,7 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
             min="0"
             max="100"
             step="1"
-            value={targetCv ?? 0}
+            value={cvDraft.value ?? 0}
             disabled={!live}
             onChange={(e) => handleCvCommit(Number(e.target.value))}
             className="w-full accent-amber-500 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
@@ -340,8 +367,8 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
             <input
               type="number"
               step="0.05"
-              value={tuneKp ?? ''}
-              onChange={(e) => setTuneKp(e.target.value === '' ? null : Number(e.target.value))}
+              value={tuneDraft.value.kp ?? ''}
+              onChange={(e) => tuneDraft.update({ ...tuneDraft.value, kp: e.target.value === '' ? null : Number(e.target.value) })}
               className="bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-slate-100"
             />
           </div>
@@ -350,8 +377,8 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
             <input
               type="number"
               step="0.5"
-              value={tuneTn ?? ''}
-              onChange={(e) => setTuneTn(e.target.value === '' ? null : Number(e.target.value))}
+              value={tuneDraft.value.tn ?? ''}
+              onChange={(e) => tuneDraft.update({ ...tuneDraft.value, tn: e.target.value === '' ? null : Number(e.target.value) })}
               className="bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-slate-100"
             />
           </div>
@@ -360,12 +387,33 @@ export const PidControllerFaceplate: React.FC<PidControllerFaceplateProps> = ({
             <input
               type="number"
               step="0.1"
-              value={tuneTv ?? ''}
-              onChange={(e) => setTuneTv(e.target.value === '' ? null : Number(e.target.value))}
+              value={tuneDraft.value.tv ?? ''}
+              onChange={(e) => tuneDraft.update({ ...tuneDraft.value, tv: e.target.value === '' ? null : Number(e.target.value) })}
               className="bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-slate-100"
             />
           </div>
         </div>
+        {/* R8/R6: the trio is one episode, so one band states it once rather than three times. */}
+        {tuneDraft.isDraftOpen && (
+          <div data-testid="pid-tune-draft" className="text-[10px] text-cyan-300 font-mono">
+            DRAFT — uncommitted. Device reports{' '}
+            {(['kp', 'tn', 'tv'] as const)
+              .map((k) => `${k}=${tuneDraft.committed[k] === null ? COMMITTED_UNKNOWN_TEXT : tuneDraft.committed[k]}`)
+              .join(' ')}
+            {tuneDraft.diverged ? ' (changed since this edit began)' : ''}
+          </div>
+        )}
+        {/* O4: no threshold configured means drift is not being watched, and that must be said. */}
+        {tuneDraft.isDraftOpen && !isDriftConfigured(driftThreshold) && (
+          <div data-testid="pid-tune-drift-status" className="text-[10px] text-slate-400 font-mono">
+            Drift: {DRIFT_NOT_CONFIGURED_TEXT}
+          </div>
+        )}
+        {tuneDraft.notice && (
+          <div data-testid="pid-tune-draft-notice" className="text-[10px] text-amber-300 font-mono">
+            {tuneDraft.notice}
+          </div>
+        )}
         <button
           onClick={handleTuningSave}
           className="mt-1 py-1 px-3 rounded bg-sky-700 hover:bg-sky-600 text-white font-medium transition-colors"
