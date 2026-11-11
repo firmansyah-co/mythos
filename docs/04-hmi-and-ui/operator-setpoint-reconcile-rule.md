@@ -1,8 +1,9 @@
 # Operator Setpoint Reconcile Rule (draft vs committed)
 
-**Status:** PARTIALLY DECIDED. The parts that depend on the live-telemetry slice's scoping
-decision are marked **OPEN** and are deliberately not guessed. See §5.
-**Date:** 2026-10-26
+**Status:** DECIDED. §5 was rewritten from OPEN to DECIDED on 2026-11-11 after the live-telemetry
+slice (S-004) landed; every question it carried is now answered or explicitly struck. See §5 for
+each ruling and the evidence behind it.
+**Date:** 2026-10-26 (decisions recorded 2026-11-11)
 **Surfaces in scope:** `MotorFaceplate.inputSpeed`; `PidControllerFaceplate.targetSp`,
 `.targetCv`, `.tuneKp`, `.tuneTn`, `.tuneTv`.
 **Related:** qitem-20261026053023-3c4197fd2154e695 (the row this answers); SYS-REQ-096;
@@ -56,7 +57,10 @@ copy of anything.
 **R3 — An episode opens on the first operator input**, not on focus. A focused but unmodified
 field has no draft.
 
-**R4 — An episode closes at an explicit boundary, or on echo — whichever comes first.**
+**R4 — An episode closes at an explicit boundary.** There is no echo path: §5/O2 strikes it,
+because the transport carries no write acknowledgement and no sequence, so value equality cannot
+distinguish the operator's own command returning from an independent change that happens to land on
+the same value. Reconciling on equality would silently close an episode on a coincidence.
 An "explicit boundary" is an affordance the operator performed deliberately:
 
 - Sliders (`inputSpeed`, `targetSp`, `targetCv`): these stream a command on every `onChange` today.
@@ -91,9 +95,10 @@ meaningless without the surface showing it, and must not survive in a form that 
 as device state. Consequence: **unmount discards open drafts silently.** Accepted for a genuine
 navigation unmount, which the operator caused. The case that is *not* obviously covered is the
 canvas re-keying a faceplate on a changed component id (`DockviewWorkspace` keys on `compId`):
-a re-key destroys the surface and the draft with it, for a reason the operator did not choose. See
-§5/O6 — this is treated as open rather than waved through, because the honest answer may be that a
-draft needs to outlive the component or that a re-key must be forbidden while an episode is open.
+a re-key destroys the surface and the draft with it, for a reason the operator did not choose.
+**§5/O6 settles it: a re-key discards the draft and shows a visible one-line notice.** The draft is
+still not carried across the identity change — the notice is what makes the discard honest rather
+than silent.
 
 ## 4. What this rule deliberately does not do
 
@@ -108,34 +113,90 @@ draft needs to outlive the component or that a re-key must be forbidden while an
   the no-data state; the current mount-time seed is exactly defect (1) and is removed rather than
   preserved.
 
-## 5. OPEN — depends on the live-telemetry slice's scoping decision
+## 5. DECIDED — the transport questions this rule was waiting on
 
-These are marked open rather than answered, because answering them here would pre-empt a decision
-that belongs to the transport slice (`qitem-20261023085422-f459118d847f001d`, `slice:hmi-live-transport`,
-currently blocked with `needs-scoping-decision`).
+These were OPEN until the live-telemetry slice (S-004) landed. They are answered here against the
+transport as it was built, not against an assumption about it. Each ruling states what it buys and
+what it does **not**, because the second half is where this rule can go wrong quietly.
 
-- **O1 — Wire-level staleness.** Does a frame carry a sequence and/or an age, and is there a frame
-  clock? Without it, "the value moved underneath the edit" cannot be distinguished from "no frame
-  has arrived", and R6's divergence display has no bounded meaning.
-- **O2 — Echo versus independent change.** Does a write return an acknowledgement or a sequence that
-  identifies the resulting frame? Value equality is a weaker test: a device can legitimately land on
-  the same value independently, so equality alone would misclassify a real change as an echo (and
-  silently close an episode). R4's "or on echo" depends on this being answerable.
-- **O3 — Central staleness resolution.** If the transport resolves staleness once, centrally (a
-  frame for one tag implying others are stale), then per-field staleness rules here are redundant
-  and should defer to it rather than coexist with it. Which layer owns the rule is undecided.
-- **O4 — Staleness threshold policy.** If a draft is to be abandoned on drift, by what measure?
-  A percentage of range is meaningless for `kp`/`tn`/`tv`. This is a plant-policy question as much
-  as a technical one.
-- **O5 — Do the tuning parameters ever come back from the device?** `kp`/`tn`/`tv` are stored
-  configuration, not process values, and the device may never report them. If it does not, R6's
-  "show the committed value beside the draft" is **not available** for those three fields, and they
-  need a different honest treatment: the draft labelled uncommitted, with the device's value stated
-  as unknown rather than seeded at mount. This distinction must not be flattened into the same rule
-  as `inputSpeed`, which is a live process value the device does report.
-- **O6 — Draft lifetime across a component re-key.** See R9. Either a draft survives a re-key, or a
-  re-key while an episode is open is prevented, or a silent discard is declared acceptable and
-  written down as a known limitation. Not decided here.
+- **O1 — Wire-level staleness → ANSWERED: consumer-observed arrival age.**
+
+  The question asked whether an age is computable. It is, but not from the device clock. The wire
+  carries `TagValueUpdate.timestamp_ns` (the **slot writer's** clock, `telemetry.rs:63`) and
+  `TelemetryBatch.timestamp_ms` (the **server's** clock). A subtraction between a device stamp and a
+  browser's clock is only as trustworthy as their agreement, and nothing in this repository
+  establishes that they are synchronised.
+
+  **Ruling: the rule uses CONSUMER-OBSERVED ARRIVAL AGE.** The consumer stamps `performance.now()`
+  when it applies a batch. That is one clock on one side, so "how long has it been since I heard
+  anything about this tag" is exactly computable with no synchronisation assumption.
+
+  What this buys: it distinguishes *no frame has arrived* (a real staleness signal) from *the value
+  moved underneath the edit* (which needs the value, and we have it).
+
+  What it does **not** buy, and what must not be claimed anywhere in the UI:
+  - Nothing may display a **device-side age**. The arrival clock does not observe when the device
+    wrote the value.
+  - The wire carries **no sequence number**, so a dropped or reordered frame is undetectable. The
+    arrival clock measures **silence, not loss**. Any wording that implies "we know we lost a frame"
+    is false.
+
+- **O2 — Echo versus independent change → STRUCK, not deferred.**
+
+  No write acknowledgement and no sequence crosses this stream. Value equality is the only available
+  signal, and a device can legitimately land on the same value independently. An equality test would
+  therefore **silently close an episode on a coincidence** — the worst kind of wrong, because it
+  looks exactly like the rule working.
+
+  **Ruling: "or on echo" is struck from R4.** The rule reconciles on **commit**, **cancel**, or
+  **observed drift beyond a stated bound**. If a future transport adds an acknowledgement or a
+  sequence, the clause returns **with that transport** and is tested against it — it is not
+  resurrected here as an assumption.
+
+- **O3 — Central staleness resolution → ANSWERED by the implementation: the transport owns it.**
+
+  The server enumerates the whole tag catalog on every 100 ms tick and emits an update only for
+  slots it could actually read, so an absent tag means "could not read", never "unchanged". The
+  consumer's cache consequently replaces per batch rather than merging.
+
+  **Ruling: staleness is resolved centrally. This rule DEFERS to the transport and says so, rather
+  than restating it per field.** Per-field staleness rules would duplicate the transport's answer
+  and could disagree with it.
+
+- **O4 — Drift threshold policy → OUT OF SCOPE of the rule; it is REQUIRED configuration.**
+
+  A percentage of range is meaningless for `kp`/`tn`/`tv`, and a single plant-wide number is not
+  something this document can choose.
+
+  **Ruling: the drift threshold is a named, REQUIRED configuration value with NO DEFAULT in code.**
+  When it is unconfigured, the surface renders `NOT CONFIGURED` and **drift detection is inactive**.
+  It must never be seeded with a plausible-looking number: a carried default here is the
+  fabricated-bound defect in a new costume, and an operator cannot tell a chosen bound from a
+  measured one.
+
+- **O5 — Do the tuning parameters come back from the device? → PER-FIELD, PER-PLANT, at runtime.**
+
+  `kp` **is** in `PROCESS_KEYS` (`componentData.ts:59`), so it *can* arrive as a live value — but
+  whether a given plant's catalog actually carries it is not knowable statically. `inputSpeed` is a
+  live process value the device reports; `kp`/`tn`/`tv` are stored configuration the device may
+  never report. **Conflating the two is the defect this question exists to prevent.**
+
+  **Ruling: each field is treated as reported-or-not at runtime.** Where the device does not report
+  the field, the tuning field shows the draft labelled uncommitted with the device value stated as
+  **UNKNOWN** — never seeded at mount, and never presented as though the device had confirmed it.
+
+- **O6 — Draft lifetime across a component re-key → DECIDED: discard, visibly.**
+
+  Three options were open: survive the re-key, prevent the re-key, or declare a silent discard
+  acceptable. Ruled against the first two and against silence:
+  - Surviving a re-key means carrying a draft across an identity change, so the draft would apply to
+    a **different device** than the one it was typed against.
+  - Preventing the re-key is a UI lock on a navigation control: scope creep, and a new failure mode.
+  - Silent discard is exactly what this rule exists to prevent.
+
+  **Ruling: a re-key discards the draft and says so in a visible one-line notice** ("draft discarded
+  when the faceplate changed device"). Visible discard is honest; silent discard is a fabricated
+  success.
 
 ## 6. Test obligations when this is implemented
 
@@ -146,7 +207,15 @@ currently blocked with `needs-scoping-decision`).
   mounted-instance re-render and PR #34's class-level colour assertions.
 - R7 needs its own case: quality leaves `GOOD` mid-episode, the draft is discarded, and the reason
   is on screen.
-- Whatever O5 resolves to needs a case where the device reports nothing for the field at all.
+- **O5 resolved to per-field at runtime**, so this needs a case where the device reports nothing for
+  the field at all: the draft is labelled uncommitted, the device value reads **UNKNOWN**, and
+  nothing is seeded at mount.
+- **O6 resolved to visible discard**, so this needs a case where the faceplate is re-keyed with an
+  episode open: the draft is gone *and* the one-line notice is on screen. A test that only asserts
+  the draft is gone would pass against the silent discard this ruling rejects.
+- **O4 resolved to required configuration**, so this needs a case where no drift threshold is
+  configured: the surface reads `NOT CONFIGURED` and drift detection is inactive. Asserting only
+  that nothing crashed would pass against a fabricated default.
 
 ## 7. Observation outside this rule (found while writing it, not fixed)
 

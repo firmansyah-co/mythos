@@ -9,6 +9,7 @@ import {
   processBarPercent,
 } from '../processData';
 import { DataQualityBadge } from './DataQualityBadge';
+import { useOperatorDraft, COMMITTED_UNKNOWN_TEXT } from '../useOperatorDraft';
 
 /**
  * MotorFaceplate — ISA-101 3-Tier Motor / VFD Component
@@ -34,6 +35,7 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
   tier = 2,
   quality,
   qualityDetail = null,
+  driftThreshold = null,
   alarm,
   alarmActive,
   alarmUnacknowledged,
@@ -49,7 +51,18 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
   className = '',
 }) => {
   const [activeTier, setActiveTier] = useState<FaceplateTier>(tier);
-  const [inputSpeed, setInputSpeed] = useState<number>(speedSetpoint ?? 0);
+  // R1/R2: the committed setpoint is read from props on every render and never seeded into state.
+  // The previous `useState(speedSetpoint ?? 0)` pinned the mount-time value forever (so telemetry
+  // after mount never reached the field) and invented 0 when the device reported none.
+  const speedDraft = useOperatorDraft({
+    committed: speedSetpoint ?? null,
+    // Declared before `live` exists in this scope; the provenance predicate is the same one.
+    isLive: isLiveQuality(quality),
+    // The device this surface is showing. A change discards an open draft with a visible notice.
+    identity: tag,
+    // O4: REQUIRED configuration with no default. Null means unconfigured, and drift is inactive.
+    driftThreshold,
+  });
   const [isLocked, setIsLocked] = useState<boolean>(maintenanceLock);
 
   // Provenance: only live telemetry may drive colour, animation, alarm annunciation and commands.
@@ -94,10 +107,16 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
     onModeToggle?.(m);
   };
 
+  // R4: sliders stream a command on every change today, so the boundary is the change itself.
+  // The value goes out; the field then returns to reporting telemetry rather than trusting the echo
+  // (O2 — there is no echo path on this transport).
   const handleSpeedCommit = (val: number) => {
-    setInputSpeed(val);
+    speedDraft.update(val);
     onSpeedChange?.(val);
   };
+
+  // R4: end of gesture closes the episode.
+  const handleSpeedCommitEnd = () => speedDraft.commit();
 
   // Status color determination adhering strictly to ISA-101. Without live data the symbol
   // stays quiescent grey: neither "running" nor "stopped" is known, so neither is drawn.
@@ -376,16 +395,34 @@ export const MotorFaceplate: React.FC<MotorFaceplateProps> = ({
           <span className="text-slate-400">
             Speed Target (0 - {rangeMax === null ? NO_DATA_TEXT : `${rangeMax} RPM`})
           </span>
-          <span className="font-mono font-bold text-sky-400">{displayable ? `${inputSpeed} RPM` : NO_DATA_TEXT}</span>
+          <span className="font-mono font-bold text-sky-400">{displayable ? `${speedDraft.value ?? COMMITTED_UNKNOWN_TEXT} RPM` : NO_DATA_TEXT}</span>
         </div>
+        {/* R6: an open draft is always visibly uncommitted, and the committed value is shown beside
+            it so the operator can see the device move underneath the edit. */}
+        {speedDraft.isDraftOpen && (
+          <div data-testid="motor-speed-draft" className="text-[10px] text-cyan-300 font-mono">
+            DRAFT — uncommitted. Device reports{' '}
+            {speedDraft.committed === null ? COMMITTED_UNKNOWN_TEXT : `${speedDraft.committed} RPM`}
+            {speedDraft.diverged ? ' (changed since this edit began)' : ''}
+          </div>
+        )}
+        {/* R7/O6: a discard is never silent. */}
+        {speedDraft.notice && (
+          <div data-testid="motor-speed-draft-notice" className="text-[10px] text-amber-300 font-mono">
+            {speedDraft.notice}
+          </div>
+        )}
         <input
           type="range"
           min="0"
           max={rangeMax ?? 0}
           step="10"
-          value={inputSpeed}
+          value={speedDraft.value ?? 0}
           disabled={!live || rangeMax === null || operatingMode !== 'MANUAL' || isLocked}
           onChange={(e) => handleSpeedCommit(Number(e.target.value))}
+          onPointerUp={handleSpeedCommitEnd}
+          onKeyUp={handleSpeedCommitEnd}
+          onBlur={handleSpeedCommitEnd}
           className="w-full accent-sky-500 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
         />
       </div>
