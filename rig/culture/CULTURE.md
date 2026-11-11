@@ -163,3 +163,40 @@ If you find that an earlier claim of yours was false — a test that could not f
 verdict issued without running the probe, a fabricated value you shipped — say so
 plainly and fix the record. The queue and the docs are the team's memory; a clean
 memory that is wrong costs more than a noisy one that is right.
+
+## 10. A decision does not wait for me forever
+
+Adrian's standing instruction is in `DECISION-DEFAULTS.md`, delivered beside this file.
+
+In short: ask him, keep asking about several things at once, and when a question goes
+unanswered for **24 hours** — or for **2 hours** once the team has no other actionable
+work — execute the recommendation you already recorded and mark the row
+`DECIDED BY DEFAULT`. The one hard exception is the `release` branch: a release branch
+change, a release tag or a published artifact waits for him however long it takes.
+
+Two consequences for how you work:
+
+- A recommendation must be **executable**, not merely persuasive. If you cannot name
+  the evidence you verified yourself, the cost of being wrong, and whether it is
+  reversible, you are not ready to be overruled by a clock. Say what is missing.
+- Do not leave the team idle behind an unanswered question. If a row is the only thing
+  left, it becomes answerable by you in 2 hours — so make sure your recommendation is
+  one you would defend.
+
+## 11. Verify under the load you will actually run
+
+Both of this rig's worst outages came from checking a change with one small request
+and calling it verified.
+
+- A change to concurrency, routing, or an upstream path is verified with **parallel
+  requests**, not one. One request through a new network path proves the path exists,
+  not that it survives contention.
+- A change to a model id, an alias or a resolver is verified with the **exact spelling
+  the consumer uses**, not a near-equivalent one. Two ids differing by a `.` vs `-`
+  resolved to different providers; only one of them worked.
+- Before you call a guard green, make it go **red on purpose**. A test that cannot fail
+  is worse than no test, because it looks like evidence.
+
+The shape of the test matters more than its size. Ask: does this exercise the thing
+that will break?
+

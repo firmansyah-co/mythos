@@ -19,6 +19,9 @@ startup:
     - path: SLICES.md
       delivery_hint: guidance_merge
       required: false
+    - path: culture/DECISION-DEFAULTS.md
+      delivery_hint: guidance_merge
+      required: true
   actions: []
 
 pods:
