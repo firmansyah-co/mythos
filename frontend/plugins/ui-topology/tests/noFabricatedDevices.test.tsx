@@ -259,20 +259,50 @@ describe('SYS-REQ-096: network canvas invents no plant topology', () => {
   });
 
   /**
-   * Conformance is DERIVED from nominal vs actual, never asserted as an input state. It cannot be
-   * compared while only one side is readable, so the strip says so rather than leaving the slot
-   * blank — and it is marked as derived so it never reads as a fourth input.
+   * Conformance is DERIVED from nominal vs actual, never asserted as an input state.
+   *
+   * This test used to hand `conformance="MISMATCH"` straight to the canvas and assert
+   * `data-derived="true"` — proving only that the component sets an attribute on whatever it is
+   * given. It could not fail for the defect it was named for: a caller-asserted conclusion is
+   * exactly what the rule forbids, and the test supplied one. The canvas now accepts the two id
+   * sets and derives, so this supplies DATA and asserts the CONCLUSION the data implies.
    */
-  it('renders conformance as a derived claim, and never as an input state', () => {
-    renderClient(<NetworkCanvas claim={{ source: 'CONFIGURED', health: 'UNKNOWN' }} conformance="MISMATCH" />);
+  it('derives the conformance segment from the two device-id sets, never from an asserted value', () => {
+    renderClient(
+      <NetworkCanvas
+        claim={{ source: 'CONFIGURED', health: 'UNKNOWN' }}
+        nominalDeviceIds={['sw-1', 'plc-1']}
+        actualDeviceIds={['sw-1', 'plc-9']}
+      />
+    );
     const conformance = container.querySelector('[data-testid="topology-conformance-mismatch"]');
     expect(conformance, 'the derived conformance claim did not render').not.toBeNull();
     expect(conformance!.getAttribute('data-derived')).toBe('true');
 
+    // The same data on both sides derives MATCHES, not MISMATCH — so the segment tracks the data
+    // rather than being whatever the caller wanted to say.
+    renderClient(
+      <NetworkCanvas
+        claim={{ source: 'CONFIGURED', health: 'UNKNOWN' }}
+        nominalDeviceIds={['sw-1', 'plc-1']}
+        actualDeviceIds={['sw-1', 'plc-1']}
+      />
+    );
+    expect(container.querySelector('[data-testid="topology-conformance-matches"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="topology-conformance-mismatch"]')).toBeNull();
+
+    // With only one side readable there is nothing to compare, and the strip says so rather than
+    // leaving the slot blank.
+    renderClient(<NetworkCanvas claim={{ source: 'CONFIGURED', health: 'UNKNOWN' }} />);
+    expect(
+      container.querySelector('[data-testid="topology-conformance-not-compared"]')
+    ).not.toBeNull();
+
     // With nothing read there is nothing to compare against, so the slot stays empty rather than
     // restating "nothing has been read" in a second sentence.
-    renderClient(<NetworkCanvas claim={{ source: 'UNREAD', health: 'UNKNOWN' }} conformance="MISMATCH" />);
+    renderClient(<NetworkCanvas claim={{ source: 'UNREAD', health: 'UNKNOWN' }} />);
     expect(container.querySelector('[data-testid="topology-conformance-mismatch"]')).toBeNull();
+    expect(container.querySelector('[data-testid="topology-conformance-not-compared"]')).toBeNull();
   });
 
   it('derives conformance from the two topologies, and answers NOT_COMPARED until both exist', () => {

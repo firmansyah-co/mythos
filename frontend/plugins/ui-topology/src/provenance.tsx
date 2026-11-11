@@ -281,15 +281,21 @@ const Segment: React.FC<{ presentation: ProvenancePresentation; derived?: boolea
  */
 export const TopologyProvenanceBanner: React.FC<{
   claim: TopologyClaim | null;
-  conformance?: TopologyConformance;
+  /**
+   * The two id sets conformance is DERIVED from. The banner does not accept a conformance value:
+   * `data-derived` marks the segment as a conclusion rather than one of the two input axes, and a
+   * conclusion handed in by a caller would make that marker a lie. Both absent derives
+   * NOT_COMPARED.
+   */
+  nominalDeviceIds?: readonly string[];
+  actualDeviceIds?: readonly string[];
   className?: string;
-}> = ({ claim, conformance, className = '' }) => {
+}> = ({ claim, nominalDeviceIds, actualDeviceIds, className = '' }) => {
   const key: SourceDisplayKey = claim ? sourceKeyOf(claim) : 'NOT_STATED';
   const health = claim ? TOPOLOGY_HEALTH[claim.health] : undefined;
+  const conformance = deriveConformance(nominalDeviceIds, actualDeviceIds);
   const conformancePresentation =
-    claim && claim.source !== 'UNREAD'
-      ? TOPOLOGY_CONFORMANCE[conformance ?? 'NOT_COMPARED']
-      : undefined;
+    claim && claim.source !== 'UNREAD' ? TOPOLOGY_CONFORMANCE[conformance] : undefined;
 
   return (
     <div
@@ -297,7 +303,7 @@ export const TopologyProvenanceBanner: React.FC<{
       data-source={claim?.source ?? 'NOT_STATED'}
       data-health={claim?.health ?? 'UNKNOWN'}
       data-commissioning={claim && claim.source === 'DISCOVERED' ? claim.commissioning : undefined}
-      data-conformance={conformancePresentation ? (conformance ?? 'NOT_COMPARED') : undefined}
+      data-conformance={conformancePresentation ? conformance : undefined}
       role="status"
       className={`flex flex-col text-[11px] ${className}`}
     >

@@ -32,7 +32,6 @@ import {
   TopologyProvenanceBanner,
   TOPOLOGY_CLAIM_UNREAD,
   type TopologyClaim,
-  type TopologyConformance,
 } from './provenance';
 import {
   Plus,
@@ -56,8 +55,14 @@ export interface NetworkCanvasProps {
    * visibly is.
    */
   claim?: TopologyClaim;
-  /** DERIVED, never asserted: compare nominal and actual ids once both are readable. */
-  conformance?: TopologyConformance;
+  /**
+   * The two device-id sets conformance is DERIVED from. A caller may supply observations; it may
+   * not supply a conclusion. There is deliberately no `conformance` prop: conformance is computed
+   * by this component via `deriveConformance`, so "the caller asserted MATCHES" is not a state the
+   * type can express. Both absent (today's only reachable case) derives NOT_COMPARED.
+   */
+  nominalDeviceIds?: readonly string[];
+  actualDeviceIds?: readonly string[];
   initialStations?: HardwareStationNode[];
   initialCables?: TopologyCableEdge[];
   onSelectStation?: (station: HardwareStationNode | null) => void;
@@ -92,7 +97,8 @@ const edgeTypes = {
  */
 const NetworkCanvasInner: React.FC<NetworkCanvasProps> = ({
   claim,
-  conformance,
+  nominalDeviceIds,
+  actualDeviceIds,
   initialStations,
   initialCables,
   onSelectStation,
@@ -298,7 +304,8 @@ const NetworkCanvasInner: React.FC<NetworkCanvasProps> = ({
       */}
       <TopologyProvenanceBanner
         claim={claim ?? (stations.length > 0 ? null : TOPOLOGY_CLAIM_UNREAD)}
-        conformance={conformance}
+        nominalDeviceIds={nominalDeviceIds}
+        actualDeviceIds={actualDeviceIds}
       />
 
       {/* Main xyflow Canvas Viewport */}
