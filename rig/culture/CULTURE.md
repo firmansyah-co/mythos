@@ -184,3 +184,35 @@ If you find that an earlier claim of yours was false — a test that could not f
 verdict issued without running the probe, a fabricated value you shipped — say so
 plainly and fix the record. The queue and the docs are the team's memory; a clean
 memory that is wrong costs more than a noisy one that is right.
+
+## 10. When a question goes unanswered
+
+`rig/culture/DECISION-DEFAULTS.md` says how long a question waits and what a seat may
+decide alone when it does. **Read it; this section only records the boundary that file
+must not be read past.**
+
+- **The clock is the human's, not the queue's.** `closureRequiredAt` and
+  `waiting.deadlineAt` are the *owner's* closure SLA — `claimedAt` plus a tier allowance.
+  They say nothing about how long Adrian has. The human deadline is arrival plus the clock
+  in `DECISION-DEFAULTS.md`, taken from the row's transition notes when the advisor stated
+  one, and **labelled as inferred** when it was computed rather than read.
+- **A defaulted decision is a recorded decision, not a silent one.** §5 of that file fixes
+  the recording format; a seat that acts on a default without recording it has not
+  defaulted, it has decided alone and hidden it.
+- **The one hard exception is the `release` branch.** That is an *exclusivity* claim about
+  this file, not a summary of §3's list — §3 names three acts that need me, and §6 names
+  the seats that may merge. **This file says whether an act may proceed without an answer;
+  it does not change who may perform it (§6) or whether it must be reviewed (§6).**
+
+## 11. Defaulting is not the same as guessing
+
+A default exists so the team keeps moving while I am not looking. It is not licence to
+invent what I would have said.
+
+- **Execute the recorded recommendation, not a new one.** If a row has no recommendation,
+  it is not defaultable — send it back to its author.
+- **A default that widens what a seat may do is not a default.** Every added clause in
+  `DECISION-DEFAULTS.md` narrows or disciplines the grant; none widens it. A clause that
+  would widen it is a question for me, however long it waits.
+- **State that it was defaulted.** The row says so, with the deadline that was used and
+  the clock that applied. A successor reading it must be able to see that no human answered.
