@@ -222,7 +222,7 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 ### Sprint 8: Live Telemetry Cutover & Device-Mode Completion (next slice)
 - **Sprint Goal**: Prove that one real TagBus value reaches one HMI faceplate, and complete the SYS-REQ-096 device-mode path that the Sprint 0 honesty work deferred.
 - **Status**: PRE-COMMITTED PREREQUISITE. Not started. Recorded before sprint planning so the gap cannot be lost again. This is a next-slice prerequisite, not a retroactive defect against the merged HMI honesty work.
-- **Precondition**: The canonical `DeviceExecutionMode` ownership decision must be resolved before implementation begins. See the ACCEPTED DUPLICATION note below.
+- **Precondition**: ~~The canonical `DeviceExecutionMode` ownership decision must be resolved before implementation begins.~~ **Resolved 2026-11-11** by #57 — `mythos_core` owns the type and `mythos-strucpp` re-exports it. See the retired-note paragraph below.
 - **Lead Division**: Software (`head-software`), Design (`head-design`)
 
 | Task ID | Task Description | Assigned Division | Deliverables & Code Artifacts | Acceptance Criteria |
@@ -231,14 +231,19 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 
 **Scope limit.** This slice proves one real tag-to-faceplate path. Broader subscription and binding architecture is follow-up. Do not expand the slice past that proof.
 
-> **ACCEPTED DUPLICATION (1.4.0): `DeviceExecutionMode` is defined twice, deliberately and temporarily.**
+> **RETIRED (2026-11-11): `DeviceExecutionMode` was defined twice; the duplication is gone.**
 >
-> - `crates/mythos-core/src/device/mode.rs:30`
-> - `crates/mythos-strucpp/src/quality_gate.rs:13`
+> This note used to record an accepted duplication between `crates/mythos-core/src/device/mode.rs` and `crates/mythos-strucpp/src/quality_gate.rs`, and a precondition on TSK-801 that the canonical ownership be resolved first. **Both are resolved.** #57 (`refactor(strucpp): adopt mythos_core::DeviceExecutionMode, delete the duplicate`, merged 2026-11-11 as `792d139`) deleted strucpp's definition and replaced it with a re-export:
 >
-> `mythos-strucpp` already depends on `mythos-core` (`crates/mythos-strucpp/Cargo.toml:16`, `mythos-core.workspace = true`), and there is no reverse dependency, so collapsing the two enums would create no cycle. The two definitions are not collapsed in Sprint 0; the duplication is an accepted, recorded choice, not an oversight. Its real cost is a wire-format divergence, verified empirically: `mythos-core`'s enum carries `#[serde(rename_all = "snake_case")]` and `Default`, `mythos-strucpp`'s carries neither, so the first variant serialises as `"physical_hardware"` in one crate and `"PhysicalHardware"` in the other.
+> ```rust
+> pub use mythos_core::DeviceExecutionMode;
+> ```
 >
-> **Precondition on TSK-801.** The canonical ownership decision must be resolved before the slice is implemented. Because `mythos-strucpp` already depends on `mythos-core`, the natural resolution is for `mythos-strucpp` to adopt the `mythos-core` enum, but doing so changes the wire name of any serialised value and requires a migration. This document does not pick the resolution, because choosing one is an architecture decision, not a documentation edit.
+> `mythos_core` owns the type; `mythos_strucpp::quality_gate::DeviceExecutionMode` still resolves for existing consumers. Verified: `git grep -c "enum DeviceExecutionMode" -- crates/` returns one hit, in `mythos-core`.
+>
+> The wire form is settled on the core type's `#[serde(rename_all = "snake_case")]`, so the first variant is `"physical_hardware"`. `Default` is `PhysicalHardware`.
+>
+> **On the migration this note warned about:** it was not needed. The decision record anticipated that collapsing the enums "changes the wire name of any serialised value and requires a migration". Checked against the merged tree: the only code that serialises the type is #57's own test (`crates/mythos-strucpp/tests/device_execution_mode_identity.rs`), so there is no persisted or transmitted value to migrate. One serialisable structure does carry it — `SimulationAuditEvent` in `mythos-core/src/device/mode.rs`, which derives `Serialize` and holds `previous_mode` / `new_mode` — and nothing writes it to storage or the wire today; it appears outside that module only as a re-export. That is the seam where a migration would have been required had the collapse come later.
 
 ## 3. Milestones & Quality Gates
 
