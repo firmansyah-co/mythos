@@ -1,0 +1,215 @@
+name: Release Build & Packaging Sanity
+
+# THE PRODUCER OF THE rc -> release GATE'S "release build" EVIDENCE.
+#
+# WHY THIS EXISTS: docs/01-architecture/08-one-click-installers-and-distribution.md lists
+# "release build" among the criteria for promoting rc -> release, and nothing produced it.
+# scripts/build-installers.sh DOES run `cargo build -p mythos-desktop --release`, but no
+# workflow invoked it (`git grep build-installers origin/dev -- .github/` -> zero hits at
+# 7c35e80), and scripts/test-packaging-sanity.sh had zero CI references.
+#
+# IT PUBLISHES NOTHING AND CREATES NO TAG. That is enforced structurally by
+# `permissions: contents: read` below, not merely asserted here: `contents: write` is what a
+# tag push requires, so this job cannot create one even if a step tried. The release path
+# already has a #52-class defect where a workflow created its own tag; this job must not
+# become a second one.
+#
+# WHAT THIS JOB DOES NOT PROVE — stated so it is not cited for more than it is:
+#   * It compiles the desktop HOST, not a shippable installer. src-tauri/build.rs writes a
+#     placeholder index.html when frontend/packages/ui-shell/dist is absent, so a green run
+#     here can be a green run against a stub frontend. This is a compile-and-validate gate,
+#     not a packaging gate. Producing real bundles is build-installers.sh's job and is not
+#     wired to CI by this change.
+#   * It does NOT satisfy "soak / regression stability" or "IEC safety integrity". Grep over
+#     specs/ for those phrases returns zero hits: there is no test, no requirement, no bound.
+#     S-017 removes those phrases from the gate; this job is not the producer for them.
+#   * Hot-reload IS measured elsewhere (hot_reload_tests.rs asserts <50ms). That is a TEST,
+#     not a soak, and this job does not change it either way.
+
+on:
+  push:
+    branches:
+      - rc
+      - release
+  # Manual re-run: lets a human obtain release-build evidence on a ref without a new commit,
+  # and is the only way to exercise this job on a branch that is neither rc nor release.
+  workflow_dispatch:
+
+# Same shape as ci.yml: supersede an in-flight run on the same ref rather than queueing it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The constraint from the slice, made mechanical. This job reads the repo and writes nothing
+# back to it. A `contents: write` grant is required to push a tag, so omitting it is what
+# prevents this job from ever becoming a tag creator.
+permissions:
+  contents: read
+
+jobs:
+  release-build:
+    name: Release Build & Packaging Sanity
+    runs-on: arc-runner-org
+    # A release build of the Tauri host is heavier than the test suite. Without a bound a hang
+    # would run to GitHub's 6h default (same reasoning as frontend-tests' 30 minutes).
+    timeout-minutes: 45
+    # Identical to core-engine-tests: the runner image is shared and these point at the
+    # persistent toolcache. Copied rather than invented so both Rust jobs behave the same way.
+    env:
+      RUSTUP_HOME: /opt/hostedtoolcache/rustup
+      CARGO_HOME: /opt/hostedtoolcache/cargo
+      CARGO_HTTP_IP_RESOLVE: "ipv4"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
+      RUSTC_WRAPPER: "/opt/hostedtoolcache/cargo/bin/sccache"
+      SCCACHE_DIR: "/opt/hostedtoolcache/sccache"
+      SCCACHE_CACHE_SIZE: "10G"
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Build Tools & Linker
+        run: |
+          START=$(date +%s)
+          # Serialize every apt run. All jobs on this self-hosted runner share the
+          # persistent cache at /opt/hostedtoolcache/apt, and concurrent runs raced it:
+          # one left a stale archives/lock and every later run died with
+          # "E: Could not get lock ... It is held by process 0" (exit 100).
+          sudo mkdir -p /opt/hostedtoolcache/apt
+          exec 9>/opt/hostedtoolcache/apt/.mythos-apt.lock
+          flock 9
+
+          # Only now that we hold the serialization lock is it safe to clear stale
+          # locks: removing them outside it could corrupt an apt run that holds one.
+          sudo rm -f /opt/hostedtoolcache/apt/archives/lock /opt/hostedtoolcache/apt/lists/lock
+
+          # Disable docker-clean so downloaded .deb packages are preserved
+          sudo rm -f /etc/apt/apt.conf.d/docker-clean 2>/dev/null || true
+
+          # Create persistent cache directories on host-backed toolcache
+          sudo mkdir -p /opt/hostedtoolcache/apt/archives/partial
+          sudo mkdir -p /opt/hostedtoolcache/apt/lists/partial
+          sudo chmod -R 777 /opt/hostedtoolcache/apt 2>/dev/null || true
+
+          # Configure APT via /etc/apt/apt.conf.d/99custom-cache
+          cat << 'EOF' | sudo tee /etc/apt/apt.conf.d/99custom-cache >/dev/null
+          Dir::Cache::Archives "/opt/hostedtoolcache/apt/archives";
+          Dir::State::Lists "/opt/hostedtoolcache/apt/lists";
+          Binary::apt::APT::Keep-Downloaded-Packages "true";
+          APT::Keep-Downloaded-Packages "true";
+          EOF
+
+          PKGS="build-essential gcc libc6-dev pkg-config libdbus-1-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev"
+
+          if dpkg -s $PKGS >/dev/null 2>&1; then
+            echo "All required build tools and linker packages are already installed, skipping."
+            MODE="already present (image bakes the toolchain)"
+          else
+            MODE="installed by apt in this run (dpkg configure only; 0 downloads from cache)"
+            # Check if package lists need update (if lists are missing or older than 24 hours)
+            if [ -z "$(find /opt/hostedtoolcache/apt/lists -maxdepth 1 -type f -name '*_Packages' -mtime -1 2>/dev/null)" ]; then
+              echo "Package lists missing or older than 24h. Updating package lists..."
+              sudo apt-get update -y
+            else
+              echo "Reusing cached package lists."
+            fi
+            echo "Installing required packages..."
+            sudo apt-get install -y --no-install-recommends $PKGS
+          fi
+
+          SECS=$(( $(date +%s) - START ))
+          echo "build tools: $MODE in ${SECS}s"
+          {
+            echo "### Rust job timing"
+            echo ""
+            echo "| phase | seconds |"
+            echo "|---|---|"
+            echo "| build tools / linker | $SECS |"
+            echo ""
+            echo "- build tool mode: $MODE"
+          } >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Setup Cache Symlinks and Directories
+        run: |
+          sudo mkdir -p /opt/hostedtoolcache/rustup /opt/hostedtoolcache/cargo/bin /opt/hostedtoolcache/sccache
+          sudo chown -R $(id -u):$(id -g) /opt/hostedtoolcache/rustup /opt/hostedtoolcache/cargo /opt/hostedtoolcache/sccache 2>/dev/null || true
+          sudo chmod -R 777 /opt/hostedtoolcache/sccache 2>/dev/null || true
+          if [ -d "/home/runner/.cargo/registry" ]; then
+            ln -s /home/runner/.cargo/registry /opt/hostedtoolcache/cargo/registry 2>/dev/null || true
+          fi
+          if [ -d "/home/runner/.cargo/git" ]; then
+            ln -s /home/runner/.cargo/git /opt/hostedtoolcache/cargo/git 2>/dev/null || true
+          fi
+          echo "/opt/hostedtoolcache/cargo/bin" >> $GITHUB_PATH
+
+      - name: Install & Start sccache Server
+        run: |
+          if [ ! -x "/opt/hostedtoolcache/cargo/bin/sccache" ]; then
+            echo "Installing sccache v0.8.2..."
+            curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.8.2/sccache-v0.8.2-x86_64-unknown-linux-musl.tar.gz -o /tmp/sccache.tar.gz
+            tar -xzf /tmp/sccache.tar.gz -C /tmp
+            mv /tmp/sccache-v0.8.2-x86_64-unknown-linux-musl/sccache /opt/hostedtoolcache/cargo/bin/sccache
+            chmod +x /opt/hostedtoolcache/cargo/bin/sccache
+            rm -rf /tmp/sccache*
+          else
+            echo "sccache already present in toolcache, skipping download."
+          fi
+          /opt/hostedtoolcache/cargo/bin/sccache --version
+          /opt/hostedtoolcache/cargo/bin/sccache --start-server || true
+          /opt/hostedtoolcache/cargo/bin/sccache --zero-stats || true
+
+      - name: Install Rust Toolchain
+        run: |
+          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
+          export RUSTC_WRAPPER="/opt/hostedtoolcache/cargo/bin/sccache"
+          if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1 && rustup component list | grep -q "rustfmt.*(installed)" && rustup component list | grep -q "clippy.*(installed)"; then
+            echo "Rust toolchain already present in cache, skipping re-download."
+          else
+            echo "Installing or updating Rust toolchain via rustup..."
+            for i in 1 2 3 4 5; do
+              echo "Attempt $i to install rustup..."
+              curl --proto '=https' --tlsv1.2 --retry 5 --retry-delay 2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --component rustfmt,clippy && break || sleep 5
+            done
+          fi
+          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
+            source /opt/hostedtoolcache/cargo/env
+          fi
+          rustc --version
+          cargo --version
+
+
+      # THE ACCEPTANCE CRITERION, direction 1: this step is what must go red on a compile
+      # break in src-tauri. --release specifically, because a debug build can succeed while a
+      # release build fails (different lints, optimization passes, and cfg gates).
+      - name: Build Desktop Host (release)
+        run: |
+          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
+          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
+            source /opt/hostedtoolcache/cargo/env
+          fi
+          START=$(date +%s)
+          cargo build -p mythos-desktop --release
+          SECS=$(( $(date +%s) - START ))
+          echo "release build: ${SECS}s"
+          {
+            echo "### Release build timing"
+            echo ""
+            echo "| phase | seconds |"
+            echo "|---|---|"
+            echo "| cargo build --release | $SECS |"
+          } >> "$GITHUB_STEP_SUMMARY" || true
+
+      # THE ACCEPTANCE CRITERION, direction 2: its own step, so a syntax error in the installer
+      # script names this step rather than surfacing as an ambiguous failure inside the sanity
+      # suite. bash -n parses WITHOUT executing, which is why it is safe to point at a script
+      # that otherwise compiles and packages.
+      - name: Validate Installer Script Syntax (bash -n)
+        run: bash -n scripts/build-installers.sh
+
+      # The existing sanity suite: tauri.conf.json structure and bundle metadata, icon assets,
+      # the src-tauri Cargo manifest, installer-script syntax, and `build-installers.sh --help`.
+      # Verified inert before wiring it in: --help exits 0 at the top of build-installers.sh
+      # (line ~39, before any build), and that script contains no `git tag`, `gh release`,
+      # `cargo publish` or push. Under `permissions: contents: read` it could not tag anyway.
+      - name: Packaging Sanity Suite
+        run: ./scripts/test-packaging-sanity.sh
