@@ -94,8 +94,9 @@ pods:
         restore_policy: resume_if_possible
         # Adrian's decision, 2026-11-12: builtin:auto on builder seats only.
         # Recorded via the desk's AskUserQuestion after the narrower /tmp-only policy
-        # was shown on screen and declined. Reviewers, advisor, auditor and desk keep
-        # builtin:standard -- this grant is builders only.
+        # was shown on screen and declined. Reviewers, advisor and auditor INHERIT the
+        # rig-level builtin:standard -- this grant is builders only. The desk has no entry
+        # in this spec at all (S-006 has not landed), so it is not pinned to anything.
         permission_policy: builtin:auto
       - id: reviewer
         agent_ref: path:/home/adrian/Projects/mythos/rig/agents/ui-reviewer
@@ -121,8 +122,9 @@ pods:
         restore_policy: resume_if_possible
         # Adrian's decision, 2026-11-12: builtin:auto on builder seats only.
         # Recorded via the desk's AskUserQuestion after the narrower /tmp-only policy
-        # was shown on screen and declined. Reviewers, advisor, auditor and desk keep
-        # builtin:standard -- this grant is builders only.
+        # was shown on screen and declined. Reviewers, advisor and auditor INHERIT the
+        # rig-level builtin:standard -- this grant is builders only. The desk has no entry
+        # in this spec at all (S-006 has not landed), so it is not pinned to anything.
         permission_policy: builtin:auto
       - id: reviewer
         agent_ref: path:/home/adrian/Projects/mythos/rig/agents/hmi-reviewer
@@ -148,8 +150,9 @@ pods:
         restore_policy: resume_if_possible
         # Adrian's decision, 2026-11-12: builtin:auto on builder seats only.
         # Recorded via the desk's AskUserQuestion after the narrower /tmp-only policy
-        # was shown on screen and declined. Reviewers, advisor, auditor and desk keep
-        # builtin:standard -- this grant is builders only.
+        # was shown on screen and declined. Reviewers, advisor and auditor INHERIT the
+        # rig-level builtin:standard -- this grant is builders only. The desk has no entry
+        # in this spec at all (S-006 has not landed), so it is not pinned to anything.
         permission_policy: builtin:auto
       - id: reviewer
         agent_ref: path:/home/adrian/Projects/mythos/rig/agents/backend-reviewer
