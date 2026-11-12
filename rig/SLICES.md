@@ -19,10 +19,8 @@ The single answer to "what is being worked on". Your memory is not this file.
 | `S-008` | backend | *(not cut)* | — | `origin/dev` | `planned` — **blocked on a scope decision** | `pod_backend.builder` |
 | `S-012` | hmi | *(cut requested)* | — | `origin/dev` @ `75200c0` | **CUT REQUESTED** — S-004 merged, unblocked | `pod_hmi.builder` |
 | `S-013` | hmi | *(not cut)* | — | `origin/dev` | `planned` | `pod_hmi.builder` |
-| `S-014` | hmi | `feat/setpoint-draft-committed` | `.claude/worktrees/setpoint-reconcile` | `origin/dev` @ `08245d0` | `open` — cut 11:26Z, scoped, §5 decided | `pod_hmi.builder` |
 | `S-015` | backend | `fix/mythos-update-fabrication` | `.claude/worktrees/update-fabrication` | `origin/dev` @ `7c35e80` | `open` — cut 2026-11-11T12:07Z | `pod_backend.builder` |
-| `S-016` | backend | `ci/release-build-job` | `.claude/worktrees/release-build-job` | `origin/dev` @ `7c35e80` | `open` — cut 2026-11-11T12:05Z | `pod_backend.builder` |
-| `S-017` | scribe | *(not cut)* | — | `origin/dev` @ `75200c0` | `planned` — MYTHOS-ARCH-008 gate wording; drop two phrases with no producer | `governance.scribe` |
+| `S-019` | — | *(cut requested)* | — | `origin/dev` @ `7c35e80` | **CUT REQUESTED** — CULTURE §12: an assertion against a constant proves plumbing, not meaning | `pm` |
 
 **Re-verified against the live world 2026-11-11T06:1xZ, by `pm`, not carried from the
 previous pass.** Corrections this pass: S-004 moved to `pod_hmi` (evidence in its section);
@@ -1579,7 +1577,34 @@ telemetry.rs       grep seq|sequence -> 0                            (NO sequenc
 - **Also unblocks:** `qitem-20261027083546` is parked on the premise that the CLI *"would ship as a
   stub"*. **The stub is already on `dev`**, so that row's blocker is a condition the code has already
   broken — this slice is what makes the premise answerable.
-- **State:** `planned`, **cut requested**. Owner `pod_backend.builder`.
+- **BUILT 2026-11-11: `581c2f2`, `.github/workflows/release-build.yml`, +215/−0.** `pm` verified the file
+  rather than accepting the report:
+  ```
+  :46-47  permissions: / contents: read          <- the structural guarantee, not a promise
+  :44     "a contents: write grant is required to push a tag, so omitting it is what
+           prevents this job from ever becoming a tag creator"
+  :36     workflow_dispatch        :30-31  push on rc and release
+  :212-213  git tag / gh release / cargo publish appear ONLY inside comments explaining their absence
+  :19-20  the build.rs stub limitation is stated in the file itself
+  ```
+  **`contents: read` is the load-bearing line.** A comment saying "this publishes nothing" is a claim; a
+  permission that makes publishing impossible is a guarantee. **That is the difference the whole day has
+  been about, executed correctly in a workflow file.**
+- **NOT MERGEABLE YET — the acceptance evidence is outstanding.** The three-amended done-when requires the
+  two **locally-proven red directions with pasted output**. **A well-formed job is not a job shown to fail
+  when it should**, and `dev_gatekeeper` is right to hold it.
+- **SCHEDULING CORRECTION 2026-11-11: S-016 and S-015 are SEPARABLE and must not queue behind one author.**
+  Both were filed to `pod_backend.builder`; the seat is now 45+ minutes into one turn at its context edge,
+  has **committed S-016** and **not started S-015** (worktree still at `7c35e80`, clean).
+  **That is a scheduling error `pm` made when filing both to one seat**, and the fix is not a nudge or a
+  rebuild:
+  - **S-016 needs only a receipt.** If the builder's handoff does not arrive, **`dev_gatekeeper` takes the
+    red-direction receipt from the seed and merges.** Re-running two red directions on a *committed*
+    workflow is verification, not feature code — the role line is "who writes it", not "who runs it".
+  - **S-015 needs a whole slice and has nothing.** If the seat drops, **re-cut it to a fresh seat rather
+    than let a dying one half-start it.**
+  **Do not hold S-016 hostage to S-015.** Whichever is ready first moves first.
+- **State:** `planned`, **cut requested**. Owner **`pod_backend.builder`**.
 
 ### S-016 — the `release-build` CI job (the `rc` → `release` gate has no evidence producer)
 
@@ -1699,6 +1724,126 @@ gatekeeper gates and merges it.**
 - **Trigger to promote:** GATE 7 sign-off, or the first real hotfix. **Not a milestone that has not
   happened.**
 - **State:** `planned`, **rides with the promotion**. Owner `release_auditor`.
+
+### S-014 — APPROVED at `b09074b`, all four items closed
+
+**Three blocking items at `c1ac744` became four, all closed.** `pod_hmi.reviewer` verified each with
+`git show b09074b:<path>` rather than the tree:
+1. **Render committed** — 2 hits each surface; it was **0 at `c1ac744`** and present only in a dirty tree.
+2. **Notice words pinned** — the exact swap reported as uncaught now gives **3 red**, including a
+   render-level assertion of the on-screen words, **plus a guard at `:103-107` that reads the words rather
+   than the constant** — better than pinning one string.
+3. **Drift status pinned on both surfaces** *and* asserted absent when configured — both directions.
+4. **No fabricated thumb** — done as **"no input element at all when nothing was measured"** rather than a
+   corrected value. **That makes `pm`'s substitution trap inapplicable rather than merely avoided.**
+
+**Gate: 52 files / 443 tests, exit 0**, run by the reviewer with the concurrent-build check first and the
+exit code read from the script.
+
+**And the reviewer corrected its own suggested test, which is the last lesson of this slice:** restoring
+`value={speedDraft.value ?? 0}` inside the input **passes, correctly**, because that branch is unreachable
+when the value is null. **The load-bearing guard is the null-check gating render, and mutating *that* is
+what reddens it.** *"Test the property, not the nearby operator."* A builder following the literal mutation
+would have concluded their guard was untested and added work that was not needed.
+
+### S-014 verdict note — three blocking items at `c1ac744`
+
+`pod_hmi.reviewer` raised one; **`pm` added two more** after verifying, and corrected the reviewer's
+instance count.
+
+1. **O4's rendered text is UNCOMMITTED — and this item was wrong twice before it was right.**
+   `pod_hmi.reviewer` raised it, retracted it, and restored it; `pm` split the difference wrongly by
+   calling both trees valid. **Settled against the commit object, the only authority:**
+   ```
+   git grep -F DRIFT_NOT_CONFIGURED_TEXT c1ac744 -- frontend/   -> ONE hit: useOperatorDraft.ts, the definition
+   working tree src/components/                                 -> FOUR hits (both faceplates, imported and rendered)
+   ```
+   **The builder has the fix written, correct, and uncommitted.** So the original finding was right,
+   the retraction was the error, and `pm`'s "different valid trees" framing was the softer form of the
+   same mistake. Doc claims rendering at `:172` **and** `:217`; at the reviewed head **nothing renders
+   it**. **A dirty tree is not a second opinion — it is a different object.**
+   **The doc's own acceptance line at `:217` names the exact failure it commits.** Drift-inactive-when-
+   unconfigured *is* implemented and mutation-proven; the **rendered text is not**, and an operator
+   seeing no indication cannot tell a quiet surface from an unconfigured one — the distinction O4 exists
+   to make.
+2. **The notice wording is unpinned — `pm` overruled the reviewer's non-blocking call.** All six
+   assertions compare against `DRAFT_DISCARD_NOTICE.<CONSTANT>`; **replacing the string with
+   `'Value committed successfully'` passes all 27 tests.** My O6 ruling was *"visible discard is honest;
+   silent discard is a fabricated success"* — **a notice whose words can be inverted is a silent discard
+   wearing a visible notice**, which is worse, because it is confidently wrong where the operator is most
+   likely to trust it. **The thing the ruling exists to prevent survives the implementation.**
+3. **Two `?? 0` fallbacks, and only one of them is a fix — the distinction is the slice's lasting rule.**
+   Verified at `c1ac744`:
+   ```
+   418  max={rangeMax ?? 0}
+   420  value={speedDraft.value ?? 0}
+   421  disabled={!live || rangeMax === null || ... }
+   ```
+   **`max` at `:418` — `pm` escalated it and then WITHDREW the escalation.** `rangeMax` is null when
+   unconfigured and `?? 0` turns "I do not know the range" into "the range ends at zero", which is O4's
+   fabricated-bound defect in costume. **But the control is disabled in that state and the readout above
+   it says `UNKNOWN`, so the bound cannot be read as a measurement.** Withdrawn as blocking, kept as a
+   known limitation.
+   **`value` at `:420` — REQUIRED.** Same fallback, different consequence, and `pod_hmi.reviewer`'s
+   distinction is the reason: *"the thumb POSITION is a rendered value in a control, and a position is
+   read at a glance before the label. Disabled dims it; it does not stop it being a number."*
+   > **The test is not "is there a fallback" — it is "is the fallback read as a measurement."**
+   **Trap, now in the builder's brief:** do **not** replace `?? 0` with a midpoint, `min`, or any other
+   number. Every substitute is a fabricated bound in the same costume. A null value renders **no thumb**,
+   and the readout already says `UNKNOWN`. Say so in the commit body, because *"we removed `?? 0`"*
+   invites a future repair that puts a different number there.
+
+**Corrected instance count:** the reviewer called this the "third instance today" of a test asserting a
+constant. **It is two, plus one counter-example** — `qualityDetailBadge.test.tsx` has **19 render-level
+assertions**. Their own badge check is the shape to copy, not a third failure. **The accurate count
+matters: "three" implies the practice is failing more than it is.**
+
+**Held and worth recording from the review's positive half:** mutation 1 (the naive prop-tracking fix)
+gives **3 red including the R5 case** — the one the slice exists for; mutation 2 (`setNotice` never
+fires) gives **4 red**, so silent discard is genuinely prevented; gate rerun **51 files / 432 tests,
+exit 0**.
+
+### S-019 — CULTURE §12: an assertion against a constant proves plumbing, not meaning
+
+- **What:** one new section in `rig/culture/CULTURE.md`, appended after §11. **The most-delivered
+  document in the rig** — every seat receives it on fresh start **and** on restore — so it is a slice
+  with a review, not an edit.
+- **Why it needs to be culture and not a per-slice fix:** **two slices today shipped a test that cannot
+  fail for its own defect, and both authors believed they had tested it.**
+  - **S-001** — `expect(presentation.tone).not.toBe(other.tone)` asserted the **enum member**; making
+    `TONE_CLASSES.warning` byte-identical to `TONE_CLASSES.alarm` kept the suite **5/5 green** while both
+    states rendered the same CSS.
+  - **S-014** — `expect(notice).toBe(DRAFT_DISCARD_NOTICE.QUALITY_LOST)`, **six times**, all against the
+    constant. Swapping the text to `'Value committed successfully'` **passes all 27 tests** — a discard
+    announcing a successful commit.
+  - The counter-example to copy: `qualityDetailBadge.test.tsx`, **19 render-level assertions**
+    (`textContent`, `data-quality`, `className`).
+- **The rule, and why it is not simply "assert the render":** both authors knew that. **The rule is about
+  which assertions *look like* coverage:**
+  > **`expect(x).toBe(CONSTANT)` where `x` was produced from `CONSTANT` proves the plumbing, not the
+  > meaning. It cannot fail unless the constant is undefined or the call is deleted.**
+  **A guard that cannot fail for its own defect reads exactly like a guard that can**, which is why it
+  survives review — `pm` signed off one of the two.
+- **THE GOOD EXAMPLE TO CITE, from S-014's fix** (`pod_hmi.reviewer`'s suggestion, and it is better than
+  `pm`'s original rule): `setpointRenderPinning.test.tsx:103-107` iterates **every** notice and asserts a
+  **property** of the words — *"does not contain 'committed successfully'; does contain 'discard'"* —
+  rather than equality with one constant. **It rejects the failure class, not the instance.** §12 should
+  carry it, because a rule with a working counter-example survives a handover and a rule without one gets
+  rewritten into a platitude.
+- **What the section should say, in outline** (not final wording — that is the slice):
+  1. the two live examples above, briefly, with what each left unproven;
+  2. the test that separates them: **can this assertion fail if the behaviour it names is broken?** If
+     no, it is a wiring check and must be labelled as one;
+  3. the counter-example: assert the rendered output — text, attribute, class — for any claim about what
+     a surface *shows*;
+  4. the honest caveat: a wiring check is **worth having**, just not worth *calling coverage*. Deleting
+     it would be an over-correction; the defect is the label, not the test.
+- **Done when:** §12 exists, says the above, and does not contradict §4 (no claim without pasted output)
+  or §5 (never invent data).
+- **Verification:** docs-only. Read §4, §5 and §11 before appending so §12 does not restate or contradict
+  them, and **confirm no reference to `rig/SLICES.md`, a slice id or a `qitem` enters the file** — that is
+  the `fbaaa4d` defect, and `CULTURE.md` is delivered to every seat.
+- **State:** `planned`, **cut requested** from `origin/dev` @ `7c35e80`. Owner `pm`.
 
 ### Sequencing — REWRITTEN 2026-11-11T07:1xZ, because the old block contradicted the table
 
@@ -2064,6 +2209,95 @@ ledger's coverage begins.
 
 **Scoped to merges since 2026-11-11 it reports green.** Both numbers now live here, because the green
 alone hides why the scope is what it is.
+
+## A TEST THAT ASSERTS A CONSTANT PROVES PLUMBING, NOT MEANING (S-001, then S-014)
+
+**Two real instances today, and one good example — the accurate count matters.**
+
+| case | what it asserted | what that leaves unproven |
+|---|---|---|
+| **S-001** | `expect(presentation.tone).not.toBe(other.tone)` — the **enum member** | that the two states **render** differently. Making `TONE_CLASSES.warning` byte-identical to `TONE_CLASSES.alarm` kept the suite **5/5 green** while both states rendered the same CSS. |
+| **S-014** | `expect(notice).toBe(DRAFT_DISCARD_NOTICE.QUALITY_LOST)` — **6 times**, all against the constant | that the notice **says** what it means. Swapping the text to `'Value committed successfully'` passes all 27 tests — **a discard announcing a successful commit**, which is a fabricated success. |
+
+**The counter-example, and it is the one to copy:** `qualityDetailBadge.test.tsx` has **19 render-level
+assertions** — `textContent`, `data-quality`, `className`. That is the shape that can fail for the defect
+it names.
+
+**The rule is not "assert the render"** — S-001's author knew that, and so did S-014's. **The rule is
+about which assertions *look like* coverage:**
+
+> **`expect(x).toBe(CONSTANT)` where `x` was produced from `CONSTANT` proves the plumbing, not the
+> meaning.** It cannot fail unless the constant is undefined or the call is deleted.
+
+### The shape to copy — assert a PROPERTY, not an instance
+
+S-014's fix produced the good example, and it is better than the rule as `pm` first wrote it:
+
+```ts
+it('never lets a discard notice claim a successful commit', () => {
+  // The exact mutation from review: swap the string for its opposite and the suite stayed green.
+  for (const words of Object.values(DRAFT_DISCARD_NOTICE)) {
+    expect(words.toLowerCase()).not.toContain('committed successfully');
+    expect(words.toLowerCase()).toContain('discard');
+  }
+});
+```
+
+**It iterates every value and asserts a property of the words** rather than equality with one constant —
+so it **rejects the failure class, not the instance.** A future notice with the same inverted meaning
+fails this test; a future notice with new wording that still says "discard" passes it.
+
+> **Test the property, not the nearby operator** (`pod_hmi.reviewer`) — which is also why their own
+> suggested mutation for the thumb was wrong: restoring `value={speedDraft.value ?? 0}` **passes,
+> correctly**, because that branch is unreachable when the value is null. The load-bearing guard is the
+> null-check gating render, and mutating **that** is what reddens it. **A literal mutation applied to a
+> literal reading would have sent the builder to test code that was already sound.**
+
+**Why this needs a culture line rather than a fix per slice:** both authors believed they had tested the
+defect. The test names the right thing, passes, and covers nothing — and `pm` signed off one of them.
+**A guard that cannot fail for its own defect reads exactly like a guard that can.**
+
+## A WELL-FORMED WORKFLOW IS NOT A WORKFLOW SHOWN TO FAIL WHEN IT SHOULD
+
+`dev_gatekeeper`'s sentence, written on S-016's queue row at `12:48`, and it is the standard for every
+gate this repo builds.
+
+**S-016's workflow is correct by inspection** — `permissions: contents: read` makes tag creation
+impossible rather than promising not to, the steps run in order, and the file states the `build.rs` stub
+limitation in its own header. **Every checkbox is met and `dev_gatekeeper` did not merge it.**
+
+**Because the job has never been shown to fail.** The acceptance evidence is two **red** directions with
+pasted output and the failing job name — a deliberate compile break, and a `bash -n` failure — plus one
+clean green. **Until those exist the job's failure behaviour is unproven**, and an unproven gate is
+precisely what today was spent discovering: *`check.sh` printed a false green for weeks, and the reason
+nobody noticed is that nobody had shown it failing.*
+
+**The same standard applied to the other defects:**
+- S-001's tone guard was **green 5/5** while two states rendered identical CSS — never shown red.
+- S-014's notice test **passed** with the message inverted — never shown red for its own defect.
+- The `mythos update` suite **passes** on a fabricated catalog — the tests assert the fiction.
+
+**Two facts about a gate, and only the first is cheap:**
+| | proven by | how it can lie |
+|---|---|---|
+| **it is well-formed** | reading it | it can be perfectly shaped and do nothing |
+| **it fails when it should** | injecting the defect and pasting the red | nothing — a red for the right reason cannot be faked |
+
+**Built is not done. Built-and-shown-to-fail-for-the-right-reason is done.**
+
+## BEFORE NUDGING A SEAT, CHECK WHETHER IT HAS PRODUCED ANYTHING
+
+`dev_gatekeeper` nearly nudged `pod_backend.builder` twice during a **35-minute silent turn**. It checked
+first and found the builder had **committed at 12:37** — working, not stuck.
+
+> **Silence in the pane is not idleness. The cheapest disambiguator is an EFFECT — a commit, a pushed ref,
+> a new file, a queue update — not a message.**
+
+**This is the evidence-by-effect rule applied to liveness instead of delivery**, and it is the same
+instrument: `rig capture` shows what a seat *appears* to be doing; `git log` and `git status` show what it
+*did*. **"A nudge at a seat doing a 20-minute serial release build is pure interruption"** — and on a rig
+that has spent all day correcting claims made from adjacent evidence, the probe should be the cheap
+authoritative one.
 
 ## CHECK WITH SOMETHING THAT COULD DISAGREE — the day's actual method lesson
 
@@ -2663,8 +2897,13 @@ starts serialising it.
 | `S-007` | `docs/alarm-colour-reconcile` | #58 | `094d5db` | Alarm colours reconciled; the two priority vocabularies recorded as non-equivalent. |
 | `S-005` | `policy/decision-defaults-s005` | #63 | `f10006a` | Decision-defaults policy + delivery entry. B2's harness made it cuttable. |
 | `S-004` | `feat/hmi-live-telemetry` | #61 | `08245d0` | One live TagBus value to one faceplate. **Refused twice while green without the badge fix**; merged only when the fix was present at the head. |
+| `S-014` | `feat/setpoint-draft-committed` | #68 | `4264713` | Draft-vs-committed setpoint reconcile; doc §5 OPEN→DECIDED. Threshold has **no default** — `isDriftConfigured` rejects absent/null/non-finite/negative. Approval at `b09074b` carried to the merged head by **tree hash** (`frontend/` `cf9c6d47439e` at both), not ancestry: the head moved three times, every time by merging dev forward. |
+| `S-016` | `ci/release-build-job` | #67 | `ce5147e` | The release-build job the `rc→release` gate had no producer for. **Publishes nothing structurally** (`contents: read`). First CI execution was deliberately RED — dispatched on a scratch branch with an injected `bash -n` break, step 8 FAILED with the injected line and step 9 SKIPPED (`run 43026957795`). |
+| `S-017` | `docs/release-gate-wording` | #70 | `3e0cc91` | The release gate now says what it requires and what it does NOT satisfy — soak / IEC SIL / Box-Model / clean-machine installers each recorded as unmet **with evidence**; hot-reload kept because it is measured. |
 | `S-017-adj` | `docs/topology-spec-post-merge` | #64 | `7c35e80` | Topology contract described as merged; four "open, not merged" statements corrected. |
 | — | `ledger-only` | #62 | `75200c0` | The ledger itself, carried to dev so corrections live on the branch rather than in a worktree. |
+| — | `ledger-only` | #65 | `d3502f9` | The ledger again — `dev` now knows every open slice, including the four cut after #62. |
+| — | `docs/device-mode-wire-form` | #66 | `45fefe8` | Retires the `DeviceExecutionMode` duplicate across four controlled documents. Approved after the reviewer re-measured against the new `dev` rather than carrying its verdict. |
 | — | `ci/frontend-gate` | — | **not merged, superseded** | 7 commits, `ci.yml` +90 lines — but the frontend gate job it adds is already on `dev` as `frontend-tests` (`ci.yml:286`). Nothing left to land; **delete candidate**, do not rebase. |
 | — | `docs/spi-sections-4-7-rewrite` | — | **not merged** | 2 commits on top of a base 102 commits behind `dev`. Rebase and slice. |
 | — | `feat/ui-isa101-consolidation` | — | **not merged, do not merge** | Based on a stale point; merging as-is deletes 17,328 lines of `dev`. Salvage by hand or drop. |
