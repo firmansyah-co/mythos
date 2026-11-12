@@ -1,4 +1,13 @@
 //! Sub-second (<1.0s) atomic binary rollback engine.
+//!
+//! # No producer today
+//!
+//! This mechanism is implemented and tested, but **nothing installs a version for it to
+//! roll back between**: [`crate::update::UpdateManager::update`] refuses until a real
+//! release feed exists, so on a fresh install `previous_version` is `None` and this
+//! correctly returns [`RollbackError::NoPreviousVersion`]. It is kept because the
+//! symlink swap is correct and is the half a real installer will use, and because
+//! deleting working code is not the same as refusing to fabricate.
 
 use crate::config::{CliConfig, CliConfigError};
 use crate::update::{atomic_symlink, binary_filename};
