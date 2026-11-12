@@ -85,10 +85,13 @@ pub async fn execute_command(
         Commands::Versions { remote } => {
             let config = CliConfig::load_from(mythos_dir)?;
             if remote {
+                // No feed is published and this build has no network client, so this
+                // errors before anything is printed. The header below names a remote URL
+                // and must never be reached without a catalogue that came from it.
                 let catalog = versions::VersionManager::fetch_remote_versions(
                     &config.remote_url,
                     Some(config.channel),
-                );
+                )?;
                 println!("Official Release Versions (Remote: {}):", config.remote_url);
                 for (ch, vers) in &catalog.channels {
                     let active_marker = if *ch == config.channel.to_string() {
@@ -128,6 +131,10 @@ pub async fn execute_command(
             }
         }
         Commands::Update { version } => {
+            // `update` refuses for every input until a real release feed exists, so the
+            // `?` propagates before the success line below can print. There is no code
+            // path that reaches it today; it is kept so that a real implementation has a
+            // success line to print rather than being added later, untested.
             let res = update::UpdateManager::update(mythos_dir, version)?;
             println!(
                 "Successfully updated to version {} (took {:.2} ms)",
