@@ -132,6 +132,18 @@ impl IoStatusHandle {
         self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Report that nothing is running, and why. Replaces whatever was reported before.
+    pub(crate) fn set_not_running(&self, note: impl Into<String>) {
+        let note = note.into();
+        self.update(|status| {
+            *status = IoStatus {
+                source: None,
+                note: Some(note),
+                connections: Vec::new(),
+            };
+        });
+    }
+
     fn update(&self, change: impl FnOnce(&mut IoStatus)) {
         change(&mut self.0.write().unwrap_or_else(|e| e.into_inner()));
     }

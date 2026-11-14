@@ -522,8 +522,8 @@ impl MythosPlugin for ScriptedDriver {
 
 #[async_trait]
 impl ProtocolDriver for ScriptedDriver {
-    fn validate_config(&self, _config: &Value) -> Result<(), PluginError> {
-        Ok(())
+    fn describe_config(&self, _config: &Value) -> Result<Vec<TagDeclaration>, PluginError> {
+        Ok(self.declared_tags())
     }
     fn declared_tags(&self) -> Vec<TagDeclaration> {
         vec![TagDeclaration {

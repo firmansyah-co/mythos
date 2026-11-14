@@ -5,6 +5,7 @@
 
 pub mod datatypes;
 pub mod faceplates;
+mod io;
 mod screens;
 pub mod state;
 pub mod telemetry;
@@ -143,6 +144,12 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
         )
         // Field I/O runtime status
         .route("/api/v1/io/status", get(io_status_handler::<S>))
+        .route("/api/v1/io/drivers", get(io::drivers::<S>))
+        // A project's field I/O configuration
+        .route(
+            "/api/v1/projects/:id/io",
+            get(io::get_config::<S>).put(io::put_config::<S>),
+        )
         // Control logic deployment: answers 501, nothing is compiled (see the handler)
         .route("/api/v1/control/deploy", post(control_deploy_handler::<S>))
         // CRDT Collaboration WebSocket Gateway (TSK-311)
@@ -288,6 +295,11 @@ async fn activate_project_handler<S: PlatformShm + 'static>(
         };
         (status, Json(json!({"error": e.to_string()})))
     })?;
+
+    // The controller now runs a different project, so it runs that project's field I/O.
+    if let Some(io) = &state.io_manager {
+        io.reload().await;
+    }
 
     Ok(Json(json!({"status": "activated", "project_id": id})))
 }

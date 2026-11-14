@@ -21,8 +21,9 @@ function Connections({ io }: { io: IoStatus }) {
           <h3>No field connections are running</h3>
           <p>{io.note ?? 'The controller gave no reason.'}</p>
           <p className="muted">
-            Connections are defined in <code>io.json</code> in the project directory and are
-            loaded when the server starts. There is no editor for them yet.
+            Connections are the project's I/O configuration (<code>io.json</code>). The workbench
+            has no editor for it yet; it can be saved with{' '}
+            <code>PUT /api/v1/projects/&lt;id&gt;/io</code> and is applied at once.
           </p>
         </div>
       </div>

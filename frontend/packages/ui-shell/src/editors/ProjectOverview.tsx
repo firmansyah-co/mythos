@@ -13,7 +13,6 @@ export function ProjectOverview() {
   const refresh = useController((state) => state.refresh);
   const [busy, setBusy] = useState(false);
   const [activateError, setActivateError] = useState<string | null>(null);
-  const [activatedNow, setActivatedNow] = useState(false);
 
   if (!project) return null;
 
@@ -24,7 +23,6 @@ export function ProjectOverview() {
     setActivateError(null);
     try {
       await api.activateProject(project.id);
-      setActivatedNow(true);
       log.info(`Project “${project.name}” set as the controller's active project.`);
       await refresh();
     } catch (cause) {
@@ -98,17 +96,6 @@ export function ProjectOverview() {
         </div>
       )}
 
-      {activatedNow && isActive && (
-        <div className="notice notice--warn" data-testid="restart-notice">
-          <div>
-            <h3>Restart the server to load this project's field I/O</h3>
-            <p>
-              The project is now the active one, but the I/O configuration is read only when the
-              server starts. Until then the controller keeps running what it loaded before.
-            </p>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

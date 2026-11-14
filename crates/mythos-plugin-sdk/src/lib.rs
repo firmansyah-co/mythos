@@ -298,8 +298,12 @@ pub struct TagDeclaration {
 /// reader.
 #[async_trait]
 pub trait ProtocolDriver: MythosPlugin {
-    /// Parse and validate the driver-specific JSON configuration schema.
-    fn validate_config(&self, config: &JsonValue) -> Result<(), PluginError>;
+    /// Validate a configuration and say which tags it would provide, without starting anything.
+    ///
+    /// Opens no connection and changes no state: a host calls this to check a configuration
+    /// before saving it. `start` must accept exactly the configurations this accepts, and a
+    /// driver started with one must declare exactly the tags returned here.
+    fn describe_config(&self, config: &JsonValue) -> Result<Vec<TagDeclaration>, PluginError>;
 
     /// The tags this driver reports, known once it has been started with a configuration.
     ///

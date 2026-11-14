@@ -57,9 +57,7 @@ pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::Joi
             _ = shutdown_rx => info!("Received shutdown signal for embedded server."),
         }
 
-        if let Some(io) = io {
-            io.shutdown().await;
-        }
+        io.shutdown().await;
         info!("Embedded server terminated cleanly.");
     })
 }

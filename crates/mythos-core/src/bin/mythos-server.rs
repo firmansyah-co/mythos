@@ -61,8 +61,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ = shutdown_signal() => tracing::info!("Shutdown requested"),
     }
 
-    if let Some(io) = server.io {
-        io.shutdown().await;
-    }
+    server.io.shutdown().await;
     Ok(())
 }
