@@ -4,8 +4,10 @@
 import { act } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { ConnectionStatus, IoStatus, ProjectConfig } from '../api/client';
+import type { ConnectionStatus, IoConfig, IoStatus, ProjectConfig } from '../api/client';
 import { useController } from '../data/controller';
+import { useIoConfig } from '../data/ioConfig';
+import { toForm } from '../data/ioForm';
 import { useLog } from '../data/log';
 import type { TagSample } from '../data/quality';
 import { goOffline, useTelemetry } from '../data/telemetry';
@@ -36,6 +38,8 @@ export function resetStores(): void {
   useTelemetry.setState({ tags: new Map(), stream: 'IDLE', lastBatchAtMs: null, wantOnline: false });
   useController.setState({ activeProjectId: undefined, io: null, tagMeta: new Map(), error: null });
   useLog.setState({ entries: [] });
+  useIoConfig.getState().reset();
+  useIoConfig.setState({ drivers: [] });
   useWorkbench.setState({
     view: 'portal',
     project: null,
@@ -98,4 +102,46 @@ export function texts(container: HTMLElement, testId: string): string[] {
   return [...container.querySelectorAll(`[data-testid="${testId}"]`)].map(
     (element) => element.textContent ?? ''
   );
+}
+
+/** A stored Modbus TCP connection with one holding-register tag per given URI. */
+export function modbusConnection(id: string, uris: string[], port = 502) {
+  return {
+    id,
+    driver: 'modbus',
+    poll_interval_ms: 250,
+    config: {
+      transport: 'tcp',
+      host: '192.0.2.10',
+      port,
+      slave_id: 1,
+      timeout_ms: 1000,
+      mappings: uris.map((uri, index) => ({
+        uri,
+        address: index,
+        function_code: 3,
+        data_type: 'u16',
+        word_order: 'high_first',
+        scale: 1,
+      })),
+    },
+  };
+}
+
+/** Put the I/O configuration store in the state it has after loading `config` for a project. */
+export function loadedIoConfig(projectId: string, config: IoConfig | null): void {
+  const draft = toForm(config);
+  useIoConfig.setState({
+    projectId,
+    phase: 'ready',
+    loadError: null,
+    saved: config,
+    draft,
+    baseline: JSON.stringify(draft, (key, value: unknown) => (key === 'key' ? undefined : value)),
+    drivers: ['modbus'],
+    fieldErrors: [],
+    checking: false,
+    problems: [],
+    saveError: null,
+  });
 }

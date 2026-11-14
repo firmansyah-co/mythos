@@ -1,9 +1,11 @@
 import { ChevronRight, X } from 'lucide-react';
 import { editorPath } from '../data/derive';
+import { useIoConfig } from '../data/ioConfig';
 import { useTelemetry } from '../data/telemetry';
 import { useWorkbench, type EditorRef } from '../data/workbench';
 import { ConnectionDiagnostics } from '../editors/ConnectionDiagnostics';
-import { DevicesAndNetworks } from '../editors/DevicesAndNetworks';
+import { ConnectionEditor } from '../editors/ConnectionEditor';
+import { ConfigBar, DevicesAndNetworks } from '../editors/DevicesAndNetworks';
 import { ProjectOverview } from '../editors/ProjectOverview';
 import { TagTable } from '../editors/TagTable';
 
@@ -13,6 +15,13 @@ function EditorBody({ editor }: { editor: EditorRef }) {
       return <ProjectOverview />;
     case 'devices':
       return <DevicesAndNetworks />;
+    case 'connection':
+      return (
+        <div className="editor__column">
+          <ConfigBar />
+          <ConnectionEditor connectionKey={editor.connectionId ?? ''} />
+        </div>
+      );
     case 'tags':
       return <TagTable connectionId={editor.connectionId} />;
     case 'diagnostics':
@@ -30,6 +39,8 @@ export function WorkArea() {
   const activeEditorId = useWorkbench((state) => state.activeEditorId);
   const closeEditor = useWorkbench((state) => state.closeEditor);
   const stream = useTelemetry((state) => state.stream);
+  const draft = useIoConfig((state) => state.draft);
+  const nameOf = (key: string) => draft.find((connection) => connection.key === key)?.id;
 
   const editor = editors.find((candidate) => candidate.id === activeEditorId);
 
@@ -41,7 +52,7 @@ export function WorkArea() {
     );
   }
 
-  const path = editorPath(editor, project.name);
+  const path = editorPath(editor, project.name, nameOf);
   // The tag table is the editor whose values arrive on the telemetry stream.
   const online = stream === 'OPEN' && editor.kind === 'tags';
 

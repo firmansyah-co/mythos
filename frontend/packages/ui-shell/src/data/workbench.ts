@@ -4,13 +4,17 @@
 import { create } from 'zustand';
 import type { ProjectConfig } from '../api/client';
 
-export type EditorKind = 'overview' | 'devices' | 'tags' | 'diagnostics';
+export type EditorKind = 'overview' | 'devices' | 'connection' | 'tags' | 'diagnostics';
 
 export interface EditorRef {
   /** Stable identity: opening the same thing twice focuses the existing editor. */
   id: string;
   kind: EditorKind;
-  /** The connection this editor is scoped to, for the kinds that have one. */
+  /**
+   * The connection this editor is scoped to, for the kinds that have one. For `tags` and
+   * `diagnostics` it is the connection's id; for `connection` it is the key of the draft row,
+   * because the id itself is one of the things that editor changes.
+   */
   connectionId?: string;
 }
 

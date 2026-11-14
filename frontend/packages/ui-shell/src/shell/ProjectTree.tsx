@@ -7,9 +7,11 @@ import {
   Cable,
   FolderOpen,
   Network,
+  Settings2,
   Tags,
 } from 'lucide-react';
-import { currentProblems } from '../data/derive';
+import { connectionLabel, currentProblems } from '../data/derive';
+import { isDirty, useIoConfig } from '../data/ioConfig';
 import { useRuntimeScope } from '../data/scope';
 import { useWorkbench, type EditorKind } from '../data/workbench';
 
@@ -81,8 +83,10 @@ function TreeNode({
 /**
  * The project tree.
  *
- * Runtime nodes (connections and their tags) appear only when the open project is the one the
- * controller runs. For any other project they would show another project's field devices.
+ * The connections listed are the open project's own configuration, so every project has them.
+ * The runtime nodes under a connection (its live tags and diagnostics) appear only when the
+ * open project is the one the controller runs: for any other project they would show another
+ * project's field devices.
  */
 export function ProjectTree() {
   const project = useWorkbench((state) => state.project);
@@ -91,6 +95,8 @@ export function ProjectTree() {
   const select = useWorkbench((state) => state.select);
   const openEditor = useWorkbench((state) => state.openEditor);
   const scope = useRuntimeScope();
+  const draft = useIoConfig((state) => state.draft);
+  const dirty = useIoConfig(isDirty);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   if (!project) return null;
@@ -123,75 +129,103 @@ export function ProjectTree() {
         onOpen={open('overview')}
       />
 
-      {isOpen('project') && io && (
-        <>
-          <TreeNode
-            depth={1}
-            icon={<Network size={14} />}
-            label="Devices & networks"
-            testId="tree-devices"
-            selected={editorIs('devices') && selection === null}
-            onSelect={() => select(null)}
-            onOpen={open('devices')}
-          />
+      {isOpen('project') && (
+        <TreeNode
+          depth={1}
+          icon={<Network size={14} />}
+          label="Devices & networks"
+          testId="tree-devices"
+          selected={editorIs('devices') && selection === null}
+          onSelect={() => select(null)}
+          onOpen={open('devices')}
+          mark={
+            dirty ? (
+              <span className="tree__mark tree__mark--warn" title="Unsaved changes">
+                *
+              </span>
+            ) : undefined
+          }
+        />
+      )}
 
-          {io.connections.map((connection) => {
-            const key = `connection:${connection.id}`;
-            const faults = problems.filter((p) => p.connectionId === connection.id).length;
-            return (
-              <div key={connection.id} role="group">
+      {isOpen('project') &&
+        draft.map((connection) => {
+          const key = `connection:${connection.key}`;
+          const id = connection.id.trim();
+          // The runtime half of a connection exists only for a running project, and only once
+          // the controller has loaded a connection with this name.
+          const status = io?.connections.find((candidate) => candidate.id === id);
+          const faults = problems.filter((p) => p.connectionId === id).length;
+          return (
+            <div key={connection.key} role="group">
+              <TreeNode
+                depth={1}
+                icon={<Cable size={14} />}
+                label={`${connectionLabel(connection.id)} [${connection.driver}]`}
+                testId="tree-connection"
+                expanded={isOpen(key)}
+                onToggle={() => toggle(key)}
+                selected={
+                  status !== undefined &&
+                  selection?.kind === 'connection' &&
+                  selection.id === status.id
+                }
+                onSelect={() => select(status ? { kind: 'connection', id: status.id } : null)}
+                onOpen={open('connection', connection.key)}
+                mark={
+                  status && faults > 0 ? (
+                    <span className="tree__mark tree__mark--warn" title={`${faults} problem(s)`}>
+                      {faults}
+                    </span>
+                  ) : undefined
+                }
+              />
+              {isOpen(key) && (
                 <TreeNode
-                  depth={1}
-                  icon={<Cable size={14} />}
-                  label={`${connection.id} [${connection.driver}]`}
-                  testId="tree-connection"
-                  expanded={isOpen(key)}
-                  onToggle={() => toggle(key)}
-                  selected={selection?.kind === 'connection' && selection.id === connection.id}
-                  onSelect={() => select({ kind: 'connection', id: connection.id })}
-                  onOpen={open('tags', connection.id)}
-                  mark={
-                    faults > 0 ? (
-                      <span className="tree__mark tree__mark--warn" title={`${faults} problem(s)`}>
-                        {faults}
-                      </span>
-                    ) : undefined
-                  }
+                  depth={2}
+                  icon={<Settings2 size={14} />}
+                  label="Configuration"
+                  selected={editorIs(`connection:${connection.key}`) && selection === null}
+                  onSelect={() => select(null)}
+                  onOpen={open('connection', connection.key)}
                 />
-                {isOpen(key) && connection.state === 'RUNNING' && (
-                  <TreeNode
-                    depth={2}
-                    icon={<Tags size={14} />}
-                    label={`Tags (${connection.tags.length})`}
-                    selected={editorIs(`tags:${connection.id}`) && selection === null}
-                    onSelect={() => select(null)}
-                    onOpen={open('tags', connection.id)}
-                  />
-                )}
-                {isOpen(key) && (
-                  <TreeNode
-                    depth={2}
-                    icon={<Activity size={14} />}
-                    label="Online & diagnostics"
-                    selected={editorIs(`diagnostics:${connection.id}`) && selection === null}
-                    onSelect={() => select(null)}
-                    onOpen={open('diagnostics', connection.id)}
-                  />
-                )}
-              </div>
-            );
-          })}
+              )}
+              {isOpen(key) && status?.state === 'RUNNING' && (
+                <TreeNode
+                  depth={2}
+                  icon={<Tags size={14} />}
+                  label={`Tags (${status.tags.length})`}
+                  testId="tree-runtime-tags"
+                  selected={editorIs(`tags:${status.id}`) && selection === null}
+                  onSelect={() => select(null)}
+                  onOpen={open('tags', status.id)}
+                />
+              )}
+              {isOpen(key) && status && (
+                <TreeNode
+                  depth={2}
+                  icon={<Activity size={14} />}
+                  label="Online & diagnostics"
+                  testId="tree-runtime-diagnostics"
+                  selected={editorIs(`diagnostics:${status.id}`) && selection === null}
+                  onSelect={() => select(null)}
+                  onOpen={open('diagnostics', status.id)}
+                />
+              )}
+            </div>
+          );
+        })}
 
-          <TreeNode
-            depth={1}
-            icon={<Tags size={14} />}
-            label="All tags"
-            testId="tree-all-tags"
-            selected={editorIs('tags') && selection === null}
-            onSelect={() => select(null)}
-            onOpen={open('tags')}
-          />
-        </>
+      {isOpen('project') && io && (
+        <TreeNode
+          depth={1}
+          icon={<Tags size={14} />}
+          label="All tags"
+          testId="tree-all-tags"
+          selected={editorIs('tags') && selection === null}
+          onSelect={() => select(null)}
+          onOpen={open('tags')}
+        />
       )}
 
       {isOpen('project') && scope.kind !== 'active' && (

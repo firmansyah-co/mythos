@@ -24,7 +24,7 @@ intent and may describe things that do not exist.
 | Tag bus | `crates/mythos-shm`, `crates/mythos-pal` | Triple-buffered shared-memory tag store with typed values and OPC-style quality codes. One writer: the field I/O runtime. |
 | Field I/O runtime | `crates/mythos-core/src/io` | Polls each configured connection and writes what the driver reports to the tag bus: a typed value with `GOOD` quality, or the last value read with a bad quality that names the fault. A tag that was never read has no value. |
 | API server | `crates/mythos-core` (`mythos-server`) | HTTP API for projects, HMI screens, data types, faceplate types and each project's I/O configuration; a 100 ms SSE telemetry stream of the tag bus; `GET /api/v1/io/status` for the state of each connection. |
-| Web workbench | `frontend/packages/ui-shell` | Portal view (open or create a project) and project view: project tree, devices & networks, live tag tables, connection diagnostics, inspector. Read-only: it shows what the controller reads and edits nothing yet. |
+| Web workbench | `frontend/packages/ui-shell` | Portal view (open or create a project) and project view: project tree, devices & networks, an editor for Modbus TCP connections and their tags, live tag tables, connection diagnostics, inspector. |
 | Modbus TCP driver | `plugins/drivers/driver-modbus` | Reads holding and input registers as `u16`, `i16`, `u32`, `i32` or `f32`, with scaling and selectable word order. Exercised end to end against a simulated device, not yet against hardware. |
 | Device catalog | `catalog/`, `crates/mythos-core/src/catalog` | Manifest format and parser, with two reference device packages. |
 | Desktop shell | `src-tauri` | A Tauri window that embeds the same API server. |
@@ -34,8 +34,6 @@ intent and may describe things that do not exist.
 
 - **Any driver other than Modbus TCP.** A Modbus RTU configuration is rejected; there is no
   MQTT driver.
-- **An I/O configuration editor in the workbench.** The configuration is saved through the
-  API or written by hand.
 - **HMI screens, faceplates, a logic editor and a network editor in the workbench.** The server
   still stores HMI screens, faceplate types and data types; the workbench has no editors for
   them yet.
@@ -156,7 +154,11 @@ cargo run -p driver-modbus --features sim --example modbus_sim -- 127.0.0.1:1502
 
 ```bash
 ./scripts/check.sh    # cargo fmt, clippy, test; pnpm lint, test, build
+./scripts/e2e.sh      # a real server, a simulated device, and the workbench in a real browser
 ```
+
+`e2e.sh` needs Chromium and is not run in CI. It adds a connection through the workbench's form,
+has the controller refuse a bad one, saves a good one, and reads live values off the page.
 
 See [`CLAUDE.md`](CLAUDE.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the working rules.
 

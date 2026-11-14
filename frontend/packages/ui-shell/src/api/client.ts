@@ -41,6 +41,37 @@ export interface IoStatus {
   connections: ConnectionStatus[];
 }
 
+/** One connection of a project's I/O configuration, as stored. */
+export interface ConnectionConfig {
+  id: string;
+  driver: string;
+  poll_interval_ms: number;
+  cycle_timeout_ms?: number;
+  /** Driver-specific. The workbench understands the Modbus TCP shape and shows any other as is. */
+  config: unknown;
+}
+
+export interface IoConfig {
+  connections: ConnectionConfig[];
+}
+
+/** One reason the server refused a configuration. */
+export interface ConfigProblem {
+  connection_id: string | null;
+  message: string;
+}
+
+/** A refused configuration: the server's message and every problem it named. */
+export class ConfigRejected extends Error {
+  constructor(
+    message: string,
+    readonly problems: ConfigProblem[]
+  ) {
+    super(message);
+    this.name = 'ConfigRejected';
+  }
+}
+
 /** A tag as the catalog describes it. Only the fields this workbench shows are typed. */
 export interface TagMetadata {
   uri: string;
@@ -110,6 +141,36 @@ export const api = {
   getActiveProjectId: async () =>
     (await request<{ project_id: string | null }>('/api/v1/projects/active')).project_id,
   getIoStatus: () => request<IoStatus>('/api/v1/io/status'),
+  listDrivers: () => request<string[]>('/api/v1/io/drivers'),
+  getIoConfig: async (projectId: string) =>
+    (await request<{ config: IoConfig | null }>(`/api/v1/projects/${encodeURIComponent(projectId)}/io`))
+      .config,
+  /**
+   * Save a project's I/O configuration. Resolves with whether the controller applied it; throws
+   * `ConfigRejected` when the server refused it, with the problems it named.
+   */
+  saveIoConfig: async (projectId: string, config: IoConfig): Promise<{ applied: boolean }> => {
+    const path = `/api/v1/projects/${encodeURIComponent(projectId)}/io`;
+    let response: Response;
+    try {
+      response = await fetch(path, json('PUT', config));
+    } catch (cause) {
+      throw new ApiError(
+        `The controller did not answer (${cause instanceof Error ? cause.message : 'network error'})`,
+        null
+      );
+    }
+    const body: unknown = await response.json().catch(() => null);
+    const record = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+    if (response.ok) return { applied: record.applied === true };
+
+    const message =
+      typeof record.error === 'string' ? record.error : `${response.status} ${response.statusText}`;
+    if (Array.isArray(record.problems)) {
+      throw new ConfigRejected(message, record.problems as ConfigProblem[]);
+    }
+    throw new ApiError(message, response.status);
+  },
   listTags: () => request<TagMetadata[]>('/api/v1/tags'),
 };
 

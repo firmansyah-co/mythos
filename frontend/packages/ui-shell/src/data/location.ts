@@ -7,12 +7,15 @@
 
 import type { EditorKind } from './workbench';
 
+/** Editor kinds that can be named in the address. A draft row cannot: its key is not stable. */
+type AddressableKind = Exclude<EditorKind, 'connection'>;
+
 export interface WorkbenchLocation {
   projectId: string;
-  editor?: { kind: EditorKind; connectionId?: string };
+  editor?: { kind: AddressableKind; connectionId?: string };
 }
 
-const EDITOR_KINDS: readonly EditorKind[] = ['overview', 'devices', 'tags', 'diagnostics'];
+const EDITOR_KINDS: readonly AddressableKind[] = ['overview', 'devices', 'tags', 'diagnostics'];
 
 export function parseLocation(hash: string): WorkbenchLocation | null {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);

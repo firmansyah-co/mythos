@@ -436,6 +436,107 @@
   border-color: var(--c-focus);
 }
 
+/* Configuration forms ----------------------------------------------------- */
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px 16px;
+  padding: 12px 10px 14px;
+  max-width: 1100px;
+}
+
+.field {
+  display: grid;
+  gap: 3px;
+  align-content: start;
+}
+
+.field__label {
+  font-weight: 600;
+}
+
+.field input,
+.field select,
+.grid--form input,
+.grid--form select {
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--c-chrome-border);
+  border-radius: var(--radius);
+  background: var(--c-surface);
+}
+
+.field input:disabled,
+.field select:disabled,
+.grid--form select:disabled {
+  background: var(--c-surface-sunken);
+  color: var(--c-text-faint);
+}
+
+.field.has-error input,
+.grid--form input[aria-invalid='true'] {
+  border-color: var(--c-bad);
+  background: var(--c-bad-soft);
+}
+
+.field__hint {
+  color: var(--c-text-muted);
+  font-size: var(--fs-xs);
+}
+
+.field__error {
+  display: block;
+  color: var(--c-bad);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.grid--form td {
+  height: auto;
+  padding: 3px 6px;
+  overflow: visible;
+}
+
+.grid--form td.grow input {
+  width: 100%;
+}
+
+.grid--form .num-input {
+  width: 84px;
+  text-align: right;
+}
+
+.editor__section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editor__section-action {
+  height: 20px;
+  font-weight: 400;
+}
+
+.editor__danger {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--c-rule);
+}
+
+.raw {
+  margin: 6px 0 0;
+  padding: 8px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-rule);
+  font-size: var(--fs-xs);
+  overflow: auto;
+  max-height: 240px;
+}
+
 /* Tag values -------------------------------------------------------------- */
 
 .tagvalue--live {
