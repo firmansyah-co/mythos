@@ -75,6 +75,10 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
             get(screens::list::<S>).post(screens::create::<S>),
         )
         .route(
+            "/api/v1/projects/:id/hmi/screens/:screen",
+            axum::routing::delete(screens::delete::<S>),
+        )
+        .route(
             "/api/v1/projects/:id/hmi/screens/:screen/subscreens",
             post(screens::create_subscreen::<S>),
         )

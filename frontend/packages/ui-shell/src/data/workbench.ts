@@ -4,30 +4,31 @@
 import { create } from 'zustand';
 import type { ProjectConfig } from '../api/client';
 
-export type EditorKind = 'overview' | 'devices' | 'connection' | 'tags' | 'diagnostics';
+export type EditorKind = 'overview' | 'devices' | 'connection' | 'tags' | 'diagnostics' | 'screen';
 
 export interface EditorRef {
   /** Stable identity: opening the same thing twice focuses the existing editor. */
   id: string;
   kind: EditorKind;
   /**
-   * The connection this editor is scoped to, for the kinds that have one. For `tags` and
-   * `diagnostics` it is the connection's id; for `connection` it is the key of the draft row,
-   * because the id itself is one of the things that editor changes.
+   * What the editor is scoped to, for the kinds that are scoped. For `tags` and `diagnostics`
+   * it is a connection's id; for `connection` it is the key of the draft row, because the id
+   * itself is one of the things that editor changes; for `screen` it is the screen's id.
    */
-  connectionId?: string;
+  target?: string;
 }
 
 export type Selection =
   | { kind: 'project' }
   | { kind: 'connection'; id: string }
   | { kind: 'tag'; uri: string }
+  | { kind: 'element'; screenId: string; elementId: string }
   | null;
 
 export type InspectorTab = 'properties' | 'info' | 'diagnostics';
 
-export function editorId(kind: EditorKind, connectionId?: string): string {
-  return connectionId ? `${kind}:${connectionId}` : kind;
+export function editorId(kind: EditorKind, target?: string): string {
+  return target ? `${kind}:${target}` : kind;
 }
 
 export interface WorkbenchState {
@@ -43,7 +44,7 @@ export interface WorkbenchState {
   closeProject: () => void;
   showPortal: () => void;
   showProject: () => void;
-  openEditor: (kind: EditorKind, connectionId?: string) => void;
+  openEditor: (kind: EditorKind, target?: string) => void;
   closeEditor: (id: string) => void;
   focusEditor: (id: string) => void;
   select: (selection: Selection) => void;
@@ -75,12 +76,12 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
   showPortal: () => set({ view: 'portal' }),
   showProject: () => set((state) => (state.project ? { view: 'project' } : {})),
 
-  openEditor: (kind, connectionId) =>
+  openEditor: (kind, target) =>
     set((state) => {
-      const id = editorId(kind, connectionId);
+      const id = editorId(kind, target);
       const exists = state.editors.some((editor) => editor.id === id);
       return {
-        editors: exists ? state.editors : [...state.editors, { id, kind, connectionId }],
+        editors: exists ? state.editors : [...state.editors, { id, kind, target }],
         activeEditorId: id,
       };
     }),

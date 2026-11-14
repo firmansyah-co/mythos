@@ -10,6 +10,7 @@ import { useIoConfig } from '../data/ioConfig';
 import { toForm } from '../data/ioForm';
 import { useLog } from '../data/log';
 import type { TagSample } from '../data/quality';
+import { useScreens } from '../data/screens';
 import { goOffline, useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
 
@@ -39,6 +40,7 @@ export function resetStores(): void {
   useController.setState({ activeProjectId: undefined, io: null, tagMeta: new Map(), error: null });
   useLog.setState({ entries: [] });
   useIoConfig.getState().reset();
+  useScreens.getState().reset();
   useIoConfig.setState({ drivers: [] });
   useWorkbench.setState({
     view: 'portal',
@@ -143,5 +145,20 @@ export function loadedIoConfig(projectId: string, config: IoConfig | null): void
     checking: false,
     problems: [],
     saveError: null,
+  });
+}
+
+/** Type into a field the way a keystroke does, so React sees the change. */
+export function typeInto(element: Element | null, value: string): void {
+  if (!(element instanceof HTMLInputElement) && !(element instanceof HTMLSelectElement)) {
+    throw new Error('not a field');
+  }
+  const proto = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+  act(() => {
+    setter?.call(element, value);
+    element.dispatchEvent(
+      new Event(element instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true })
+    );
   });
 }

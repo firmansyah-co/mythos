@@ -1,8 +1,11 @@
+import { Gauge, Type } from 'lucide-react';
 import { useController } from '../data/controller';
 import { allTagUris } from '../data/derive';
 import { formatClock, viewTag } from '../data/quality';
 import { useProjectIo, useRuntimeScope } from '../data/scope';
+import { useScreens } from '../data/screens';
 import { useTelemetry } from '../data/telemetry';
+import { useWorkbench } from '../data/workbench';
 
 const STREAM_WORDS = {
   IDLE: { label: 'OFFLINE', tone: 'neutral' },
@@ -84,6 +87,39 @@ export function OnlineTools() {
           <dd className="mono">{connectionCount ?? '—'}</dd>
         </dl>
       )}
+    </div>
+  );
+}
+
+/** The "Toolbox" task card: the elements that can be placed on the open screen. */
+export function Toolbox({ screenId }: { screenId: string }) {
+  const addElement = useScreens((state) => state.addElement);
+  const select = useWorkbench((state) => state.select);
+
+  const add = (kind: 'text' | 'io_field') => {
+    const elementId = addElement(screenId, kind);
+    if (elementId) select({ kind: 'element', screenId, elementId });
+  };
+
+  return (
+    <div className="card" data-testid="toolbox">
+      <h3 className="card__title">Toolbox</h3>
+      <div className="toolbox">
+        <button type="button" className="toolbox__item" onClick={() => add('text')}>
+          <Type size={16} aria-hidden />
+          <span>
+            <strong>Text field</strong>
+            <small>A fixed label</small>
+          </span>
+        </button>
+        <button type="button" className="toolbox__item" onClick={() => add('io_field')}>
+          <Gauge size={16} aria-hidden />
+          <span>
+            <strong>I/O field</strong>
+            <small>Shows the value of a tag</small>
+          </span>
+        </button>
+      </div>
     </div>
   );
 }

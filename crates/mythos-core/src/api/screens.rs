@@ -2,7 +2,7 @@
 
 use super::ApiState;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -89,13 +89,48 @@ fn write_screens<S: PlatformShm>(
         .map_err(|e| failure(StatusCode::INTERNAL_SERVER_ERROR, e))
 }
 
+/// `?view=draft|active`. The draft is what an engineer is editing; the active set is what was
+/// last released. Absent means the draft.
+#[derive(Deserialize)]
+pub struct ViewQuery {
+    view: Option<String>,
+}
+
 pub async fn list<S: PlatformShm>(
     State(state): State<ApiState<S>>,
     Path(project): Path<String>,
+    Query(query): Query<ViewQuery>,
 ) -> Result<Json<Vec<Screen>>, ApiError> {
+    let stage = match query.view.as_deref() {
+        None | Some("draft") => "draft",
+        Some("active") => "active",
+        Some(other) => {
+            return Err(failure(
+                StatusCode::BAD_REQUEST,
+                format!("unknown view '{other}': use 'draft' or 'active'"),
+            ))
+        }
+    };
     let _guard = SCREEN_WRITES.lock().await;
     let dir = project_dir(&state, &project)?;
-    Ok(Json(read_screens(&dir, "draft")?))
+    Ok(Json(read_screens(&dir, stage)?))
+}
+
+/// Remove a screen from the draft. The released copy stays until the next release.
+pub async fn delete<S: PlatformShm>(
+    State(state): State<ApiState<S>>,
+    Path((project, screen)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let _guard = SCREEN_WRITES.lock().await;
+    let dir = project_dir(&state, &project)?;
+    let mut screens = read_screens(&dir, "draft")?;
+    let before = screens.len();
+    screens.retain(|s| s.id != screen);
+    if screens.len() == before {
+        return Err(failure(StatusCode::NOT_FOUND, "Screen not found"));
+    }
+    write_screens(&state, &dir, "draft", &screens)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn create<S: PlatformShm>(
