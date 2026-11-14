@@ -1,5 +1,4 @@
 use mythos_core::*;
-use mythos_shm::TagValueRaw;
 use std::fs;
 use tempfile::tempdir;
 
@@ -92,91 +91,6 @@ fn test_tag_catalog_registration_and_lookup() {
     let external_tags = catalog.find_by_domain(TagDomain::External);
     assert_eq!(external_tags.len(), 1);
     assert_eq!(external_tags[0].slot_id, 1);
-}
-
-#[test]
-fn test_nvram_wal_append_and_recovery() {
-    let temp_dir = tempdir().unwrap();
-    let nvram_path = temp_dir.path().join("nvram.dat");
-
-    {
-        let mut engine = NvramWalEngine::new(&nvram_path);
-        let lsn1 = engine
-            .append_record(10, TagValueRaw::from_f64(12.34), 1000)
-            .unwrap();
-        let lsn2 = engine
-            .append_record(20, TagValueRaw::from_i32(500), 2000)
-            .unwrap();
-        // Update tag 10 again
-        let lsn3 = engine
-            .append_record(10, TagValueRaw::from_f64(56.78), 3000)
-            .unwrap();
-
-        assert_eq!(lsn1, 1);
-        assert_eq!(lsn2, 2);
-        assert_eq!(lsn3, 3);
-    }
-
-    // Recover in fresh engine
-    let mut recovery_engine = NvramWalEngine::new(&nvram_path);
-    let recovered = recovery_engine.recover().unwrap();
-
-    assert_eq!(recovered.len(), 2);
-    assert_eq!(recovered[0].0, 10);
-    assert_eq!(recovered[0].1.as_f64(), 56.78);
-    assert_eq!(recovered[1].0, 20);
-    assert_eq!(recovered[1].1.as_i32(), 500);
-}
-
-#[test]
-fn test_nvram_wal_crc_corruption_detection() {
-    let temp_dir = tempdir().unwrap();
-    let nvram_path = temp_dir.path().join("corrupt_nvram.dat");
-
-    {
-        let mut engine = NvramWalEngine::new(&nvram_path);
-        engine
-            .append_record(1, TagValueRaw::from_u32(100), 100)
-            .unwrap();
-    }
-
-    // Corrupt one byte of payload
-    let mut data = fs::read(&nvram_path).unwrap();
-    data[15] ^= 0xFF; // Flip bit
-    fs::write(&nvram_path, data).unwrap();
-
-    let mut recovery_engine = NvramWalEngine::new(&nvram_path);
-    let res = recovery_engine.recover();
-    assert!(matches!(res, Err(NvramError::ChecksumMismatch { .. })));
-}
-
-#[test]
-fn test_nvram_wal_compaction() {
-    let temp_dir = tempdir().unwrap();
-    let nvram_path = temp_dir.path().join("nvram_compact.dat");
-
-    let mut engine = NvramWalEngine::new(&nvram_path);
-    for i in 0..100 {
-        engine
-            .append_record(1, TagValueRaw::from_i32(i), i as u64)
-            .unwrap();
-    }
-    // File size has 100 records = 3400 bytes
-    let size_before = fs::metadata(&nvram_path).unwrap().len();
-    assert_eq!(size_before, 100 * 34);
-
-    let compacted_count = engine.compact().unwrap();
-    assert_eq!(compacted_count, 1);
-
-    let size_after = fs::metadata(&nvram_path).unwrap().len();
-    assert_eq!(size_after, 34);
-
-    // Verify recovery after compaction
-    let mut recovery_engine = NvramWalEngine::new(&nvram_path);
-    let state = recovery_engine.recover().unwrap();
-    assert_eq!(state.len(), 1);
-    assert_eq!(state[0].0, 1);
-    assert_eq!(state[0].1.as_i32(), 99);
 }
 
 #[test]
