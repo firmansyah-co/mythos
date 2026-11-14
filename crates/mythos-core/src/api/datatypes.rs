@@ -34,20 +34,17 @@ fn map_error(error: DataTypeError) -> ApiError {
 }
 
 fn store<S: PlatformShm>(state: &ApiState<S>, project: &str) -> Result<DataTypeStore, ApiError> {
-    if project.is_empty()
-        || !project
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        return Err(failure(StatusCode::BAD_REQUEST, "Invalid project ID"));
-    }
+    let dir = state
+        .storage
+        .project_dir(project)
+        .map_err(|e| failure(StatusCode::BAD_REQUEST, e))?;
     state.storage.get_project(project).map_err(|_| {
         failure(
             StatusCode::NOT_FOUND,
             format!("Project '{project}' not found"),
         )
     })?;
-    Ok(DataTypeStore::new(state.storage.project_dir(project)))
+    Ok(DataTypeStore::new(dir))
 }
 
 #[derive(Deserialize)]

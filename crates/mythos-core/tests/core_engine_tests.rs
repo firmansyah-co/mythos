@@ -137,7 +137,7 @@ fn test_project_wal_append_replay_and_recovery() {
     let proj = ProjectConfig::new("proj_wal_test", "WAL Test Project");
     storage.create_project(&proj).unwrap();
 
-    let wal = storage.get_wal("proj_wal_test");
+    let wal = storage.get_wal("proj_wal_test").unwrap();
     assert!(!wal.has_pending_entries());
 
     // Append two delta edits
@@ -160,6 +160,7 @@ fn test_project_wal_append_replay_and_recovery() {
 
     let target_file = storage
         .project_dir("proj_wal_test")
+        .unwrap()
         .join("logic/draft/main.st");
     assert_eq!(fs::read(&target_file).unwrap(), logic_code);
 
@@ -174,7 +175,7 @@ fn test_project_draft_commit_with_rollback() {
     let proj = ProjectConfig::new("proj_commit_test", "Commit Test Project");
     storage.create_project(&proj).unwrap();
 
-    let pdir = storage.project_dir("proj_commit_test");
+    let pdir = storage.project_dir("proj_commit_test").unwrap();
     let active_path = pdir.join("project.active.json");
     let draft_path = pdir.join("project.draft.json");
 
