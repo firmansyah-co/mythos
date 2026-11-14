@@ -142,6 +142,13 @@ impl TagCatalog {
         Ok(())
     }
 
+    /// Remove a tag, freeing its slot. Returns what was registered, if anything was.
+    pub fn unregister(&mut self, uri: &str) -> Option<TagMetadata> {
+        let metadata = self.by_uri.remove(uri)?;
+        self.by_slot.remove(&metadata.slot_id);
+        Some(metadata)
+    }
+
     /// Lookup metadata by canonical URI.
     pub fn get_by_uri(&self, uri: &str) -> Option<&TagMetadata> {
         self.by_uri.get(uri)

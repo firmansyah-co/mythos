@@ -67,6 +67,30 @@ fn fault_for_exception(function_code: u8, exception_code: u8) -> SampleFault {
     }
 }
 
+/// The tags a configuration provides, each described by where its value comes from.
+fn declarations(config: &ModbusDriverConfig) -> Vec<TagDeclaration> {
+    let host = config.host.as_deref().unwrap_or("");
+    config
+        .mappings
+        .iter()
+        .map(|m| TagDeclaration {
+            uri: m.uri.clone(),
+            description: format!(
+                "Modbus TCP {}:{} unit {} {} register {}",
+                host,
+                config.port,
+                config.slave_id,
+                if m.function_code == 4 {
+                    "input"
+                } else {
+                    "holding"
+                },
+                m.address
+            ),
+        })
+        .collect()
+}
+
 fn read_request(slave_id: u8, mapping: &TagMapping) -> ModbusRequest {
     let quantity = mapping.data_type.register_count();
     if mapping.function_code == 4 {
@@ -149,37 +173,16 @@ impl MythosPlugin for ModbusDriver {
 
 #[async_trait]
 impl ProtocolDriver for ModbusDriver {
-    fn validate_config(&self, config: &JsonValue) -> Result<(), PluginError> {
+    fn describe_config(&self, config: &JsonValue) -> Result<Vec<TagDeclaration>, PluginError> {
         let parsed: ModbusDriverConfig = serde_json::from_value(config.clone()).map_err(|e| {
             PluginError::InvalidConfiguration(format!("Invalid configuration schema: {}", e))
         })?;
-        parsed.validate()
+        parsed.validate()?;
+        Ok(declarations(&parsed))
     }
 
     fn declared_tags(&self) -> Vec<TagDeclaration> {
-        let Some(config) = self.config.as_ref() else {
-            return Vec::new();
-        };
-        let host = config.host.as_deref().unwrap_or("");
-        config
-            .mappings
-            .iter()
-            .map(|m| TagDeclaration {
-                uri: m.uri.clone(),
-                description: format!(
-                    "Modbus TCP {}:{} unit {} {} register {}",
-                    host,
-                    config.port,
-                    config.slave_id,
-                    if m.function_code == 4 {
-                        "input"
-                    } else {
-                        "holding"
-                    },
-                    m.address
-                ),
-            })
-            .collect()
+        self.config.as_ref().map(declarations).unwrap_or_default()
     }
 
     async fn poll_cycle(&mut self, ctx: &PluginContext) -> Result<Vec<TagSample>, PluginError> {

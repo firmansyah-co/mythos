@@ -12,9 +12,11 @@
 //! device and carries a bad quality, and a tag that was never read has no type and no value.
 
 pub mod config;
+pub mod manager;
 pub mod runtime;
 
 pub use config::{ConnectionConfig, IoConfig, IoConfigError, IO_CONFIG_FILE};
+pub use manager::{ConfigProblem, IoManager};
 pub use runtime::{
     ConnectionState, ConnectionStatus, DriverRegistry, IoRuntime, IoStatus, IoStatusHandle,
     TagFaultStatus,

@@ -23,7 +23,7 @@ intent and may describe things that do not exist.
 | :--- | :--- | :--- |
 | Tag bus | `crates/mythos-shm`, `crates/mythos-pal` | Triple-buffered shared-memory tag store with typed values and OPC-style quality codes. One writer: the field I/O runtime. |
 | Field I/O runtime | `crates/mythos-core/src/io` | Polls each configured connection and writes what the driver reports to the tag bus: a typed value with `GOOD` quality, or the last value read with a bad quality that names the fault. A tag that was never read has no value. |
-| API server | `crates/mythos-core` (`mythos-server`) | HTTP API for projects, HMI screens, data types and faceplate types; a 100 ms SSE telemetry stream of the tag bus; `GET /api/v1/io/status` for the state of each connection. |
+| API server | `crates/mythos-core` (`mythos-server`) | HTTP API for projects, HMI screens, data types, faceplate types and each project's I/O configuration; a 100 ms SSE telemetry stream of the tag bus; `GET /api/v1/io/status` for the state of each connection. |
 | Web workbench | `frontend/packages/ui-shell` | Portal view (open or create a project) and project view: project tree, devices & networks, live tag tables, connection diagnostics, inspector. Read-only: it shows what the controller reads and edits nothing yet. |
 | Modbus TCP driver | `plugins/drivers/driver-modbus` | Reads holding and input registers as `u16`, `i16`, `u32`, `i32` or `f32`, with scaling and selectable word order. Exercised end to end against a simulated device, not yet against hardware. |
 | Device catalog | `catalog/`, `crates/mythos-core/src/catalog` | Manifest format and parser, with two reference device packages. |
@@ -34,8 +34,8 @@ intent and may describe things that do not exist.
 
 - **Any driver other than Modbus TCP.** A Modbus RTU configuration is rejected; there is no
   MQTT driver.
-- **I/O configuration from the API or the workbench.** `io.json` is written by hand and read
-  when the server starts.
+- **An I/O configuration editor in the workbench.** The configuration is saved through the
+  API or written by hand.
 - **HMI screens, faceplates, a logic editor and a network editor in the workbench.** The server
   still stores HMI screens, faceplate types and data types; the workbench has no editors for
   them yet.
@@ -98,9 +98,17 @@ MYTHOS_STATIC_DIR="$PWD/frontend/packages/ui-shell/dist" \
 
 ## Reading a device
 
-Field I/O is configured per project in `<storage root>/<project id>/io.json` and started for the
-**active** project when the server starts. Create and activate a project through the workbench
-or the API, write the file, then restart the server.
+Field I/O is configured per project and runs for the **active** project. The configuration is
+stored as `<storage root>/<project id>/io.json`.
+
+Save it with `PUT /api/v1/projects/<project id>/io`. The server checks it first — its own
+rules, each driver's view of its connection, and that no tag is provided twice — and refuses
+it whole, naming every problem, if anything is wrong. A saved configuration of the active
+project is applied at once: the running connections are stopped, their tags removed, and the
+new ones started. Activating another project switches field I/O to that project the same way.
+`GET /api/v1/projects/<project id>/io` reads it back and `GET /api/v1/io/drivers` lists the
+drivers it may name. A file written by hand is picked up when the server starts or the project
+is activated.
 
 ```json
 {

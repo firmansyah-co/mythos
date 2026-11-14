@@ -1,7 +1,7 @@
 //! Shared state for Axum API Gateway.
 
 use crate::collab::RoomManager;
-use crate::io::IoStatusHandle;
+use crate::io::{IoManager, IoStatusHandle};
 use crate::storage::ControllerStorage;
 use crate::tag::TagCatalog;
 use mythos_pal::PlatformShm;
@@ -37,6 +37,9 @@ pub struct ApiState<S: PlatformShm + 'static = mythos_pal::DefaultShm> {
     pub hmi_events: BroadcastSender<HmiEvent>,
     /// What the field I/O runtime is doing, or why none is running.
     pub io_status: IoStatusHandle,
+    /// The manager of the field I/O runtime, when this server has one. Without it an I/O
+    /// configuration can be read and saved but not applied.
+    pub io_manager: Option<Arc<IoManager<S>>>,
 }
 
 impl<S: PlatformShm + 'static> Clone for ApiState<S> {
@@ -49,6 +52,7 @@ impl<S: PlatformShm + 'static> Clone for ApiState<S> {
             room_manager: Arc::clone(&self.room_manager),
             hmi_events: self.hmi_events.clone(),
             io_status: self.io_status.clone(),
+            io_manager: self.io_manager.clone(),
         }
     }
 }
@@ -74,6 +78,7 @@ impl<S: PlatformShm + 'static> ApiState<S> {
             io_status: IoStatusHandle::not_running(
                 "no field I/O runtime is attached to this server",
             ),
+            io_manager: None,
         }
     }
 
@@ -83,6 +88,14 @@ impl<S: PlatformShm + 'static> ApiState<S> {
     /// anyone is watching.
     pub fn notify_hmi(&self, event: HmiEvent) {
         let _ = self.hmi_events.send(event);
+    }
+
+    /// Attach the field I/O manager. Its status becomes the one reported at
+    /// `GET /api/v1/io/status`.
+    pub fn with_io_manager(mut self, manager: Arc<IoManager<S>>) -> Self {
+        self.io_status = manager.status();
+        self.io_manager = Some(manager);
+        self
     }
 
     /// Attach the status of a field I/O runtime, reported at `GET /api/v1/io/status`.

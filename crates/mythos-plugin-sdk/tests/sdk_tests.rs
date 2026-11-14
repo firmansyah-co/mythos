@@ -31,7 +31,7 @@ impl MythosPlugin for MockDriver {
         _ctx: &PluginContext,
         config: &serde_json::Value,
     ) -> Result<(), PluginError> {
-        self.validate_config(config)?;
+        self.describe_config(config)?;
         Ok(())
     }
 
@@ -51,11 +51,14 @@ impl MythosPlugin for MockDriver {
 
 #[async_trait::async_trait]
 impl ProtocolDriver for MockDriver {
-    fn validate_config(&self, config: &serde_json::Value) -> Result<(), PluginError> {
+    fn describe_config(
+        &self,
+        config: &serde_json::Value,
+    ) -> Result<Vec<TagDeclaration>, PluginError> {
         if config.get("port").is_none() {
             return Err(PluginError::InvalidConfiguration("Missing 'port'".into()));
         }
-        Ok(())
+        Ok(self.declared_tags())
     }
 
     fn declared_tags(&self) -> Vec<TagDeclaration> {
