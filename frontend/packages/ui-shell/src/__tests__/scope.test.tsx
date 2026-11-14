@@ -11,9 +11,20 @@ import { Inspector } from '../shell/Inspector';
 import { ProjectTree } from '../shell/ProjectTree';
 import { ProjectView } from '../shell/ProjectView';
 import { OnlineTools } from '../shell/TaskCards';
-import { connection, ioStatus, project, render, resetStores, sample, unmountAll } from './harness';
+import {
+  connection,
+  ioStatus,
+  loadedIoConfig,
+  modbusConnection,
+  project,
+  render,
+  resetStores,
+  sample,
+  unmountAll,
+} from './harness';
 
 const TAG = 'external.BoilerHouse.Unit1.steam_temp';
+const OWN_TAG = 'external.Intake.LT201.level';
 
 /** The controller runs `boiler_house`, with one connection, one tag and one fault. */
 function controllerRunsBoilerHouse() {
@@ -63,7 +74,6 @@ describe('a project the controller is not running', () => {
   it.each([
     ['the tag table', () => <TagTable />],
     ['a connection-scoped tag table', () => <TagTable connectionId="boiler-plc" />],
-    ['devices & networks', () => <DevicesAndNetworks />],
     ['connection diagnostics', () => <ConnectionDiagnostics connectionId="boiler-plc" />],
   ])('%s shows none of the running project’s devices or tags', (_name, element) => {
     const container = render(element());
@@ -73,11 +83,52 @@ describe('a project the controller is not running', () => {
     expect(container.textContent).not.toContain(TAG);
   });
 
-  it('the project tree lists no connections', () => {
+  it('devices & networks shows its own configuration and nothing of the running project', () => {
+    // water_intake has one configured connection of its own; boiler-plc is the running one.
+    act(() => loadedIoConfig('water_intake', { connections: [modbusConnection('intake-plc', [OWN_TAG])] }));
+    const container = render(<DevicesAndNetworks />);
+
+    const rows = [...container.querySelectorAll('[data-testid="connection-row"]')];
+    expect(rows.map((row) => row.querySelector('td')?.textContent)).toEqual(['intake-plc']);
+    expect(container.querySelector('[data-testid="config-not-active"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('boiler-plc');
+    // No runtime state is claimed for a connection the controller is not running.
+    expect(container.querySelector('.badge--good, .badge--warn')).toBeNull();
+  });
+
+  it('the project tree lists its configured connections and no runtime under them', () => {
+    act(() => loadedIoConfig('water_intake', { connections: [modbusConnection('intake-plc', [OWN_TAG])] }));
     const container = render(<ProjectTree />);
-    expect(container.querySelectorAll('[data-testid="tree-connection"]').length).toBe(0);
-    expect(container.querySelector('[data-testid="tree-devices"]')).toBeNull();
+
+    const connections = [...container.querySelectorAll('[data-testid="tree-connection"]')];
+    expect(connections.map((node) => node.textContent)).toEqual(['intake-plc [modbus]']);
+    expect(container.querySelector('[data-testid="tree-runtime-tags"]')).toBeNull();
+    expect(container.querySelector('[data-testid="tree-runtime-diagnostics"]')).toBeNull();
+    expect(container.querySelector('[data-testid="tree-all-tags"]')).toBeNull();
     expect(container.querySelector('[data-testid="tree-not-active"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('boiler-plc');
+  });
+
+  it('a connection named like a running one is not given that connection’s state', () => {
+    act(() => loadedIoConfig('water_intake', { connections: [modbusConnection('boiler-plc', [OWN_TAG])] }));
+    const container = render(<DevicesAndNetworks />);
+    const cells = [...container.querySelectorAll('[data-testid="connection-row"] td')].map(
+      (cell) => cell.textContent
+    );
+    expect(cells[0]).toBe('boiler-plc');
+    // The "On the controller" column: a dash, not the running connection's badge.
+    expect(cells[5]).toBe('—');
+    expect(container.querySelector('[data-testid="connection-row"] .badge')).toBeNull();
+    expect(container.textContent).not.toContain('communication failure');
+  });
+
+  it('a connection named like a running one still gets no runtime nodes', () => {
+    // Same name as the connection the controller runs for the other project.
+    act(() => loadedIoConfig('water_intake', { connections: [modbusConnection('boiler-plc', [OWN_TAG])] }));
+    const container = render(<ProjectTree />);
+    expect(container.querySelectorAll('[data-testid="tree-connection"]').length).toBe(1);
+    expect(container.querySelector('[data-testid="tree-runtime-tags"]')).toBeNull();
+    expect(container.querySelector('[data-testid="tree-runtime-diagnostics"]')).toBeNull();
   });
 
   it('the inspector counts no problems and lists none', () => {
@@ -109,8 +160,11 @@ describe('the project the controller is running', () => {
   });
 
   it('shows its connections, its tags and its problems', () => {
+    act(() => loadedIoConfig('boiler_house', { connections: [modbusConnection('boiler-plc', [TAG])] }));
     const tree = render(<ProjectTree />);
     expect(tree.querySelectorAll('[data-testid="tree-connection"]').length).toBe(1);
+    expect(tree.querySelectorAll('[data-testid="tree-runtime-tags"]').length).toBe(1);
+    expect(tree.querySelectorAll('[data-testid="tree-runtime-diagnostics"]').length).toBe(1);
 
     const table = render(<TagTable />);
     expect(table.querySelectorAll('[data-testid="tag-row"]').length).toBe(1);
@@ -120,9 +174,11 @@ describe('the project the controller is running', () => {
   });
 
   it('stops showing all of it the moment the controller cannot be reached', () => {
+    act(() => loadedIoConfig('boiler_house', { connections: [modbusConnection('boiler-plc', [TAG])] }));
     const table = render(<TagTable />);
     const tree = render(<ProjectTree />);
     expect(table.querySelectorAll('[data-testid="tag-row"]').length).toBe(1);
+    expect(tree.querySelectorAll('[data-testid="tree-runtime-tags"]').length).toBe(1);
 
     act(() =>
       useController.setState({
@@ -135,6 +191,9 @@ describe('the project the controller is running', () => {
 
     expect(table.querySelector('[data-testid="gate-unreachable"]')).not.toBeNull();
     expect(table.querySelectorAll('[data-testid="tag-row"]').length).toBe(0);
-    expect(tree.querySelectorAll('[data-testid="tree-connection"]').length).toBe(0);
+    // The configured connection is still listed; what is gone is everything known at run time.
+    expect(tree.querySelectorAll('[data-testid="tree-connection"]').length).toBe(1);
+    expect(tree.querySelectorAll('[data-testid="tree-runtime-tags"]').length).toBe(0);
+    expect(tree.querySelectorAll('[data-testid="tree-runtime-diagnostics"]').length).toBe(0);
   });
 });

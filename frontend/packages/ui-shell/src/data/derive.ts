@@ -68,12 +68,23 @@ export function currentProblems(io: IoStatus | null): Problem[] {
   return problems;
 }
 
-export function editorTitle(editor: EditorRef): string {
+/** What a draft connection is called on screen: its name, or a marker when it has none yet. */
+export function connectionLabel(id: string | undefined): string {
+  return id && id.trim() !== '' ? id : '(unnamed connection)';
+}
+
+/**
+ * An editor's title. `nameOf` resolves a draft row's key to the connection's current name,
+ * for the configuration editor.
+ */
+export function editorTitle(editor: EditorRef, nameOf: (key: string) => string | undefined): string {
   switch (editor.kind) {
     case 'overview':
       return 'Project overview';
     case 'devices':
       return 'Devices & networks';
+    case 'connection':
+      return `Configuration [${connectionLabel(nameOf(editor.connectionId ?? ''))}]`;
     case 'tags':
       return editor.connectionId ? `Tags [${editor.connectionId}]` : 'All tags';
     case 'diagnostics':
@@ -82,12 +93,18 @@ export function editorTitle(editor: EditorRef): string {
 }
 
 /** The path shown in an editor's header, outermost first. */
-export function editorPath(editor: EditorRef, projectName: string): string[] {
+export function editorPath(
+  editor: EditorRef,
+  projectName: string,
+  nameOf: (key: string) => string | undefined
+): string[] {
   switch (editor.kind) {
     case 'overview':
       return [projectName, 'Project overview'];
     case 'devices':
       return [projectName, 'Devices & networks'];
+    case 'connection':
+      return [projectName, connectionLabel(nameOf(editor.connectionId ?? '')), 'Configuration'];
     case 'tags':
       return editor.connectionId
         ? [projectName, editor.connectionId, 'Tags']

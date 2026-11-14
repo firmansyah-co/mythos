@@ -1,5 +1,6 @@
 import { ChevronLeft, ChevronRight, LayoutGrid, Plug, Unplug, X } from 'lucide-react';
 import { editorTitle } from '../data/derive';
+import { isDirty, useIoConfig } from '../data/ioConfig';
 import { useLog } from '../data/log';
 import { useRuntimeScope } from '../data/scope';
 import { goOffline, goOnline, useTelemetry } from '../data/telemetry';
@@ -54,6 +55,21 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
   const wantOnline = useTelemetry((state) => state.wantOnline);
   const lastLog = useLog((state) => state.entries[state.entries.length - 1]);
   const running = useRuntimeScope().kind === 'active';
+  const draft = useIoConfig((state) => state.draft);
+  const dirty = useIoConfig(isDirty);
+  const nameOf = (key: string) => draft.find((connection) => connection.key === key)?.id;
+
+  /** Close the project, unless there are unsaved changes the engineer wants to keep. */
+  const close = () => {
+    if (
+      dirty &&
+      !window.confirm('The I/O configuration has unsaved changes. Close the project and lose them?')
+    ) {
+      return;
+    }
+    goOffline();
+    closeProject();
+  };
 
   const tree = useResizable({ storageKey: 'mythos.pane.tree', initial: 280, min: 180, max: 520, grow: 'right' });
   const cards = useResizable({ storageKey: 'mythos.pane.cards', initial: 260, min: 200, max: 480, grow: 'left' });
@@ -66,7 +82,7 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
       label: 'Project',
       items: [
         { label: 'Open or create a project…', run: showPortal },
-        { label: 'Close project', run: () => { goOffline(); closeProject(); } },
+        { label: 'Close project', run: close },
       ],
     },
     {
@@ -201,12 +217,12 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
                 className="editorbar__tab-label"
                 onClick={() => focusEditor(editor.id)}
               >
-                {editorTitle(editor)}
+                {editorTitle(editor, nameOf)}
               </button>
               <button
                 type="button"
                 className="editorbar__tab-close"
-                aria-label={`Close ${editorTitle(editor)}`}
+                aria-label={`Close ${editorTitle(editor, nameOf)}`}
                 onClick={() => closeEditor(editor.id)}
               >
                 <X size={11} />

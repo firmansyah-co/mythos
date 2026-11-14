@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api/client';
 import { startControllerPolling, stopControllerPolling, useController } from './data/controller';
+import { useIoConfig } from './data/ioConfig';
 import { formatLocation, parseLocation } from './data/location';
 import { log } from './data/log';
 import { goOffline, goOnline, useTelemetry } from './data/telemetry';
@@ -51,7 +52,10 @@ export function App() {
           state.project
             ? {
                 projectId: state.project.id,
-                editor: editor && { kind: editor.kind, connectionId: editor.connectionId },
+                editor:
+                  editor && editor.kind !== 'connection'
+                    ? { kind: editor.kind, connectionId: editor.connectionId }
+                    : undefined,
               }
             : null
         );
@@ -59,6 +63,15 @@ export function App() {
       }),
     []
   );
+
+  // The open project's I/O configuration is read when the project opens.
+  useEffect(() => {
+    if (projectId === null) {
+      useIoConfig.getState().reset();
+      return;
+    }
+    void useIoConfig.getState().load(projectId);
+  }, [projectId]);
 
   // The controller's own state is read for as long as a project is open.
   useEffect(() => {
