@@ -1,17 +1,36 @@
-//! # MythOS Server Microkernel Daemon
+//! # MythOS Server Daemon
 //!
-//! Production daemon entry point hosting the Axum REST/SSE API Gateway,
-//! lock-free TagBus supervisor, and Universal Plugin Host.
+//! Hosts the HTTP/SSE API and the field I/O runtime that feeds the tag bus.
 
-use mythos_core::api::{create_router, ApiState};
-use mythos_core::storage::{ControllerStorage, DEFAULT_PROJECTS_DIR};
-use mythos_core::tag::TagCatalog;
-use mythos_core::PluginHost;
+use mythos_core::api::create_router;
+use mythos_core::server::{bootstrap, shm_name_from_env};
+use mythos_core::storage::DEFAULT_PROJECTS_DIR;
 use mythos_pal::PosixShm;
-use mythos_shm::ShmReaderHandle;
 use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+
+/// Resolves when the process is asked to stop (Ctrl-C, or SIGTERM on Unix).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,27 +38,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage_root =
         std::env::var("MYTHOS_STORAGE_ROOT").unwrap_or_else(|_| DEFAULT_PROJECTS_DIR.to_string());
-    let storage = Arc::new(ControllerStorage::new(&storage_root)?);
+    let shm_name = shm_name_from_env();
 
-    let tag_catalog = Arc::new(RwLock::new(TagCatalog::new()));
-    let plugin_host = PluginHost::new();
-
-    // Attach to or initialize lock-free TagBus in shared memory
-    let shm_name = "mythos_tagbus";
-    let shm_reader = match ShmReaderHandle::<PosixShm>::new(shm_name, 32768) {
-        Ok(r) => Some(r),
-        Err(e) => {
-            tracing::warn!(
-                "Could not attach to POSIX SHM ({}). Running without SHM backing: {}",
-                shm_name,
-                e
-            );
-            None
-        }
-    };
-
-    let state = ApiState::new(storage, tag_catalog, shm_reader);
-    let app = create_router(state);
+    let server = bootstrap::<PosixShm>(&storage_root, &shm_name).await?;
+    let app = create_router(server.state);
 
     let port: u16 = std::env::var("MYTHOS_HTTP_PORT")
         .ok()
@@ -47,11 +49,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(8080);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("MythOS Microkernel Daemon listening on http://{}", addr);
+    tracing::info!("MythOS server listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
 
-    let _ = plugin_host;
+    // Telemetry streams never end on their own, so a graceful HTTP shutdown would wait for
+    // every browser to close. Stop serving on the signal instead, then let the I/O runtime mark
+    // its tags "not connected" before the process exits.
+    tokio::select! {
+        result = axum::serve(listener, app) => result?,
+        _ = shutdown_signal() => tracing::info!("Shutdown requested"),
+    }
+
+    if let Some(io) = server.io {
+        io.shutdown().await;
+    }
     Ok(())
 }

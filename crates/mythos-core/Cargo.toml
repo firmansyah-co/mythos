@@ -14,6 +14,7 @@ workspace = true
 mythos-pal.workspace = true
 mythos-shm.workspace = true
 mythos-plugin-sdk.workspace = true
+driver-modbus.workspace = true
 async-trait.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true
@@ -34,6 +35,8 @@ ts-rs = { workspace = true, features = ["serde-json-impl", "no-serde-warnings"] 
 yrs = { workspace = true }
 
 [dev-dependencies]
+# The Modbus device simulator, for the end-to-end read path tests.
+driver-modbus = { workspace = true, features = ["sim"] }
 tempfile = "3.10"
 tokio-tungstenite = "0.24"
 futures-util = "0.3"

@@ -25,8 +25,9 @@ described. They remain in git history.
   stale: lists crates that have been removed.
 - [01 Microkernel and shared memory](01-architecture/01-microkernel-and-shm.md) — the tag bus
   in `crates/mythos-shm`.
-- [02 Protocol driver SPI](01-architecture/02-protocol-driver-spi.md) — the driver contract in
-  `crates/mythos-plugin-sdk`.
+- [02 Protocol driver SPI](01-architecture/02-protocol-driver-spi.md) — stale: predates the
+  contract in `crates/mythos-plugin-sdk`, in which a driver returns samples and never writes the
+  tag bus itself.
 - [05 HTTP, SSE and WebSocket API](01-architecture/05-http-sse-and-websocket-api.md) — describes
   more endpoints than `crates/mythos-core/src/api` serves.
 - [06 Universal plugin harness](01-architecture/06-universal-plugin-harness-and-extensibility.md)
