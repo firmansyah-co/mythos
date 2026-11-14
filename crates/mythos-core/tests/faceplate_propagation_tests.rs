@@ -358,7 +358,7 @@ async fn draft_and_active_are_separate_until_release() {
     let app = build_app(&storage);
 
     save_draft(&app, "fp_motor", type_body("fp_motor", &["running"])).await;
-    let project_dir = storage.project_dir(PROJECT);
+    let project_dir = storage.project_dir(PROJECT).unwrap();
     assert!(project_dir.join("faceplates/draft/types.json").exists());
     assert!(
         !project_dir.join("faceplates/active/types.json").exists(),
@@ -452,6 +452,7 @@ async fn binding_to_an_undeclared_udt_member_is_rejected_with_the_offender_named
     assert!(
         !storage
             .project_dir(PROJECT)
+            .unwrap()
             .join("faceplates/draft/types.json")
             .exists(),
         "a rejected definition must not be persisted"
@@ -919,6 +920,7 @@ async fn a_frozen_version_missing_from_history_reports_master_data_unavailable()
     // Simulate history loss: v1 is no longer retained in the active store.
     let active_path = storage
         .project_dir(PROJECT)
+        .unwrap()
         .join("faceplates/active/types.json");
     let bytes = std::fs::read(&active_path).unwrap();
     let mut versions: Vec<Value> = serde_json::from_slice(&bytes).unwrap();
