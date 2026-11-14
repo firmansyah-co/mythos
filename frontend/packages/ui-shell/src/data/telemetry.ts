@@ -84,6 +84,20 @@ export const useTelemetry = create<TelemetryState>((set) => ({
   clear: () => set({ tags: new Map(), lastBatchAtMs: null }),
 }));
 
+/** Named events the controller sends on the stream besides tag batches. */
+export const HMI_EVENTS = ['SCREENS_RELEASED'] as const;
+export type HmiEventName = (typeof HMI_EVENTS)[number];
+
+const hmiHandlers = new Map<HmiEventName, Set<(data: unknown) => void>>();
+
+/** Be told when the controller announces `name`. Returns the function that stops it. */
+export function onHmiEvent(name: HmiEventName, handler: (data: unknown) => void): () => void {
+  const handlers = hmiHandlers.get(name) ?? new Set();
+  hmiHandlers.set(name, handlers);
+  handlers.add(handler);
+  return () => handlers.delete(handler);
+}
+
 // One connection for the whole application. Module state, because a second stream would write
 // the cache twice per tick and the two would disagree about whether the workbench is online.
 let source: EventSource | null = null;
@@ -116,6 +130,19 @@ function connect(): void {
     }
     useTelemetry.getState().applyBatch(batch);
   });
+
+  for (const name of HMI_EVENTS) {
+    current.addEventListener(name, (event) => {
+      if (source !== current) return;
+      let data: unknown;
+      try {
+        data = JSON.parse((event as MessageEvent<string>).data);
+      } catch {
+        return;
+      }
+      for (const handler of hmiHandlers.get(name) ?? []) handler(data);
+    });
+  }
 
   current.onerror = () => {
     // Close it ourselves: the browser's own reconnect would keep the cache as it was while it

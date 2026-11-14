@@ -1,5 +1,6 @@
 //! Project-scoped HMI screen drafts, persisted without simulated entities.
 
+use super::state::HmiEvent;
 use super::ApiState;
 use axum::{
     extract::{Path, Query, State},
@@ -11,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, path::PathBuf};
 use tokio::sync::Mutex;
+
+/// Name of the event sent on the telemetry stream when a project's screens are released.
+pub const SCREENS_RELEASED_EVENT: &str = "SCREENS_RELEASED";
 
 // Serialize read-modify-write operations, including concurrent browser requests.
 static SCREEN_WRITES: Mutex<()> = Mutex::const_new(());
@@ -217,6 +221,14 @@ pub async fn commit<S: PlatformShm>(
     let dir = project_dir(&state, &project)?;
     let screens = read_screens(&dir, "draft")?;
     write_screens(&state, &dir, "active", &screens)?;
+
+    // Tell every open station. An operator's runtime shows the released screens, and must not
+    // go on showing the previous release until somebody reloads the page.
+    state.notify_hmi(HmiEvent::new(
+        SCREENS_RELEASED_EVENT,
+        json!({ "project_id": project, "screens": screens.len() }),
+    ));
+
     Ok(Json(
         screens.into_iter().map(|s| (s.id, s.canvas_data)).collect(),
     ))

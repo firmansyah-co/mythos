@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, LayoutGrid, Plug, Unplug, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, LayoutGrid, MonitorPlay, Plug, Unplug, X } from 'lucide-react';
 import { editorTitle } from '../data/derive';
 import { isDirty, useIoConfig } from '../data/ioConfig';
 import { useLog } from '../data/log';
@@ -53,6 +53,7 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
   const closeEditor = useWorkbench((state) => state.closeEditor);
   const closeProject = useWorkbench((state) => state.closeProject);
   const showPortal = useWorkbench((state) => state.showPortal);
+  const startRuntime = useWorkbench((state) => state.startRuntime);
   const stream = useTelemetry((state) => state.stream);
   const wantOnline = useTelemetry((state) => state.wantOnline);
   const lastLog = useLog((state) => state.entries[state.entries.length - 1]);
@@ -102,6 +103,7 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
       items: [
         { label: 'Go online', disabled: wantOnline || !running, run: goOnline },
         { label: 'Go offline', disabled: !wantOnline, run: goOffline },
+        { label: 'Start runtime', run: () => startRuntime() },
       ],
     },
     { label: 'Help', items: [{ label: 'About MythOS Workbench', run: onAbout }] },
@@ -134,6 +136,15 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
         </button>
         <button type="button" className="btn btn--flat" disabled={!wantOnline} onClick={goOffline}>
           <Unplug size={14} aria-hidden /> Go offline
+        </button>
+        <span className="toolbar__sep" aria-hidden />
+        <button
+          type="button"
+          className="btn btn--flat"
+          title="Show the released screens as an operator sees them"
+          onClick={() => startRuntime()}
+        >
+          <MonitorPlay size={14} aria-hidden /> Start runtime
         </button>
         <span className="toolbar__sep" aria-hidden />
         <span className={`badge badge--${words.tone}`} data-testid="toolbar-stream">

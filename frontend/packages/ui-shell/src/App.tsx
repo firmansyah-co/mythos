@@ -10,6 +10,7 @@ import { useWorkbench } from './data/workbench';
 import { AboutDialog } from './shell/AboutDialog';
 import { PortalView } from './shell/PortalView';
 import { ProjectView } from './shell/ProjectView';
+import { RuntimeView } from './shell/RuntimeView';
 
 export function App() {
   const view = useWorkbench((state) => state.view);
@@ -29,6 +30,7 @@ export function App() {
         const workbench = useWorkbench.getState();
         workbench.openProject(project);
         if (target.editor) workbench.openEditor(target.editor.kind, target.editor.connectionId);
+        if (target.runtime) workbench.startRuntime(target.runtime.screenId);
         log.info(`Project “${project.name}” opened.`);
       })
       .catch((cause: unknown) => {
@@ -50,7 +52,12 @@ export function App() {
       useWorkbench.subscribe((state) => {
         const editor = state.editors.find((candidate) => candidate.id === state.activeEditorId);
         const next = formatLocation(
-          state.project
+          state.project && state.view === 'runtime'
+            ? {
+                projectId: state.project.id,
+                runtime: state.runtimeScreenId ? { screenId: state.runtimeScreenId } : {},
+              }
+            : state.project
             ? {
                 projectId: state.project.id,
                 editor:
@@ -136,7 +143,13 @@ export function App() {
 
   return (
     <>
-      {view === 'portal' ? <PortalView /> : <ProjectView onAbout={() => setAbout(true)} />}
+      {view === 'portal' ? (
+        <PortalView />
+      ) : view === 'runtime' ? (
+        <RuntimeView />
+      ) : (
+        <ProjectView onAbout={() => setAbout(true)} />
+      )}
       {about && <AboutDialog onClose={() => setAbout(false)} />}
     </>
   );

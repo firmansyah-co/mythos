@@ -206,12 +206,39 @@ try {
   check('the released version on the controller is the saved one', JSON.stringify(active[0]?.canvasData) === JSON.stringify(drafts[0]?.canvasData));
   await shot('e2e_5_hmi_screen');
 
-  // 8. Go offline: values disappear, on the screen as everywhere else.
+  // 8. The operator runtime: the released screen, full window, with live values.
+  await evaluate(`__t.click('Start runtime')`); await sleep(1800);
+  check('Start runtime opens the operator runtime', await evaluate(`__t.has('[data-testid="runtime-view"]')`));
+  check('the engineering workbench is no longer on screen', !(await evaluate(`__t.has('[data-testid="project-view"]')`)));
+  const rtField = await evaluate(`(() => { const el = document.querySelector('[data-testid="runtime-view"] [data-testid="io-field"]'); return el && {
+    state: el.getAttribute('data-state'), value: el.querySelector('[data-testid="tag-value"]').textContent }; })()`);
+  check('the runtime shows the live value on the released screen', rtField?.state === 'live' && Number(rtField.value) >= 20 && Number(rtField.value) <= 80, JSON.stringify(rtField));
+  check('and the released text', (await evaluate(`__t.text('[data-testid="runtime-view"] .textfield')[0]`)) === 'Boiler 1');
+  check('it reports the stream as online', (await evaluate(`__t.text('[data-testid="runtime-stream"]')[0]`)) === 'ONLINE');
+  check('the address is the runtime, so a reload returns to it', (await evaluate(`location.hash`)) === '#/runtime/plant_a');
+
+  // Another engineer releases a change. The runtime must follow without a reload.
+  const revised = structuredClone(drafts[0].canvasData);
+  revised.components.find((c) => c.type === 'text').text = 'Boiler 1 — revised';
+  await fetch(`${base}/api/v1/projects/plant_a/hmi/screens/${drafts[0].id}/draft`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(revised) });
+  await sleep(700);
+  check('a saved but unreleased change does not reach the operator', (await evaluate(`__t.text('[data-testid="runtime-view"] .textfield')[0]`)) === 'Boiler 1');
+  await fetch(`${base}/api/v1/projects/plant_a/hmi/commit`, { method: 'POST' });
+  await sleep(1500);
+  check('a release made elsewhere appears in the runtime without a reload',
+    (await evaluate(`__t.text('[data-testid="runtime-view"] .textfield')[0]`)) === 'Boiler 1 — revised');
+  await shot('e2e_6_operator_runtime');
+
+  await evaluate(`__t.click('Exit runtime')`); await sleep(500);
+  check('Exit runtime returns to the workbench', await evaluate(`__t.has('[data-testid="project-view"]')`));
+
+  // 9. Go offline: values disappear, on the screen as everywhere else.
   await evaluate(`__t.click('Go offline')`); await sleep(500);
   const offline = await evaluate(`__t.text('[data-testid="tag-value"]')`);
   const fieldOffline = await evaluate(`document.querySelector('[data-testid="io-field"]').getAttribute('data-state')`);
   check('going offline removes the value from the screen', offline.length >= 1 && offline.every((v) => v === '—') && fieldOffline === 'offline', `${offline.join(',')} / ${fieldOffline}`);
-  await shot('e2e_6_offline');
+  await shot('e2e_7_offline');
   ws.close();
 } catch (e) {
   console.log('FAIL  the script itself failed —', e.message); failures++;

@@ -10,6 +10,7 @@ import { useIoConfig } from '../data/ioConfig';
 import { toForm } from '../data/ioForm';
 import { useLog } from '../data/log';
 import type { TagSample } from '../data/quality';
+import { useRuntime } from '../data/runtime';
 import { useScreens } from '../data/screens';
 import { goOffline, useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
@@ -41,9 +42,11 @@ export function resetStores(): void {
   useLog.setState({ entries: [] });
   useIoConfig.getState().reset();
   useScreens.getState().reset();
+  useRuntime.getState().reset();
   useIoConfig.setState({ drivers: [] });
   useWorkbench.setState({
     view: 'portal',
+    runtimeScreenId: null,
     project: null,
     editors: [],
     activeEditorId: null,
