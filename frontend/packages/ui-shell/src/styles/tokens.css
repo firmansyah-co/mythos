@@ -1,0 +1,71 @@
+/*
+ * MythOS Workbench design tokens. The single source for colour, type and spacing: components
+ * reference these names and never a literal.
+ *
+ * The layout follows the engineering-station convention (portal view, project tree, work area,
+ * inspector, task cards). The palette and marks are MythOS's own.
+ */
+:root {
+  /* Chrome */
+  --c-titlebar: #1e2733;
+  --c-titlebar-text: #e8edf3;
+  --c-chrome: #e9edf1;
+  --c-chrome-strong: #d5dce4;
+  --c-chrome-border: #b6c0cc;
+  --c-surface: #ffffff;
+  --c-surface-alt: #f5f7f9;
+  --c-surface-sunken: #eef1f4;
+  --c-rule: #dde3ea;
+
+  /* Text */
+  --c-text: #1b2430;
+  --c-text-muted: #5b6878;
+  --c-text-faint: #8794a4;
+  --c-text-inverse: #ffffff;
+
+  /* Interaction */
+  --c-accent: #1f5f9e;
+  --c-accent-hover: #184c80;
+  --c-select: #cfe1f5;
+  --c-select-inactive: #e3e8ee;
+  --c-hover: #e6edf5;
+  --c-focus: #1f5f9e;
+
+  /* Online: the one colour that means "this is live data from the controller". */
+  --c-online: #d9730d;
+  --c-online-soft: #fbead7;
+
+  /* Data quality. Colour is never the only carrier: every state also has a word. */
+  --c-good: #1a7f4b;
+  --c-good-soft: #dff3e8;
+  --c-bad: #b3261e;
+  --c-bad-soft: #fbe3e1;
+  --c-warn: #9a5b00;
+  --c-warn-soft: #fbefd5;
+  --c-neutral: #5b6878;
+  --c-neutral-soft: #e6eaef;
+
+  /* Brand mark */
+  --c-brand: #f97316;
+
+  /* Type */
+  --font-ui: 'Segoe UI', 'Inter', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', 'SF Mono', Consolas, 'Liberation Mono', monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 16px;
+  --fs-xl: 22px;
+
+  /* Density */
+  --row-h: 24px;
+  --bar-h: 26px;
+  --toolbar-h: 34px;
+  --pane-header-h: 26px;
+  --gap-1: 4px;
+  --gap-2: 8px;
+  --gap-3: 12px;
+  --gap-4: 16px;
+  --gap-6: 24px;
+  --radius: 2px;
+}

@@ -2,7 +2,5 @@
 
 /**
  * Kind of IEC 61131-3 user-defined type.
- *
- * Mirrors the DUT model in `frontend/plugins/ui-logic-editor/src/variables/types.ts`.
  */
 export type UdtKind = "STRUCT" | "ENUM" | "ALIAS";

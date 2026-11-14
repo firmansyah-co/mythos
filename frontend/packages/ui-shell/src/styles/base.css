@@ -1,0 +1,288 @@
+@import './tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+  line-height: 1.35;
+  color: var(--c-text);
+  background: var(--c-chrome);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+:focus-visible {
+  outline: 2px solid var(--c-focus);
+  outline-offset: -2px;
+}
+
+table {
+  border-collapse: collapse;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--c-text-muted);
+}
+
+/* Buttons ---------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--c-chrome-border);
+  border-radius: var(--radius);
+  background: var(--c-surface);
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--c-hover);
+}
+
+.btn:disabled {
+  color: var(--c-text-faint);
+  background: var(--c-surface-sunken);
+}
+
+.btn--primary {
+  border-color: var(--c-accent);
+  background: var(--c-accent);
+  color: var(--c-text-inverse);
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--c-accent-hover);
+}
+
+.btn--primary:disabled {
+  border-color: var(--c-chrome-border);
+}
+
+.btn--flat {
+  border-color: transparent;
+  background: transparent;
+}
+
+.btn--flat:disabled {
+  background: transparent;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--c-text-muted);
+}
+
+.icon-btn:hover {
+  background: var(--c-chrome-strong);
+  color: var(--c-text);
+}
+
+/* Quality badge ---------------------------------------------------------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.badge::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.badge--good {
+  color: var(--c-good);
+  background: var(--c-good-soft);
+}
+
+.badge--bad {
+  color: var(--c-bad);
+  background: var(--c-bad-soft);
+}
+
+.badge--warn {
+  color: var(--c-warn);
+  background: var(--c-warn-soft);
+}
+
+.badge--neutral {
+  color: var(--c-neutral);
+  background: var(--c-neutral-soft);
+}
+
+.badge--online {
+  color: var(--c-online);
+  background: var(--c-online-soft);
+}
+
+/* Data grid -------------------------------------------------------------- */
+
+.grid {
+  width: 100%;
+  font-size: var(--fs-sm);
+}
+
+.grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: var(--row-h);
+  padding: 0 8px;
+  border-right: 1px solid var(--c-chrome-border);
+  border-bottom: 1px solid var(--c-chrome-border);
+  background: var(--c-chrome-strong);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.grid td {
+  height: var(--row-h);
+  padding: 0 8px;
+  border-right: 1px solid var(--c-rule);
+  border-bottom: 1px solid var(--c-rule);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 420px;
+}
+
+.grid tbody tr:nth-child(even) td {
+  background: var(--c-surface-alt);
+}
+
+.grid tbody tr:hover td {
+  background: var(--c-hover);
+}
+
+.grid tbody tr[aria-selected='true'] td {
+  background: var(--c-select);
+}
+
+.grid .num {
+  text-align: right;
+}
+
+/* The one column that takes whatever width is left, and truncates instead of widening the table. */
+.grid td.grow {
+  width: 100%;
+  max-width: 0;
+}
+
+/* Property list ---------------------------------------------------------- */
+
+.props {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  margin: 0;
+}
+
+.props dt,
+.props dd {
+  min-height: var(--row-h);
+  margin: 0;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--c-rule);
+}
+
+.props dt {
+  color: var(--c-text-muted);
+  background: var(--c-surface-alt);
+  border-right: 1px solid var(--c-rule);
+}
+
+.props dd {
+  overflow-wrap: anywhere;
+}
+
+/* Empty and notice states ------------------------------------------------- */
+
+.notice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: var(--gap-4);
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--c-chrome-border);
+  border-left: 3px solid var(--c-neutral);
+  background: var(--c-surface-alt);
+  max-width: 760px;
+}
+
+.notice--warn {
+  border-left-color: var(--c-warn);
+  background: var(--c-warn-soft);
+}
+
+.notice--bad {
+  border-left-color: var(--c-bad);
+  background: var(--c-bad-soft);
+}
+
+.notice h3 {
+  margin: 0 0 4px;
+  font-size: var(--fs-md);
+}
+
+.notice p {
+  margin: 0 0 4px;
+}
+
+.notice code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}

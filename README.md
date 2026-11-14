@@ -24,7 +24,7 @@ intent and may describe things that do not exist.
 | Tag bus | `crates/mythos-shm`, `crates/mythos-pal` | Triple-buffered shared-memory tag store with typed values and OPC-style quality codes. One writer: the field I/O runtime. |
 | Field I/O runtime | `crates/mythos-core/src/io` | Polls each configured connection and writes what the driver reports to the tag bus: a typed value with `GOOD` quality, or the last value read with a bad quality that names the fault. A tag that was never read has no value. |
 | API server | `crates/mythos-core` (`mythos-server`) | HTTP API for projects, HMI screens, data types and faceplate types; a 100 ms SSE telemetry stream of the tag bus; `GET /api/v1/io/status` for the state of each connection. |
-| Web workbench | `frontend/` | Project portal, HMI canvas, faceplates, logic and topology editors. Being rebuilt. |
+| Web workbench | `frontend/packages/ui-shell` | Portal view (open or create a project) and project view: project tree, devices & networks, live tag tables, connection diagnostics, inspector. Read-only: it shows what the controller reads and edits nothing yet. |
 | Modbus TCP driver | `plugins/drivers/driver-modbus` | Reads holding and input registers as `u16`, `i16`, `u32`, `i32` or `f32`, with scaling and selectable word order. Exercised end to end against a simulated device, not yet against hardware. |
 | Device catalog | `catalog/`, `crates/mythos-core/src/catalog` | Manifest format and parser, with two reference device packages. |
 | Desktop shell | `src-tauri` | A Tauri window that embeds the same API server. |
@@ -36,6 +36,9 @@ intent and may describe things that do not exist.
   MQTT driver.
 - **I/O configuration from the API or the workbench.** `io.json` is written by hand and read
   when the server starts.
+- **HMI screens, faceplates, a logic editor and a network editor in the workbench.** The server
+  still stores HMI screens, faceplate types and data types; the workbench has no editors for
+  them yet.
 - **A logic engine.** There is no IEC 61131-3 compiler or runtime. `POST /api/v1/control/deploy`
   answers `501` and compiles nothing.
 - **Writes to field devices** from the API or the HMI.
@@ -57,7 +60,7 @@ intent and may describe things that do not exist.
 | `crates/mythos-cli` | The `mythos` command-line tool. |
 | `plugins/drivers/driver-modbus` | Modbus TCP driver and a device simulator (`sim` feature). |
 | `src-tauri` | Desktop shell. |
-| `frontend/` | Web workbench (pnpm workspace). |
+| `frontend/` | Web workbench (pnpm workspace; the application is `packages/ui-shell`). |
 | `catalog/` | Device packages. |
 | `docs/`, `specs/` | Design documents and the requirements baseline. See [`docs/README.md`](docs/README.md). |
 | `rig/` | Definition of the agent team that works on this repository. |

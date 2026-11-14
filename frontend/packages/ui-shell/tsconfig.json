@@ -1,28 +1,22 @@
 {
-  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "outDir": "./dist",
-    "rootDir": "./src"
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "types": ["vite/client"]
   },
-  "include": [
-    "src/**/*"
-  ],
-  "references": [
-    {
-      "path": "../../plugins/ui-logic-editor"
-    },
-    {
-      "path": "../../plugins/ui-topology"
-    },
-    {
-      "path": "../../plugins/ui-faceplate-lib"
-    },
-    {
-      "path": "../../plugins/ui-inspector"
-    }
-  ],
-  "exclude": [
-    "src/__tests__/**/*",
-    "dist"
-  ]
+  "include": ["src", "vite.config.ts"]
 }
