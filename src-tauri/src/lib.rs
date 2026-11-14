@@ -1,51 +1,34 @@
 //! # MythOS Industrial Workbench - Desktop Core Library
 //!
-//! Provides the core entry point and microkernel supervisor for the Tauri v2 desktop application.
+//! Entry point for the Tauri v2 desktop application, which embeds the MythOS server.
 
-use mythos_core::api::{create_router, ApiState};
-use mythos_core::storage::{ControllerStorage, DEFAULT_PROJECTS_DIR};
-use mythos_core::tag::TagCatalog;
+use mythos_core::api::create_router;
+use mythos_core::server::{bootstrap, shm_name_from_env};
+use mythos_core::storage::DEFAULT_PROJECTS_DIR;
 use mythos_pal::PosixShm;
-use mythos_shm::ShmReaderHandle;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tauri::{AppHandle, Manager, RunEvent};
-use tokio::sync::{oneshot, RwLock};
-use tracing::{error, info, warn};
+use tokio::sync::oneshot;
+use tracing::{error, info};
 
-/// Spawn the MythOS microkernel embedded service in a background tokio task.
+/// Spawn the embedded MythOS server in a background tokio task.
 pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let storage_root = std::env::var("MYTHOS_STORAGE_ROOT")
             .unwrap_or_else(|_| DEFAULT_PROJECTS_DIR.to_string());
 
-        let storage = match ControllerStorage::new(&storage_root) {
-            Ok(s) => Arc::new(s),
+        let server = match bootstrap::<PosixShm>(&storage_root, &shm_name_from_env()).await {
+            Ok(server) => server,
             Err(e) => {
                 error!(
-                    "Desktop microkernel failed to initialize storage at {}: {}",
+                    "Embedded server failed to initialize storage at {}: {}",
                     storage_root, e
                 );
                 return;
             }
         };
-
-        let tag_catalog = Arc::new(RwLock::new(TagCatalog::new()));
-
-        let shm_name = "mythos_tagbus";
-        let shm_reader = match ShmReaderHandle::<PosixShm>::new(shm_name, 32768) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                warn!(
-                    "Embedded microkernel running without SHM backing ({}): {}",
-                    shm_name, e
-                );
-                None
-            }
-        };
-
-        let state = ApiState::new(storage, tag_catalog, shm_reader);
-        let app = create_router(state);
+        let io = server.io;
+        let app = create_router(server.state);
 
         let port: u16 = std::env::var("MYTHOS_HTTP_PORT")
             .ok()
@@ -53,26 +36,31 @@ pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::Joi
             .unwrap_or(9090);
 
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        info!("Embedded MythOS Microkernel listening on http://{}", addr);
+        info!("Embedded MythOS server listening on http://{}", addr);
 
         let listener = match tokio::net::TcpListener::bind(&addr).await {
             Ok(l) => l,
             Err(e) => {
-                error!("Failed to bind microkernel listener to {}: {}", addr, e);
+                error!("Failed to bind embedded server listener to {}: {}", addr, e);
                 return;
             }
         };
 
-        let server = axum::serve(listener, app).with_graceful_shutdown(async move {
-            let _ = shutdown_rx.await;
-            info!("Received shutdown signal for embedded microkernel.");
-        });
-
-        if let Err(e) = server.await {
-            error!("Embedded microkernel server terminated with error: {}", e);
-        } else {
-            info!("Embedded microkernel server terminated cleanly.");
+        // Telemetry streams never end on their own, so stop serving on the signal rather than
+        // waiting for every stream to close.
+        tokio::select! {
+            result = axum::serve(listener, app) => {
+                if let Err(e) = result {
+                    error!("Embedded server terminated with error: {}", e);
+                }
+            }
+            _ = shutdown_rx => info!("Received shutdown signal for embedded server."),
         }
+
+        if let Some(io) = io {
+            io.shutdown().await;
+        }
+        info!("Embedded server terminated cleanly.");
     })
 }
 

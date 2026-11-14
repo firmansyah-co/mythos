@@ -26,6 +26,7 @@ mythos-pal = { path = "crates/mythos-pal" }
 mythos-shm = { path = "crates/mythos-shm" }
 mythos-core = { path = "crates/mythos-core" }
 mythos-plugin-sdk = { path = "crates/mythos-plugin-sdk" }
+driver-modbus = { path = "plugins/drivers/driver-modbus" }
 
 # Concurrency and Async
 tokio = { version = "1.40", features = ["full"] }

@@ -213,18 +213,105 @@ pub trait MythosPlugin: Send + Sync {
 pub trait Plugin: MythosPlugin {}
 impl<T: MythosPlugin> Plugin for T {}
 
+/// A typed process value read from a field device.
+///
+/// The variant is the type. A driver reports the value in the type the device holds it in; it
+/// does not widen everything to a float, because a consumer that must branch on the type cannot
+/// recover it afterwards.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SampleValue {
+    Bool(bool),
+    U8(u8),
+    I16(i16),
+    U16(u16),
+    I32(i32),
+    U32(u32),
+    I64(i64),
+    U64(u64),
+    F32(f32),
+    F64(f64),
+}
+
+/// Why a tag has no usable reading this cycle.
+///
+/// A driver that cannot read a tag says so with one of these. It never substitutes a number: a
+/// zero, a last value or a default handed back as a reading is indistinguishable from a
+/// measurement once it reaches an operator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SampleFault {
+    /// The link to the device failed: no connection, a timeout, a malformed or mismatched frame.
+    CommFailure(String),
+    /// The device answered and reported that it cannot serve the request.
+    DeviceFailure(String),
+    /// The device rejected the request as invalid: the mapping names something it does not have.
+    ConfigError(String),
+}
+
+impl fmt::Display for SampleFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CommFailure(m) => write!(f, "communication failure: {m}"),
+            Self::DeviceFailure(m) => write!(f, "device failure: {m}"),
+            Self::ConfigError(m) => write!(f, "configuration error: {m}"),
+        }
+    }
+}
+
+/// One tag's outcome for one poll cycle: a value, or the reason there is none.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TagSample {
+    pub uri: String,
+    pub reading: Result<SampleValue, SampleFault>,
+}
+
+impl TagSample {
+    pub fn value(uri: impl Into<String>, value: SampleValue) -> Self {
+        Self {
+            uri: uri.into(),
+            reading: Ok(value),
+        }
+    }
+
+    pub fn fault(uri: impl Into<String>, fault: SampleFault) -> Self {
+        Self {
+            uri: uri.into(),
+            reading: Err(fault),
+        }
+    }
+}
+
+/// A tag a started driver will report on every poll cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagDeclaration {
+    /// Canonical tag URI.
+    pub uri: String,
+    /// Where the tag comes from, in the driver's own terms (for example the register address).
+    pub description: String,
+}
+
 /// Protocol Driver Service Provider Interface (SPI).
 ///
 /// Every communication protocol driver (Modbus, MQTT, Profinet, etc.) implements this trait.
+///
+/// A driver never touches the tag bus. It returns samples and the host writes them, so a driver
+/// cannot publish to a slot it does not own and the host decides the quality that reaches a
+/// reader.
 #[async_trait]
 pub trait ProtocolDriver: MythosPlugin {
     /// Parse and validate the driver-specific JSON configuration schema.
     fn validate_config(&self, config: &JsonValue) -> Result<(), PluginError>;
 
+    /// The tags this driver reports, known once it has been started with a configuration.
+    ///
+    /// The host registers exactly these. Empty before `start`.
+    fn declared_tags(&self) -> Vec<TagDeclaration>;
+
     /// Execute a single bounded I/O polling cycle against configured target devices.
     ///
-    /// Returns the number of field tags successfully ingested or updated.
-    async fn poll_cycle(&mut self, ctx: &PluginContext) -> Result<u32, PluginError>;
+    /// Returns one [`TagSample`] for every declared tag: a value, or the fault that prevented a
+    /// reading. `Err` means the cycle as a whole could not run; the host then treats every
+    /// declared tag as a communication failure.
+    async fn poll_cycle(&mut self, ctx: &PluginContext) -> Result<Vec<TagSample>, PluginError>;
 
     /// Write an output value to a field device target tag.
     async fn write_tag(

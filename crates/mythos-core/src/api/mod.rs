@@ -139,6 +139,8 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
             "/api/v1/telemetry/stream",
             get(telemetry_stream_handler::<S>),
         )
+        // Field I/O runtime status
+        .route("/api/v1/io/status", get(io_status_handler::<S>))
         // Control logic deployment: answers 501, nothing is compiled (see the handler)
         .route("/api/v1/control/deploy", post(control_deploy_handler::<S>))
         // CRDT Collaboration WebSocket Gateway (TSK-311)
@@ -163,6 +165,13 @@ async fn health_handler() -> impl IntoResponse {
         service: "mythos-microkernel".to_string(),
         timestamp_ms: now,
     })
+}
+
+/// `GET /api/v1/io/status` — the connections feeding the tag bus and how their last poll went.
+async fn io_status_handler<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+) -> impl IntoResponse {
+    Json(state.io_status.snapshot())
 }
 
 async fn list_tags_handler<S: PlatformShm + 'static>(

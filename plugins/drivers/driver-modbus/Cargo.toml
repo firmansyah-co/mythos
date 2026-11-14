@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Reference Modbus RTU/TCP Protocol Driver for MythOS"
+description = "Modbus TCP protocol driver for MythOS"
 
 [lints]
 workspace = true
@@ -15,9 +15,22 @@ mythos-plugin-sdk = { path = "../../../crates/mythos-plugin-sdk" }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tokio = { workspace = true, features = ["full", "io-util", "net"] }
 tracing.workspace = true
 
+[features]
+# A Modbus TCP device simulator, for tests and development without hardware.
+sim = []
+
+[[example]]
+name = "modbus_sim"
+required-features = ["sim"]
+
+[[test]]
+name = "modbus_driver_tests"
+required-features = ["sim"]
+
 [dev-dependencies]
-tokio-test = "0.4"
+# Turns the simulator on for this crate's own tests, so `cargo test -p driver-modbus` runs them
+# without a feature flag and cannot skip them silently.
+driver-modbus = { path = ".", features = ["sim"] }
