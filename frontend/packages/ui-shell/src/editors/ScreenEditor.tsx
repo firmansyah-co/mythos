@@ -1,14 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { RotateCcw, Save, Send, Trash2 } from 'lucide-react';
-import { viewTag, type QualityTone } from '../data/quality';
-import { useProjectIo } from '../data/scope';
-import {
-  GRID,
-  type IoFieldElement,
-  type KnownElement,
-  type ScreenElement,
-} from '../data/screenModel';
+import { GRID, type KnownElement } from '../data/screenModel';
 import {
   anyScreenDirty,
   isScreenDirty,
@@ -16,9 +9,8 @@ import {
   useScreens,
   type ReleaseState,
 } from '../data/screens';
-import { useTelemetry } from '../data/telemetry';
 import { editorId, useWorkbench } from '../data/workbench';
-import { TagValue } from '../shell/QualityBadge';
+import { ElementBody } from './ScreenElements';
 
 const RELEASE_WORDS: Record<ReleaseState, { label: string; tone: string }> = {
   never: { label: 'NOT RELEASED', tone: 'neutral' },
@@ -26,63 +18,6 @@ const RELEASE_WORDS: Record<ReleaseState, { label: string; tone: string }> = {
   differs: { label: 'RELEASED VERSION DIFFERS', tone: 'warn' },
   unknown: { label: 'RELEASE STATE UNKNOWN', tone: 'neutral' },
 };
-
-/**
- * An I/O field as it is drawn. The value obeys the same rule as everywhere else: shown as
- * current only when GOOD and online. What the field is bound to is always legible, so a field
- * with no value still says which tag it is waiting for.
- */
-function IoField({ element }: { element: IoFieldElement }) {
-  const io = useProjectIo();
-  const sample = useTelemetry((state) => (element.tag ? state.tags.get(element.tag) : undefined));
-  const stream = useTelemetry((state) => state.stream);
-
-  if (element.tag === '') {
-    return (
-      <div className="iofield iofield--unbound" data-testid="io-field" data-state="not-bound">
-        {element.label && <span className="iofield__label">{element.label}</span>}
-        <span className="iofield__state">NOT BOUND</span>
-      </div>
-    );
-  }
-
-  // Values exist only for the project the controller runs. For any other project the field is
-  // offline whatever the stream holds, because the stream is another project's.
-  const view = viewTag(sample, io ? stream : 'IDLE');
-  const tone: QualityTone | 'offline' =
-    view.kind === 'live'
-      ? 'good'
-      : view.kind === 'stale' || view.kind === 'never-read'
-        ? view.tone
-        : 'offline';
-  const word =
-    view.kind === 'stale' || view.kind === 'never-read'
-      ? view.qualityLabel
-      : view.kind === 'no-data'
-        ? 'NO DATA'
-        : view.kind === 'offline'
-          ? 'OFFLINE'
-          : null;
-
-  return (
-    <div className={`iofield iofield--${tone}`} data-testid="io-field" data-state={view.kind}>
-      <span className="iofield__label" title={element.tag}>
-        {element.label || element.tag}
-      </span>
-      <span className="iofield__value">
-        <TagValue sample={sample} stream={io ? stream : 'IDLE'} />
-        {element.unit && view.kind === 'live' && <span className="iofield__unit">{element.unit}</span>}
-      </span>
-      {word && <span className="iofield__state">{word}</span>}
-    </div>
-  );
-}
-
-function ElementBody({ element }: { element: ScreenElement }) {
-  if (element.type === 'text') return <div className="textfield">{element.text}</div>;
-  if (element.type === 'io_field') return <IoField element={element} />;
-  return null;
-}
 
 /** Edits one HMI screen: a canvas of elements, saved as a draft and released to operators. */
 export function ScreenEditor({ screenId }: { screenId: string }) {

@@ -32,7 +32,9 @@ export function editorId(kind: EditorKind, target?: string): string {
 }
 
 export interface WorkbenchState {
-  view: 'portal' | 'project';
+  view: 'portal' | 'project' | 'runtime';
+  /** The screen the operator runtime is showing. `null` shows the project's first screen. */
+  runtimeScreenId: string | null;
   project: ProjectConfig | null;
   editors: EditorRef[];
   activeEditorId: string | null;
@@ -44,6 +46,8 @@ export interface WorkbenchState {
   closeProject: () => void;
   showPortal: () => void;
   showProject: () => void;
+  startRuntime: (screenId?: string) => void;
+  exitRuntime: () => void;
   openEditor: (kind: EditorKind, target?: string) => void;
   closeEditor: (id: string) => void;
   focusEditor: (id: string) => void;
@@ -54,6 +58,7 @@ export interface WorkbenchState {
 
 export const useWorkbench = create<WorkbenchState>((set) => ({
   view: 'portal',
+  runtimeScreenId: null,
   project: null,
   editors: [],
   activeEditorId: null,
@@ -75,6 +80,9 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
 
   showPortal: () => set({ view: 'portal' }),
   showProject: () => set((state) => (state.project ? { view: 'project' } : {})),
+  startRuntime: (screenId) =>
+    set((state) => (state.project ? { view: 'runtime', runtimeScreenId: screenId ?? null } : {})),
+  exitRuntime: () => set((state) => (state.view === 'runtime' ? { view: 'project' } : {})),
 
   openEditor: (kind, target) =>
     set((state) => {

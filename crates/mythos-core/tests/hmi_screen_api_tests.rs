@@ -254,3 +254,70 @@ async fn deleting_a_screen_removes_it_from_the_draft_and_from_the_next_release()
         ["Keep"]
     );
 }
+
+#[tokio::test]
+async fn releasing_screens_is_announced_on_the_telemetry_stream() {
+    use futures_util::StreamExt;
+    use std::time::Duration;
+
+    let (app, _dir) = app_with(&["plant_a"]);
+    let base = "/api/v1/projects/plant_a/hmi/screens";
+    request(&app, "POST", base, json!({"name": "Overview"})).await;
+
+    // An operator station: the stream is open before the release happens.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/telemetry/stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut body = response.into_body().into_data_stream();
+
+    // Nothing is announced while nothing has been released.
+    let mut seen = String::new();
+    let quiet = tokio::time::timeout(Duration::from_millis(400), async {
+        while let Some(Ok(chunk)) = body.next().await {
+            seen.push_str(&String::from_utf8_lossy(&chunk));
+        }
+    })
+    .await;
+    assert!(quiet.is_err(), "the stream stays open");
+    assert!(
+        !seen.contains("SCREENS_RELEASED"),
+        "nothing was released yet: {seen}"
+    );
+
+    request(
+        &app,
+        "POST",
+        "/api/v1/projects/plant_a/hmi/commit",
+        Value::Null,
+    )
+    .await;
+
+    let announced = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut buffer = seen;
+        loop {
+            let chunk = body.next().await.expect("stream ended").unwrap();
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            if let Some(start) = buffer.find("event: SCREENS_RELEASED") {
+                if let Some(end) = buffer[start..].find("\n\n") {
+                    let event = &buffer[start..start + end];
+                    let data = event
+                        .lines()
+                        .find_map(|l| l.strip_prefix("data: "))
+                        .unwrap();
+                    return serde_json::from_str::<Value>(data).unwrap();
+                }
+            }
+        }
+    })
+    .await
+    .expect("the release was not announced on the telemetry stream");
+
+    assert_eq!(announced, json!({"project_id": "plant_a", "screens": 1}));
+}
