@@ -70,6 +70,7 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
             "/api/v1/projects",
             get(list_projects_handler::<S>).post(create_project_handler::<S>),
         )
+        .route("/api/v1/projects/active", get(active_project_handler::<S>))
         .route("/api/v1/projects/:id", get(get_project_handler::<S>))
         .route(
             "/api/v1/projects/:id/activate",
@@ -256,6 +257,22 @@ async fn get_project_handler<S: PlatformShm + 'static>(
         .get_project(&id)
         .map_err(|_| StatusCode::NOT_FOUND)?;
     Ok(Json(config))
+}
+
+/// `GET /api/v1/projects/active` — which project the controller runs, or `null` when none is.
+///
+/// The field I/O runtime serves the active project only, so a client needs this to know whether
+/// the live tags it sees belong to the project it has open.
+async fn active_project_handler<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let active = state.storage.get_active_project().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+    })?;
+    Ok(Json(json!({ "project_id": active })))
 }
 
 async fn activate_project_handler<S: PlatformShm + 'static>(

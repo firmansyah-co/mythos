@@ -147,12 +147,7 @@ esac
 STAMP_FILES=(
   Cargo.toml
   frontend/package.json
-  frontend/packages/ui-empty-state/package.json
   frontend/packages/ui-shell/package.json
-  frontend/plugins/ui-faceplate-lib/package.json
-  frontend/plugins/ui-inspector/package.json
-  frontend/plugins/ui-logic-editor/package.json
-  frontend/plugins/ui-topology/package.json
 )
 
 current_version_of() {

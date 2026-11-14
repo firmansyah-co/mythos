@@ -53,7 +53,9 @@ described. They remain in git history.
 
 ## HMI (`docs/04-hmi-and-ui/`)
 
-The web workbench is being rebuilt. These describe the previous design.
+These describe the previous workbench, which has been replaced. The current one
+(`frontend/packages/ui-shell`) follows a portal view / project view layout and is described by
+its own source.
 
 - [Frontend application architecture](04-hmi-and-ui/00-frontend-application-architecture.md)
 - [Design tokens](04-hmi-and-ui/design-tokens-dtcg.json)

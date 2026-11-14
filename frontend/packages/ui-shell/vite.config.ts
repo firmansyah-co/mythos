@@ -1,38 +1,14 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
-  resolve: {
-    alias: [
-      {
-        find: '@mythos/ui-logic-editor',
-        replacement: path.resolve(__dirname, '../../plugins/ui-logic-editor/src/index.ts'),
-      },
-      {
-        find: '@mythos/ui-topology',
-        replacement: path.resolve(__dirname, '../../plugins/ui-topology/src/index.ts'),
-      },
-      {
-        find: '@mythos/ui-faceplate-lib',
-        replacement: path.resolve(__dirname, '../../plugins/ui-faceplate-lib/src/index.ts'),
-      },
-      {
-        find: '@mythos/ui-inspector',
-        replacement: path.resolve(__dirname, '../../plugins/ui-inspector/src/index.ts'),
-      },
-      {
-        find: 'monaco-editor/esm/vs/editor/editor.api.js',
-        replacement: 'monaco-editor',
-      },
-    ],
-  },
   server: {
     port: 5173,
     proxy: {
+      // The API server. Server-sent events pass through unchanged.
       '/api': {
-        target: 'http://localhost:8080',
+        target: process.env.MYTHOS_API ?? 'http://localhost:8080',
         changeOrigin: true,
       },
     },
@@ -40,14 +16,5 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: true,
-  },
-  test: {
-    globals: true,
-    environment: 'happy-dom',
-    server: {
-      deps: {
-        inline: ['y-monaco'],
-      },
-    },
   },
 });
