@@ -66,6 +66,22 @@ try {
         if (!el) throw new Error('no element: ' + testId);
         el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
       },
+      press(label, key) {
+        const el = document.querySelector('[aria-label="' + label + '"]');
+        if (!el) throw new Error('no field: ' + label);
+        el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      },
+      clickTestId(testId) {
+        const el = document.querySelector('[data-testid="' + testId + '"]');
+        if (!el) throw new Error('no element: ' + testId);
+        el.click();
+      },
+      rect(sel) {
+        const el = document.querySelector(sel);
+        if (!el) throw new Error('no element: ' + sel);
+        const r = el.getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width, height: r.height };
+      },
       text(sel) { return [...document.querySelectorAll(sel)].map((el) => el.textContent.trim()); },
       has(sel) { return document.querySelector(sel) !== null; },
     }; true`);
@@ -137,12 +153,65 @@ try {
   const props = await evaluate(`__t.text('[data-testid="tag-properties"]').join(' ')`);
   check('selecting a tag shows its properties, including where it is read from', /holding register 2/.test(props) && /REAL/.test(props), props.slice(0, 200));
 
-  // 7. Go offline: values disappear.
+  // 7. HMI screens: create one from the tree, place an I/O field, bind it, and watch it read.
+  await evaluate(`__t.clickTestId('tree-add-screen')`); await sleep(200);
+  await evaluate(`__t.type('Screen name', 'Boiler overview'); __t.press('Screen name', 'Enter'); true`); await sleep(900);
+  check('a screen created from the tree opens in the screen editor', await evaluate(`__t.has('[data-testid="screen-editor"]')`));
+  check('a new screen is reported as not released', (await evaluate(`__t.text('[data-testid="release-state"]')[0]`)) === 'NOT RELEASED');
+
+  await evaluate(`__t.click('I/O field')`); await sleep(300);
+  check('a new I/O field says NOT BOUND and shows no value',
+    (await evaluate(`document.querySelector('[data-testid="io-field"]').getAttribute('data-state')`)) === 'not-bound');
+  await evaluate(`__t.type('Tag', 'external.BoilerHouse.Unit1.steam_temp'); __t.type('Label', 'Steam temperature'); __t.type('Unit', '°C'); true`);
+  await sleep(1200);
+  const field = await evaluate(`(() => { const el = document.querySelector('[data-testid="io-field"]'); return {
+    state: el.getAttribute('data-state'), value: el.querySelector('[data-testid="tag-value"]').textContent, text: el.textContent }; })()`);
+  check('bound to a tag, the field shows the live value with its unit',
+    field.state === 'live' && Number(field.value) >= 20 && Number(field.value) <= 80 && field.text.includes('°C') && field.text.includes('Steam temperature'),
+    JSON.stringify(field));
+
+  await evaluate(`__t.click('Text field')`); await sleep(200);
+  await evaluate(`__t.type('Text', 'Boiler 1')`); await sleep(200);
+  check('a text field shows what was typed', (await evaluate(`__t.text('.textfield')[0]`)) === 'Boiler 1');
+
+  // Drag the text field with the mouse (it is the selected element, and on top), and read
+  // where it ended up from its properties.
+  const box = await evaluate(`__t.rect('[data-element-type="text"]')`);
+  const from = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: from.x, y: from.y, button: 'left', clickCount: 1 });
+  for (let step = 1; step <= 6; step++) {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: from.x + step * 40, y: from.y + step * 20, button: 'left', buttons: 1 });
+  }
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: from.x + 240, y: from.y + 120, button: 'left', clickCount: 1 });
+  await sleep(300);
+  const moved = await evaluate(`__t.rect('[data-element-type="text"]')`);
+  const position = await evaluate(`[document.querySelector('[aria-label="X"]').value, document.querySelector('[aria-label="Y"]').value]`);
+  check('dragging an element with the mouse moves it', moved.x - box.x > 150 && moved.y - box.y > 70, `${Math.round(box.x)},${Math.round(box.y)} -> ${Math.round(moved.x)},${Math.round(moved.y)}`);
+  check('and it lands on the grid', Number(position[0]) % 8 === 0 && Number(position[1]) % 8 === 0, position.join(','));
+  check('the screen is marked unsaved', await evaluate(`__t.has('[data-testid="screen-unsaved"]')`));
+
+  await evaluate(`__t.click('Save screen')`); await sleep(900);
+  check('after saving it is no longer unsaved', !(await evaluate(`__t.has('[data-testid="screen-unsaved"]')`)));
+  const drafts = await (await fetch(base + '/api/v1/projects/plant_a/hmi/screens?view=draft')).json();
+  const savedText = drafts[0]?.canvasData?.components?.find((c) => c.type === 'text');
+  check('the controller stored the screen with both elements, at the dragged position',
+    drafts[0]?.name === 'Boiler overview' && drafts[0].canvasData.components.length === 2 &&
+    String(savedText?.x) === position[0] && String(savedText?.y) === position[1],
+    JSON.stringify(savedText));
+  check('saving does not release', (await (await fetch(base + '/api/v1/projects/plant_a/hmi/screens?view=active')).json()).length === 0);
+
+  await evaluate(`__t.click('Release screens')`); await sleep(900);
+  check('after releasing, the screen is reported as released', (await evaluate(`__t.text('[data-testid="release-state"]')[0]`)) === 'RELEASED');
+  const active = await (await fetch(base + '/api/v1/projects/plant_a/hmi/screens?view=active')).json();
+  check('the released version on the controller is the saved one', JSON.stringify(active[0]?.canvasData) === JSON.stringify(drafts[0]?.canvasData));
+  await shot('e2e_5_hmi_screen');
+
+  // 8. Go offline: values disappear, on the screen as everywhere else.
   await evaluate(`__t.click('Go offline')`); await sleep(500);
   const offline = await evaluate(`__t.text('[data-testid="tag-value"]')`);
-  // Three table rows plus the selected tag's value in the inspector.
-  check('going offline removes every value from the screen, table and inspector alike', offline.length === 4 && offline.every((v) => v === '—'), offline.join(','));
-  await shot('e2e_5_offline');
+  const fieldOffline = await evaluate(`document.querySelector('[data-testid="io-field"]').getAttribute('data-state')`);
+  check('going offline removes the value from the screen', offline.length >= 1 && offline.every((v) => v === '—') && fieldOffline === 'offline', `${offline.join(',')} / ${fieldOffline}`);
+  await shot('e2e_6_offline');
   ws.close();
 } catch (e) {
   console.log('FAIL  the script itself failed —', e.message); failures++;

@@ -72,6 +72,14 @@ export class ConfigRejected extends Error {
   }
 }
 
+/** An HMI screen as the controller stores it. `canvasData` is the workbench's own format. */
+export interface StoredScreen {
+  id: string;
+  name: string;
+  is_root: boolean;
+  canvasData: unknown;
+}
+
 /** A tag as the catalog describes it. Only the fields this workbench shows are typed. */
 export interface TagMetadata {
   uri: string;
@@ -120,6 +128,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+/** A request whose success carries no body. Throws exactly as `request` does. */
+async function send(path: string, init: RequestInit): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(path, init);
+  } catch (cause) {
+    throw new ApiError(
+      `The controller did not answer (${cause instanceof Error ? cause.message : 'network error'})`,
+      null
+    );
+  }
+  if (response.ok) return;
+  let detail = '';
+  try {
+    const body: unknown = await response.json();
+    if (body && typeof body === 'object') {
+      const text = (body as Record<string, unknown>).error;
+      if (typeof text === 'string') detail = `: ${text}`;
+    }
+  } catch {
+    // The body was not JSON; the status line is all there is to report.
+  }
+  throw new ApiError(`${response.status} ${response.statusText}${detail}`, response.status);
+}
+
 function json(method: string, body: unknown): RequestInit {
   return {
     method,
@@ -142,6 +175,31 @@ export const api = {
     (await request<{ project_id: string | null }>('/api/v1/projects/active')).project_id,
   getIoStatus: () => request<IoStatus>('/api/v1/io/status'),
   listDrivers: () => request<string[]>('/api/v1/io/drivers'),
+  listScreens: (projectId: string, view: 'draft' | 'active') =>
+    request<StoredScreen[]>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/hmi/screens?view=${view}`
+    ),
+  createScreen: (projectId: string, name: string) =>
+    request<StoredScreen>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/hmi/screens`,
+      json('POST', { name, is_root: false })
+    ),
+  saveScreenDraft: (projectId: string, screenId: string, canvas: unknown) =>
+    send(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/hmi/screens/${encodeURIComponent(screenId)}/draft`,
+      json('PUT', canvas)
+    ),
+  deleteScreen: (projectId: string, screenId: string) =>
+    send(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/hmi/screens/${encodeURIComponent(screenId)}`,
+      { method: 'DELETE' }
+    ),
+  /** Release every screen's draft: what operators see becomes what was last saved. */
+  releaseScreens: (projectId: string) =>
+    request<Record<string, unknown>>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/hmi/commit`,
+      { method: 'POST' }
+    ),
   getIoConfig: async (projectId: string) =>
     (await request<{ config: IoConfig | null }>(`/api/v1/projects/${encodeURIComponent(projectId)}/io`))
       .config,

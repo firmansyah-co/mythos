@@ -6,13 +6,17 @@ import {
   ChevronRight,
   Cable,
   FolderOpen,
+  Monitor,
+  MonitorSmartphone,
   Network,
+  Plus,
   Settings2,
   Tags,
 } from 'lucide-react';
 import { connectionLabel, currentProblems } from '../data/derive';
 import { isDirty, useIoConfig } from '../data/ioConfig';
 import { useRuntimeScope } from '../data/scope';
+import { anyScreenDirty, useScreens } from '../data/screens';
 import { useWorkbench, type EditorKind } from '../data/workbench';
 
 interface NodeProps {
@@ -80,6 +84,64 @@ function TreeNode({
   );
 }
 
+/** The "Add new screen" row: becomes a name field, and creates the screen on Enter. */
+function AddScreen() {
+  const create = useScreens((state) => state.create);
+  const busy = useScreens((state) => state.busy);
+  const openEditor = useWorkbench((state) => state.openEditor);
+  const [name, setName] = useState<string | null>(null);
+
+  const submit = async () => {
+    const trimmed = (name ?? '').trim();
+    if (trimmed === '') return;
+    const id = await create(trimmed);
+    if (id) {
+      setName(null);
+      openEditor('screen', id);
+    }
+  };
+
+  if (name === null) {
+    return (
+      <div
+        role="treeitem"
+        aria-selected={false}
+        tabIndex={0}
+        data-testid="tree-add-screen"
+        className="tree__node tree__node--action"
+        style={{ paddingLeft: 6 + 2 * 16 }}
+        onClick={() => setName('')}
+        onKeyDown={(event) => event.key === 'Enter' && setName('')}
+      >
+        <span className="tree__twisty" />
+        <span className="tree__icon">
+          <Plus size={14} />
+        </span>
+        <span className="tree__label">Add new screen</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="tree__node tree__node--input" style={{ paddingLeft: 6 + 2 * 16 }}>
+      <span className="tree__twisty" />
+      <input
+        autoFocus
+        aria-label="Screen name"
+        placeholder="Screen name"
+        value={name}
+        disabled={busy === 'creating'}
+        onChange={(event) => setName(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') void submit();
+          if (event.key === 'Escape') setName(null);
+        }}
+        onBlur={() => name.trim() === '' && setName(null)}
+      />
+    </div>
+  );
+}
+
 /**
  * The project tree.
  *
@@ -97,6 +159,9 @@ export function ProjectTree() {
   const scope = useRuntimeScope();
   const draft = useIoConfig((state) => state.draft);
   const dirty = useIoConfig(isDirty);
+  const screens = useScreens((state) => state.screens);
+  const screensPhase = useScreens((state) => state.phase);
+  const screensDirty = useScreens(anyScreenDirty);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   if (!project) return null;
@@ -226,6 +291,45 @@ export function ProjectTree() {
           onSelect={() => select(null)}
           onOpen={open('tags')}
         />
+      )}
+
+      {isOpen('project') && (
+        <TreeNode
+          depth={1}
+          icon={<MonitorSmartphone size={14} />}
+          label="HMI screens"
+          testId="tree-screens"
+          expanded={isOpen('screens')}
+          onToggle={() => toggle('screens')}
+          onSelect={() => select(null)}
+          mark={
+            screensDirty ? (
+              <span className="tree__mark tree__mark--warn" title="Unsaved changes">
+                *
+              </span>
+            ) : undefined
+          }
+        />
+      )}
+      {isOpen('project') && isOpen('screens') && <AddScreen />}
+      {isOpen('project') &&
+        isOpen('screens') &&
+        screens.map((screen) => (
+          <TreeNode
+            key={screen.id}
+            depth={2}
+            icon={<Monitor size={14} />}
+            label={screen.name}
+            testId="tree-screen"
+            selected={editorIs(`screen:${screen.id}`)}
+            onSelect={() => select(null)}
+            onOpen={open('screen', screen.id)}
+          />
+        ))}
+      {isOpen('project') && isOpen('screens') && screensPhase === 'unreadable' && (
+        <p className="tree__note" data-testid="tree-screens-unreadable">
+          The screens could not be read.
+        </p>
       )}
 
       {isOpen('project') && scope.kind !== 'active' && (

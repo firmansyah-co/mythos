@@ -1,10 +1,14 @@
+import { useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import type { IoStatus } from '../api/client';
 import { useController } from '../data/controller';
 import { connectionById, connectionOfTag, currentProblems } from '../data/derive';
+import { useIoConfig } from '../data/ioConfig';
 import { useLog } from '../data/log';
 import { formatClock, formatTimestampNs, viewTag } from '../data/quality';
 import { useProjectIo } from '../data/scope';
+import { GRID, type KnownElement } from '../data/screenModel';
+import { useScreens } from '../data/screens';
 import { useTelemetry } from '../data/telemetry';
 import { useWorkbench, type InspectorTab } from '../data/workbench';
 import { ConnectionStateBadge } from '../editors/ConnectionStateBadge';
@@ -98,10 +102,197 @@ function ProjectProperties() {
   );
 }
 
+/**
+ * A whole-number property. The text typed is applied only when it is a number in range; until
+ * then the element keeps its value and the field says what is wrong.
+ */
+function NumberProperty({
+  label,
+  value,
+  min,
+  max,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (value: number) => void;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  const shown = text ?? String(value);
+  const trimmed = shown.trim();
+  const parsed = /^-?\d+$/.test(trimmed) ? Number(trimmed) : null;
+  const error =
+    text === null
+      ? null
+      : parsed === null
+        ? 'Must be a whole number'
+        : parsed < min || parsed > max
+          ? `Must be between ${min} and ${max}`
+          : null;
+
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd>
+        <input
+          className="mono prop-input"
+          inputMode="numeric"
+          aria-label={label}
+          aria-invalid={error !== null}
+          value={shown}
+          onChange={(event) => {
+            const next = event.target.value;
+            setText(next);
+            const candidate = /^-?\d+$/.test(next.trim()) ? Number(next.trim()) : null;
+            if (candidate !== null && candidate >= min && candidate <= max) onCommit(candidate);
+          }}
+          onBlur={() => setText(null)}
+        />
+        {error && (
+          <span className="field__error" role="alert">
+            {error}
+          </span>
+        )}
+      </dd>
+    </>
+  );
+}
+
+function ElementProperties({ screenId, elementId }: { screenId: string; elementId: string }) {
+  const doc = useScreens((state) => state.screens.find((screen) => screen.id === screenId));
+  const updateElement = useScreens((state) => state.updateElement);
+  const removeElement = useScreens((state) => state.removeElement);
+  const select = useWorkbench((state) => state.select);
+  const draft = useIoConfig((state) => state.draft);
+
+  const element = doc?.canvas.elements.find((candidate) => candidate.id === elementId);
+  if (!doc || !element || element.type === 'unknown') {
+    return <p className="inspector__empty muted">This element is no longer on the screen.</p>;
+  }
+
+  const update = (change: Partial<KnownElement>) => updateElement(screenId, elementId, change);
+  // The tags a field can be bound to are the ones the project's I/O configuration provides.
+  const configured = [
+    ...new Set(draft.flatMap((connection) => connection.modbus?.mappings ?? []).map((m) => m.uri.trim())),
+  ]
+    .filter((uri) => uri !== '')
+    .sort((a, b) => a.localeCompare(b));
+
+  return (
+    <dl className="props" data-testid="element-properties">
+      <dt>Element</dt>
+      <dd>{element.type === 'text' ? 'Text field' : 'I/O field'}</dd>
+
+      {element.type === 'text' && (
+        <>
+          <dt>Text</dt>
+          <dd>
+            <input
+              className="prop-input prop-input--wide"
+              aria-label="Text"
+              value={element.text}
+              onChange={(event) => update({ text: event.target.value })}
+            />
+          </dd>
+        </>
+      )}
+
+      {element.type === 'io_field' && (
+        <>
+          <dt>Tag</dt>
+          <dd>
+            <select
+              className="prop-input prop-input--wide mono"
+              aria-label="Tag"
+              value={element.tag}
+              onChange={(event) => update({ tag: event.target.value })}
+            >
+              <option value="">(not bound)</option>
+              {configured.map((uri) => (
+                <option key={uri} value={uri}>
+                  {uri}
+                </option>
+              ))}
+              {element.tag !== '' && !configured.includes(element.tag) && (
+                <option value={element.tag}>{element.tag} — not in the I/O configuration</option>
+              )}
+            </select>
+            {element.tag !== '' && !configured.includes(element.tag) && (
+              <span className="field__error" role="alert" data-testid="tag-not-configured">
+                No connection of this project provides this tag.
+              </span>
+            )}
+          </dd>
+          <dt>Label</dt>
+          <dd>
+            <input
+              className="prop-input prop-input--wide"
+              aria-label="Label"
+              placeholder="Shown above the value. Empty shows the tag name."
+              value={element.label}
+              onChange={(event) => update({ label: event.target.value })}
+            />
+          </dd>
+          <dt>Unit</dt>
+          <dd>
+            <input
+              className="prop-input"
+              aria-label="Unit"
+              value={element.unit}
+              onChange={(event) => update({ unit: event.target.value })}
+            />
+          </dd>
+        </>
+      )}
+
+      <NumberProperty label="X" value={element.x} min={0} max={doc.canvas.width} onCommit={(x) => update({ x })} />
+      <NumberProperty label="Y" value={element.y} min={0} max={doc.canvas.height} onCommit={(y) => update({ y })} />
+      <NumberProperty
+        label="Width"
+        value={element.width}
+        min={GRID}
+        max={doc.canvas.width}
+        onCommit={(width) => update({ width })}
+      />
+      <NumberProperty
+        label="Height"
+        value={element.height}
+        min={GRID}
+        max={doc.canvas.height}
+        onCommit={(height) => update({ height })}
+      />
+      <dt />
+      <dd>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => {
+            removeElement(screenId, elementId);
+            select(null);
+          }}
+        >
+          Remove element
+        </button>
+      </dd>
+    </dl>
+  );
+}
+
 function PropertiesTab() {
   const selection = useWorkbench((state) => state.selection);
   if (!selection) {
     return <p className="inspector__empty muted">Nothing is selected.</p>;
+  }
+  if (selection.kind === 'element') {
+    return (
+      <ElementProperties
+        key={`${selection.screenId}:${selection.elementId}`}
+        screenId={selection.screenId}
+        elementId={selection.elementId}
+      />
+    );
   }
   if (selection.kind === 'tag') return <TagProperties uri={selection.uri} />;
   if (selection.kind === 'connection') return <ConnectionProperties id={selection.id} />;

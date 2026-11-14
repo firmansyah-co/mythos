@@ -7,8 +7,11 @@
 
 import type { EditorKind } from './workbench';
 
-/** Editor kinds that can be named in the address. A draft row cannot: its key is not stable. */
-type AddressableKind = Exclude<EditorKind, 'connection'>;
+/**
+ * Editor kinds that can be named in the address. A draft row cannot: its key is not stable.
+ * A screen is not yet: its editor needs the screen list, which loads after the project opens.
+ */
+type AddressableKind = Exclude<EditorKind, 'connection' | 'screen'>;
 
 export interface WorkbenchLocation {
   projectId: string;

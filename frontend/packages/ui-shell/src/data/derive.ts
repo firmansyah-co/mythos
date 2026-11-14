@@ -73,43 +73,45 @@ export function connectionLabel(id: string | undefined): string {
   return id && id.trim() !== '' ? id : '(unnamed connection)';
 }
 
-/**
- * An editor's title. `nameOf` resolves a draft row's key to the connection's current name,
- * for the configuration editor.
- */
-export function editorTitle(editor: EditorRef, nameOf: (key: string) => string | undefined): string {
+/** Resolves what an editor is scoped to into the name it currently has. */
+export interface EditorNames {
+  /** A draft connection's name, by the key of its row. */
+  connection: (key: string) => string | undefined;
+  /** A screen's name, by its id. */
+  screen: (id: string) => string | undefined;
+}
+
+export function editorTitle(editor: EditorRef, names: EditorNames): string {
   switch (editor.kind) {
     case 'overview':
       return 'Project overview';
     case 'devices':
       return 'Devices & networks';
     case 'connection':
-      return `Configuration [${connectionLabel(nameOf(editor.connectionId ?? ''))}]`;
+      return `Configuration [${connectionLabel(names.connection(editor.target ?? ''))}]`;
     case 'tags':
-      return editor.connectionId ? `Tags [${editor.connectionId}]` : 'All tags';
+      return editor.target ? `Tags [${editor.target}]` : 'All tags';
     case 'diagnostics':
-      return `Online & diagnostics [${editor.connectionId ?? ''}]`;
+      return `Online & diagnostics [${editor.target ?? ''}]`;
+    case 'screen':
+      return `Screen [${names.screen(editor.target ?? '') ?? 'removed'}]`;
   }
 }
 
 /** The path shown in an editor's header, outermost first. */
-export function editorPath(
-  editor: EditorRef,
-  projectName: string,
-  nameOf: (key: string) => string | undefined
-): string[] {
+export function editorPath(editor: EditorRef, projectName: string, names: EditorNames): string[] {
   switch (editor.kind) {
     case 'overview':
       return [projectName, 'Project overview'];
     case 'devices':
       return [projectName, 'Devices & networks'];
     case 'connection':
-      return [projectName, connectionLabel(nameOf(editor.connectionId ?? '')), 'Configuration'];
+      return [projectName, connectionLabel(names.connection(editor.target ?? '')), 'Configuration'];
     case 'tags':
-      return editor.connectionId
-        ? [projectName, editor.connectionId, 'Tags']
-        : [projectName, 'All tags'];
+      return editor.target ? [projectName, editor.target, 'Tags'] : [projectName, 'All tags'];
     case 'diagnostics':
-      return [projectName, editor.connectionId ?? '', 'Online & diagnostics'];
+      return [projectName, editor.target ?? '', 'Online & diagnostics'];
+    case 'screen':
+      return [projectName, 'HMI screens', names.screen(editor.target ?? '') ?? 'removed'];
   }
 }

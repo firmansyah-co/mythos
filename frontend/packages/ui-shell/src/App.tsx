@@ -4,6 +4,7 @@ import { startControllerPolling, stopControllerPolling, useController } from './
 import { useIoConfig } from './data/ioConfig';
 import { formatLocation, parseLocation } from './data/location';
 import { log } from './data/log';
+import { useScreens } from './data/screens';
 import { goOffline, goOnline, useTelemetry } from './data/telemetry';
 import { useWorkbench } from './data/workbench';
 import { AboutDialog } from './shell/AboutDialog';
@@ -53,8 +54,8 @@ export function App() {
             ? {
                 projectId: state.project.id,
                 editor:
-                  editor && editor.kind !== 'connection'
-                    ? { kind: editor.kind, connectionId: editor.connectionId }
+                  editor && editor.kind !== 'connection' && editor.kind !== 'screen'
+                    ? { kind: editor.kind, connectionId: editor.target }
                     : undefined,
               }
             : null
@@ -71,6 +72,15 @@ export function App() {
       return;
     }
     void useIoConfig.getState().load(projectId);
+  }, [projectId]);
+
+  // So are its HMI screens.
+  useEffect(() => {
+    if (projectId === null) {
+      useScreens.getState().reset();
+      return;
+    }
+    void useScreens.getState().load(projectId);
   }, [projectId]);
 
   // The controller's own state is read for as long as a project is open.

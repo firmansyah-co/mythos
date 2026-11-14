@@ -3,12 +3,14 @@ import { editorTitle } from '../data/derive';
 import { isDirty, useIoConfig } from '../data/ioConfig';
 import { useLog } from '../data/log';
 import { useRuntimeScope } from '../data/scope';
+import { anyScreenDirty, useScreens } from '../data/screens';
 import { goOffline, goOnline, useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
 import { Inspector } from './Inspector';
 import { MenuBar, type Menu } from './MenuBar';
 import { ProjectTree } from './ProjectTree';
-import { OnlineTools } from './TaskCards';
+import { OnlineTools, Toolbox } from './TaskCards';
+import { useEditorNames } from './useEditorNames';
 import { useResizable } from './useResizable';
 import { WorkArea } from './WorkArea';
 
@@ -55,15 +57,17 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
   const wantOnline = useTelemetry((state) => state.wantOnline);
   const lastLog = useLog((state) => state.entries[state.entries.length - 1]);
   const running = useRuntimeScope().kind === 'active';
-  const draft = useIoConfig((state) => state.draft);
-  const dirty = useIoConfig(isDirty);
-  const nameOf = (key: string) => draft.find((connection) => connection.key === key)?.id;
+  const ioDirty = useIoConfig(isDirty);
+  const screensDirty = useScreens(anyScreenDirty);
+  const dirty = ioDirty || screensDirty;
+  const names = useEditorNames();
+  const activeEditor = editors.find((editor) => editor.id === activeEditorId);
 
   /** Close the project, unless there are unsaved changes the engineer wants to keep. */
   const close = () => {
     if (
       dirty &&
-      !window.confirm('The I/O configuration has unsaved changes. Close the project and lose them?')
+      !window.confirm('This project has unsaved changes. Close it and lose them?')
     ) {
       return;
     }
@@ -180,7 +184,7 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
             <div className="splitter splitter--v" role="separator" aria-orientation="vertical" {...cards.handle} />
             <aside className="pane pane--cards" style={{ width: cards.size }}>
               <header className="pane__header">
-                <span className="pane__title">Online tools</span>
+                <span className="pane__title">Task cards</span>
                 <button
                   type="button"
                   className="icon-btn"
@@ -191,12 +195,15 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
                 </button>
               </header>
               <div className="pane__body">
+                {activeEditor?.kind === 'screen' && activeEditor.target && (
+                  <Toolbox screenId={activeEditor.target} />
+                )}
                 <OnlineTools />
               </div>
             </aside>
           </>
         ) : (
-          <CollapsedPane label="Online tools" side="right" onExpand={() => togglePane('taskCards')} />
+          <CollapsedPane label="Task cards" side="right" onExpand={() => togglePane('taskCards')} />
         )}
       </div>
 
@@ -217,12 +224,12 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
                 className="editorbar__tab-label"
                 onClick={() => focusEditor(editor.id)}
               >
-                {editorTitle(editor, nameOf)}
+                {editorTitle(editor, names)}
               </button>
               <button
                 type="button"
                 className="editorbar__tab-close"
-                aria-label={`Close ${editorTitle(editor, nameOf)}`}
+                aria-label={`Close ${editorTitle(editor, names)}`}
                 onClick={() => closeEditor(editor.id)}
               >
                 <X size={11} />
