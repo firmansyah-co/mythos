@@ -1,7 +1,8 @@
 //! # MythOS Axum REST and SSE API Gateway
 //!
-//! Provides REST endpoints (`/api/v1/health`, `/api/v1/tags`, `/api/v1/projects`)
-//! and real-time SSE stream (`/api/v1/telemetry/stream`) with locked 100ms batch throttling.
+//! REST endpoints for health, tags (read-only), projects and their HMI, data-type, faceplate
+//! and I/O configuration, and the SSE telemetry stream (`/api/v1/telemetry/stream`, one batch
+//! every 100 ms).
 
 pub mod datatypes;
 pub mod faceplates;
@@ -38,15 +39,6 @@ pub struct HealthResponse {
     pub timestamp_ms: u64,
 }
 
-/// Tag registration schema for POST /api/v1/tags
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RegisterTagRequest {
-    pub uri: String,
-    pub slot_id: u32,
-    pub description: Option<String>,
-    pub engineering_units: Option<String>,
-}
-
 /// Project creation schema for POST /api/v1/projects
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateProjectRequest {
@@ -62,10 +54,9 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
         // Health
         .route("/api/v1/health", get(health_handler))
         // Tags
-        .route(
-            "/api/v1/tags",
-            get(list_tags_handler::<S>).post(register_tag_handler::<S>),
-        )
+        // Read-only. A tag exists because the field I/O runtime registered it and feeds it;
+        // there is no route to create one, because nothing would feed it.
+        .route("/api/v1/tags", get(list_tags_handler::<S>))
         .route("/api/v1/tags/:uri", get(get_tag_handler::<S>))
         // Projects
         .route(
@@ -189,32 +180,6 @@ async fn list_tags_handler<S: PlatformShm + 'static>(
     let catalog = state.tag_catalog.read().await;
     let tags: Vec<crate::tag::TagMetadata> = catalog.iter().cloned().collect();
     Json(tags)
-}
-
-async fn register_tag_handler<S: PlatformShm + 'static>(
-    State(state): State<ApiState<S>>,
-    Json(payload): Json<RegisterTagRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let mut catalog = state.tag_catalog.write().await;
-    let mut meta = crate::tag::TagMetadata::new(&payload.uri, payload.slot_id).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": e.to_string()})),
-        )
-    })?;
-
-    if let Some(desc) = payload.description {
-        meta.description = desc;
-    }
-    if let Some(units) = payload.engineering_units {
-        meta.engineering_units = units;
-    }
-
-    catalog
-        .register(meta.clone())
-        .map_err(|e| (StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))))?;
-
-    Ok((StatusCode::CREATED, Json(meta)))
 }
 
 async fn get_tag_handler<S: PlatformShm + 'static>(
