@@ -80,7 +80,10 @@ async fn start_io<S: PlatformShm + 'static>(
         Err(e) => return not_running(format!("the active project could not be resolved: {e}")),
     };
 
-    let path = storage.project_dir(&active).join(IO_CONFIG_FILE);
+    let path = match storage.project_dir(&active) {
+        Ok(dir) => dir.join(IO_CONFIG_FILE),
+        Err(e) => return not_running(format!("the active project cannot be used: {e}")),
+    };
     let config = match IoConfig::load(&path) {
         Ok(Some(config)) => config,
         Ok(None) => {

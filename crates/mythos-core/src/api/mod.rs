@@ -11,6 +11,7 @@ pub mod telemetry;
 pub mod web;
 
 use crate::sdui::{DeploymentRequest, DeploymentResponse};
+use crate::storage::StorageError;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -252,10 +253,10 @@ async fn get_project_handler<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let config = state
-        .storage
-        .get_project(&id)
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let config = state.storage.get_project(&id).map_err(|e| match e {
+        StorageError::InvalidProjectId(_) => StatusCode::BAD_REQUEST,
+        _ => StatusCode::NOT_FOUND,
+    })?;
     Ok(Json(config))
 }
 
@@ -280,10 +281,12 @@ async fn activate_project_handler<S: PlatformShm + 'static>(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     state.storage.activate_project(&id).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
+        let status = match e {
+            StorageError::InvalidProjectId(_) => StatusCode::BAD_REQUEST,
+            StorageError::ProjectNotFound(_) => StatusCode::NOT_FOUND,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, Json(json!({"error": e.to_string()})))
     })?;
 
     Ok(Json(json!({"status": "activated", "project_id": id})))

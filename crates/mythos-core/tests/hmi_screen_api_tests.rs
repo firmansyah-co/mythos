@@ -96,6 +96,7 @@ async fn screen_create_save_reopen_and_commit_are_project_scoped() {
     );
     assert!(!storage
         .project_dir("plant_a")
+        .unwrap()
         .join("screens/active/screens.json")
         .exists());
     let (status, committed) = request(
@@ -109,6 +110,7 @@ async fn screen_create_save_reopen_and_commit_are_project_scoped() {
     assert_eq!(committed[id], canvas);
     assert!(storage
         .project_dir("plant_a")
+        .unwrap()
         .join("screens/active/screens.json")
         .exists());
     assert_eq!(

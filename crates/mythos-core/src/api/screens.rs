@@ -54,18 +54,15 @@ fn failure(status: StatusCode, message: impl ToString) -> ApiError {
 }
 
 fn project_dir<S: PlatformShm>(state: &ApiState<S>, id: &str) -> Result<PathBuf, ApiError> {
-    if id.is_empty()
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        return Err(failure(StatusCode::BAD_REQUEST, "Invalid project ID"));
-    }
+    let dir = state
+        .storage
+        .project_dir(id)
+        .map_err(|e| failure(StatusCode::BAD_REQUEST, e))?;
     state
         .storage
         .get_project(id)
         .map_err(|e| failure(StatusCode::NOT_FOUND, e))?;
-    Ok(state.storage.project_dir(id))
+    Ok(dir)
 }
 
 fn read_screens(dir: &std::path::Path, stage: &str) -> Result<Vec<Screen>, ApiError> {

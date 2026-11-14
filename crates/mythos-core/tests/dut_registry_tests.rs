@@ -118,6 +118,7 @@ async fn a_project_with_no_data_types_returns_none_and_no_sample_names() {
     // Nothing was written to disk either: no registry file is created by merely reading.
     assert!(!storage
         .project_dir(PROJECT)
+        .unwrap()
         .join("datatypes/draft/types.json")
         .exists());
 }

@@ -34,6 +34,34 @@ pub enum StorageError {
 
     #[error("No active project currently designated")]
     NoActiveProject,
+
+    #[error(
+        "'{0}' is not a valid project id: use 1 to {MAX_PROJECT_ID_LEN} ASCII letters, digits, \
+         '_' or '-' (and not the reserved name 'active')"
+    )]
+    InvalidProjectId(String),
+}
+
+/// Longest accepted project id, in bytes.
+pub const MAX_PROJECT_ID_LEN: usize = 128;
+
+/// Name of the symlink that designates the active project. It lives beside the project
+/// directories, so no project may be called this.
+const ACTIVE_LINK_NAME: &str = "active";
+
+/// Whether `id` may name a project.
+///
+/// A project id becomes a directory name directly under the storage root, so it must be a
+/// single, ordinary path component: no separator, no `.` or `..`, nothing absolute. The
+/// alphabet is deliberately narrow rather than "anything but `/`", because every character
+/// outside it is one somebody would later have to prove harmless.
+pub fn is_valid_project_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_PROJECT_ID_LEN
+        && id != ACTIVE_LINK_NAME
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 pub struct ControllerStorage {
@@ -60,17 +88,24 @@ impl ControllerStorage {
 
     /// Path to the atomic 'active' symlink (`<root>/active`).
     pub fn active_symlink_path(&self) -> PathBuf {
-        self.root_dir.join("active")
+        self.root_dir.join(ACTIVE_LINK_NAME)
     }
 
     /// Path to a specific project directory (`<root>/<project_name>`).
-    pub fn project_dir(&self, project_name: &str) -> PathBuf {
-        self.root_dir.join(project_name)
+    ///
+    /// This is the only place a project id is turned into a path, and it refuses any id that is
+    /// not a valid one. An id reaches here from request bodies and URL path segments; joined
+    /// unchecked, `../x` or an absolute path would name a directory outside the storage root.
+    pub fn project_dir(&self, project_name: &str) -> Result<PathBuf, StorageError> {
+        if !is_valid_project_id(project_name) {
+            return Err(StorageError::InvalidProjectId(project_name.to_string()));
+        }
+        Ok(self.root_dir.join(project_name))
     }
 
     /// Create a new project layout on disk with full directory hierarchy.
     pub fn create_project(&self, config: &ProjectConfig) -> Result<PathBuf, StorageError> {
-        let pdir = self.project_dir(&config.id);
+        let pdir = self.project_dir(&config.id)?;
         if pdir.exists() {
             return Err(StorageError::ProjectAlreadyExists(config.id.clone()));
         }
@@ -97,7 +132,7 @@ impl ControllerStorage {
         for entry in fs::read_dir(&self.root_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_dir() && entry.file_name() != "active" {
+            if path.is_dir() && entry.file_name() != ACTIVE_LINK_NAME {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     list.push(name.to_string());
                 }
@@ -110,7 +145,7 @@ impl ControllerStorage {
     /// Resolve the name of the currently active project via the `active` symlink.
     /// Retrieve project configuration descriptor (`project.active.json` or `project.draft.json`).
     pub fn get_project(&self, project_name: &str) -> Result<ProjectConfig, StorageError> {
-        let pdir = self.project_dir(project_name);
+        let pdir = self.project_dir(project_name)?;
         if !pdir.exists() {
             return Err(StorageError::ProjectNotFound(project_name.to_string()));
         }
@@ -152,7 +187,7 @@ impl ControllerStorage {
 
     /// Atomically switch the active project using a temporary symlink and atomic rename.
     pub fn switch_active_project(&self, project_name: &str) -> Result<(), StorageError> {
-        let target_dir = self.project_dir(project_name);
+        let target_dir = self.project_dir(project_name)?;
         if !target_dir.exists() {
             return Err(StorageError::ProjectNotFound(project_name.to_string()));
         }
@@ -208,7 +243,7 @@ impl ControllerStorage {
 
     /// Commit staged drafts to active production with automatic rollback capability.
     pub fn commit_draft_to_active(&self, project_name: &str) -> Result<(), StorageError> {
-        let pdir = self.project_dir(project_name);
+        let pdir = self.project_dir(project_name)?;
         if !pdir.exists() {
             return Err(StorageError::ProjectNotFound(project_name.to_string()));
         }
@@ -245,15 +280,15 @@ impl ControllerStorage {
     }
 
     /// Get WAL handle for the specified project.
-    pub fn get_wal(&self, project_name: &str) -> ProjectWal {
-        let wal_path = self.project_dir(project_name).join("project.wal");
-        ProjectWal::new(wal_path)
+    pub fn get_wal(&self, project_name: &str) -> Result<ProjectWal, StorageError> {
+        let wal_path = self.project_dir(project_name)?.join("project.wal");
+        Ok(ProjectWal::new(wal_path))
     }
 
     /// Recover any uncheckpointed WAL edits into active project files.
     pub fn recover_project_wal(&self, project_name: &str) -> Result<usize, StorageError> {
-        let pdir = self.project_dir(project_name);
-        let wal = self.get_wal(project_name);
+        let pdir = self.project_dir(project_name)?;
+        let wal = self.get_wal(project_name)?;
 
         let entries = wal.replay()?;
         if entries.is_empty() {
