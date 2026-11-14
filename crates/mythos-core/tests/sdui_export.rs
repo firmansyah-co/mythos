@@ -22,10 +22,7 @@ fn test_sdui_typescript_type_export() {
         .and_then(|p| p.parent())
         .expect("Workspace root must exist");
 
-    let targets = vec![
-        workspace_root.join("frontend/packages/ui-shell/src/types/generated"),
-        workspace_root.join("frontend/src/types/generated"),
-    ];
+    let targets = vec![workspace_root.join("frontend/packages/ui-shell/src/types/generated")];
 
     for target_dir in &targets {
         fs::create_dir_all(target_dir).expect("Failed to create target generated types directory");
@@ -125,8 +122,13 @@ export * from './DataTypeSummary';
     }
 }
 
+/// The deploy route must refuse, in the shape the client parses, for any input.
+///
+/// It replaced a handler that hashed the request text and answered "Successfully compiled and
+/// deployed" whatever it was sent. Garbage and a well-formed program are both exercised so a
+/// handler that starts "succeeding" for one of them goes red here.
 #[tokio::test]
-async fn test_control_deploy_endpoint_success() {
+async fn test_control_deploy_endpoint_reports_not_implemented() {
     use axum::body::Body;
     use axum::http::{header, Request, StatusCode};
     use mythos_core::api::{create_router, ApiState};
@@ -138,83 +140,46 @@ async fn test_control_deploy_endpoint_success() {
     use tokio::sync::RwLock;
     use tower::ServiceExt;
 
-    let tmp_dir = tempdir().unwrap();
-    let storage = Arc::new(ControllerStorage::new(tmp_dir.path()).unwrap());
-    let catalog = Arc::new(RwLock::new(TagCatalog::new()));
-    let state = ApiState::<mythos_pal::MemoryShm>::new(storage, catalog, None);
-    let router = create_router(state);
+    let sources = [
+        "PROGRAM Main\nVAR x: INT; END_VAR\nx := x + 1;\nEND_PROGRAM",
+        "this is not a program @@@ !!!",
+        "   ",
+    ];
 
-    let deploy_req = DeploymentRequest {
-        code: "PROGRAM Main\nVAR x: INT; END_VAR\nx := x + 1;\nEND_PROGRAM".to_string(),
-        language: "ST".to_string(),
-        target_block: "MainTask".to_string(),
-        hot_reload: true,
-    };
+    for code in sources {
+        let tmp_dir = tempdir().unwrap();
+        let storage = Arc::new(ControllerStorage::new(tmp_dir.path()).unwrap());
+        let catalog = Arc::new(RwLock::new(TagCatalog::new()));
+        let state = ApiState::<mythos_pal::MemoryShm>::new(storage, catalog, None);
+        let router = create_router(state);
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/control/deploy")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_vec(&deploy_req).unwrap()))
-        .unwrap();
+        let deploy_req = DeploymentRequest {
+            code: code.to_string(),
+            language: "ST".to_string(),
+            target_block: "MainTask".to_string(),
+            hot_reload: true,
+        };
 
-    let resp = router.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/control/deploy")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(&deploy_req).unwrap()))
+            .unwrap();
 
-    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let deploy_resp: DeploymentResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_IMPLEMENTED,
+            "source: {code:?}"
+        );
 
-    assert!(deploy_resp.success);
-    assert!(deploy_resp.binary_hash.is_some());
-    assert!(deploy_resp.message.contains("MainTask"));
-    assert!(deploy_resp.message.contains("lang=ST"));
-    assert!(deploy_resp.message.contains("hot_reload=true"));
-}
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let deploy_resp: DeploymentResponse = serde_json::from_slice(&body_bytes).unwrap();
 
-#[tokio::test]
-async fn test_control_deploy_endpoint_empty_code_rejected() {
-    use axum::body::Body;
-    use axum::http::{header, Request, StatusCode};
-    use mythos_core::api::{create_router, ApiState};
-    use mythos_core::sdui::{DeploymentRequest, DeploymentResponse};
-    use mythos_core::storage::ControllerStorage;
-    use mythos_core::tag::TagCatalog;
-    use std::sync::Arc;
-    use tempfile::tempdir;
-    use tokio::sync::RwLock;
-    use tower::ServiceExt;
-
-    let tmp_dir = tempdir().unwrap();
-    let storage = Arc::new(ControllerStorage::new(tmp_dir.path()).unwrap());
-    let catalog = Arc::new(RwLock::new(TagCatalog::new()));
-    let state = ApiState::<mythos_pal::MemoryShm>::new(storage, catalog, None);
-    let router = create_router(state);
-
-    let deploy_req = DeploymentRequest {
-        code: "   ".to_string(),
-        language: "ST".to_string(),
-        target_block: "MainTask".to_string(),
-        hot_reload: false,
-    };
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/control/deploy")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_vec(&deploy_req).unwrap()))
-        .unwrap();
-
-    let resp = router.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-
-    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let deploy_resp: DeploymentResponse = serde_json::from_slice(&body_bytes).unwrap();
-
-    assert!(!deploy_resp.success);
-    assert!(deploy_resp.binary_hash.is_none());
-    assert!(deploy_resp.message.contains("cannot be empty"));
+        assert!(!deploy_resp.success, "source: {code:?}");
+        assert!(deploy_resp.binary_hash.is_none(), "source: {code:?}");
+    }
 }
