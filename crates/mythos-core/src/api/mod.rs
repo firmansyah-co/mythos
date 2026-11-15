@@ -141,6 +141,7 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
         .route("/api/v1/io/status", get(io_status_handler::<S>))
         .route("/api/v1/io/drivers", get(io::drivers::<S>))
         .route("/api/v1/modules", get(io::modules::<S>))
+        .route("/api/v1/modules/rescan", post(io::rescan_modules::<S>))
         // A project's field I/O configuration
         .route(
             "/api/v1/projects/:id/io",

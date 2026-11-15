@@ -1,16 +1,25 @@
 //! The I/O runtime: driver tasks, the scanner that owns the tag bus writer, and their status.
+//!
+//! Connections are independent units. [`IoRuntime::apply`] takes a new configuration and
+//! changes only what differs from what is running: a connection whose configuration and driver
+//! are unchanged keeps running untouched; one whose tags stay the same is swapped in place, the
+//! new driver started before the old one is stopped, so its tags never stop updating; one whose
+//! tags change is stopped and started again; one that is gone is stopped. A new driver that
+//! cannot start leaves the one it was meant to replace running.
 
 use crate::io::config::{ConnectionConfig, IoConfig};
 use crate::io::registry::DriverRegistry;
 use crate::tag::{AccessMode, TagCatalog, TagMetadata};
 use mythos_pal::PlatformShm;
-use mythos_plugin_sdk::{PluginContext, ProtocolDriver, SampleFault, SampleValue, TagSample};
+use mythos_plugin_sdk::{
+    PluginContext, ProtocolDriver, SampleFault, SampleValue, TagDeclaration, TagSample,
+};
 use mythos_shm::{QualityCode, ShmWriterHandle, TagDataType, TagValueRaw};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Duration;
-use tokio::sync::{mpsc, watch, RwLock};
+use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, timeout, MissedTickBehavior};
 use tracing::{error, info, warn};
@@ -104,12 +113,22 @@ impl IoStatusHandle {
         change(&mut self.0.write().unwrap_or_else(|e| e.into_inner()));
     }
 
-    fn update_connection(&self, index: usize, change: impl FnOnce(&mut ConnectionStatus)) {
+    fn update_connection(&self, id: &str, change: impl FnOnce(&mut ConnectionStatus)) {
         self.update(|status| {
-            if let Some(connection) = status.connections.get_mut(index) {
+            if let Some(connection) = status.connections.iter_mut().find(|c| c.id == id) {
                 change(connection);
             }
         });
+    }
+
+    /// Insert or replace the entry of one connection.
+    fn upsert_connection(&self, entry: ConnectionStatus) {
+        self.update(
+            |status| match status.connections.iter_mut().find(|c| c.id == entry.id) {
+                Some(existing) => *existing = entry,
+                None => status.connections.push(entry),
+            },
+        );
     }
 }
 
@@ -191,8 +210,8 @@ fn now_unix_ns() -> u64 {
 ///
 /// The whole image is written each time because the triple buffer hands the writer a bank that
 /// is two publishes old: a slot left untouched would roll back to a stale value.
-fn flush<S: PlatformShm>(writer: &mut ShmWriterHandle<S>, image: &[SlotImage]) {
-    for slot in image {
+fn flush<S: PlatformShm>(writer: &mut ShmWriterHandle<S>, image: &BTreeMap<usize, SlotImage>) {
+    for slot in image.values() {
         if let Err(e) = writer.write_tag(
             slot.slot_id,
             slot.type_code,
@@ -208,33 +227,132 @@ fn flush<S: PlatformShm>(writer: &mut ShmWriterHandle<S>, image: &[SlotImage]) {
 }
 
 // -----------------------------------------------------------------------------
+// Scanner
+// -----------------------------------------------------------------------------
+
+/// What the scanner is asked to do. It is the only task that writes the tag bus.
+enum ScanMsg {
+    /// One poll cycle's outcome: slot and reading.
+    Batch {
+        at_ns: u64,
+        updates: Vec<(usize, Result<SampleValue, SampleFault>)>,
+    },
+    /// Slots about to be given to new tags: publish them as never read before anyone can see
+    /// the tags. A slot that held an older tag's value must not show it under a new name.
+    Attach {
+        slots: Vec<usize>,
+        done: oneshot::Sender<()>,
+    },
+    /// Slots whose tags are going away: publish them as not connected.
+    Detach {
+        slots: Vec<usize>,
+        done: oneshot::Sender<()>,
+    },
+}
+
+async fn run_scanner<S: PlatformShm>(
+    mut writer: ShmWriterHandle<S>,
+    mut rx: mpsc::Receiver<ScanMsg>,
+) {
+    // Every slot this runtime has ever written. A detached slot stays here, not connected,
+    // and is written on every publish: the triple buffer would otherwise bring back whatever
+    // an older bank held for it.
+    let mut image: BTreeMap<usize, SlotImage> = BTreeMap::new();
+
+    while let Some(message) = rx.recv().await {
+        match message {
+            ScanMsg::Batch { at_ns, updates } => {
+                for (slot, reading) in &updates {
+                    if let Some(image) = image.get_mut(slot) {
+                        image.apply(reading, at_ns);
+                    }
+                }
+                flush(&mut writer, &image);
+            }
+            ScanMsg::Attach { slots, done } => {
+                for slot in slots {
+                    image.insert(slot, SlotImage::unread(slot));
+                }
+                flush(&mut writer, &image);
+                let _ = done.send(());
+            }
+            ScanMsg::Detach { slots, done } => {
+                for slot in slots {
+                    if let Some(image) = image.get_mut(&slot) {
+                        image.quality = QualityCode::BAD_NOT_CONNECTED;
+                    }
+                }
+                flush(&mut writer, &image);
+                let _ = done.send(());
+            }
+        }
+    }
+
+    // Nothing will refresh these slots again. Leaving them GOOD would present the last reading
+    // as current for as long as the segment exists.
+    for slot in image.values_mut() {
+        slot.quality = QualityCode::BAD_NOT_CONNECTED;
+    }
+    flush(&mut writer, &image);
+}
+
+// -----------------------------------------------------------------------------
 // Runtime
 // -----------------------------------------------------------------------------
 
-/// One poll cycle's outcome for one connection: image index and reading.
-struct Batch {
-    at_ns: u64,
-    updates: Vec<(usize, Result<SampleValue, SampleFault>)>,
-}
-
-/// A connection that started and is ready to be polled.
+/// A driver that has been started with a connection's configuration and is ready to poll.
 struct Prepared {
-    index: usize,
-    id: String,
     driver: Box<dyn ProtocolDriver>,
     ctx: PluginContext,
     driver_config: serde_json::Value,
     poll_interval: Duration,
     cycle_timeout: Duration,
-    /// Declared tag URI and its index in the scanner's image, in declaration order.
+    declared: Vec<TagDeclaration>,
+}
+
+/// A replacement driver for a running connection whose tags stay the same.
+struct Swap {
+    prepared: Prepared,
+    done: oneshot::Sender<()>,
+}
+
+struct Running {
+    config: ConnectionConfig,
+    /// Which build of which driver runs it. See [`DriverRegistry::identity`].
+    identity: String,
+    /// Tag URI and slot, in declaration order.
     tags: Vec<(String, usize)>,
+    swap: mpsc::Sender<Swap>,
+    shutdown: watch::Sender<bool>,
+    task: JoinHandle<()>,
+}
+
+/// What [`IoRuntime::apply`] did to each connection.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct ApplyReport {
+    /// Unchanged and left running.
+    pub kept: Vec<String>,
+    /// Same tags, new configuration or driver: replaced in place without a gap.
+    pub swapped: Vec<String>,
+    /// Different tags: stopped and started again.
+    pub restarted: Vec<String>,
+    /// New connections that started.
+    pub started: Vec<String>,
+    /// Connections that are no longer configured.
+    pub stopped: Vec<String>,
+    /// Connections that could not be started or replaced, and why. A connection listed here
+    /// that was running before keeps running as it was.
+    pub failed: Vec<(String, String)>,
 }
 
 /// The running field I/O of one server.
 pub struct IoRuntime {
     status: IoStatusHandle,
-    shutdown: watch::Sender<bool>,
-    tasks: Vec<JoinHandle<()>>,
+    catalog: Arc<RwLock<TagCatalog>>,
+    capacity: usize,
+    scanner: Option<mpsc::Sender<ScanMsg>>,
+    scanner_task: Option<JoinHandle<()>>,
+    connections: HashMap<String, Running>,
 }
 
 impl IoRuntime {
@@ -242,206 +360,401 @@ impl IoRuntime {
     ///
     /// A connection that cannot be started is reported in the status with the reason and
     /// contributes no tags; the others still run. Tags are registered in `catalog` only after
-    /// their slots have been published as "not connected", so a reader can never see a slot of
-    /// this runtime holding data left over from an earlier process.
+    /// their slots have been published as never read, so a reader can never see a slot of this
+    /// runtime holding data left over from an earlier process or tag.
     pub async fn start<S: PlatformShm + 'static>(
         config: IoConfig,
         source: Option<String>,
         registry: &DriverRegistry,
         catalog: Arc<RwLock<TagCatalog>>,
-        mut writer: ShmWriterHandle<S>,
+        writer: ShmWriterHandle<S>,
         status: IoStatusHandle,
     ) -> Self {
+        Self::start_with_report(config, source, registry, catalog, writer, status)
+            .await
+            .0
+    }
+
+    /// [`Self::start`], also saying which connections started and which could not.
+    pub async fn start_with_report<S: PlatformShm + 'static>(
+        config: IoConfig,
+        source: Option<String>,
+        registry: &DriverRegistry,
+        catalog: Arc<RwLock<TagCatalog>>,
+        writer: ShmWriterHandle<S>,
+        status: IoStatusHandle,
+    ) -> (Self, ApplyReport) {
         let capacity = writer.max_tags();
-        let mut image: Vec<SlotImage> = Vec::new();
-        let mut staged: Vec<TagMetadata> = Vec::new();
-        let mut staged_uris: HashSet<String> = HashSet::new();
-        let mut staged_slots: HashSet<u32> = HashSet::new();
-        let mut next_slot: u32 = 0;
-        let mut prepared: Vec<Prepared> = Vec::new();
-        let mut statuses: Vec<ConnectionStatus> = Vec::new();
-
-        let mut catalog_guard = catalog.write().await;
-
-        for (index, connection) in config.connections.iter().enumerate() {
-            let mut connection_status = ConnectionStatus {
-                id: connection.id.clone(),
-                driver: connection.driver.clone(),
-                state: ConnectionState::ConfigError,
-                detail: None,
-                tags: Vec::new(),
-                poll_interval_ms: connection.poll_interval_ms,
-                cycle_timeout_ms: connection.effective_cycle_timeout_ms(),
-                cycles_completed: 0,
-                last_cycle_unix_ms: None,
-                last_cycle_error: None,
-                tags_good: None,
-                faults: Vec::new(),
-            };
-
-            let (driver, ctx) = match start_driver(connection, registry).await {
-                Ok(started) => started,
-                Err(reason) => {
-                    error!("I/O connection '{}' not started: {}", connection.id, reason);
-                    connection_status.detail = Some(reason);
-                    statuses.push(connection_status);
-                    continue;
-                }
-            };
-
-            // Stage this connection's tags. Nothing is committed until all of them are valid,
-            // so a rejected connection leaves no partial set of tags behind.
-            let mut local_meta: Vec<TagMetadata> = Vec::new();
-            let mut local_uris: HashSet<String> = HashSet::new();
-            let mut local_slots: Vec<u32> = Vec::new();
-            let mut probe_slot = next_slot;
-            let mut rejection: Option<String> = None;
-
-            for declaration in driver.declared_tags() {
-                if catalog_guard.get_by_uri(&declaration.uri).is_some()
-                    || staged_uris.contains(&declaration.uri)
-                    || !local_uris.insert(declaration.uri.clone())
-                {
-                    rejection = Some(format!(
-                        "tag '{}' is already provided by another source",
-                        declaration.uri
-                    ));
-                    break;
-                }
-
-                while catalog_guard.get_by_slot(probe_slot).is_some()
-                    || staged_slots.contains(&probe_slot)
-                {
-                    probe_slot += 1;
-                }
-                if probe_slot as usize >= capacity {
-                    rejection = Some(format!(
-                        "the tag bus is full ({} slots): no slot for tag '{}'",
-                        capacity, declaration.uri
-                    ));
-                    break;
-                }
-
-                match TagMetadata::new(declaration.uri.clone(), probe_slot) {
-                    Ok(meta) => {
-                        local_meta.push(
-                            meta.with_description(declaration.description)
-                                .with_access(AccessMode::ReadOnly),
-                        );
-                        local_slots.push(probe_slot);
-                        probe_slot += 1;
-                    }
-                    Err(e) => {
-                        rejection = Some(format!("tag '{}' is not valid: {}", declaration.uri, e));
-                        break;
-                    }
-                }
-            }
-
-            if rejection.is_none() && local_meta.is_empty() {
-                rejection = Some("the connection declares no tags".to_string());
-            }
-
-            if let Some(reason) = rejection {
-                error!("I/O connection '{}' not started: {}", connection.id, reason);
-                let mut driver = driver;
-                let _ = driver.stop(&ctx).await;
-                connection_status.detail = Some(reason);
-                statuses.push(connection_status);
-                continue;
-            }
-
-            let mut tags = Vec::with_capacity(local_meta.len());
-            for (meta, slot) in local_meta.into_iter().zip(local_slots) {
-                tags.push((meta.uri.clone(), image.len()));
-                image.push(SlotImage::unread(slot as usize));
-                staged_uris.insert(meta.uri.clone());
-                staged_slots.insert(slot);
-                staged.push(meta);
-            }
-            next_slot = probe_slot;
-
-            connection_status.state = ConnectionState::Running;
-            connection_status.tags = tags.iter().map(|(uri, _)| uri.clone()).collect();
-            statuses.push(connection_status);
-
-            prepared.push(Prepared {
-                index,
-                id: connection.id.clone(),
-                driver,
-                ctx,
-                driver_config: connection.config.clone(),
-                poll_interval: Duration::from_millis(connection.poll_interval_ms),
-                cycle_timeout: Duration::from_millis(connection.effective_cycle_timeout_ms()),
-                tags,
-            });
-        }
-
-        // Publish "not connected" for every slot before any of them becomes visible.
-        flush(&mut writer, &image);
-        for meta in staged {
-            let uri = meta.uri.clone();
-            if let Err(e) = catalog_guard.register(meta) {
-                error!("tag '{}' could not be registered: {}", uri, e);
-            }
-        }
-        drop(catalog_guard);
-
-        status.update(|s| {
-            s.source = source;
-            s.note = if statuses.is_empty() {
-                Some("the I/O configuration has no connections".to_string())
-            } else {
-                None
-            };
-            s.connections = statuses;
-        });
-
-        let (shutdown, shutdown_rx) = watch::channel(false);
-        let (tx, rx) = mpsc::channel::<Batch>(64);
-        let mut tasks = Vec::with_capacity(prepared.len() + 1);
-
-        tasks.push(tokio::spawn(run_scanner(writer, image, rx)));
-        for connection in prepared {
-            info!(
-                "I/O connection '{}' started with {} tag(s)",
-                connection.id,
-                connection.tags.len()
-            );
-            tasks.push(tokio::spawn(run_connection(
-                connection,
-                tx.clone(),
-                shutdown_rx.clone(),
-                status.clone(),
-            )));
-        }
-        // The scanner ends when the last driver task drops its sender.
-        drop(tx);
-
-        Self {
+        let (tx, rx) = mpsc::channel::<ScanMsg>(256);
+        let scanner_task = tokio::spawn(run_scanner(writer, rx));
+        status.update(|s| *s = IoStatus::default());
+        let mut runtime = Self {
             status,
-            shutdown,
-            tasks,
-        }
+            catalog,
+            capacity,
+            scanner: Some(tx),
+            scanner_task: Some(scanner_task),
+            connections: HashMap::new(),
+        };
+        let report = runtime.apply(config, source, registry).await;
+        (runtime, report)
     }
 
     pub fn status(&self) -> IoStatusHandle {
         self.status.clone()
     }
 
-    /// Stop every driver, mark every tag "not connected", and wait for the tasks to end.
-    pub async fn shutdown(self) {
-        let _ = self.shutdown.send(true);
-        for task in self.tasks {
+    /// The configuration of the connections that are running, in no particular order.
+    pub fn running_configs(&self) -> Vec<ConnectionConfig> {
+        self.connections
+            .values()
+            .map(|r| r.config.clone())
+            .collect()
+    }
+
+    /// Make the running connections match `config`, changing only what differs.
+    pub async fn apply(
+        &mut self,
+        config: IoConfig,
+        source: Option<String>,
+        registry: &DriverRegistry,
+    ) -> ApplyReport {
+        let mut report = ApplyReport::default();
+        let wanted: HashSet<&str> = config.connections.iter().map(|c| c.id.as_str()).collect();
+
+        // Connections that are gone go first, so their tag names are free for the others.
+        let mut gone: Vec<String> = self
+            .connections
+            .keys()
+            .filter(|id| !wanted.contains(id.as_str()))
+            .cloned()
+            .collect();
+        gone.sort();
+        for id in gone {
+            self.remove(&id).await;
+            report.stopped.push(id);
+        }
+
+        // Connections whose tags change are stopped before any new one is started, for the same
+        // reason; their replacements are started below with the new ones.
+        let mut pending: Vec<(ConnectionConfig, Prepared, String)> = Vec::new();
+        let mut not_started: Vec<(ConnectionConfig, String)> = Vec::new();
+
+        for connection in &config.connections {
+            let identity = registry.identity(&connection.driver);
+            if let Some(running) = self.connections.get(&connection.id) {
+                let unchanged =
+                    running.config == *connection && Some(&running.identity) == identity.as_ref();
+                if unchanged {
+                    report.kept.push(connection.id.clone());
+                    continue;
+                }
+                let prepared = match prepare(connection, registry).await {
+                    Ok(prepared) => prepared,
+                    Err(reason) => {
+                        error!(
+                            "I/O connection '{}' not replaced, the running one is kept: {}",
+                            connection.id, reason
+                        );
+                        self.status.update_connection(&connection.id, |s| {
+                            s.detail = Some(format!(
+                                "the new configuration could not be started, so the previous \
+                                 one is still running: {reason}"
+                            ));
+                        });
+                        report.failed.push((connection.id.clone(), reason));
+                        continue;
+                    }
+                };
+                let same_tags = running
+                    .tags
+                    .iter()
+                    .map(|(uri, _)| uri.as_str())
+                    .eq(prepared.declared.iter().map(|d| d.uri.as_str()));
+                let identity = identity.unwrap_or_default();
+                if same_tags {
+                    self.swap(connection, prepared, identity).await;
+                    report.swapped.push(connection.id.clone());
+                } else {
+                    self.remove(&connection.id).await;
+                    pending.push((connection.clone(), prepared, identity));
+                    report.restarted.push(connection.id.clone());
+                }
+            } else {
+                match prepare(connection, registry).await {
+                    Ok(prepared) => {
+                        pending.push((connection.clone(), prepared, identity.unwrap_or_default()));
+                        report.started.push(connection.id.clone());
+                    }
+                    Err(reason) => not_started.push((connection.clone(), reason)),
+                }
+            }
+        }
+
+        for (connection, prepared, identity) in pending {
+            if let Err(reason) = self.add(&connection, prepared, identity).await {
+                report.started.retain(|id| id != &connection.id);
+                report.restarted.retain(|id| id != &connection.id);
+                not_started.push((connection, reason));
+            }
+        }
+
+        for (connection, reason) in not_started {
+            error!("I/O connection '{}' not started: {}", connection.id, reason);
+            self.status.upsert_connection(ConnectionStatus {
+                state: ConnectionState::ConfigError,
+                detail: Some(reason.clone()),
+                ..new_status(&connection)
+            });
+            report.failed.push((connection.id.clone(), reason));
+        }
+
+        // The status lists the configured connections, in the configuration's order.
+        let order: Vec<String> = config.connections.iter().map(|c| c.id.clone()).collect();
+        self.status.update(|s| {
+            s.source = source;
+            s.note = if order.is_empty() {
+                Some("the I/O configuration has no connections".to_string())
+            } else {
+                None
+            };
+            let mut by_id: HashMap<String, ConnectionStatus> =
+                s.connections.drain(..).map(|c| (c.id.clone(), c)).collect();
+            s.connections = order.iter().filter_map(|id| by_id.remove(id)).collect();
+        });
+
+        report
+    }
+
+    /// Start a prepared connection: claim slots, publish them unread, register the tags, poll.
+    async fn add(
+        &mut self,
+        connection: &ConnectionConfig,
+        mut prepared: Prepared,
+        identity: String,
+    ) -> Result<(), String> {
+        let Some(scanner) = self.scanner.clone() else {
+            let _ = prepared.driver.stop(&prepared.ctx).await;
+            return Err("the I/O runtime has been shut down".to_string());
+        };
+
+        let mut catalog = self.catalog.write().await;
+
+        // Stage every tag. Nothing is committed until all of them are valid, so a rejected
+        // connection leaves no partial set of tags behind.
+        let mut metas: Vec<TagMetadata> = Vec::new();
+        let mut slots: Vec<usize> = Vec::new();
+        let mut taken: HashSet<u32> = HashSet::new();
+        let mut probe: u32 = 0;
+        let mut rejection: Option<String> = None;
+        for declaration in &prepared.declared {
+            if catalog.get_by_uri(&declaration.uri).is_some() {
+                rejection = Some(format!(
+                    "tag '{}' is already provided by another source",
+                    declaration.uri
+                ));
+                break;
+            }
+            while catalog.get_by_slot(probe).is_some() || taken.contains(&probe) {
+                probe += 1;
+            }
+            if probe as usize >= self.capacity {
+                rejection = Some(format!(
+                    "the tag bus is full ({} slots): no slot for tag '{}'",
+                    self.capacity, declaration.uri
+                ));
+                break;
+            }
+            match TagMetadata::new(declaration.uri.clone(), probe) {
+                Ok(meta) => {
+                    metas.push(
+                        meta.with_description(declaration.description.clone())
+                            .with_access(AccessMode::ReadOnly),
+                    );
+                    slots.push(probe as usize);
+                    taken.insert(probe);
+                    probe += 1;
+                }
+                Err(e) => {
+                    rejection = Some(format!("tag '{}' is not valid: {}", declaration.uri, e));
+                    break;
+                }
+            }
+        }
+
+        if let Some(reason) = rejection {
+            drop(catalog);
+            let _ = prepared.driver.stop(&prepared.ctx).await;
+            return Err(reason);
+        }
+
+        let (done, attached) = oneshot::channel();
+        if scanner
+            .send(ScanMsg::Attach {
+                slots: slots.clone(),
+                done,
+            })
+            .await
+            .is_err()
+            || attached.await.is_err()
+        {
+            drop(catalog);
+            let _ = prepared.driver.stop(&prepared.ctx).await;
+            return Err("the tag bus scanner has stopped".to_string());
+        }
+        for meta in metas {
+            let uri = meta.uri.clone();
+            if let Err(e) = catalog.register(meta) {
+                error!("tag '{}' could not be registered: {}", uri, e);
+            }
+        }
+        drop(catalog);
+
+        let tags: Vec<(String, usize)> = prepared
+            .declared
+            .iter()
+            .map(|d| d.uri.clone())
+            .zip(slots)
+            .collect();
+
+        self.status.upsert_connection(ConnectionStatus {
+            state: ConnectionState::Running,
+            tags: tags.iter().map(|(uri, _)| uri.clone()).collect(),
+            ..new_status(connection)
+        });
+
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let (swap, swap_rx) = mpsc::channel::<Swap>(1);
+        info!(
+            "I/O connection '{}' started with {} tag(s)",
+            connection.id,
+            tags.len()
+        );
+        let task = tokio::spawn(run_connection(
+            connection.id.clone(),
+            prepared,
+            tags.clone(),
+            scanner,
+            shutdown_rx,
+            swap_rx,
+            self.status.clone(),
+        ));
+
+        self.connections.insert(
+            connection.id.clone(),
+            Running {
+                config: connection.clone(),
+                identity,
+                tags,
+                swap,
+                shutdown,
+                task,
+            },
+        );
+        Ok(())
+    }
+
+    /// Hand a running connection a new driver for the same tags. The new driver is already
+    /// started; the connection's task stops the old one between two poll cycles.
+    async fn swap(&mut self, connection: &ConnectionConfig, prepared: Prepared, identity: String) {
+        let Some(running) = self.connections.get_mut(&connection.id) else {
+            return;
+        };
+        let (done, swapped) = oneshot::channel();
+        let sent = running.swap.send(Swap { prepared, done }).await;
+        if sent.is_ok() && swapped.await.is_ok() {
+            running.config = connection.clone();
+            running.identity = identity;
+            let interval_ms = connection.poll_interval_ms;
+            let timeout_ms = connection.effective_cycle_timeout_ms();
+            self.status.update_connection(&connection.id, |s| {
+                s.driver = connection.driver.clone();
+                s.poll_interval_ms = interval_ms;
+                s.cycle_timeout_ms = timeout_ms;
+                s.detail = None;
+            });
+            info!("I/O connection '{}' swapped to a new driver", connection.id);
+        } else if let Err(mpsc::error::SendError(swap)) = sent {
+            // The task has already ended; the new driver was never used.
+            let mut prepared = swap.prepared;
+            let _ = prepared.driver.stop(&prepared.ctx).await;
+        }
+    }
+
+    /// Stop one connection, publish its slots as not connected, and remove its tags.
+    async fn remove(&mut self, id: &str) {
+        let Some(running) = self.connections.remove(id) else {
+            return;
+        };
+        let _ = running.shutdown.send(true);
+        let _ = running.task.await;
+
+        let slots: Vec<usize> = running.tags.iter().map(|(_, slot)| *slot).collect();
+        if let Some(scanner) = &self.scanner {
+            let (done, detached) = oneshot::channel();
+            if scanner.send(ScanMsg::Detach { slots, done }).await.is_ok() {
+                let _ = detached.await;
+            }
+        }
+        // Unregistered only now: there is no moment at which a registered tag reads as GOOD
+        // with nothing feeding it.
+        let mut catalog = self.catalog.write().await;
+        for (uri, _) in &running.tags {
+            catalog.unregister(uri);
+        }
+        drop(catalog);
+        self.status.update(|s| s.connections.retain(|c| c.id != id));
+        info!("I/O connection '{}' stopped", id);
+    }
+
+    /// Stop every driver, mark every tag "not connected", remove the tags, and wait for the
+    /// tasks to end.
+    pub async fn shutdown(mut self) {
+        let mut tags: Vec<String> = Vec::new();
+        for (id, running) in self.connections.drain() {
+            let _ = running.shutdown.send(true);
+            let _ = running.task.await;
+            tags.extend(running.tags.into_iter().map(|(uri, _)| uri));
+            let detail = Some("shut down".to_string());
+            self.status.update_connection(&id, |s| {
+                s.state = ConnectionState::Stopped;
+                s.detail = detail;
+            });
+        }
+        // The scanner marks every slot not connected when its last sender is gone.
+        self.scanner.take();
+        if let Some(task) = self.scanner_task.take() {
             let _ = task.await;
+        }
+        let mut catalog = self.catalog.write().await;
+        for uri in &tags {
+            catalog.unregister(uri);
         }
     }
 }
 
-async fn start_driver(
+fn new_status(connection: &ConnectionConfig) -> ConnectionStatus {
+    ConnectionStatus {
+        id: connection.id.clone(),
+        driver: connection.driver.clone(),
+        state: ConnectionState::Running,
+        detail: None,
+        tags: Vec::new(),
+        poll_interval_ms: connection.poll_interval_ms,
+        cycle_timeout_ms: connection.effective_cycle_timeout_ms(),
+        cycles_completed: 0,
+        last_cycle_unix_ms: None,
+        last_cycle_error: None,
+        tags_good: None,
+        faults: Vec::new(),
+    }
+}
+
+/// Create, initialise and start a driver for `connection`, and read the tags it declares.
+async fn prepare(
     connection: &ConnectionConfig,
     registry: &DriverRegistry,
-) -> Result<(Box<dyn ProtocolDriver>, PluginContext), String> {
+) -> Result<Prepared, String> {
     let mut driver = registry.create(&connection.driver).ok_or_else(|| {
         format!(
             "unknown driver '{}' (available: {})",
@@ -454,66 +767,85 @@ async fn start_driver(
     capabilities.insert(DRIVER_CAPABILITY.to_string());
     let ctx = PluginContext::new(format!("io.{}", connection.id), capabilities, String::new());
 
-    driver.init(&ctx).await.map_err(|e| e.to_string())?;
-    driver
-        .start(&ctx, &connection.config)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok((driver, ctx))
-}
-
-/// The only task that writes the tag bus.
-async fn run_scanner<S: PlatformShm>(
-    mut writer: ShmWriterHandle<S>,
-    mut image: Vec<SlotImage>,
-    mut rx: mpsc::Receiver<Batch>,
-) {
-    while let Some(batch) = rx.recv().await {
-        for (index, reading) in &batch.updates {
-            if let Some(slot) = image.get_mut(*index) {
-                slot.apply(reading, batch.at_ns);
-            }
-        }
-        flush(&mut writer, &image);
+    if let Err(e) = driver.init(&ctx).await {
+        let _ = driver.stop(&ctx).await;
+        return Err(e.to_string());
+    }
+    if let Err(e) = driver.start(&ctx, &connection.config).await {
+        let _ = driver.stop(&ctx).await;
+        return Err(e.to_string());
     }
 
-    // Every driver task has ended, so nothing will refresh these slots again. Leaving them
-    // GOOD would present the last reading as current for as long as the segment exists.
-    for slot in &mut image {
-        slot.quality = QualityCode::BAD_NOT_CONNECTED;
+    let declared = driver.declared_tags();
+    let mut seen = HashSet::new();
+    let problem = if declared.is_empty() {
+        Some("the connection declares no tags".to_string())
+    } else {
+        declared
+            .iter()
+            .find(|d| !seen.insert(d.uri.as_str()))
+            .map(|d| format!("tag '{}' is declared twice", d.uri))
+    };
+    if let Some(problem) = problem {
+        let _ = driver.stop(&ctx).await;
+        return Err(problem);
     }
-    flush(&mut writer, &image);
+
+    Ok(Prepared {
+        driver,
+        ctx,
+        driver_config: connection.config.clone(),
+        poll_interval: Duration::from_millis(connection.poll_interval_ms),
+        cycle_timeout: Duration::from_millis(connection.effective_cycle_timeout_ms()),
+        declared,
+    })
 }
 
 fn now_unix_ms() -> u64 {
     now_unix_ns() / 1_000_000
 }
 
+fn ticker_for(period: Duration) -> tokio::time::Interval {
+    let mut ticker = interval(period);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    ticker
+}
+
 async fn run_connection(
-    mut connection: Prepared,
-    tx: mpsc::Sender<Batch>,
+    id: String,
+    mut current: Prepared,
+    tags: Vec<(String, usize)>,
+    scanner: mpsc::Sender<ScanMsg>,
     mut shutdown: watch::Receiver<bool>,
+    mut swaps: mpsc::Receiver<Swap>,
     status: IoStatusHandle,
 ) {
-    let by_uri: HashMap<&str, usize> = connection
-        .tags
+    let by_uri: HashMap<&str, usize> = tags
         .iter()
-        .map(|(uri, index)| (uri.as_str(), *index))
+        .map(|(uri, slot)| (uri.as_str(), *slot))
         .collect();
 
-    let mut ticker = interval(connection.poll_interval);
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut ticker = ticker_for(current.poll_interval);
     let mut stop_reason: Option<String> = None;
 
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
+            Some(swap) = swaps.recv() => {
+                let mut old = std::mem::replace(&mut current, swap.prepared);
+                let _ = old.driver.stop(&old.ctx).await;
+                if old.poll_interval != current.poll_interval {
+                    ticker = ticker_for(current.poll_interval);
+                }
+                let _ = swap.done.send(());
+                continue;
+            }
             _ = ticker.tick() => {}
         }
 
         let outcome = timeout(
-            connection.cycle_timeout,
-            connection.driver.poll_cycle(&connection.ctx),
+            current.cycle_timeout,
+            current.driver.poll_cycle(&current.ctx),
         )
         .await;
 
@@ -529,7 +861,7 @@ async fn run_connection(
                 overran = true;
                 cycle_error = Some(format!(
                     "poll cycle exceeded its {} ms deadline",
-                    connection.cycle_timeout.as_millis()
+                    current.cycle_timeout.as_millis()
                 ));
                 Vec::new()
             }
@@ -540,21 +872,21 @@ async fn run_connection(
         let mut readings: HashMap<usize, Result<SampleValue, SampleFault>> = HashMap::new();
         for sample in samples {
             match by_uri.get(sample.uri.as_str()) {
-                Some(index) => {
-                    readings.insert(*index, sample.reading);
+                Some(slot) => {
+                    readings.insert(*slot, sample.reading);
                 }
                 None => warn!(
                     "I/O connection '{}': driver reported undeclared tag '{}'",
-                    connection.id, sample.uri
+                    id, sample.uri
                 ),
             }
         }
 
-        let mut updates = Vec::with_capacity(connection.tags.len());
+        let mut updates = Vec::with_capacity(tags.len());
         let mut faults = Vec::new();
         let mut good = 0usize;
-        for (uri, index) in &connection.tags {
-            let reading = readings.remove(index).unwrap_or_else(|| {
+        for (uri, slot) in &tags {
+            let reading = readings.remove(slot).unwrap_or_else(|| {
                 Err(SampleFault::CommFailure(match &cycle_error {
                     Some(reason) => reason.clone(),
                     None => "the driver returned no sample for this tag".to_string(),
@@ -567,11 +899,11 @@ async fn run_connection(
                     reason: fault.to_string(),
                 }),
             }
-            updates.push((*index, reading));
+            updates.push((*slot, reading));
         }
 
-        if tx
-            .send(Batch {
+        if scanner
+            .send(ScanMsg::Batch {
                 at_ns: now_unix_ns(),
                 updates,
             })
@@ -582,7 +914,7 @@ async fn run_connection(
             break;
         }
 
-        status.update_connection(connection.index, |s| {
+        status.update_connection(&id, |s| {
             s.cycles_completed += 1;
             s.last_cycle_unix_ms = Some(now_unix_ms());
             s.last_cycle_error = cycle_error.clone();
@@ -593,10 +925,10 @@ async fn run_connection(
         if overran {
             // The cycle was cancelled mid-request, so the driver's connection is in an unknown
             // state. Restart it rather than read a late answer as the reply to a new request.
-            let _ = connection.driver.stop(&connection.ctx).await;
-            if let Err(e) = connection
+            let _ = current.driver.stop(&current.ctx).await;
+            if let Err(e) = current
                 .driver
-                .start(&connection.ctx, &connection.driver_config)
+                .start(&current.ctx, &current.driver_config)
                 .await
             {
                 stop_reason = Some(format!("driver could not be restarted: {e}"));
@@ -605,26 +937,25 @@ async fn run_connection(
         }
     }
 
-    let _ = connection.driver.stop(&connection.ctx).await;
+    let _ = current.driver.stop(&current.ctx).await;
 
     // If the task ends for any reason other than an orderly shutdown, its tags must not stay
     // as they were: mark them, then report the connection stopped.
     if let Some(reason) = &stop_reason {
-        error!("I/O connection '{}' stopped: {}", connection.id, reason);
-        let updates = connection
-            .tags
+        error!("I/O connection '{}' stopped: {}", id, reason);
+        let updates = tags
             .iter()
-            .map(|(_, index)| (*index, Err(SampleFault::CommFailure(reason.clone()))))
+            .map(|(_, slot)| (*slot, Err(SampleFault::CommFailure(reason.clone()))))
             .collect();
-        let _ = tx
-            .send(Batch {
+        let _ = scanner
+            .send(ScanMsg::Batch {
                 at_ns: now_unix_ns(),
                 updates,
             })
             .await;
+        status.update_connection(&id, |s| {
+            s.state = ConnectionState::Stopped;
+            s.detail = Some(reason.clone());
+        });
     }
-    status.update_connection(connection.index, |s| {
-        s.state = ConnectionState::Stopped;
-        s.detail = Some(stop_reason.unwrap_or_else(|| "shut down".to_string()));
-    });
 }

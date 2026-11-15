@@ -80,6 +80,25 @@ impl DriverRegistry {
         })
     }
 
+    /// Which build of which driver `name` currently is, or `None` when there is no such
+    /// driver. Two calls return the same string exactly when the same code would run, so a
+    /// change means the connections using the driver should be swapped to the new one.
+    pub fn identity(&self, name: &str) -> Option<String> {
+        self.drivers.get(name).map(|source| match source {
+            DriverSource::InProcess(factory) => {
+                format!("in_process:{name}:{:p}", *factory as *const ())
+            }
+            DriverSource::Module(module) => format!(
+                "module:{}:{}:{}:{}:{}",
+                module.manifest.id,
+                module.manifest.version,
+                module.path.display(),
+                module.fingerprint.len,
+                module.fingerprint.modified_unix_ns
+            ),
+        })
+    }
+
     /// Registered driver names, sorted.
     pub fn names(&self) -> Vec<String> {
         self.drivers.keys().cloned().collect()

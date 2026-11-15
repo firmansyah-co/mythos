@@ -22,7 +22,8 @@ pub mod protocol;
 pub mod serve;
 
 pub use host::{
-    discover, read_manifest, Discovery, Fingerprint, ModuleBinary, ModuleProblem, ProcessDriver,
+    discover, read_manifest, snapshot, Discovery, Fingerprint, ModuleBinary, ModuleProblem,
+    ProcessDriver,
 };
 pub use protocol::{ModuleKind, ModuleManifest, MODULE_FILE_PREFIX, PROTOCOL_VERSION};
 pub use serve::{run_driver_module, serve_driver};

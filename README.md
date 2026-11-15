@@ -22,8 +22,8 @@ intent and may describe things that do not exist.
 | Piece | Where | State |
 | :--- | :--- | :--- |
 | Tag bus | `crates/mythos-shm`, `crates/mythos-pal` | Triple-buffered shared-memory tag store with typed values and OPC-style quality codes. One writer: the field I/O runtime. |
-| Modules | `crates/mythos-module` | Every driver is a separate executable, `mythos-module-<name>`, that the server finds beside itself (or in `MYTHOS_MODULE_PATH`), starts as a child process and talks to over JSON lines on its standard streams. Nothing is compiled into the server. A module process that dies is replaced; its tags read `BAD_COMM_FAILURE` until it is back. See [ADR-010](specs/adr/ADR-010-modules-are-processes.md). |
-| Field I/O runtime | `crates/mythos-core/src/io` | Polls each configured connection and writes what the driver reports to the tag bus: a typed value with `GOOD` quality, or the last value read with a bad quality that names the fault. A tag that was never read has no value. |
+| Modules | `crates/mythos-module` | Every driver is a separate executable, `mythos-module-<name>`, that the server finds beside itself (or in `MYTHOS_MODULE_PATH`), starts as a child process and talks to over JSON lines on its standard streams. Nothing is compiled into the server. A module process that dies is replaced; its tags read `BAD_COMM_FAILURE` until it is back. A new build of a module put in the directory is noticed within two seconds and swapped in for the running one without its tags stopping; a new build that cannot start leaves the old one running. See [ADR-010](specs/adr/ADR-010-modules-are-processes.md). |
+| Field I/O runtime | `crates/mythos-core/src/io` | Each connection is a unit of its own: saving a configuration changes only the connections that differ, and one whose tags stay the same is swapped to its new settings without its tags stopping. Polls each configured connection and writes what the driver reports to the tag bus: a typed value with `GOOD` quality, or the last value read with a bad quality that names the fault. A tag that was never read has no value. |
 | API server | `crates/mythos-core` (`mythos-server`) | HTTP API for projects, HMI screens, data types, faceplate types and each project's I/O configuration; a 100 ms SSE telemetry stream of the tag bus; `GET /api/v1/io/status` for the state of each connection. |
 | Web workbench | `frontend/packages/ui-shell` | Portal view (open or create a project) and project view: project tree, devices & networks, an editor for Modbus TCP connections and their tags, live tag tables, connection diagnostics, HMI screens (text fields and I/O fields bound to tags, saved as a draft and released), an operator runtime that shows the released screens full window and follows a new release without a reload, inspector. |
 | Modbus TCP driver | `plugins/drivers/driver-modbus` (module `mythos-module-modbus`) | Reads holding and input registers as `u16`, `i16`, `u32`, `i32` or `f32`, with scaling and selectable word order. Exercised end to end against a simulated device, not yet against hardware. |
@@ -101,6 +101,8 @@ MYTHOS_STATIC_DIR="$PWD/frontend/packages/ui-shell/dist" \
 
 `GET /api/v1/modules` lists the modules the server found, the schema of the configuration each
 accepts, and any executable named like a module that could not be used, with the reason.
+`POST /api/v1/modules/rescan` looks again at once; the server also does that by itself when a
+module executable is added, removed or replaced.
 
 ## Reading a device
 
@@ -110,8 +112,10 @@ stored as `<storage root>/<project id>/io.json`.
 Save it with `PUT /api/v1/projects/<project id>/io`. The server checks it first — its own
 rules, each driver's view of its connection, and that no tag is provided twice — and refuses
 it whole, naming every problem, if anything is wrong. A saved configuration of the active
-project is applied at once: the running connections are stopped, their tags removed, and the
-new ones started. Activating another project switches field I/O to that project the same way.
+project is applied at once, and only what differs changes: a connection that is unchanged keeps
+running, one whose tags stay the same is swapped to the new settings without a gap, one whose
+tags change is restarted, one that is gone is stopped and its tags removed. The answer's
+`changes` lists which connection had which. Activating another project switches field I/O to that project the same way.
 `GET /api/v1/projects/<project id>/io` reads it back and `GET /api/v1/io/drivers` lists the
 drivers it may name. A file written by hand is picked up when the server starts or the project
 is activated.
