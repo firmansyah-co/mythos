@@ -105,25 +105,44 @@ fn is_module_file_name(name: &str) -> bool {
     }
 }
 
+/// Linux refuses to execute a file that some process holds open for writing (`ETXTBSY`). That
+/// happens briefly while a module is being installed, and whenever another thread of this
+/// process forks while a file is being written. It passes; anything else does not.
+fn is_text_file_busy(e: &std::io::Error) -> bool {
+    cfg!(target_os = "linux") && e.raw_os_error() == Some(26)
+}
+
+const BUSY_RETRIES: u32 = 10;
+
 /// Run `path --manifest` and read what it prints.
 pub async fn read_manifest(path: &Path) -> Result<ModuleManifest, String> {
-    let output = tokio::time::timeout(
-        MANIFEST_TIMEOUT,
-        Command::new(path)
+    let mut attempt = 0;
+    let run = loop {
+        let result = Command::new(path)
             .arg(MANIFEST_FLAG)
             .stdin(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .map_err(|_| {
-        format!(
-            "it did not print a manifest within {} s",
-            MANIFEST_TIMEOUT.as_secs()
-        )
-    })?
-    .map_err(|e| format!("it could not be run: {e}"))?;
+            .spawn();
+        match result {
+            Err(e) if is_text_file_busy(&e) && attempt < BUSY_RETRIES => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(20 * attempt as u64)).await;
+            }
+            other => break other,
+        }
+    };
+    let child = run.map_err(|e| format!("it could not be run: {e}"))?;
+    let output = tokio::time::timeout(MANIFEST_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| {
+            format!(
+                "it did not print a manifest within {} s",
+                MANIFEST_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| format!("it could not be run: {e}"))?;
 
     if !output.status.success() {
         return Err(format!("'{MANIFEST_FLAG}' exited with {}", output.status));
@@ -233,19 +252,29 @@ struct Session {
 
 impl Session {
     async fn spawn(module: &ModuleBinary, label: &str) -> Result<Self, PluginError> {
-        let mut child = Command::new(&module.path)
-            .arg(SERVE_FLAG)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| {
-                PluginError::StartFailed(format!(
-                    "module {} could not be started: {e}",
-                    module.path.display()
-                ))
-            })?;
+        let mut attempt = 0;
+        let spawned = loop {
+            let result = Command::new(&module.path)
+                .arg(SERVE_FLAG)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn();
+            match result {
+                Err(e) if is_text_file_busy(&e) && attempt < BUSY_RETRIES => {
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_millis(20 * attempt as u64)).await;
+                }
+                other => break other,
+            }
+        };
+        let mut child = spawned.map_err(|e| {
+            PluginError::StartFailed(format!(
+                "module {} could not be started: {e}",
+                module.path.display()
+            ))
+        })?;
 
         let (Some(stdin), Some(stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())

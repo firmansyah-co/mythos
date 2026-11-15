@@ -234,9 +234,12 @@ async fn the_runtime_reads_a_device_through_the_module_process() {
     )
     .await;
 
+    let snapshot = status.snapshot();
     assert_eq!(
-        status.snapshot().connections[0].state,
-        ConnectionState::Running
+        snapshot.connections[0].state,
+        ConnectionState::Running,
+        "{:?}",
+        snapshot.connections[0].detail
     );
     assert_eq!(
         module_children(&dir.path().join("mythos-module-modbus")).len(),
