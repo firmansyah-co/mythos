@@ -10,6 +10,7 @@ pub mod collab;
 pub mod datatype;
 pub mod faceplate;
 pub mod io;
+pub mod mcp;
 pub mod namespace;
 pub mod pal;
 pub mod plugin;

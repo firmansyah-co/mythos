@@ -27,6 +27,7 @@ intent and may describe things that do not exist.
 | API server | `crates/mythos-core` (`mythos-server`) | HTTP API for projects, HMI screens, data types, faceplate types and each project's I/O configuration; a 100 ms SSE telemetry stream of the tag bus; `GET /api/v1/io/status` for the state of each connection. |
 | Web workbench | `frontend/packages/ui-shell` | Portal view (open or create a project) and project view: project tree, devices & networks, an editor for Modbus TCP connections and their tags, live tag tables, connection diagnostics, HMI screens (text fields and I/O fields bound to tags, saved as a draft and released), an operator runtime that shows the released screens full window and follows a new release without a reload, inspector. |
 | Modbus TCP driver | `plugins/drivers/driver-modbus` (module `mythos-module-modbus`) | Reads holding and input registers as `u16`, `i16`, `u32`, `i32` or `f32`, with scaling and selectable word order. Exercised end to end against a simulated device, not yet against hardware. |
+| MCP endpoint | `crates/mythos-core/src/mcp.rs` | `POST /mcp`, the Model Context Protocol over Streamable HTTP. Every API route is a tool (35), or is listed with the reason it is not (the telemetry stream, the collaboration WebSocket, the 501 deploy route, static files); a test reads the router and fails on a route that is neither. A tool sends its route's own request through the same router. Checked with the official MCP TypeScript SDK client. |
 | Device catalog | `catalog/`, `crates/mythos-core/src/catalog` | Manifest format and parser, with two reference device packages. |
 | Desktop shell | `src-tauri` | A Tauri window that embeds the same API server. |
 | Collaboration | `crates/mythos-core/src/collab` | A Yjs (`yrs`) WebSocket room. Not verified end to end. |
@@ -45,7 +46,6 @@ intent and may describe things that do not exist.
 - **Alarms, historian, recipes, device discovery, disaster recovery.**
 - **Authentication and access control.** The API has none and the server listens on every
   interface. Do not expose it to a network you do not trust.
-- **An AI / MCP interface.**
 - **Releases and installers.** Nothing has been published. The `mythos` CLI's `update`,
   `versions` and `rollback` commands work against a built-in version list, not a release feed.
 
@@ -75,7 +75,7 @@ Requirements: Linux with `/dev/shm`, Rust 1.82 or newer, Node.js 22 and pnpm.
 git clone https://github.com/firmansyah-co/mythos.git
 cd mythos
 
-cargo build --bin mythos-server -p driver-modbus --bin mythos-module-modbus
+cargo build -p mythos-core -p driver-modbus --bin mythos-server --bin mythos-module-modbus
 
 cd frontend
 pnpm install --frozen-lockfile
@@ -161,6 +161,18 @@ a separate process that is only read when a connection is pointed at it:
 ```bash
 cargo run -p driver-modbus --features sim --example modbus_sim -- 127.0.0.1:1502
 ```
+
+## Connecting an AI agent
+
+The server answers the Model Context Protocol at `/mcp`. In Claude Code:
+
+```bash
+claude mcp add --transport http mythos http://localhost:8080/mcp
+```
+
+The agent then has a tool for every route: projects, field I/O configuration and status, tag
+values with their quality, modules, HMI screens, data types and faceplates. Like the HTTP API,
+it has no authentication; it refuses requests whose `Origin` is a web page on another host.
 
 ## Verifying a change
 

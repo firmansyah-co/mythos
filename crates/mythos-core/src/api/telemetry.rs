@@ -160,6 +160,15 @@ pub async fn telemetry_stream_handler<S: PlatformShm + 'static>(
 async fn build_telemetry_event<S: PlatformShm + 'static>(
     state: &ApiState<S>,
 ) -> Result<Event, Infallible> {
+    let batch = snapshot_batch(state).await;
+    let json_data = serde_json::to_string(&batch).unwrap_or_else(|_| "{}".to_string());
+    Ok(Event::default().event("tag_update").data(json_data))
+}
+
+/// Every registered tag's current value and quality, read from the tag bus now.
+pub(crate) async fn snapshot_batch<S: PlatformShm + 'static>(
+    state: &ApiState<S>,
+) -> TelemetryBatch {
     let catalog_lock = state.tag_catalog.read().await;
     let tags: Vec<crate::tag::TagMetadata> = catalog_lock.iter().cloned().collect();
     drop(catalog_lock);
@@ -198,12 +207,31 @@ async fn build_telemetry_event<S: PlatformShm + 'static>(
         .unwrap_or_default()
         .as_millis() as u64;
 
-    let batch = TelemetryBatch {
+    TelemetryBatch {
         timestamp_ms: now_ms,
         batch_window_ms: 100,
         updates,
-    };
+    }
+}
 
-    let json_data = serde_json::to_string(&batch).unwrap_or_else(|_| "{}".to_string());
-    Ok(Event::default().event("tag_update").data(json_data))
+#[derive(Debug, serde::Deserialize)]
+pub struct ValuesQuery {
+    /// Only tags whose URI starts with this.
+    prefix: Option<String>,
+}
+
+/// `GET /api/v1/tags/values` — every tag's value and quality as of now, in the stream's shape.
+///
+/// The same reading the telemetry stream sends every 100 ms, once, for a client that wants an
+/// answer rather than a subscription.
+pub async fn tag_values_handler<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    axum::extract::Query(query): axum::extract::Query<ValuesQuery>,
+) -> axum::Json<TelemetryBatch> {
+    let mut batch = snapshot_batch(&state).await;
+    if let Some(prefix) = &query.prefix {
+        batch.updates.retain(|u| u.uri.starts_with(prefix.as_str()));
+    }
+    batch.updates.sort_by(|a, b| a.uri.cmp(&b.uri));
+    axum::Json(batch)
 }
