@@ -79,7 +79,7 @@ async fn rig() -> Rig {
         Arc::clone(&catalog),
         segment.clone(),
         CAPACITY,
-        DriverRegistry::builtin(),
+        modbus_registry(),
     );
     io.reload().await;
 
@@ -609,4 +609,28 @@ async fn the_routes_refuse_projects_that_do_not_exist_or_cannot_be_named() {
     let (code, drivers) = rig.request("GET", "/api/v1/io/drivers", None).await;
     assert_eq!(code, StatusCode::OK);
     assert_eq!(drivers, json!(["modbus"]));
+}
+
+#[tokio::test]
+async fn the_modules_route_lists_each_driver_and_where_it_comes_from() {
+    let rig = rig().await;
+    let (status, body) = rig.request("GET", "/api/v1/modules", None).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["problems"], json!([]));
+    assert_eq!(
+        body["drivers"],
+        json!([{ "name": "modbus", "source": "in_process", "module": null }])
+    );
+
+    let (status, names) = rig.request("GET", "/api/v1/io/drivers", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(names, json!(["modbus"]));
+}
+
+/// The Modbus driver, in-process. A running server gets it as a module process instead; that
+/// path is tested in `mythos-module-tests`.
+fn modbus_registry() -> DriverRegistry {
+    let mut registry = DriverRegistry::empty();
+    registry.register("modbus", || Box::new(driver_modbus::ModbusDriver::new()));
+    registry
 }

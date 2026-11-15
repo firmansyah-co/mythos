@@ -4,14 +4,14 @@
 //! `io.json` and feeds the tag bus the API reads from.
 
 use crate::api::ApiState;
-use crate::io::{DriverRegistry, IoManager};
+use crate::io::{module_dirs_from_env, DriverRegistry, IoManager};
 use crate::storage::{ControllerStorage, StorageError};
 use crate::tag::TagCatalog;
 use mythos_pal::PlatformShm;
 use mythos_shm::ShmReaderHandle;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::warn;
+use tracing::{info, warn};
 
 /// Name of the shared-memory tag bus segment, unless `MYTHOS_SHM_NAME` says otherwise.
 pub const DEFAULT_SHM_NAME: &str = "mythos_tagbus";
@@ -35,10 +35,47 @@ pub fn shm_name_from_env() -> String {
         .unwrap_or_else(|| DEFAULT_SHM_NAME.to_string())
 }
 
-/// Open storage and the tag bus, and start field I/O for the active project.
+/// Open storage and the tag bus, find the modules, and start field I/O for the active project.
+///
+/// Modules are looked for where [`module_dirs_from_env`] says.
 pub async fn bootstrap<S: PlatformShm + 'static>(
     storage_root: &str,
     shm_name: &str,
+) -> Result<Server<S>, StorageError> {
+    let dirs = module_dirs_from_env();
+    let registry = DriverRegistry::discover(&dirs).await;
+    for driver in registry.drivers() {
+        if let Some(module) = &driver.module {
+            info!(
+                "Module '{}' {} provides driver '{}' ({})",
+                module.manifest.id,
+                module.manifest.version,
+                driver.name,
+                module.path.display()
+            );
+        }
+    }
+    for problem in registry.problems() {
+        warn!(
+            "Module {} cannot be used: {}",
+            problem.path.display(),
+            problem.message
+        );
+    }
+    if registry.names().is_empty() {
+        warn!(
+            "No driver modules found in {:?}; set MYTHOS_MODULE_PATH to the directory that holds them",
+            dirs
+        );
+    }
+    bootstrap_with(storage_root, shm_name, registry).await
+}
+
+/// [`bootstrap`] with a given set of drivers.
+pub async fn bootstrap_with<S: PlatformShm + 'static>(
+    storage_root: &str,
+    shm_name: &str,
+    registry: DriverRegistry,
 ) -> Result<Server<S>, StorageError> {
     let storage = Arc::new(ControllerStorage::new(storage_root)?);
     let tag_catalog = Arc::new(RwLock::new(TagCatalog::new()));
@@ -59,7 +96,7 @@ pub async fn bootstrap<S: PlatformShm + 'static>(
         Arc::clone(&tag_catalog),
         shm_name,
         TAG_CAPACITY,
-        DriverRegistry::builtin(),
+        registry,
     );
     io.reload().await;
 

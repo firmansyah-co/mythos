@@ -8,6 +8,7 @@ pub mod client;
 pub mod config;
 pub mod crc;
 pub mod frame;
+pub mod module;
 #[cfg(feature = "sim")]
 pub mod sim;
 
@@ -173,7 +174,10 @@ impl MythosPlugin for ModbusDriver {
 
 #[async_trait]
 impl ProtocolDriver for ModbusDriver {
-    fn describe_config(&self, config: &JsonValue) -> Result<Vec<TagDeclaration>, PluginError> {
+    async fn describe_config(
+        &self,
+        config: &JsonValue,
+    ) -> Result<Vec<TagDeclaration>, PluginError> {
         let parsed: ModbusDriverConfig = serde_json::from_value(config.clone()).map_err(|e| {
             PluginError::InvalidConfiguration(format!("Invalid configuration schema: {}", e))
         })?;

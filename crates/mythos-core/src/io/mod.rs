@@ -13,11 +13,12 @@
 
 pub mod config;
 pub mod manager;
+pub mod registry;
 pub mod runtime;
 
 pub use config::{ConnectionConfig, IoConfig, IoConfigError, IO_CONFIG_FILE};
 pub use manager::{ConfigProblem, IoManager};
+pub use registry::{module_dirs_from_env, DriverFactory, DriverInfo, DriverRegistry};
 pub use runtime::{
-    ConnectionState, ConnectionStatus, DriverRegistry, IoRuntime, IoStatus, IoStatusHandle,
-    TagFaultStatus,
+    ConnectionState, ConnectionStatus, IoRuntime, IoStatus, IoStatusHandle, TagFaultStatus,
 };

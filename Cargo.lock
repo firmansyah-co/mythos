@@ -1004,6 +1004,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "driver-modbus",
+ "mythos-module",
  "mythos-plugin-sdk",
  "serde",
  "serde_json",
@@ -2324,6 +2325,7 @@ dependencies = [
  "driver-modbus",
  "futures-util",
  "hex",
+ "mythos-module",
  "mythos-pal",
  "mythos-plugin-sdk",
  "mythos-shm",
@@ -2360,6 +2362,36 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "mythos-module"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "mythos-plugin-sdk",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "mythos-module-tests"
+version = "0.1.0"
+dependencies = [
+ "driver-modbus",
+ "mythos-core",
+ "mythos-module",
+ "mythos-pal",
+ "mythos-plugin-sdk",
+ "mythos-shm",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

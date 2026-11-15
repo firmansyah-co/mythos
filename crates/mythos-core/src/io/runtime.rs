@@ -1,6 +1,7 @@
 //! The I/O runtime: driver tasks, the scanner that owns the tag bus writer, and their status.
 
 use crate::io::config::{ConnectionConfig, IoConfig};
+use crate::io::registry::DriverRegistry;
 use crate::tag::{AccessMode, TagCatalog, TagMetadata};
 use mythos_pal::PlatformShm;
 use mythos_plugin_sdk::{PluginContext, ProtocolDriver, SampleFault, SampleValue, TagSample};
@@ -16,51 +17,6 @@ use tracing::{error, info, warn};
 
 /// The capability granted to every protocol driver: it may open network connections.
 const DRIVER_CAPABILITY: &str = "network:client";
-
-// -----------------------------------------------------------------------------
-// Driver registry
-// -----------------------------------------------------------------------------
-
-/// Constructs a fresh, unconfigured driver instance.
-pub type DriverFactory = fn() -> Box<dyn ProtocolDriver>;
-
-/// The drivers a server can instantiate, by the name used in `io.json`.
-///
-/// Drivers are compiled in. There is no dynamic loading.
-pub struct DriverRegistry {
-    factories: HashMap<String, DriverFactory>,
-}
-
-impl DriverRegistry {
-    /// A registry with no drivers.
-    pub fn empty() -> Self {
-        Self {
-            factories: HashMap::new(),
-        }
-    }
-
-    /// The drivers that ship with the server.
-    pub fn builtin() -> Self {
-        let mut registry = Self::empty();
-        registry.register("modbus", || Box::new(driver_modbus::ModbusDriver::new()));
-        registry
-    }
-
-    pub fn register(&mut self, name: impl Into<String>, factory: DriverFactory) {
-        self.factories.insert(name.into(), factory);
-    }
-
-    pub fn create(&self, name: &str) -> Option<Box<dyn ProtocolDriver>> {
-        self.factories.get(name).map(|factory| factory())
-    }
-
-    /// Registered driver names, sorted.
-    pub fn names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.factories.keys().cloned().collect();
-        names.sort();
-        names
-    }
-}
 
 // -----------------------------------------------------------------------------
 // Status

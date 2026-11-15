@@ -5,6 +5,8 @@ members = [
     "crates/mythos-core",
     "crates/mythos-shm",
     "crates/mythos-plugin-sdk",
+    "crates/mythos-module",
+    "crates/mythos-module-tests",
     "crates/mythos-cli",
     "plugins/drivers/driver-modbus",
     "src-tauri",
@@ -26,6 +28,7 @@ mythos-pal = { path = "crates/mythos-pal" }
 mythos-shm = { path = "crates/mythos-shm" }
 mythos-core = { path = "crates/mythos-core" }
 mythos-plugin-sdk = { path = "crates/mythos-plugin-sdk" }
+mythos-module = { path = "crates/mythos-module" }
 driver-modbus = { path = "plugins/drivers/driver-modbus" }
 
 # Concurrency and Async

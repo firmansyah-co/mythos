@@ -107,7 +107,7 @@ async fn rig_with(config: Value, registry: DriverRegistry, segment: Segment) -> 
 }
 
 async fn rig(config: Value) -> Rig {
-    rig_with(config, DriverRegistry::builtin(), Segment::new()).await
+    rig_with(config, modbus_registry(), Segment::new()).await
 }
 
 /// Read the telemetry stream until `accept` returns true for the update of `uri`, and return
@@ -336,7 +336,7 @@ async fn data_left_in_the_segment_by_an_earlier_process_is_never_served() {
         json!({"connections": [modbus_connection(port, json!([
             {"uri": PRESSURE, "address": 0, "function_code": 3}
         ]))]}),
-        DriverRegistry::builtin(),
+        modbus_registry(),
         segment,
     )
     .await;
@@ -522,7 +522,7 @@ impl MythosPlugin for ScriptedDriver {
 
 #[async_trait]
 impl ProtocolDriver for ScriptedDriver {
-    fn describe_config(&self, _config: &Value) -> Result<Vec<TagDeclaration>, PluginError> {
+    async fn describe_config(&self, _config: &Value) -> Result<Vec<TagDeclaration>, PluginError> {
         Ok(self.declared_tags())
     }
     fn declared_tags(&self) -> Vec<TagDeclaration> {
@@ -681,4 +681,12 @@ async fn a_server_with_no_io_runtime_says_so() {
         status["note"].as_str().is_some_and(|n| !n.is_empty()),
         "an idle runtime must state why it is idle: {status}"
     );
+}
+
+/// The Modbus driver, in-process. A running server gets it as a module process instead; that
+/// path is tested in `mythos-module-tests`.
+fn modbus_registry() -> DriverRegistry {
+    let mut registry = DriverRegistry::empty();
+    registry.register("modbus", || Box::new(driver_modbus::ModbusDriver::new()));
+    registry
 }

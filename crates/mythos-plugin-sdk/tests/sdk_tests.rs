@@ -31,7 +31,7 @@ impl MythosPlugin for MockDriver {
         _ctx: &PluginContext,
         config: &serde_json::Value,
     ) -> Result<(), PluginError> {
-        self.describe_config(config)?;
+        self.describe_config(config).await?;
         Ok(())
     }
 
@@ -51,7 +51,7 @@ impl MythosPlugin for MockDriver {
 
 #[async_trait::async_trait]
 impl ProtocolDriver for MockDriver {
-    fn describe_config(
+    async fn describe_config(
         &self,
         config: &serde_json::Value,
     ) -> Result<Vec<TagDeclaration>, PluginError> {

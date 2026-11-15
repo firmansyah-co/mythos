@@ -1,0 +1,35 @@
+[package]
+name = "mythos-module-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "End-to-end tests of MythOS modules running as real processes"
+
+[lints]
+workspace = true
+
+# A module executable built from this package, so its tests can find it through
+# CARGO_BIN_EXE_*. It runs exactly the Modbus module entry point the shipped
+# `mythos-module-modbus` runs. Its name lacks the `mythos-module-` prefix on purpose: a server
+# started from the same target directory must not discover it as a second Modbus module. The
+# tests copy it into a directory of their own under the shipped name.
+[[bin]]
+name = "modbus-module-under-test"
+path = "src/bin/modbus-module-under-test.rs"
+
+[dependencies]
+driver-modbus.workspace = true
+
+[dev-dependencies]
+driver-modbus = { workspace = true, features = ["sim"] }
+mythos-core.workspace = true
+mythos-module.workspace = true
+mythos-pal.workspace = true
+mythos-plugin-sdk.workspace = true
+mythos-shm.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tempfile = "3.10"
