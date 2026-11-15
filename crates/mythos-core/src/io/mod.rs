@@ -17,8 +17,9 @@ pub mod registry;
 pub mod runtime;
 
 pub use config::{ConnectionConfig, IoConfig, IoConfigError, IO_CONFIG_FILE};
-pub use manager::{ConfigProblem, IoManager};
+pub use manager::{ConfigProblem, IoManager, RescanReport};
 pub use registry::{module_dirs_from_env, DriverFactory, DriverInfo, DriverRegistry};
 pub use runtime::{
-    ConnectionState, ConnectionStatus, IoRuntime, IoStatus, IoStatusHandle, TagFaultStatus,
+    ApplyReport, ConnectionState, ConnectionStatus, IoRuntime, IoStatus, IoStatusHandle,
+    TagFaultStatus,
 };

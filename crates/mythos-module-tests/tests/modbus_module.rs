@@ -355,3 +355,221 @@ async fn checking_a_configuration_asks_the_module() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+// -----------------------------------------------------------------------------
+// Replacing a module while it runs
+// -----------------------------------------------------------------------------
+
+struct ManagerRig {
+    io: Arc<IoManager<PosixShm>>,
+    segment: Segment,
+    _storage: tempfile::TempDir,
+}
+
+/// A manager over one active project whose connection reads the simulator through the module
+/// in `dir`, with field I/O running.
+async fn manager_rig(dir: &Path, sim_port: u16) -> ManagerRig {
+    use mythos_core::storage::{ControllerStorage, ProjectConfig};
+    let storage_dir = tempfile::tempdir().unwrap();
+    let storage = Arc::new(ControllerStorage::new(storage_dir.path()).unwrap());
+    storage
+        .create_project(&ProjectConfig::new("plant", "Plant"))
+        .unwrap();
+    storage.activate_project("plant").unwrap();
+    let io_file = storage.project_dir("plant").unwrap().join("io.json");
+    std::fs::write(
+        &io_file,
+        serde_json::to_vec(&json!({"connections": [connection(sim_port)]})).unwrap(),
+    )
+    .unwrap();
+
+    let segment = Segment::new();
+    let dirs = vec![dir.to_path_buf()];
+    let io = IoManager::<PosixShm>::with_module_dirs(
+        storage,
+        Arc::new(RwLock::new(TagCatalog::new())),
+        segment.0.clone(),
+        CAPACITY,
+        DriverRegistry::discover(&dirs).await,
+        dirs,
+    );
+    io.reload().await;
+    ManagerRig {
+        io,
+        segment,
+        _storage: storage_dir,
+    }
+}
+
+/// Put `source` in place of the module, the way an installer does: write beside it, then
+/// rename over it. The running process keeps the file it was started from.
+fn install(dir: &Path, source: &Path) {
+    std::thread::sleep(Duration::from_millis(20));
+    let staged = dir.join(".staged-module");
+    std::fs::copy(source, &staged).unwrap();
+    std::fs::rename(&staged, dir.join("mythos-module-modbus")).unwrap();
+}
+
+/// Records every read of slot 0 that is not GOOD, until finished or dropped.
+struct SlotWatch {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<tokio::task::JoinHandle<(u64, Vec<String>)>>,
+}
+
+impl Drop for SlotWatch {
+    /// A test that panics must still stop the thread: the runtime waits for it on shutdown.
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+impl SlotWatch {
+    fn start(segment: &Segment) -> Self {
+        let name = segment.0.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let handle = tokio::task::spawn_blocking(move || {
+            let mut reader = ShmReaderHandle::<PosixShm>::new(&name, CAPACITY).unwrap();
+            let (mut reads, mut gaps) = (0u64, Vec::new());
+            while !flag.load(Ordering::SeqCst) {
+                reader.update();
+                let quality = reader.read_tag(0).unwrap().quality;
+                reads += 1;
+                if quality != QualityCode::GOOD {
+                    gaps.push(format!("{quality:?}"));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            (reads, gaps)
+        });
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    async fn finish(mut self) -> (u64, Vec<String>) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.handle.take().unwrap().await.unwrap()
+    }
+}
+
+#[tokio::test]
+async fn installing_a_new_build_of_a_module_swaps_it_in_without_a_gap() {
+    let dir = module_dir();
+    let exe = dir.path().join("mythos-module-modbus");
+    let sim = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
+    sim.set_holding(0, 5).await;
+    let rig = manager_rig(dir.path(), sim.port()).await;
+    wait_for_slot(
+        &rig.segment,
+        |s| s.quality == QualityCode::GOOD,
+        "first read",
+    )
+    .await;
+    let before = module_children(&exe);
+    assert_eq!(before.len(), 1);
+
+    let _watcher = rig
+        .io
+        .spawn_module_watcher(Duration::from_millis(100))
+        .unwrap();
+    let watch = SlotWatch::start(&rig.segment);
+
+    install(dir.path(), Path::new(UNDER_TEST));
+
+    // The watcher notices the new file and swaps the connection to a process started from it.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let now = module_children(&exe);
+        if now.len() == 1 && now != before {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the module was never swapped; children {now:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    sim.set_holding(0, 6).await;
+    wait_for_slot(
+        &rig.segment,
+        |s| s.value.as_u16() == 6,
+        "read by the new build",
+    )
+    .await;
+
+    let (reads, gaps) = watch.finish().await;
+    assert!(reads > 100, "the watch hardly ran: {reads}");
+    assert!(
+        gaps.is_empty(),
+        "the tag stopped being GOOD during the swap: {gaps:?}"
+    );
+
+    let status = rig.io.status().snapshot();
+    assert_eq!(status.connections[0].state, ConnectionState::Running);
+    rig.io.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_new_build_that_cannot_start_leaves_the_running_one_in_place() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = module_dir();
+    let exe = dir.path().join("mythos-module-modbus");
+    let sim = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
+    sim.set_holding(0, 9).await;
+    let rig = manager_rig(dir.path(), sim.port()).await;
+    wait_for_slot(
+        &rig.segment,
+        |s| s.quality == QualityCode::GOOD,
+        "first read",
+    )
+    .await;
+    let before = module_children(&exe);
+
+    // A "new version" whose manifest is fine but which dies as soon as it is started.
+    let output = std::process::Command::new(UNDER_TEST)
+        .arg("--manifest")
+        .output()
+        .unwrap();
+    let mut manifest: Value = serde_json::from_slice(&output.stdout).unwrap();
+    manifest["version"] = json!("9.9.9");
+    let broken = tempfile::tempdir().unwrap();
+    let script = broken.path().join("module");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = --manifest ]; then\ncat <<'EOF'\n{manifest}\nEOF\nexit 0\nfi\nexit 1\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let watch = SlotWatch::start(&rig.segment);
+    install(dir.path(), &script);
+    let report = rig.io.rescan().await;
+    let (_, gaps) = watch.finish().await;
+
+    let applied = report.applied.expect("field I/O is running");
+    assert!(applied.swapped.is_empty(), "{applied:?}");
+    assert_eq!(applied.failed.len(), 1, "{applied:?}");
+    assert_eq!(applied.failed[0].0, "plc1");
+    assert!(
+        gaps.is_empty(),
+        "the running connection was disturbed: {gaps:?}"
+    );
+    assert_eq!(
+        module_children(&exe),
+        before,
+        "the running process was replaced"
+    );
+
+    let status = rig.io.status().snapshot();
+    assert_eq!(status.connections[0].state, ConnectionState::Running);
+    let detail = status.connections[0].detail.clone().unwrap_or_default();
+    assert!(detail.contains("previous one is still running"), "{detail}");
+
+    sim.set_holding(0, 10).await;
+    wait_for_slot(&rig.segment, |s| s.value.as_u16() == 10, "still read").await;
+    rig.io.shutdown().await;
+}

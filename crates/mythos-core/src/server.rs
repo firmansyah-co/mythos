@@ -68,14 +68,28 @@ pub async fn bootstrap<S: PlatformShm + 'static>(
             dirs
         );
     }
-    bootstrap_with(storage_root, shm_name, registry).await
+    let server = assemble(storage_root, shm_name, registry, Some(dirs)).await?;
+    server.io.spawn_module_watcher(MODULE_WATCH_INTERVAL);
+    Ok(server)
 }
 
-/// [`bootstrap`] with a given set of drivers.
+/// How often the module directories are checked for a module added, removed or replaced.
+pub const MODULE_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// [`bootstrap`] with a fixed set of drivers and no module directories to watch.
 pub async fn bootstrap_with<S: PlatformShm + 'static>(
     storage_root: &str,
     shm_name: &str,
     registry: DriverRegistry,
+) -> Result<Server<S>, StorageError> {
+    assemble(storage_root, shm_name, registry, None).await
+}
+
+async fn assemble<S: PlatformShm + 'static>(
+    storage_root: &str,
+    shm_name: &str,
+    registry: DriverRegistry,
+    module_dirs: Option<Vec<std::path::PathBuf>>,
 ) -> Result<Server<S>, StorageError> {
     let storage = Arc::new(ControllerStorage::new(storage_root)?);
     let tag_catalog = Arc::new(RwLock::new(TagCatalog::new()));
@@ -91,13 +105,23 @@ pub async fn bootstrap_with<S: PlatformShm + 'static>(
         }
     };
 
-    let io = IoManager::<S>::new(
-        Arc::clone(&storage),
-        Arc::clone(&tag_catalog),
-        shm_name,
-        TAG_CAPACITY,
-        registry,
-    );
+    let io = match module_dirs {
+        Some(dirs) => IoManager::<S>::with_module_dirs(
+            Arc::clone(&storage),
+            Arc::clone(&tag_catalog),
+            shm_name,
+            TAG_CAPACITY,
+            registry,
+            dirs,
+        ),
+        None => IoManager::<S>::new(
+            Arc::clone(&storage),
+            Arc::clone(&tag_catalog),
+            shm_name,
+            TAG_CAPACITY,
+            registry,
+        ),
+    };
     io.reload().await;
 
     let state = ApiState::new(storage, tag_catalog, shm_reader).with_io_manager(Arc::clone(&io));

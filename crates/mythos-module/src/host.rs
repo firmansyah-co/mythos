@@ -161,6 +161,45 @@ pub async fn read_manifest(path: &Path) -> Result<ModuleManifest, String> {
     Ok(manifest)
 }
 
+/// The executables in `dir` named like modules, sorted by path.
+fn candidates_in(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .map(is_module_file_name)
+                .unwrap_or(false)
+        })
+        .map(|entry| entry.path())
+        .filter(|path| {
+            std::fs::metadata(path)
+                .map(|m| is_executable(&m))
+                .unwrap_or(false)
+        })
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// What is installed in `dirs`, cheaply: each module-named executable and its fingerprint.
+///
+/// Comparing two snapshots tells whether a module was added, removed or replaced, without
+/// running anything. [`discover`] is what reads the manifests.
+pub fn snapshot(dirs: &[PathBuf]) -> Vec<(PathBuf, Option<Fingerprint>)> {
+    dirs.iter()
+        .flat_map(|dir| candidates_in(dir))
+        .map(|path| {
+            let fingerprint = Fingerprint::of(&path).ok();
+            (path, fingerprint)
+        })
+        .collect()
+}
+
 /// Find module executables in `dirs`, in order, and read their manifests.
 ///
 /// A directory that does not exist is skipped. When two modules provide the same name, the
@@ -170,27 +209,7 @@ pub async fn discover(dirs: &[PathBuf]) -> Discovery {
     let mut provided: HashMap<(ModuleKind, String), PathBuf> = HashMap::new();
 
     for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            continue;
-        };
-        let mut paths: Vec<PathBuf> = entries
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .map(is_module_file_name)
-                    .unwrap_or(false)
-            })
-            .map(|entry| entry.path())
-            .filter(|path| {
-                std::fs::metadata(path)
-                    .map(|m| is_executable(&m))
-                    .unwrap_or(false)
-            })
-            .collect();
-        paths.sort();
-
+        let paths = candidates_in(dir);
         for path in paths {
             let fingerprint = match Fingerprint::of(&path) {
                 Ok(fingerprint) => fingerprint,

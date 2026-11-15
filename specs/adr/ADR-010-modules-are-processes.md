@@ -93,6 +93,6 @@ The root README's status table is the record of what runs. When this ADR was acc
 | 2.1 Modules are executables, discovered | Yes: `crates/mythos-module`, `mythos-module-modbus` |
 | 2.2 One tag bus writer | Yes (unchanged) |
 | 2.3 A dead module is replaced | Yes: `ProcessDriver` |
-| 2.4 Hot-swap per unit | Screens only. Connections and modules: not yet |
+| 2.4 Hot-swap per unit | Yes: `IoRuntime::apply`, `IoManager::rescan` and its watcher |
 | 2.5 MCP for every route | Not yet |
 | 2.6 Forms from the manifest | Not yet |

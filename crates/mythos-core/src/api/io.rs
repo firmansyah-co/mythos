@@ -41,6 +41,21 @@ pub async fn drivers<S: PlatformShm + 'static>(State(state): State<ApiState<S>>)
     Json(json!(names))
 }
 
+/// `POST /api/v1/modules/rescan` — look for modules again and swap every running connection
+/// whose driver changed to what is installed now. The server also does this by itself when a
+/// module executable is added, removed or replaced.
+pub async fn rescan_modules<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+) -> Result<Json<Value>, ApiError> {
+    match &state.io_manager {
+        Some(io) => Ok(Json(json!(io.rescan().await))),
+        None => Err(failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this server runs no field I/O",
+        )),
+    }
+}
+
 /// `GET /api/v1/modules` — the modules this server found, what each provides, the schema of
 /// the configuration it accepts, and the executables that could not be used as modules.
 pub async fn modules<S: PlatformShm + 'static>(State(state): State<ApiState<S>>) -> Json<Value> {
@@ -108,13 +123,12 @@ pub async fn put_config<S: PlatformShm + 'static>(
         state.storage.get_active_project(),
         Ok(Some(active)) if active == project
     );
-    let applied = match (&state.io_manager, is_active) {
-        (Some(io), true) => {
-            io.reload().await;
-            true
-        }
-        _ => false,
+    let (applied, changes) = match (&state.io_manager, is_active) {
+        (Some(io), true) => (true, io.reload().await),
+        _ => (false, None),
     };
 
-    Ok(Json(json!({ "config": config, "applied": applied })))
+    Ok(Json(
+        json!({ "config": config, "applied": applied, "changes": changes }),
+    ))
 }

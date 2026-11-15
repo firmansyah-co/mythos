@@ -634,3 +634,183 @@ fn modbus_registry() -> DriverRegistry {
     registry.register("modbus", || Box::new(driver_modbus::ModbusDriver::new()));
     registry
 }
+
+/// Watches tag slots on the tag bus from another thread and records every moment one of them
+/// is not GOOD, until stopped.
+/// Reads made, and every (tag, quality) read that was not GOOD.
+type GapLog = (u64, Vec<(String, String)>);
+
+struct GapWatch {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<tokio::task::JoinHandle<GapLog>>,
+}
+
+impl Drop for GapWatch {
+    /// A test that panics must still stop the thread: the runtime waits for it on shutdown.
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+impl GapWatch {
+    async fn start(rig: &Rig, uris: &[&str]) -> Self {
+        let catalog = rig.catalog.read().await;
+        let slots: Vec<(String, usize)> = uris
+            .iter()
+            .map(|uri| {
+                let meta = catalog
+                    .get_by_uri(uri)
+                    .unwrap_or_else(|| panic!("{uri} not registered"));
+                (uri.to_string(), meta.slot_id as usize)
+            })
+            .collect();
+        drop(catalog);
+        let segment = rig.segment.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let handle = tokio::task::spawn_blocking(move || {
+            let mut reader = ShmReaderHandle::<PosixShm>::new(&segment, CAPACITY).unwrap();
+            let mut reads = 0u64;
+            let mut gaps = Vec::new();
+            while !flag.load(Ordering::SeqCst) {
+                reader.update();
+                for (uri, slot) in &slots {
+                    let quality = reader.read_tag(*slot).unwrap().quality;
+                    reads += 1;
+                    if quality != mythos_shm::QualityCode::GOOD {
+                        gaps.push((uri.clone(), format!("{quality:?}")));
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            (reads, gaps)
+        });
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    async fn finish(mut self) -> GapLog {
+        self.stop.store(true, Ordering::SeqCst);
+        self.handle.take().unwrap().await.unwrap()
+    }
+}
+
+fn cycles_of(status: &Value, id: &str) -> u64 {
+    status["connections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == id)
+        .unwrap_or_else(|| panic!("no connection {id} in {status}"))["cycles_completed"]
+        .as_u64()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn changing_one_connection_swaps_it_in_place_and_leaves_the_others_untouched() {
+    let sim = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
+    sim.set_holding(0, 10).await;
+    sim.set_holding(1, 20).await;
+    let rig = rig().await;
+
+    let a = connection("plc_a", sim.port(), json!([holding(PRESSURE, 0)]));
+    let b = connection("plc_b", sim.port(), json!([holding(LEVEL, 1)]));
+    let (code, body) = rig
+        .put_io("plant_a", json!({"connections": [a.clone(), b.clone()]}))
+        .await;
+    assert_eq!(code, StatusCode::OK, "body: {body}");
+    rig.wait_for(PRESSURE, |u| u["quality_name"] == "GOOD")
+        .await;
+    rig.wait_for(LEVEL, |u| u["quality_name"] == "GOOD").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (_, before) = rig.request("GET", "/api/v1/io/status", None).await;
+
+    // Same tags for plc_b, a different request timeout and poll interval.
+    let mut b2 = b.clone();
+    b2["poll_interval_ms"] = json!(60);
+    b2["config"]["timeout_ms"] = json!(500);
+
+    let watch = GapWatch::start(&rig, &[PRESSURE, LEVEL]).await;
+    let (code, body) = rig.put_io("plant_a", json!({"connections": [a, b2]})).await;
+    assert_eq!(code, StatusCode::OK, "body: {body}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (reads, gaps) = watch.finish().await;
+
+    // What a reader of the tag bus saw comes first: the report is the runtime's own account.
+    assert!(reads > 100, "the watch hardly ran: {reads} reads");
+    assert!(
+        gaps.is_empty(),
+        "a tag stopped being GOOD during the change: {gaps:?}"
+    );
+    assert_eq!(body["changes"]["kept"], json!(["plc_a"]), "body: {body}");
+    assert_eq!(body["changes"]["swapped"], json!(["plc_b"]), "body: {body}");
+    assert_eq!(body["changes"]["restarted"], json!([]), "body: {body}");
+
+    let (_, after) = rig.request("GET", "/api/v1/io/status", None).await;
+    // plc_a was not restarted: its cycle count carried on rather than starting again.
+    assert!(
+        cycles_of(&after, "plc_a") > cycles_of(&before, "plc_a"),
+        "before {before}\nafter {after}"
+    );
+    let b_status = after["connections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "plc_b")
+        .unwrap()
+        .clone();
+    assert_eq!(b_status["poll_interval_ms"], json!(60), "{after}");
+    assert_eq!(b_status["state"], json!("RUNNING"), "{after}");
+
+    rig.io.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_connection_whose_tags_change_is_restarted_alone() {
+    let sim = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
+    for (address, value) in [(0, 10), (1, 20), (2, 30)] {
+        sim.set_holding(address, value).await;
+    }
+    let rig = rig().await;
+
+    let a = connection("plc_a", sim.port(), json!([holding(PRESSURE, 0)]));
+    let b = connection("plc_b", sim.port(), json!([holding(LEVEL, 1)]));
+    rig.put_io("plant_a", json!({"connections": [a.clone(), b]}))
+        .await;
+    rig.wait_for(PRESSURE, |u| u["quality_name"] == "GOOD")
+        .await;
+
+    let b2 = connection(
+        "plc_b",
+        sim.port(),
+        json!([holding(LEVEL, 1), holding(TEMPERATURE, 2)]),
+    );
+    let watch = GapWatch::start(&rig, &[PRESSURE]).await;
+    let (code, body) = rig.put_io("plant_a", json!({"connections": [a, b2]})).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (_, gaps) = watch.finish().await;
+
+    assert_eq!(code, StatusCode::OK, "body: {body}");
+    assert_eq!(body["changes"]["kept"], json!(["plc_a"]), "body: {body}");
+    assert_eq!(
+        body["changes"]["restarted"],
+        json!(["plc_b"]),
+        "body: {body}"
+    );
+    assert!(gaps.is_empty(), "plc_a was disturbed: {gaps:?}");
+    rig.wait_for(TEMPERATURE, |u| u["quality_name"] == "GOOD")
+        .await;
+    assert_eq!(rig.catalog_uris().await, {
+        let mut v = vec![
+            PRESSURE.to_string(),
+            LEVEL.to_string(),
+            TEMPERATURE.to_string(),
+        ];
+        v.sort();
+        v
+    });
+
+    rig.io.shutdown().await;
+}
