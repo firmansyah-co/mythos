@@ -3,7 +3,9 @@ import { ChevronDown, ChevronUp } from 'lucide-react';
 import type { IoStatus } from '../api/client';
 import { useController } from '../data/controller';
 import { connectionById, connectionOfTag, currentProblems } from '../data/derive';
+import { elementKind } from '../data/elementKinds';
 import { useIoConfig } from '../data/ioConfig';
+import { connectionTags } from '../data/ioForm';
 import { useLog } from '../data/log';
 import { formatClock, formatTimestampNs, viewTag } from '../data/quality';
 import { useProjectIo } from '../data/scope';
@@ -12,6 +14,7 @@ import { useScreens } from '../data/screens';
 import { useTelemetry } from '../data/telemetry';
 import { useWorkbench, type InspectorTab } from '../data/workbench';
 import { ConnectionStateBadge } from '../editors/ConnectionStateBadge';
+import { viewOf } from '../editors/elementViews';
 import { QualityBadge, TagValue } from './QualityBadge';
 import { RuntimeGate } from './RuntimeGate';
 
@@ -166,6 +169,7 @@ function ElementProperties({ screenId, elementId }: { screenId: string; elementI
   const removeElement = useScreens((state) => state.removeElement);
   const select = useWorkbench((state) => state.select);
   const draft = useIoConfig((state) => state.draft);
+  const schemas = useIoConfig((state) => state.schemas);
 
   const element = doc?.canvas.elements.find((candidate) => candidate.id === elementId);
   if (!doc || !element || element.type === 'unknown') {
@@ -173,9 +177,10 @@ function ElementProperties({ screenId, elementId }: { screenId: string; elementI
   }
 
   const update = (change: Partial<KnownElement>) => updateElement(screenId, elementId, change);
+  const { Properties } = viewOf(element);
   // The tags a field can be bound to are the ones the project's I/O configuration provides.
   const configured = [
-    ...new Set(draft.flatMap((connection) => connection.modbus?.mappings ?? []).map((m) => m.uri.trim())),
+    ...new Set(draft.flatMap((connection) => connectionTags(connection, schemas) ?? [])),
   ]
     .filter((uri) => uri !== '')
     .sort((a, b) => a.localeCompare(b));
@@ -183,69 +188,9 @@ function ElementProperties({ screenId, elementId }: { screenId: string; elementI
   return (
     <dl className="props" data-testid="element-properties">
       <dt>Element</dt>
-      <dd>{element.type === 'text' ? 'Text field' : 'I/O field'}</dd>
+      <dd>{elementKind(element.type)?.label ?? element.type}</dd>
 
-      {element.type === 'text' && (
-        <>
-          <dt>Text</dt>
-          <dd>
-            <input
-              className="prop-input prop-input--wide"
-              aria-label="Text"
-              value={element.text}
-              onChange={(event) => update({ text: event.target.value })}
-            />
-          </dd>
-        </>
-      )}
-
-      {element.type === 'io_field' && (
-        <>
-          <dt>Tag</dt>
-          <dd>
-            <select
-              className="prop-input prop-input--wide mono"
-              aria-label="Tag"
-              value={element.tag}
-              onChange={(event) => update({ tag: event.target.value })}
-            >
-              <option value="">(not bound)</option>
-              {configured.map((uri) => (
-                <option key={uri} value={uri}>
-                  {uri}
-                </option>
-              ))}
-              {element.tag !== '' && !configured.includes(element.tag) && (
-                <option value={element.tag}>{element.tag} — not in the I/O configuration</option>
-              )}
-            </select>
-            {element.tag !== '' && !configured.includes(element.tag) && (
-              <span className="field__error" role="alert" data-testid="tag-not-configured">
-                No connection of this project provides this tag.
-              </span>
-            )}
-          </dd>
-          <dt>Label</dt>
-          <dd>
-            <input
-              className="prop-input prop-input--wide"
-              aria-label="Label"
-              placeholder="Shown above the value. Empty shows the tag name."
-              value={element.label}
-              onChange={(event) => update({ label: event.target.value })}
-            />
-          </dd>
-          <dt>Unit</dt>
-          <dd>
-            <input
-              className="prop-input"
-              aria-label="Unit"
-              value={element.unit}
-              onChange={(event) => update({ unit: event.target.value })}
-            />
-          </dd>
-        </>
-      )}
+      <Properties element={element} update={update} configuredTags={configured} />
 
       <NumberProperty label="X" value={element.x} min={0} max={doc.canvas.width} onCommit={(x) => update({ x })} />
       <NumberProperty label="Y" value={element.y} min={0} max={doc.canvas.height} onCommit={(y) => update({ y })} />

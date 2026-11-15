@@ -2,16 +2,10 @@ import { Plus, RotateCcw, Save } from 'lucide-react';
 import type { ConnectionStatus } from '../api/client';
 import { connectionLabel } from '../data/derive';
 import { isDirty, useIoConfig } from '../data/ioConfig';
-import type { ConnectionForm } from '../data/ioForm';
+import { connectionTags, connectionTarget } from '../data/ioForm';
 import { useProjectIo, useRuntimeScope } from '../data/scope';
 import { useWorkbench } from '../data/workbench';
 import { ConnectionStateBadge } from './ConnectionStateBadge';
-
-function target(connection: ConnectionForm): string {
-  if (!connection.modbus) return '—';
-  const { host, port, slaveId } = connection.modbus;
-  return host.trim() === '' ? '—' : `${host}:${port} · unit ${slaveId}`;
-}
 
 /** The save bar shared by the configuration editors: what is pending, and what went wrong. */
 export function ConfigBar() {
@@ -96,6 +90,7 @@ export function ConfigBar() {
  * running, how each one is doing.
  */
 export function DevicesAndNetworks() {
+  const schemas = useIoConfig((state) => state.schemas);
   const phase = useIoConfig((state) => state.phase);
   const loadError = useIoConfig((state) => state.loadError);
   const draft = useIoConfig((state) => state.draft);
@@ -178,9 +173,9 @@ export function DevicesAndNetworks() {
                   >
                     <td>{connectionLabel(connection.id)}</td>
                     <td>{connection.driver}</td>
-                    <td className="mono">{target(connection)}</td>
+                    <td className="mono">{connectionTarget(connection, schemas) ?? '—'}</td>
                     <td className="num mono">
-                      {connection.modbus ? connection.modbus.mappings.length : '—'}
+                      {connectionTags(connection, schemas)?.length ?? '—'}
                     </td>
                     <td className="num mono">
                       {connection.pollIntervalMs.trim() === '' ? '—' : `${connection.pollIntervalMs} ms`}

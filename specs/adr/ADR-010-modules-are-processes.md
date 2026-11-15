@@ -95,4 +95,4 @@ The root README's status table is the record of what runs. When this ADR was acc
 | 2.3 A dead module is replaced | Yes: `ProcessDriver` |
 | 2.4 Hot-swap per unit | Yes: `IoRuntime::apply`, `IoManager::rescan` and its watcher |
 | 2.5 MCP for every route | Yes: `crates/mythos-core/src/mcp.rs`, enforced by `every_route_of_the_api_is_a_tool_or_says_why_not` |
-| 2.6 Forms from the manifest | Not yet |
+| 2.6 Forms from the manifest | Yes: `frontend/packages/ui-shell/src/data/schemaForm.ts` |

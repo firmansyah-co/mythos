@@ -1,34 +1,27 @@
 // The editable form of an I/O configuration, and the conversion to and from the stored one.
 //
+// A connection has fields the controller defines (its name, driver, poll interval and cycle
+// deadline) and a driver configuration that the driver module defines. The latter is drawn from
+// the module's JSON Schema (see `schemaForm`); when there is no schema the workbench can draw,
+// the stored configuration is shown and saved back unchanged.
+//
 // Every numeric field is held as the text the engineer typed. It becomes a number only when
 // the configuration is saved, and text that is not a number is reported as an error against
 // its field. Nothing here turns an empty or mistyped field into a zero.
 
 import type { ConnectionConfig, IoConfig } from '../api/client';
+import {
+  formFromValue,
+  isSupported,
+  summary,
+  tagUris,
+  valueFromForm,
+  type JsonSchema,
+  type ObjectForm,
+} from './schemaForm';
 
-export type RegisterKind = 'holding' | 'input';
-export const DATA_TYPES = ['u16', 'i16', 'u32', 'i32', 'f32'] as const;
-export type DataType = (typeof DATA_TYPES)[number];
-export const WORD_ORDERS = ['high_first', 'low_first'] as const;
-export type WordOrder = (typeof WORD_ORDERS)[number];
-
-export interface MappingForm {
-  key: string;
-  uri: string;
-  register: RegisterKind;
-  address: string;
-  dataType: DataType;
-  wordOrder: WordOrder;
-  scale: string;
-}
-
-export interface ModbusForm {
-  host: string;
-  port: string;
-  slaveId: string;
-  timeoutMs: string;
-  mappings: MappingForm[];
-}
+/** The configuration schema of each driver that publishes one, by driver name. */
+export type DriverSchemas = Record<string, JsonSchema>;
 
 export interface ConnectionForm {
   /** Identity of this row in the editor. Not stored: the connection's own id can be edited. */
@@ -38,8 +31,8 @@ export interface ConnectionForm {
   pollIntervalMs: string;
   /** Empty means "use the server's default". */
   cycleTimeoutMs: string;
-  /** Present when the driver configuration is one this workbench has a form for. */
-  modbus: ModbusForm | null;
+  /** The driver configuration as a form, when its driver publishes a schema it can draw. */
+  config: ObjectForm | null;
   /** The driver configuration exactly as stored, when there is no form for it. */
   raw: unknown;
 }
@@ -47,76 +40,39 @@ export interface ConnectionForm {
 let nextKey = 1;
 const newKey = () => `k${nextKey++}`;
 
-/** A register count per value, to say which addresses a mapping occupies. */
-export function registerCount(dataType: DataType): number {
-  return dataType === 'u16' || dataType === 'i16' ? 1 : 2;
+/** The schema for `driver`, when there is one this workbench can draw. */
+export function schemaFor(schemas: DriverSchemas, driver: string): JsonSchema | null {
+  const schema = schemas[driver];
+  return isSupported(schema) ? schema : null;
 }
 
-export function newMapping(): MappingForm {
-  return {
-    key: newKey(),
-    uri: '',
-    register: 'holding',
-    address: '',
-    dataType: 'u16',
-    wordOrder: 'high_first',
-    scale: '1',
-  };
+/** A driver configuration as a form, or `null` when the driver has no drawable schema. */
+export function driverForm(schemas: DriverSchemas, driver: string, stored?: unknown): ObjectForm | null {
+  const schema = schemaFor(schemas, driver);
+  return schema ? formFromValue(schema, stored) : null;
 }
 
 /**
- * A new, unsaved Modbus TCP connection.
- *
- * The fields that are pre-filled are the ones the protocol or the server already defines: 502
- * is the registered Modbus TCP port, and unit 1 and a 1000 ms request timeout are what the
- * server applies when they are omitted. The host, the poll interval and the tags have no such
- * answer and start empty.
+ * A new, unsaved connection using `driver`. Its driver fields start with the defaults the
+ * module's schema declares and are otherwise empty; the name and poll interval have no answer
+ * and start empty.
  */
-export function newConnection(): ConnectionForm {
+export function newConnection(driver: string, schemas: DriverSchemas): ConnectionForm {
+  const config = driverForm(schemas, driver);
   return {
     key: newKey(),
     id: '',
-    driver: 'modbus',
+    driver,
     pollIntervalMs: '',
     cycleTimeoutMs: '',
-    modbus: { host: '', port: '502', slaveId: '1', timeoutMs: '1000', mappings: [newMapping()] },
-    raw: null,
+    config,
+    raw: config ? null : {},
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function text(value: unknown, fallback: string): string {
-  return typeof value === 'number' || typeof value === 'string' ? String(value) : fallback;
-}
-
-/** Read a stored Modbus configuration into the form, or `null` when it is not Modbus TCP. */
-function modbusForm(config: unknown): ModbusForm | null {
-  if (!isRecord(config) || config.transport !== 'tcp') return null;
-  const mappings = Array.isArray(config.mappings) ? config.mappings : [];
-  return {
-    host: text(config.host, ''),
-    // Absent fields show what the server applies when they are absent.
-    port: text(config.port, '502'),
-    slaveId: text(config.slave_id, '1'),
-    timeoutMs: text(config.timeout_ms, '1000'),
-    mappings: mappings.filter(isRecord).map((mapping) => ({
-      key: newKey(),
-      uri: text(mapping.uri, ''),
-      register: mapping.function_code === 4 ? 'input' : 'holding',
-      address: text(mapping.address, ''),
-      dataType: DATA_TYPES.find((t) => t === mapping.data_type) ?? 'u16',
-      wordOrder: WORD_ORDERS.find((o) => o === mapping.word_order) ?? 'high_first',
-      scale: text(mapping.scale, '1'),
-    })),
-  };
-}
-
-export function toForm(config: IoConfig | null): ConnectionForm[] {
+export function toForm(config: IoConfig | null, schemas: DriverSchemas): ConnectionForm[] {
   return (config?.connections ?? []).map((connection) => {
-    const modbus = connection.driver === 'modbus' ? modbusForm(connection.config) : null;
+    const form = driverForm(schemas, connection.driver, connection.config ?? {});
     return {
       key: newKey(),
       id: connection.id,
@@ -124,17 +80,32 @@ export function toForm(config: IoConfig | null): ConnectionForm[] {
       pollIntervalMs: String(connection.poll_interval_ms),
       cycleTimeoutMs:
         connection.cycle_timeout_ms === undefined ? '' : String(connection.cycle_timeout_ms),
-      modbus,
-      raw: modbus ? null : connection.config,
+      config: form,
+      raw: form ? null : connection.config,
     };
   });
+}
+
+/** The tags a connection is configured to provide, or `null` when its driver has no form. */
+export function connectionTags(connection: ConnectionForm, schemas: DriverSchemas): string[] | null {
+  const schema = schemaFor(schemas, connection.driver);
+  return schema && connection.config ? tagUris(schema, connection.config) : null;
+}
+
+/** What a connection talks to, in one line, or `null` when that cannot be said. */
+export function connectionTarget(connection: ConnectionForm, schemas: DriverSchemas): string | null {
+  const schema = schemaFor(schemas, connection.driver);
+  return schema && connection.config ? summary(schema, connection.config) : null;
 }
 
 /** An error against one field of one connection, found before anything is sent. */
 export interface FieldError {
   connectionKey: string;
-  /** The mapping the field belongs to, when it belongs to one. */
-  mappingKey?: string;
+  /**
+   * `id`, `pollIntervalMs` or `cycleTimeoutMs` for the connection's own fields; for a driver
+   * field, `config.` followed by its path, with a row's key for a field in a list
+   * (`config.mappings.r3.address`).
+   */
   field: string;
   message: string;
 }
@@ -157,13 +128,13 @@ function wholeNumber(
 export type FormResult = { ok: true; config: IoConfig } | { ok: false; errors: FieldError[] };
 
 /** Turn the form into a configuration to save, or list what is wrong with it. */
-export function fromForm(connections: ConnectionForm[]): FormResult {
+export function fromForm(connections: ConnectionForm[], schemas: DriverSchemas): FormResult {
   const errors: FieldError[] = [];
   const out: ConnectionConfig[] = [];
 
   for (const connection of connections) {
-    const fail = (field: string, message: string, mappingKey?: string) =>
-      errors.push({ connectionKey: connection.key, mappingKey, field, message });
+    const fail = (field: string, message: string) =>
+      errors.push({ connectionKey: connection.key, field, message });
 
     if (connection.id.trim() === '') fail('id', 'A name is required');
 
@@ -178,43 +149,13 @@ export function fromForm(connections: ConnectionForm[]): FormResult {
     }
 
     let driverConfig: unknown = connection.raw;
-    if (connection.modbus) {
-      const modbus = connection.modbus;
-      if (modbus.host.trim() === '') fail('host', 'A host is required');
-      const port = wholeNumber(modbus.port, 'Port', 1, 65535);
-      if ('error' in port) fail('port', port.error);
-      const slaveId = wholeNumber(modbus.slaveId, 'Unit ID', 1, 247);
-      if ('error' in slaveId) fail('slaveId', slaveId.error);
-      const timeout = wholeNumber(modbus.timeoutMs, 'Request timeout', 10, 10_000);
-      if ('error' in timeout) fail('timeoutMs', timeout.error);
-
-      const mappings = modbus.mappings.map((mapping) => {
-        if (mapping.uri.trim() === '') fail('uri', 'A tag name is required', mapping.key);
-        const address = wholeNumber(mapping.address, 'Address', 0, 65535);
-        if ('error' in address) fail('address', address.error, mapping.key);
-        const scaleText = mapping.scale.trim();
-        const scale = Number(scaleText);
-        if (scaleText === '' || !Number.isFinite(scale) || scale === 0) {
-          fail('scale', 'Scale must be a number other than zero', mapping.key);
-        }
-        return {
-          uri: mapping.uri.trim(),
-          address: 'value' in address ? address.value : null,
-          function_code: mapping.register === 'input' ? 4 : 3,
-          data_type: mapping.dataType,
-          word_order: mapping.wordOrder,
-          scale,
-        };
-      });
-
-      driverConfig = {
-        transport: 'tcp',
-        host: modbus.host.trim(),
-        port: 'value' in port ? port.value : null,
-        slave_id: 'value' in slaveId ? slaveId.value : null,
-        timeout_ms: 'value' in timeout ? timeout.value : null,
-        mappings,
-      };
+    const schema = schemaFor(schemas, connection.driver);
+    if (connection.config && schema) {
+      const result = valueFromForm(schema, connection.config);
+      if (result.ok) driverConfig = result.value;
+      else for (const error of result.errors) fail(['config', ...error.path].join('.'), error.message);
+    } else if (connection.config) {
+      fail('driver', `The controller no longer describes driver '${connection.driver}'`);
     }
 
     out.push({
