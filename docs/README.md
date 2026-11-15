@@ -5,10 +5,11 @@ describe, and a `SHALL` or an "is implemented" in one of them is not evidence th
 ships. What actually runs is stated in the [root README](../README.md); when a document here
 disagrees with the code, the code is right and the document is stale.
 
-Handbooks for subsystems that have no code in the tree (the logic engine bridge, the MCP
-subsystem, Layer 2 DCP discovery, the alarm engine, the recipe model, the historian, the RBAC
+Handbooks for subsystems that have no code in the tree (the logic engine bridge, the earlier
+MCP subsystem design, Layer 2 DCP discovery, the alarm engine, the recipe model, the historian, the RBAC
 matrix and the disaster-recovery package) were removed together with the unwired code they
-described. They remain in git history.
+described. They remain in git history. The MCP endpoint that does exist is described in the root
+README and in `crates/mythos-core/src/mcp.rs`.
 
 ## Requirements and decisions (`specs/`)
 

@@ -261,6 +261,9 @@ struct Session {
     pending: Pending,
     /// Why the process stopped answering, once it has.
     ended: Arc<Mutex<Option<String>>>,
+    /// Set when the host closes the session, so the end of its output is not reported as a
+    /// failure.
+    closing: Arc<std::sync::atomic::AtomicBool>,
     next_id: u64,
     /// Set while a request is outstanding. Still set at the start of the next call means the
     /// previous one was abandoned mid-way, and the stream can no longer be trusted.
@@ -305,10 +308,12 @@ impl Session {
 
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let ended: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let closing = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let reader = {
             let pending = Arc::clone(&pending);
             let ended = Arc::clone(&ended);
+            let closing = Arc::clone(&closing);
             let label = label.to_string();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stdout).lines();
@@ -334,7 +339,11 @@ impl Session {
                         Err(e) => break format!("the module output could not be read: {e}"),
                     }
                 };
-                warn!("module {label}: {reason}");
+                if closing.load(std::sync::atomic::Ordering::SeqCst) {
+                    tracing::debug!("module {label}: {reason}");
+                } else {
+                    warn!("module {label}: {reason}");
+                }
                 *ended.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
                 // Dropping the waiters wakes every caller with an error.
                 pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -356,6 +365,7 @@ impl Session {
             stdin,
             pending,
             ended,
+            closing,
             next_id: 1,
             in_flight: false,
             reader,
@@ -443,6 +453,8 @@ impl Session {
         if polite && self.usable() {
             let _ = self.call(Call::Stop, Some(STOP_TIMEOUT)).await;
         }
+        self.closing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         drop(self.stdin);
         if tokio::time::timeout(STOP_TIMEOUT, self.child.wait())
             .await

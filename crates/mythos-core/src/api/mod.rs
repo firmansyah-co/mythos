@@ -48,8 +48,19 @@ pub struct CreateProjectRequest {
     pub author: String,
 }
 
-/// Construct the complete Axum Router for MythOS REST and SSE APIs.
+/// Construct the complete Axum Router: the REST and SSE API, its MCP endpoint (`/mcp`), and the
+/// web workbench.
 pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
+    let api: Router = api_routes::<S>().with_state(state.clone());
+    Router::new()
+        .merge(api.clone())
+        .merge(crate::mcp::router(api))
+        // Web HMI Static Asset Serving & SPA Routing
+        .merge(web::web_router::<S>().with_state(state))
+}
+
+/// Every `/api/v1` route. Each one has an MCP tool or a stated reason not to (`crate::mcp`).
+fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
     Router::new()
         // Health
         .route("/api/v1/health", get(health_handler))
@@ -57,6 +68,10 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
         // Read-only. A tag exists because the field I/O runtime registered it and feeds it;
         // there is no route to create one, because nothing would feed it.
         .route("/api/v1/tags", get(list_tags_handler::<S>))
+        .route(
+            "/api/v1/tags/values",
+            get(telemetry::tag_values_handler::<S>),
+        )
         .route("/api/v1/tags/:uri", get(get_tag_handler::<S>))
         // Projects
         .route(
@@ -151,9 +166,6 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
         .route("/api/v1/control/deploy", post(control_deploy_handler::<S>))
         // CRDT Collaboration WebSocket Gateway (TSK-311)
         .route("/api/v1/collab/ws/:room_id", get(collab_ws_handler::<S>))
-        // Web HMI Static Asset Serving & SPA Routing
-        .merge(web::web_router::<S>())
-        .with_state(state)
 }
 
 // -----------------------------------------------------------------------------
