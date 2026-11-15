@@ -21,6 +21,8 @@ pub fn config_schema() -> Value {
         "title": "Modbus TCP connection",
         "type": "object",
         "required": ["transport", "host", "mappings"],
+        "x-mythos-order": ["transport", "host", "port", "slave_id", "timeout_ms", "mappings"],
+        "x-mythos-summary": "{host}:{port} · unit {slave_id}",
         "properties": {
             "transport": {
                 "type": "string",
@@ -61,7 +63,9 @@ pub fn config_schema() -> Value {
                 "title": "Tags",
                 "items": {
                     "type": "object",
+                    "title": "Tag",
                     "required": ["uri", "address", "function_code"],
+                    "x-mythos-order": ["uri", "function_code", "address", "data_type", "word_order", "scale"],
                     "properties": {
                         "uri": {
                             "type": "string",
@@ -85,7 +89,7 @@ pub fn config_schema() -> Value {
                         },
                         "data_type": {
                             "type": "string",
-                            "title": "Type",
+                            "title": "Data type",
                             "enum": ["u16", "i16", "u32", "i32", "f32"],
                             "default": "u16"
                         },
@@ -94,6 +98,7 @@ pub fn config_schema() -> Value {
                             "title": "Word order",
                             "description": "Which register of a two-register value holds the high word.",
                             "enum": ["high_first", "low_first"],
+                            "x-enum-labels": ["High word first", "Low word first"],
                             "default": "high_first"
                         },
                         "scale": {
@@ -230,6 +235,46 @@ mod tests {
         assert!(!check(smin - 1, 1000) && !check(smax + 1, 1000));
         assert!(check(1, tmin) && check(1, tmax));
         assert!(!check(1, tmin - 1) && !check(1, tmax + 1));
+    }
+
+    /// Every property named in an `x-mythos-order` exists, and every property is named: an
+    /// order that drops a field would hide it from the form.
+    #[test]
+    fn the_declared_orders_name_every_property() {
+        let schema = config_schema();
+        for object in [&schema, &schema["properties"]["mappings"]["items"]] {
+            let mut order: Vec<String> = object["x-mythos-order"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
+            let mut names: Vec<String> = object["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            order.sort();
+            names.sort();
+            assert_eq!(order, names);
+        }
+    }
+
+    /// The workbench's tests draw the form from a copy of this manifest. It must be this one.
+    #[test]
+    fn the_workbench_fixture_is_this_manifest() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../frontend/packages/ui-shell/src/__tests__/fixtures/modbus-manifest.json"
+        ))
+        .unwrap();
+        let mut current = serde_json::to_value(manifest()).unwrap();
+        // The version follows the workspace; the fixture is about the schema.
+        current["version"] = fixture["version"].clone();
+        assert_eq!(
+            fixture, current,
+            "regenerate it: target/debug/mythos-module-modbus --manifest > frontend/packages/ui-shell/src/__tests__/fixtures/modbus-manifest.json"
+        );
     }
 
     #[test]

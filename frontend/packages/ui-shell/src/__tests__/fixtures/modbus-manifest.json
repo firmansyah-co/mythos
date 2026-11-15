@@ -1,0 +1,150 @@
+{
+    "protocol": 1,
+    "id": "org.mythos.driver.modbus",
+    "name": "Modbus TCP",
+    "version": "0.1.0",
+    "kind": "driver",
+    "provides": "modbus",
+    "description": "Reads holding and input registers from a Modbus TCP device.",
+    "capabilities": [
+        "network:client"
+    ],
+    "config_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+            "host": {
+                "description": "IP address or host name of the device or gateway.",
+                "minLength": 1,
+                "title": "Host",
+                "type": "string"
+            },
+            "mappings": {
+                "items": {
+                    "properties": {
+                        "address": {
+                            "maximum": 65535,
+                            "minimum": 0,
+                            "title": "Address",
+                            "type": "integer"
+                        },
+                        "data_type": {
+                            "default": "u16",
+                            "enum": [
+                                "u16",
+                                "i16",
+                                "u32",
+                                "i32",
+                                "f32"
+                            ],
+                            "title": "Data type",
+                            "type": "string"
+                        },
+                        "function_code": {
+                            "default": 3,
+                            "enum": [
+                                3,
+                                4
+                            ],
+                            "title": "Register",
+                            "type": "integer",
+                            "x-enum-labels": [
+                                "Holding (3)",
+                                "Input (4)"
+                            ]
+                        },
+                        "scale": {
+                            "default": 1,
+                            "description": "Multiplier. Any value other than 1 makes the tag a 64-bit float.",
+                            "title": "Scale",
+                            "type": "number"
+                        },
+                        "uri": {
+                            "description": "external.<area>.<device>.<signal>",
+                            "pattern": "^external\\.[^.]+\\.[^.]+\\..+$",
+                            "title": "Tag",
+                            "type": "string",
+                            "x-mythos-role": "tag-uri"
+                        },
+                        "word_order": {
+                            "default": "high_first",
+                            "description": "Which register of a two-register value holds the high word.",
+                            "enum": [
+                                "high_first",
+                                "low_first"
+                            ],
+                            "title": "Word order",
+                            "type": "string",
+                            "x-enum-labels": [
+                                "High word first",
+                                "Low word first"
+                            ]
+                        }
+                    },
+                    "required": [
+                        "uri",
+                        "address",
+                        "function_code"
+                    ],
+                    "title": "Tag",
+                    "type": "object",
+                    "x-mythos-order": [
+                        "uri",
+                        "function_code",
+                        "address",
+                        "data_type",
+                        "word_order",
+                        "scale"
+                    ]
+                },
+                "title": "Tags",
+                "type": "array"
+            },
+            "port": {
+                "default": 502,
+                "maximum": 65535,
+                "minimum": 1,
+                "title": "Port",
+                "type": "integer"
+            },
+            "slave_id": {
+                "default": 1,
+                "maximum": 247,
+                "minimum": 1,
+                "title": "Unit ID",
+                "type": "integer"
+            },
+            "timeout_ms": {
+                "default": 1000,
+                "maximum": 10000,
+                "minimum": 10,
+                "title": "Request timeout (ms)",
+                "type": "integer"
+            },
+            "transport": {
+                "default": "tcp",
+                "description": "Only Modbus TCP is implemented.",
+                "enum": [
+                    "tcp"
+                ],
+                "title": "Transport",
+                "type": "string"
+            }
+        },
+        "required": [
+            "transport",
+            "host",
+            "mappings"
+        ],
+        "title": "Modbus TCP connection",
+        "type": "object",
+        "x-mythos-order": [
+            "transport",
+            "host",
+            "port",
+            "slave_id",
+            "timeout_ms",
+            "mappings"
+        ],
+        "x-mythos-summary": "{host}:{port} \u00b7 unit {slave_id}"
+    }
+}

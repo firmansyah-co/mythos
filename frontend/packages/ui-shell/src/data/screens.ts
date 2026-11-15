@@ -5,8 +5,7 @@ import { create } from 'zustand';
 import { api } from '../api/client';
 import { log } from './log';
 import {
-  newIoField,
-  newTextElement,
+  newElement,
   parseCanvas,
   place,
   serializeCanvas,
@@ -42,7 +41,8 @@ export interface ScreensState {
   reset: () => void;
   create: (name: string) => Promise<string | null>;
   remove: (screenId: string) => Promise<boolean>;
-  addElement: (screenId: string, kind: 'text' | 'io_field') => string | null;
+  /** Place a new element of the kind named `type` (see `elementKinds`). */
+  addElement: (screenId: string, type: string) => string | null;
   updateElement: (screenId: string, elementId: string, change: Partial<KnownElement>) => void;
   removeElement: (screenId: string, elementId: string) => void;
   discard: (screenId: string) => void;
@@ -187,10 +187,11 @@ export const useScreens = create<ScreensState>((set, get) => {
       }
     },
 
-    addElement: (screenId, kind) => {
+    addElement: (screenId, type) => {
       const doc = get().screens.find((candidate) => candidate.id === screenId);
       if (!doc) return null;
-      const element = kind === 'text' ? newTextElement(doc.canvas) : newIoField(doc.canvas);
+      const element = newElement(doc.canvas, type);
+      if (!element) return null;
       edit(screenId, (canvas) => ({ ...canvas, elements: [...canvas.elements, element] }));
       return element.id;
     },

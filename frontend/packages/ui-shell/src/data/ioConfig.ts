@@ -2,9 +2,24 @@
 // draft of it.
 
 import { create } from 'zustand';
-import { ApiError, ConfigRejected, api, type ConfigProblem, type IoConfig } from '../api/client';
+import {
+  ApiError,
+  ConfigRejected,
+  api,
+  type ConfigProblem,
+  type DriverInfo,
+  type IoConfig,
+} from '../api/client';
 import { useController } from './controller';
-import { fromForm, newConnection, toForm, type ConnectionForm, type FieldError } from './ioForm';
+import {
+  fromForm,
+  newConnection,
+  toForm,
+  type ConnectionForm,
+  type DriverSchemas,
+  type FieldError,
+} from './ioForm';
+import type { JsonSchema } from './schemaForm';
 import { log } from './log';
 
 export type IoConfigPhase = 'idle' | 'loading' | 'ready' | 'saving' | 'unreadable';
@@ -20,7 +35,12 @@ export interface IoConfigState {
   draft: ConnectionForm[];
   /** The draft as it was when last loaded or saved, to tell whether it has changed. */
   baseline: string;
+  /** Driver names a connection may use, sorted. */
   drivers: string[];
+  /** Every driver and the module behind it, as the controller lists them. */
+  driverInfo: DriverInfo[];
+  /** Each driver's configuration schema, from its module's manifest. */
+  schemas: DriverSchemas;
   /**
    * Errors in the draft's fields. Empty until a save has been refused for them; from then on
    * they are recomputed on every change, so a message never outlives the mistake it names.
@@ -70,8 +90,8 @@ const EMPTY = {
  * Field errors follow the draft once checking is on. The controller's problems and a failed
  * save describe the configuration that was sent, which the draft no longer is, so they go.
  */
-function afterEdit(draft: ConnectionForm[], checking: boolean) {
-  const result = checking ? fromForm(draft) : null;
+function afterEdit(draft: ConnectionForm[], checking: boolean, schemas: DriverSchemas) {
+  const result = checking ? fromForm(draft, schemas) : null;
   return {
     draft,
     fieldErrors: result && !result.ok ? result.errors : [],
@@ -80,17 +100,38 @@ function afterEdit(draft: ConnectionForm[], checking: boolean) {
   };
 }
 
+/** The configuration schema each module-backed driver publishes. */
+function schemasOf(drivers: DriverInfo[]): DriverSchemas {
+  const schemas: DriverSchemas = {};
+  for (const driver of drivers) {
+    const schema = driver.module?.manifest.config_schema;
+    if (schema && typeof schema === 'object') schemas[driver.name] = schema as JsonSchema;
+  }
+  return schemas;
+}
+
 export const useIoConfig = create<IoConfigState>((set, get) => ({
   ...EMPTY,
   drivers: [],
+  driverInfo: [],
+  schemas: {},
 
   load: async (projectId) => {
     set({ ...EMPTY, projectId, phase: 'loading' });
     try {
-      const [saved, drivers] = await Promise.all([api.getIoConfig(projectId), api.listDrivers()]);
+      const [saved, modules] = await Promise.all([api.getIoConfig(projectId), api.listModules()]);
       if (get().projectId !== projectId) return;
-      const draft = toForm(saved);
-      set({ phase: 'ready', saved, draft, baseline: fingerprint(draft), drivers });
+      const schemas = schemasOf(modules.drivers);
+      const draft = toForm(saved, schemas);
+      set({
+        phase: 'ready',
+        saved,
+        draft,
+        baseline: fingerprint(draft),
+        drivers: modules.drivers.map((d) => d.name).sort(),
+        driverInfo: modules.drivers,
+        schemas,
+      });
     } catch (cause) {
       if (get().projectId !== projectId) return;
       set({
@@ -103,8 +144,11 @@ export const useIoConfig = create<IoConfigState>((set, get) => ({
   reset: () => set({ ...EMPTY }),
 
   addConnection: () => {
-    const connection = newConnection();
-    set((state) => afterEdit([...state.draft, connection], state.checking));
+    const { drivers, schemas } = get();
+    // The first driver the controller has. With none, the connection has no driver to name
+    // and saving it is refused by the controller, which says so.
+    const connection = newConnection(drivers[0] ?? '', schemas);
+    set((state) => afterEdit([...state.draft, connection], state.checking, state.schemas));
     return connection.key;
   },
 
@@ -112,7 +156,8 @@ export const useIoConfig = create<IoConfigState>((set, get) => ({
     set((state) =>
       afterEdit(
         state.draft.filter((connection) => connection.key !== key),
-        state.checking
+        state.checking,
+        state.schemas
       )
     ),
 
@@ -120,13 +165,14 @@ export const useIoConfig = create<IoConfigState>((set, get) => ({
     set((state) =>
       afterEdit(
         state.draft.map((connection) => (connection.key === key ? change(connection) : connection)),
-        state.checking
+        state.checking,
+        state.schemas
       )
     ),
 
   discard: () =>
     set((state) => {
-      const draft = toForm(state.saved);
+      const draft = toForm(state.saved, state.schemas);
       return {
         draft,
         baseline: fingerprint(draft),
@@ -138,10 +184,10 @@ export const useIoConfig = create<IoConfigState>((set, get) => ({
     }),
 
   save: async () => {
-    const { projectId, draft } = get();
+    const { projectId, draft, schemas } = get();
     if (projectId === null) return false;
 
-    const result = fromForm(draft);
+    const result = fromForm(draft, schemas);
     if (!result.ok) {
       set({ fieldErrors: result.errors, checking: true, problems: [], saveError: null });
       return false;

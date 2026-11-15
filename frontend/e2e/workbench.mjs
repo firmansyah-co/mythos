@@ -94,7 +94,7 @@ try {
   check('adding a connection opens its configuration editor', await evaluate(`__t.has('[data-testid="connection-editor"]')`));
   await evaluate(`__t.click('Save configuration')`); await sleep(400);
   const errs = await evaluate(`__t.text('.field__error')`);
-  check('saving it empty is refused in the form, field by field', errs.includes('A name is required') && errs.includes('A host is required'), errs.join(' | '));
+  check('saving it empty is refused in the form, field by field', errs.includes('A name is required') && errs.includes('Host is required'), errs.join(' | '));
   await shot('e2e_1_field_errors');
 
   // 2. Fill it in against the simulator, with one tag the device does not have.

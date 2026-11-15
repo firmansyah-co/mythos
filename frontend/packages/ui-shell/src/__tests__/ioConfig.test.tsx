@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IoConfig } from '../api/client';
 import { useController } from '../data/controller';
 import { isDirty, useIoConfig } from '../data/ioConfig';
+import { fromForm } from '../data/ioForm';
 import { useLog } from '../data/log';
 import { useWorkbench } from '../data/workbench';
 import { ConnectionEditor } from '../editors/ConnectionEditor';
@@ -11,12 +12,15 @@ import {
   connection,
   ioStatus,
   loadedIoConfig,
+  MODULES,
   modbusConnection,
   project,
   render,
   resetStores,
+  typeInto,
   unmountAll,
 } from './harness';
+import type { JsonSchema } from '../data/schemaForm';
 
 const TAG = 'external.Plant.PT101.pressure';
 const STORED: IoConfig = { connections: [modbusConnection('plc1', [TAG])] };
@@ -39,6 +43,7 @@ function server(stored: IoConfig | null, put: (body: unknown) => Response) {
       calls.push({ method, path, body });
       if (method === 'PUT') return put(body);
       if (path.endsWith('/io/drivers')) return Response.json(['modbus']);
+      if (path.endsWith('/modules')) return Response.json(MODULES);
       if (path.endsWith('/io')) return Response.json({ config: stored });
       if (path.endsWith('/projects/active')) return Response.json({ project_id: 'plant' });
       if (path.endsWith('/io/status')) return Response.json(ioStatus([]));
@@ -160,20 +165,22 @@ describe('saving', () => {
     await state().load('plant');
     const key = state().addConnection();
     await state().save();
-    expect(state().fieldErrors.map((e) => e.field).sort()).toEqual([
-      'address',
-      'host',
+    // A tag row's fields carry the row's key; it is not part of what is being checked here.
+    const fields = () => state().fieldErrors.map((e) => e.field.replace(/\.r\d+\./, '.<row>.')).sort();
+    expect(fields()).toEqual([
+      'config.host',
+      'config.mappings.<row>.address',
+      'config.mappings.<row>.uri',
       'id',
       'pollIntervalMs',
-      'uri',
     ]);
 
     state().updateConnection(key, (c) => ({ ...c, id: 'plc1' }));
-    expect(state().fieldErrors.map((e) => e.field).sort()).toEqual([
-      'address',
-      'host',
+    expect(fields()).toEqual([
+      'config.host',
+      'config.mappings.<row>.address',
+      'config.mappings.<row>.uri',
       'pollIntervalMs',
-      'uri',
     ]);
 
     // And comes back if the field is emptied again.
@@ -294,8 +301,8 @@ describe('the connection editor', () => {
     const messages = [...container.querySelectorAll('.field__error')].map((el) => el.textContent);
     expect(messages).toContain('A name is required');
     expect(messages).toContain('Poll interval is required');
-    expect(messages).toContain('A host is required');
-    expect(messages.some((m) => m?.includes('A tag name is required') && m.includes('Address is required'))).toBe(true);
+    expect(messages).toContain('Host is required');
+    expect(messages.some((m) => m?.includes('Tag is required') && m.includes('Address is required'))).toBe(true);
   });
 
   it('shows a configuration it has no form for as stored, and does not offer to edit it', () => {
@@ -309,6 +316,75 @@ describe('the connection editor', () => {
     expect(raw?.textContent).toContain('opc.tcp://plant');
     expect(container.querySelector('[data-testid="mapping-row"]')).toBeNull();
     expect(container.querySelector('input[aria-label="Host"]')).toBeNull();
+  });
+
+  it('draws the form of a driver module it has never seen from that module\'s schema', () => {
+    // A made-up driver: nothing in the workbench knows it. Its form comes from its schema alone.
+    const schema: JsonSchema = {
+      type: 'object',
+      required: ['broker', 'topics'],
+      'x-mythos-order': ['broker', 'qos', 'topics'],
+      'x-mythos-summary': 'mqtt://{broker}',
+      properties: {
+        broker: { type: 'string', title: 'Broker', minLength: 1 },
+        qos: { type: 'integer', title: 'QoS', enum: [0, 1, 2], default: 1 },
+        topics: {
+          type: 'array',
+          title: 'Subscriptions',
+          items: {
+            type: 'object',
+            title: 'Subscription',
+            required: ['topic', 'uri'],
+            'x-mythos-order': ['uri', 'topic'],
+            properties: {
+              uri: { type: 'string', title: 'Tag', 'x-mythos-role': 'tag-uri' },
+              topic: { type: 'string', title: 'Topic' },
+            },
+          },
+        },
+      },
+    };
+    act(() => loadedIoConfig('plant', null));
+    act(() =>
+      useIoConfig.setState({
+        drivers: ['modbus', 'mqtt'],
+        driverInfo: [...state().driverInfo, { name: 'mqtt', source: 'module', module: null }],
+        schemas: { ...state().schemas, mqtt: schema },
+      })
+    );
+    let key = '';
+    act(() => {
+      key = state().addConnection();
+    });
+    const container = render(<ConnectionEditor connectionKey={key} />);
+    expect(container.querySelector('input[aria-label="Host"]')).not.toBeNull();
+
+    typeInto(container.querySelector('select[aria-label="Driver"]'), 'mqtt');
+    expect(container.querySelector('input[aria-label="Host"]')).toBeNull();
+    expect(container.querySelector('select[aria-label="QoS"]')).not.toBeNull();
+    expect(container.textContent).toContain('Add subscription');
+
+    act(() => {
+      state().updateConnection(key, (c) => ({ ...c, id: 'mq', pollIntervalMs: '1000' }));
+    });
+    typeInto(container.querySelector('input[aria-label="Broker"]'), 'broker.local');
+    typeInto(container.querySelector('input[aria-label="Tag"]'), 'external.Plant.Line1.speed');
+    typeInto(container.querySelector('input[aria-label="Topic"]'), 'line1/speed');
+
+    const result = fromForm(state().draft, state().schemas);
+    expect(result).toEqual({
+      ok: true,
+      config: {
+        connections: [
+          {
+            id: 'mq',
+            driver: 'mqtt',
+            poll_interval_ms: 1000,
+            config: { broker: 'broker.local', qos: 1, topics: [{ uri: 'external.Plant.Line1.speed', topic: 'line1/speed' }] },
+          },
+        ],
+      },
+    });
   });
 
   it('says the connection is gone when its row was removed', () => {

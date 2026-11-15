@@ -1,11 +1,12 @@
-import { Gauge, Type } from 'lucide-react';
 import { useController } from '../data/controller';
+import { ELEMENT_KINDS } from '../data/elementKinds';
 import { allTagUris } from '../data/derive';
 import { formatClock, viewTag } from '../data/quality';
 import { useProjectIo, useRuntimeScope } from '../data/scope';
 import { useScreens } from '../data/screens';
 import { useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
+import { ELEMENT_VIEWS } from '../editors/elementViews';
 
 const STREAM_WORDS = {
   IDLE: { label: 'OFFLINE', tone: 'neutral' },
@@ -96,8 +97,8 @@ export function Toolbox({ screenId }: { screenId: string }) {
   const addElement = useScreens((state) => state.addElement);
   const select = useWorkbench((state) => state.select);
 
-  const add = (kind: 'text' | 'io_field') => {
-    const elementId = addElement(screenId, kind);
+  const add = (type: string) => {
+    const elementId = addElement(screenId, type);
     if (elementId) select({ kind: 'element', screenId, elementId });
   };
 
@@ -105,20 +106,18 @@ export function Toolbox({ screenId }: { screenId: string }) {
     <div className="card" data-testid="toolbox">
       <h3 className="card__title">Toolbox</h3>
       <div className="toolbox">
-        <button type="button" className="toolbox__item" onClick={() => add('text')}>
-          <Type size={16} aria-hidden />
-          <span>
-            <strong>Text field</strong>
-            <small>A fixed label</small>
-          </span>
-        </button>
-        <button type="button" className="toolbox__item" onClick={() => add('io_field')}>
-          <Gauge size={16} aria-hidden />
-          <span>
-            <strong>I/O field</strong>
-            <small>Shows the value of a tag</small>
-          </span>
-        </button>
+        {ELEMENT_KINDS.map((kind) => {
+          const Icon = ELEMENT_VIEWS[kind.type].icon;
+          return (
+            <button key={kind.type} type="button" className="toolbox__item" onClick={() => add(kind.type)}>
+              <Icon size={16} aria-hidden />
+              <span>
+                <strong>{kind.label}</strong>
+                <small>{kind.summary}</small>
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

@@ -47,8 +47,34 @@ export interface ConnectionConfig {
   driver: string;
   poll_interval_ms: number;
   cycle_timeout_ms?: number;
-  /** Driver-specific. The workbench understands the Modbus TCP shape and shows any other as is. */
+  /** Driver-specific. Its shape is the JSON Schema in the driver module's manifest. */
   config: unknown;
+}
+
+/** What a module says about itself (`--manifest`). */
+export interface ModuleManifest {
+  protocol: number;
+  id: string;
+  name: string;
+  version: string;
+  kind: string;
+  provides: string;
+  description: string;
+  capabilities: string[];
+  config_schema: unknown;
+}
+
+/** One driver a connection may use, and the module executable behind it when there is one. */
+export interface DriverInfo {
+  name: string;
+  source: 'module' | 'in_process';
+  module: { path: string; manifest: ModuleManifest } | null;
+}
+
+export interface ModuleList {
+  drivers: DriverInfo[];
+  /** Executables named like modules that could not be used, and why. */
+  problems: { path: string; message: string }[];
 }
 
 export interface IoConfig {
@@ -175,6 +201,7 @@ export const api = {
     (await request<{ project_id: string | null }>('/api/v1/projects/active')).project_id,
   getIoStatus: () => request<IoStatus>('/api/v1/io/status'),
   listDrivers: () => request<string[]>('/api/v1/io/drivers'),
+  listModules: () => request<ModuleList>('/api/v1/modules'),
   listScreens: (projectId: string, view: 'draft' | 'active') =>
     request<StoredScreen[]>(
       `/api/v1/projects/${encodeURIComponent(projectId)}/hmi/screens?view=${view}`

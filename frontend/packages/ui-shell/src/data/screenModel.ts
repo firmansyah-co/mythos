@@ -1,15 +1,17 @@
 // What an HMI screen is made of, and the conversion to and from what the controller stores.
 //
-// The stored canvas is an object with a `components` array. This workbench knows two kinds of
-// component. Anything else in the array — a component written by another tool, or by an earlier
+// The stored canvas is an object with a `components` array. The kinds of component this
+// workbench knows are listed in `elementKinds`. Anything else in the array — a component written by another tool, or by an earlier
 // workbench — is carried through untouched: it is neither dropped nor reinterpreted, and the
 // editor says that it is there.
+
+import { elementKind } from './elementKinds';
 
 export const DEFAULT_CANVAS_WIDTH = 1280;
 export const DEFAULT_CANVAS_HEIGHT = 720;
 export const GRID = 8;
 
-interface Box {
+export interface Box {
   id: string;
   x: number;
   y: number;
@@ -69,18 +71,9 @@ let unknownSeq = 1;
 function parseElement(raw: unknown): ScreenElement {
   if (isRecord(raw)) {
     const geometry = box(raw);
-    if (geometry && raw.type === 'text' && typeof raw.text === 'string') {
-      return { ...geometry, type: 'text', text: raw.text };
-    }
-    if (
-      geometry &&
-      raw.type === 'io_field' &&
-      typeof raw.tag === 'string' &&
-      typeof raw.label === 'string' &&
-      typeof raw.unit === 'string'
-    ) {
-      return { ...geometry, type: 'io_field', tag: raw.tag, label: raw.label, unit: raw.unit };
-    }
+    const kind = elementKind(raw.type);
+    const element = geometry && kind ? kind.parse(raw, geometry) : null;
+    if (element) return element;
   }
   // Not one of ours, or one of ours with a field missing. Either way it is not drawn from a
   // guess: it is kept as it is.
@@ -144,25 +137,18 @@ function slot(existing: ScreenElement[]): { x: number; y: number } {
   return { x: 40 + step * 24, y: 40 + step * 24 };
 }
 
+/** A new element of the kind named `type`, or `null` when there is no such kind. */
+export function newElement(canvas: ScreenCanvas, type: string): KnownElement | null {
+  const kind = elementKind(type);
+  if (!kind) return null;
+  const box = { id: newId(canvas.elements), ...slot(canvas.elements), width: kind.width, height: kind.height };
+  return place(kind.create(box), canvas);
+}
+
 export function newTextElement(canvas: ScreenCanvas): TextElement {
-  return place(
-    { id: newId(canvas.elements), type: 'text', ...slot(canvas.elements), width: 160, height: 32, text: 'Text' },
-    canvas
-  );
+  return newElement(canvas, 'text') as TextElement;
 }
 
 export function newIoField(canvas: ScreenCanvas): IoFieldElement {
-  return place(
-    {
-      id: newId(canvas.elements),
-      type: 'io_field',
-      ...slot(canvas.elements),
-      width: 200,
-      height: 56,
-      tag: '',
-      label: '',
-      unit: '',
-    },
-    canvas
-  );
+  return newElement(canvas, 'io_field') as IoFieldElement;
 }

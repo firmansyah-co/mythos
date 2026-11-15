@@ -4,10 +4,20 @@
 import { act } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { ConnectionStatus, IoConfig, IoStatus, ProjectConfig } from '../api/client';
+import type {
+  ConnectionStatus,
+  DriverInfo,
+  IoConfig,
+  IoStatus,
+  ModuleList,
+  ModuleManifest,
+  ProjectConfig,
+} from '../api/client';
 import { useController } from '../data/controller';
 import { useIoConfig } from '../data/ioConfig';
-import { toForm } from '../data/ioForm';
+import { toForm, type DriverSchemas } from '../data/ioForm';
+import type { JsonSchema } from '../data/schemaForm';
+import modbusManifest from './fixtures/modbus-manifest.json';
 import { useLog } from '../data/log';
 import type { TagSample } from '../data/quality';
 import { useRuntime } from '../data/runtime';
@@ -16,6 +26,22 @@ import { goOffline, useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+/**
+ * The Modbus module's manifest, as `mythos-module-modbus --manifest` prints it. A Rust test
+ * (`the_workbench_fixture_is_this_manifest`) fails when the module's manifest changes and this
+ * copy does not.
+ */
+export const MODBUS_MANIFEST = modbusManifest as ModuleManifest;
+export const MODBUS_SCHEMA = MODBUS_MANIFEST.config_schema as JsonSchema;
+export const SCHEMAS: DriverSchemas = { modbus: MODBUS_SCHEMA };
+export const MODBUS_DRIVER: DriverInfo = {
+  name: 'modbus',
+  source: 'module',
+  module: { path: '/opt/mythos/mythos-module-modbus', manifest: MODBUS_MANIFEST },
+};
+/** What `GET /api/v1/modules` answers on a controller with the Modbus module. */
+export const MODULES: ModuleList = { drivers: [MODBUS_DRIVER], problems: [] };
 
 const mounted: Array<{ root: Root; container: HTMLElement }> = [];
 
@@ -43,7 +69,7 @@ export function resetStores(): void {
   useIoConfig.getState().reset();
   useScreens.getState().reset();
   useRuntime.getState().reset();
-  useIoConfig.setState({ drivers: [] });
+  useIoConfig.setState({ drivers: [], driverInfo: [], schemas: {} });
   useWorkbench.setState({
     view: 'portal',
     runtimeScreenId: null,
@@ -135,7 +161,7 @@ export function modbusConnection(id: string, uris: string[], port = 502) {
 
 /** Put the I/O configuration store in the state it has after loading `config` for a project. */
 export function loadedIoConfig(projectId: string, config: IoConfig | null): void {
-  const draft = toForm(config);
+  const draft = toForm(config, SCHEMAS);
   useIoConfig.setState({
     projectId,
     phase: 'ready',
@@ -144,6 +170,8 @@ export function loadedIoConfig(projectId: string, config: IoConfig | null): void
     draft,
     baseline: JSON.stringify(draft, (key, value: unknown) => (key === 'key' ? undefined : value)),
     drivers: ['modbus'],
+    driverInfo: [MODBUS_DRIVER],
+    schemas: SCHEMAS,
     fieldErrors: [],
     checking: false,
     problems: [],
