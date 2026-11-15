@@ -6,9 +6,11 @@
 //! that nothing is feeding any more.
 
 use crate::io::config::{IoConfig, IO_CONFIG_FILE};
-use crate::io::runtime::{ConnectionState, DriverRegistry, IoRuntime, IoStatusHandle};
+use crate::io::registry::{DriverInfo, DriverRegistry};
+use crate::io::runtime::{ConnectionState, IoRuntime, IoStatusHandle};
 use crate::storage::ControllerStorage;
 use crate::tag::{TagCatalog, TagMetadata};
+use mythos_module::ModuleProblem;
 use mythos_pal::PlatformShm;
 use mythos_shm::ShmWriterHandle;
 use serde::Serialize;
@@ -77,17 +79,27 @@ impl<S: PlatformShm + 'static> IoManager<S> {
         self.registry.names()
     }
 
+    /// Every driver a configuration may use, and the module behind it.
+    pub fn drivers(&self) -> Vec<DriverInfo> {
+        self.registry.drivers()
+    }
+
+    /// Module executables that were found and could not be used.
+    pub fn module_problems(&self) -> Vec<ModuleProblem> {
+        self.registry.problems().to_vec()
+    }
+
     /// Everything that would stop `config` from running as written. Empty means it can be saved.
     ///
     /// Nothing is started and no device is contacted. The checks are the ones starting the
     /// configuration would make: the file's own rules, each driver's view of its connection,
     /// and that no tag is provided twice or has a name the catalog would refuse.
-    pub fn check(&self, config: &IoConfig) -> Vec<ConfigProblem> {
-        Self::check_with(&self.registry, config)
+    pub async fn check(&self, config: &IoConfig) -> Vec<ConfigProblem> {
+        Self::check_with(&self.registry, config).await
     }
 
     /// [`Self::check`] against a given set of drivers, for a server with no running manager.
-    pub fn check_with(registry: &DriverRegistry, config: &IoConfig) -> Vec<ConfigProblem> {
+    pub async fn check_with(registry: &DriverRegistry, config: &IoConfig) -> Vec<ConfigProblem> {
         let mut problems = Vec::new();
 
         if let Err(e) = config.validate() {
@@ -113,7 +125,7 @@ impl<S: PlatformShm + 'static> IoManager<S> {
                 continue;
             };
 
-            let declarations = match driver.describe_config(&connection.config) {
+            let declarations = match driver.describe_config(&connection.config).await {
                 Ok(declarations) => declarations,
                 Err(e) => {
                     problems.push(problem(e.to_string()));

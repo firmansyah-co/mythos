@@ -303,7 +303,10 @@ pub trait ProtocolDriver: MythosPlugin {
     /// Opens no connection and changes no state: a host calls this to check a configuration
     /// before saving it. `start` must accept exactly the configurations this accepts, and a
     /// driver started with one must declare exactly the tags returned here.
-    fn describe_config(&self, config: &JsonValue) -> Result<Vec<TagDeclaration>, PluginError>;
+    ///
+    /// Asynchronous because a driver may live in another process: answering means asking it.
+    async fn describe_config(&self, config: &JsonValue)
+        -> Result<Vec<TagDeclaration>, PluginError>;
 
     /// The tags this driver reports, known once it has been started with a configuration.
     ///

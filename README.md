@@ -22,10 +22,11 @@ intent and may describe things that do not exist.
 | Piece | Where | State |
 | :--- | :--- | :--- |
 | Tag bus | `crates/mythos-shm`, `crates/mythos-pal` | Triple-buffered shared-memory tag store with typed values and OPC-style quality codes. One writer: the field I/O runtime. |
+| Modules | `crates/mythos-module` | Every driver is a separate executable, `mythos-module-<name>`, that the server finds beside itself (or in `MYTHOS_MODULE_PATH`), starts as a child process and talks to over JSON lines on its standard streams. Nothing is compiled into the server. A module process that dies is replaced; its tags read `BAD_COMM_FAILURE` until it is back. See [ADR-010](specs/adr/ADR-010-modules-are-processes.md). |
 | Field I/O runtime | `crates/mythos-core/src/io` | Polls each configured connection and writes what the driver reports to the tag bus: a typed value with `GOOD` quality, or the last value read with a bad quality that names the fault. A tag that was never read has no value. |
 | API server | `crates/mythos-core` (`mythos-server`) | HTTP API for projects, HMI screens, data types, faceplate types and each project's I/O configuration; a 100 ms SSE telemetry stream of the tag bus; `GET /api/v1/io/status` for the state of each connection. |
 | Web workbench | `frontend/packages/ui-shell` | Portal view (open or create a project) and project view: project tree, devices & networks, an editor for Modbus TCP connections and their tags, live tag tables, connection diagnostics, HMI screens (text fields and I/O fields bound to tags, saved as a draft and released), an operator runtime that shows the released screens full window and follows a new release without a reload, inspector. |
-| Modbus TCP driver | `plugins/drivers/driver-modbus` | Reads holding and input registers as `u16`, `i16`, `u32`, `i32` or `f32`, with scaling and selectable word order. Exercised end to end against a simulated device, not yet against hardware. |
+| Modbus TCP driver | `plugins/drivers/driver-modbus` (module `mythos-module-modbus`) | Reads holding and input registers as `u16`, `i16`, `u32`, `i32` or `f32`, with scaling and selectable word order. Exercised end to end against a simulated device, not yet against hardware. |
 | Device catalog | `catalog/`, `crates/mythos-core/src/catalog` | Manifest format and parser, with two reference device packages. |
 | Desktop shell | `src-tauri` | A Tauri window that embeds the same API server. |
 | Collaboration | `crates/mythos-core/src/collab` | A Yjs (`yrs`) WebSocket room. Not verified end to end. |
@@ -56,8 +57,10 @@ intent and may describe things that do not exist.
 | `crates/mythos-shm` | The tag bus. |
 | `crates/mythos-core` | API server, field I/O runtime, project storage, tag catalog, device catalog parser, HMI registries. |
 | `crates/mythos-plugin-sdk` | Plugin and protocol-driver traits. |
+| `crates/mythos-module` | The module protocol, both sides of it, and module discovery. |
+| `crates/mythos-module-tests` | Modules tested as real processes. |
 | `crates/mythos-cli` | The `mythos` command-line tool. |
-| `plugins/drivers/driver-modbus` | Modbus TCP driver and a device simulator (`sim` feature). |
+| `plugins/drivers/driver-modbus` | Modbus TCP driver, its module executable, and a device simulator (`sim` feature). |
 | `src-tauri` | Desktop shell. |
 | `frontend/` | Web workbench (pnpm workspace; the application is `packages/ui-shell`). |
 | `catalog/` | Device packages. |
@@ -72,7 +75,7 @@ Requirements: Linux with `/dev/shm`, Rust 1.82 or newer, Node.js 22 and pnpm.
 git clone https://github.com/firmansyah-co/mythos.git
 cd mythos
 
-cargo build --bin mythos-server
+cargo build --bin mythos-server -p driver-modbus --bin mythos-module-modbus
 
 cd frontend
 pnpm install --frozen-lockfile
@@ -94,6 +97,10 @@ MYTHOS_STATIC_DIR="$PWD/frontend/packages/ui-shell/dist" \
 | `MYTHOS_HTTP_PORT` | `8080` | Listening port. |
 | `MYTHOS_STATIC_DIR` | unset | Directory of the built web workbench to serve. |
 | `MYTHOS_SHM_NAME` | `mythos_tagbus` | Name of the tag bus segment. Two servers must not share one: the tag bus has a single writer. |
+| `MYTHOS_MODULE_PATH` | the server's own directory | Directories to look for module executables in, separated like `PATH`. |
+
+`GET /api/v1/modules` lists the modules the server found, the schema of the configuration each
+accepts, and any executable named like a module that could not be used, with the reason.
 
 ## Reading a device
 

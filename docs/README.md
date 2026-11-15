@@ -16,8 +16,10 @@ described. They remain in git history.
   intended product, most of which is not built.
 - [Work breakdown](../specs/tasks.md) — the original sprint plan. It carries no completion
   status and still names deliverables that have been removed.
-- [Architectural decision records](../specs/adr/) — ADR-001 to ADR-009. ADR-003, ADR-004,
+- [Architectural decision records](../specs/adr/) — ADR-001 to ADR-010. ADR-003, ADR-004,
   ADR-005 and ADR-007 record decisions about subsystems that are not in the tree.
+  [ADR-010](../specs/adr/ADR-010-modules-are-processes.md) is how MythOS is assembled: every
+  driver is a module process.
 
 ## Architecture (`docs/01-architecture/`)
 
@@ -31,7 +33,8 @@ described. They remain in git history.
 - [05 HTTP, SSE and WebSocket API](01-architecture/05-http-sse-and-websocket-api.md) — describes
   more endpoints than `crates/mythos-core/src/api` serves.
 - [06 Universal plugin harness](01-architecture/06-universal-plugin-harness-and-extensibility.md)
-  — a design; there is no dynamic plugin loading.
+  — superseded by [ADR-010](../specs/adr/ADR-010-modules-are-processes.md): modules are
+  processes, not loaded libraries.
 - [07 Cross-platform HAL and containerization](01-architecture/07-cross-platform-hal-and-containerization.md)
   — `crates/mythos-pal`.
 - [08 Installers and distribution](01-architecture/08-one-click-installers-and-distribution.md)

@@ -45,6 +45,7 @@ port_in_use "$SIM_PORT" && cannot_run "port $SIM_PORT is already in use; set MYT
 
 echo "=== build ==="
 ( cd "$ROOT" && cargo build --bin mythos-server \
+    && cargo build -p driver-modbus --bin mythos-module-modbus \
     && cargo build -p driver-modbus --features sim --example modbus_sim ) \
     || cannot_run "the server or the simulator did not build"
 ( cd "$ROOT/frontend" && pnpm build ) >/dev/null || cannot_run "the workbench did not build"
@@ -86,6 +87,14 @@ kill -0 "$SIM" 2>/dev/null || cannot_run "the simulator did not start on port $S
 # it is not ours, and nothing may be written to it.
 [ "$(curl -fsS -m 3 "$API/api/v1/projects")" = "[]" ] \
     || cannot_run "the server on $API is not the one this run started (its storage is not empty)"
+
+# Field I/O runs through driver modules. The server must have found the Modbus one beside it,
+# as a module process and not anything compiled in.
+curl -fsS -m 3 "$API/api/v1/modules" | node -e '
+    let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+        const m = JSON.parse(s).drivers.find(d => d.name === "modbus");
+        process.exit(m && m.source === "module" && m.module.manifest.id === "org.mythos.driver.modbus" ? 0 : 1);
+    });' || cannot_run "the server did not find the Modbus driver module (see $WORK/server.log)"
 
 curl -fsS -o /dev/null -X POST "$API/api/v1/projects" -H 'content-type: application/json' \
     -d '{"id":"plant_a","name":"Boiler House","description":"Steam plant","author":"e2e"}' \

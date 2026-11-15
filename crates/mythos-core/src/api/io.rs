@@ -36,9 +36,21 @@ fn config_path<S: PlatformShm>(state: &ApiState<S>, project: &str) -> Result<Pat
 pub async fn drivers<S: PlatformShm + 'static>(State(state): State<ApiState<S>>) -> Json<Value> {
     let names = match &state.io_manager {
         Some(io) => io.driver_names(),
-        None => DriverRegistry::builtin().names(),
+        None => Vec::new(),
     };
     Json(json!(names))
+}
+
+/// `GET /api/v1/modules` — the modules this server found, what each provides, the schema of
+/// the configuration it accepts, and the executables that could not be used as modules.
+pub async fn modules<S: PlatformShm + 'static>(State(state): State<ApiState<S>>) -> Json<Value> {
+    match &state.io_manager {
+        Some(io) => Json(json!({
+            "drivers": io.drivers(),
+            "problems": io.module_problems(),
+        })),
+        None => Json(json!({ "drivers": [], "problems": [] })),
+    }
 }
 
 /// `GET /api/v1/projects/:id/io` — the project's configuration, or `null` when it has none.
@@ -72,8 +84,8 @@ pub async fn put_config<S: PlatformShm + 'static>(
     })?;
 
     let problems: Vec<ConfigProblem> = match &state.io_manager {
-        Some(io) => io.check(&config),
-        None => IoManager::<S>::check_with(&DriverRegistry::builtin(), &config),
+        Some(io) => io.check(&config).await,
+        None => IoManager::<S>::check_with(&DriverRegistry::empty(), &config).await,
     };
     if !problems.is_empty() {
         return Err((
