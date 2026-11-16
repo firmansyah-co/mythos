@@ -29,6 +29,7 @@ pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::Joi
                 return;
             }
         };
+        mythos_core::server::announce_setup_code(&server);
         let io = server.io;
         let app = create_router(server.state);
 

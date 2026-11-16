@@ -73,6 +73,25 @@ pub async fn bootstrap<S: PlatformShm + 'static>(
     Ok(server)
 }
 
+/// Start logging: `RUST_LOG` when set, otherwise `info`. A bare `tracing_subscriber::fmt::init()`
+/// logs only errors when `RUST_LOG` is unset, which hid every warning, the setup code among them.
+pub fn init_logging() {
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+}
+
+/// Print the setup code where the person starting the server sees it, whatever the log level:
+/// without it nobody can create the first administrator.
+pub fn announce_setup_code<S: PlatformShm + 'static>(server: &Server<S>) {
+    if let Some(code) = server.state.auth.as_ref().and_then(|a| a.setup_code()) {
+        eprintln!(
+            "MythOS has no account yet. Open the workbench and create the first administrator \
+             with setup code {code}"
+        );
+    }
+}
+
 /// How often the module directories are checked for a module added, removed or replaced.
 pub const MODULE_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
