@@ -19,8 +19,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A PUSH TO dev DOES NOT RUN THE SUITE AGAIN ON A TREE ITS PULL REQUEST ALREADY PASSED.
+  #
+  # dev requires its checks on a branch that is up to date with it, so the pull request run and
+  # the push run that follows the merge tested the same tree: over the 100 runs measured on
+  # 2026-11-16, 15 of the 37 CI runs were that repeat, and all eight merges checked by hand had
+  # the tree of their pull request's head. The repeat also took the shared runner from the next
+  # pull request, and two full suites at once is what makes the SHM latency gate miss its bound.
+  #
+  # scripts/ci-already-verified.sh establishes it from GitHub for this very commit (same tree,
+  # head contained dev, a passed run of that head) and answers false for anything else, so a
+  # direct push or a merge of a branch that was behind still gets the whole suite. On a pull
+  # request, and on rc and release, this job does not run and the suites always do.
+  #
+  # It runs on a hosted runner so that deciding to do nothing does not start a runner here.
+  # `!cancelled()` on the suites: if this job cannot run or fails, they run.
+  already-verified:
+    name: Was this tree already verified on its pull request?
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      verified: ${{ steps.check.outputs.verified }}
+    steps:
+      - name: Checkout the scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+      - name: Ask GitHub what was tested
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/ci-already-verified.sh "$GITHUB_REPOSITORY" "$GITHUB_SHA" ci.yml
+
   core-engine-tests:
     name: Rust Workspace Test Suite & Lints
+    needs: already-verified
+    if: ${{ !cancelled() && needs.already-verified.outputs.verified != 'true' }}
     runs-on: arc-runner-org
     env:
       RUSTUP_HOME: /opt/hostedtoolcache/rustup
@@ -294,6 +333,8 @@ jobs:
   # (a 250 ns best-batch backstop against a lock or syscall on the hot path).
   cross-platform-tests:
     name: Rust Workspace on ${{ matrix.os }}
+    needs: already-verified
+    if: ${{ !cancelled() && needs.already-verified.outputs.verified != 'true' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -335,10 +376,16 @@ jobs:
 
   frontend-tests:
     name: Frontend Web Workbench Test Suite & Lints
+    needs: already-verified
+    if: ${{ !cancelled() && needs.already-verified.outputs.verified != 'true' }}
     runs-on: arc-runner-org
     # Clean-tree build measured ~8.5 min (ui-logic-editor alone is ~6.5 min).
     # Without this, a hang would run to GitHub's 6h default.
     timeout-minutes: 30
+    env:
+      PNPM_VERSION: "12.14.0"
+      PNPM_PREFIX: /opt/hostedtoolcache/pnpm/12.14.0
+      PNPM_STORE: /opt/hostedtoolcache/pnpm-store
     defaults:
       run:
         # frontend/ is the pnpm workspace root (pnpm-workspace.yaml + pnpm-lock.yaml live here).
@@ -348,31 +395,10 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # REQ 1 — WHERE THE PNPM STORE ACTUALLY LIVES, MEASURED RATHER THAN ASSUMED.
-      #
-      # Two corrections to what this file used to claim, both established by measurement:
-      #
-      # 1. `npm_config_store_dir` IS NOT HONOURED. The workflow set it (to $RUNNER_TEMP/pnpm-store)
-      #    while the run at this head reports `pnpm store path` = /home/runner/.pnpm-store/v11. pnpm
-      #    reads storeDir from pnpm-workspace.yaml, its global config.yaml, or the CLI — not from
-      #    .npmrc/env. So the variable is removed rather than left in as decoration: an env var that
-      #    silently does nothing is worse than no env var, because the next reader believes it.
-      #
-      # 2. THE STORE WAS NEVER "JOB-LOCAL". The old comment here said it was kept job-local. It was
-      #    not: it has been in shared, persistent HOME (/home/runner/.pnpm-store/v11, measured 324 MB
-      #    / 15,262 files) all along. That also means the "host-backed store" I set out to engineer
-      #    may already exist by default, which is why the next experiment is DISABLING THE CACHE, not
-      #    relocating the store — see the note at the Cache step.
-      #
-      # npm_config_cache IS honoured (npm reads it) and stays: it points npm's own cache at a
-      # job-local directory, unrelated to pnpm's store.
+      # npm's own cache goes to a job-local directory; it is unrelated to pnpm's store below.
       - name: Configure npm cache directory
-        id: pnpm-store
         shell: bash
-        run: |
-          START=$(date +%s)
-          echo "npm_config_cache=$RUNNER_TEMP/npm-cache" >> "$GITHUB_ENV"
-          { echo "| configure npm cache | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
+        run: echo "npm_config_cache=$RUNNER_TEMP/npm-cache" >> "$GITHUB_ENV"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -384,71 +410,44 @@ jobs:
           # here (setup-node shells out to a pnpm that does not exist yet).
           node-version: '22'
 
+      # PNPM AND ITS STORE STAY ON THE RUNNER, IN THE HOST-BACKED TOOL CACHE.
+      #
+      # Measured over 38 green runs of this job on 2026-11-16 (median 3.6 min): 56 s restoring the
+      # store through actions/cache (324 MB fetched from GitHub on every run, 125 s at worst) and
+      # 18 s installing pnpm with npm, every time. /opt/hostedtoolcache is a host directory that
+      # outlives the runner pod: it is where the Rust job keeps rustup and sccache.
+      #
+      # WHY THE STORE WAS NOT ALREADY THERE: pnpm keeps its store on the file system of the
+      # project unless told otherwise, so in the pod it used /home/runner/.pnpm-store, which dies
+      # with the pod. `--store-dir` on the install is what places it; an environment variable does
+      # not (measured earlier in this file's history).
+      #
+      # Nothing here can let a wrong dependency in: `--frozen-lockfile` still fails the install
+      # when pnpm-lock.yaml disagrees with package.json, and pnpm verifies the content of what it
+      # takes from the store (verify-store-integrity, on by default). An empty store only means a
+      # slower run. The store is as trusted as the rest of this tool cache: the Rust job already
+      # runs the sccache and the toolchain kept beside it.
       - name: Install pnpm
         run: |
           # Pinned: frontend/package.json has no packageManager field, so nothing would
           # otherwise select a version. This matches the version that generated pnpm-lock.yaml.
-          # Install into a job-local prefix: GITHUB_PATH only affects later steps, so the
-          # absolute binary is invoked here as well.
-          npm install --global --prefix "$RUNNER_TEMP/pnpm-prefix" pnpm@12.14.0
-          echo "$RUNNER_TEMP/pnpm-prefix/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/pnpm-prefix/bin/pnpm" --version
-
-      # The cache path comes from pnpm ITSELF, not from an env var. Asking pnpm is authoritative and
-      # makes the cache key's path correct by construction; the env var that was meant to choose the
-      # store turned out not to be honoured at all (see the Configure step).
-      # RESOLVE ONLY — this value FEEDS the cache step, so failing here is correct: a silently empty
-      # path would make the cache a no-op. Everything observational moved to the report step below,
-      # which is non-fatal. (My first version of this step did both and, because GitHub runs bash with
-      # `-e -o pipefail`, a `find` on a not-yet-created store directory exited non-zero and reddened
-      # the required check — skipping install, tests and build. A diagnostic must never be able to
-      # do that; that is the #35 archival lesson, relearned the hard way on this very PR.)
-      - name: Resolve pnpm Store Path (authoritative)
-        id: pnpm-store-path
-        shell: bash
-        run: |
-          STORE=$(pnpm store path 2>/dev/null || true)
-          if [ -z "$STORE" ]; then
-            echo "::error::pnpm store path returned nothing; the pnpm cache would be a no-op"
-            exit 1
+          START=$(date +%s)
+          sudo mkdir -p "$PNPM_PREFIX" "$PNPM_STORE"
+          sudo chown "$(id -u):$(id -g)" "$PNPM_PREFIX" "$PNPM_STORE"
+          # Two jobs may get here at once the first time; one installs, the other waits.
+          exec 9>"$PNPM_PREFIX/.install.lock"
+          flock 9
+          if [ "$("$PNPM_PREFIX/bin/pnpm" --version 2>/dev/null)" = "$PNPM_VERSION" ]; then
+            MODE="already in the tool cache"
+          else
+            MODE="installed by npm in this run"
+            npm install --global --prefix "$PNPM_PREFIX" "pnpm@$PNPM_VERSION"
           fi
-          echo "path=$STORE" >> "$GITHUB_OUTPUT"
-          echo "pnpm store path (from pnpm): $STORE"
-
-      # REQ 1, retained safety: the store round-trips through actions/cache because persistence to
-      # host storage has NOT been demonstrated (see the Configure step). Cost measured at 2 s restore
-      # + 12 s save warm, 95 s + 67 s cold.
-      - name: Cache pnpm Store
-        id: pnpm-cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ steps.pnpm-store-path.outputs.path }}
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
-          restore-keys: pnpm-store-${{ runner.os }}-
-
-      # REQ 6 — OBSERVABILITY ONLY, AND THEREFORE NON-FATAL. Every command is tolerant and the step
-      # carries continue-on-error: it reports numbers, it cannot decide whether the code is correct,
-      # so it must not be able to fail the job. Same rule as the archival steps in #35.
-      #
-      # This is also where the req-1 facts surface every run: pnpm's real store, its size and file
-      # count, and the cache hit/miss, so a future change is judged against numbers, not belief.
-      - name: Report pnpm store state
-        if: always()
-        continue-on-error: true
-        shell: bash
-        run: |
-          STORE="${{ steps.pnpm-store-path.outputs.path }}"
-          SIZE=$(du -sh "$STORE" 2>/dev/null | cut -f1 || true)
-          ENTRIES=$(find "$STORE" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
-          {
-            echo ""
-            echo "| pnpm store inspect | 0 |"
-            echo ""
-            echo "- pnpm store path (from \`pnpm store path\`): \`${STORE:-<unresolved>}\`"
-            echo "- size: **${SIZE:-unknown}**, files: **${ENTRIES:-0}**"
-            echo "- cache-hit: \`${{ steps.pnpm-cache.outputs.cache-hit || 'n/a' }}\`"
-          } >> "$GITHUB_STEP_SUMMARY" || true
-          echo "pnpm store: ${STORE:-<unresolved>} size=${SIZE:-unknown} files=${ENTRIES:-0} cache-hit=${{ steps.pnpm-cache.outputs.cache-hit || 'n/a' }}"
+          flock -u 9
+          echo "$PNPM_PREFIX/bin" >> "$GITHUB_PATH"
+          "$PNPM_PREFIX/bin/pnpm" --version
+          echo "pnpm $PNPM_VERSION: $MODE"
+          { echo "| pnpm ($MODE) | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Verify Toolchain Versions
         run: |
@@ -465,8 +464,11 @@ jobs:
         run: |
           START=$(date +%s)
           STATUS=0
-          pnpm install --frozen-lockfile || STATUS=$?
-          { echo "| install dependencies (--frozen-lockfile) | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
+          BEFORE=$(find "$PNPM_STORE" -type f 2>/dev/null | wc -l | tr -d ' ')
+          pnpm install --frozen-lockfile --store-dir "$PNPM_STORE" || STATUS=$?
+          AFTER=$(find "$PNPM_STORE" -type f 2>/dev/null | wc -l | tr -d ' ')
+          echo "pnpm store $PNPM_STORE: $BEFORE files before the install, $AFTER after"
+          { echo "| install dependencies (--frozen-lockfile; store files $BEFORE -> $AFTER) | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
           exit $STATUS
 
       - name: Resolve Build Channel

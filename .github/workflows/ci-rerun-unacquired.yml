@@ -1,0 +1,38 @@
+name: Rerun CI Jobs GitHub Never Started
+
+# A job for a hosted runner that GitHub cannot place is cancelled after fifteen minutes in the
+# queue and fails its run, though no code ran. scripts/ci-rerun-unacquired.sh holds the whole
+# decision and its reasons; it reruns only when that is the ONLY thing wrong with the run, and
+# never past the third attempt.
+#
+# `workflow_run` always takes this file and the script from the default branch (dev), never from
+# the pull request whose run ended, so a pull request cannot change what is done with this token.
+on:
+  workflow_run:
+    workflows:
+      - MythOS Continuous Integration
+    types:
+      - completed
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+
+jobs:
+  rerun-unacquired:
+    name: Rerun jobs no runner acquired
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+      - name: Rerun, if nothing else is wrong
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/ci-rerun-unacquired.sh "$GITHUB_REPOSITORY" \
+            "${{ github.event.workflow_run.id }}" "${{ github.event.workflow_run.run_attempt }}"

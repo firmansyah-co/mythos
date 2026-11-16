@@ -1,0 +1,28 @@
+name: CI Scripts
+
+# The two scripts that decide what CI does (skip a suite already passed on the same tree; rerun a
+# job GitHub never started) are tested against a stand-in GitHub whenever they change. Hosted
+# runner, a few seconds, and only on a pull request that touches them.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/ci-scripts.yml
+      - scripts/ci-already-verified.sh
+      - scripts/ci-rerun-unacquired.sh
+      - scripts/test-ci-scripts.sh
+
+permissions:
+  contents: read
+
+jobs:
+  ci-scripts:
+    name: CI decision scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+      - name: Test the scripts
+        run: ./scripts/test-ci-scripts.sh
