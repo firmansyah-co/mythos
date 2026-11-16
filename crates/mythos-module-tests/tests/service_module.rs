@@ -414,7 +414,13 @@ async fn a_new_build_is_swapped_in_and_a_removed_module_stops_serving() {
     rig.send(&rig.engineer, "PUT", NOTE, Some(json!({"text": "kept"})))
         .await;
 
-    std::fs::remove_file(rig.modules.path().join(exe_name("mythos-module-notes"))).unwrap();
+    // Taken away the way that works everywhere: Windows refuses to delete an executable that is
+    // running, but lets it be renamed to a name that is not a module's.
+    std::fs::rename(
+        rig.modules.path().join(exe_name("mythos-module-notes")),
+        rig.modules.path().join("notes-removed.old"),
+    )
+    .unwrap();
     rig.io.rescan().await;
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
