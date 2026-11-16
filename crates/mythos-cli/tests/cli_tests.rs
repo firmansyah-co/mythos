@@ -71,7 +71,10 @@ fn test_cli_update_and_instantaneous_rollback_under_one_second() {
     let res1 = UpdateManager::update(&mythos_dir, Some("0.1.0".to_string())).unwrap();
     assert_eq!(res1.version, "0.1.0");
     assert!(mythos_dir.join("current").exists());
-    assert!(mythos_dir.join("bin/mythos").exists());
+    assert!(mythos_dir
+        .join("bin")
+        .join(mythos_cli::update::binary_filename())
+        .exists());
 
     let cfg1 = CliConfig::load_from(&mythos_dir).unwrap();
     assert_eq!(cfg1.current_version.as_deref(), Some("0.1.0"));
