@@ -8,6 +8,7 @@ pub mod auth;
 pub mod datatypes;
 mod io;
 pub mod modules;
+mod node;
 mod services;
 pub mod state;
 pub mod telemetry;
@@ -94,6 +95,8 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
             axum::routing::delete(auth::revoke_token::<S>),
         )
         // Settings → Updates
+        // This installation as a node (ADR-012)
+        .route("/api/v1/node", get(node::get::<S>).put(node::update::<S>))
         .route("/api/v1/updates", get(updates::status::<S>))
         .route("/api/v1/updates/releases", get(updates::releases::<S>))
         .route("/api/v1/updates/follow", put(updates::follow::<S>))

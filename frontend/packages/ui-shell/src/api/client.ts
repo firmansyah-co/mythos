@@ -190,6 +190,26 @@ export interface AccessToken {
 export type ReleaseChannel = 'release' | 'rc' | 'dev';
 export const CHANNELS: readonly ReleaseChannel[] = ['release', 'rc', 'dev'];
 
+export type NodeRole = 'workstation' | 'edge' | 'server';
+export const NODE_ROLES: readonly NodeRole[] = ['workstation', 'edge', 'server'];
+
+/** This installation as a node (ADR-012 §2.1). */
+export interface NodeInfo {
+  /** Never changes: what pairing and plant projects refer to. */
+  id: string;
+  name: string;
+  role: NodeRole;
+  site: string;
+  version: string;
+  module_protocol: number;
+  /** Where this run of the server listens; `null` when it did not say. */
+  listening: string | null;
+  /** Where the role (or MYTHOS_BIND) says to listen. */
+  listen_address: string | null;
+  /** The role's listening address differs from this run's: it applies after a restart. */
+  restart_required: boolean;
+}
+
 export interface UpdateStatus {
   running: { version: string; installed_version: string | null; target: string };
   /** `null` when the server runs from no installation it can update. */
@@ -385,6 +405,9 @@ export const api = {
   listTags: () => request<TagMetadata[]>('/api/v1/tags'),
 
   // Updates
+  getNode: () => request<NodeInfo>('/api/v1/node'),
+  updateNode: (change: Partial<Pick<NodeInfo, 'name' | 'site' | 'role'>>) =>
+    request<NodeInfo>('/api/v1/node', json('PUT', change)),
   getUpdates: () => request<UpdateStatus>('/api/v1/updates'),
   listReleases: (refresh = false) =>
     request<ReleaseList>(`/api/v1/updates/releases${refresh ? '?refresh=true' : ''}`),

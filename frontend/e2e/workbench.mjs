@@ -302,6 +302,17 @@ try {
   await evaluate(`__t.click('Settings…')`); await sleep(600);
   check('Settings opens on the signed-in account', await evaluate(`__t.has('[data-testid="settings-view"]')`)
     && (await evaluate(`__t.text('[data-testid="my-role"]')`))[0] === 'admin');
+  // The node this server is (ADR-012 §2.1): started without a role, it is an edge, listening
+  // on every interface of the port e2e.sh gave it.
+  await evaluate(`__t.click('Node')`); await sleep(800);
+  const nodeId = (await evaluate(`__t.text('[data-testid="node-id"]')`))[0] ?? '';
+  check('Settings → Node shows this node’s id', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(nodeId), nodeId);
+  check('and that it is an edge, listening on every interface',
+    (await evaluate(`document.querySelector('input[value="edge"]')?.checked`)) === true &&
+    (await evaluate(`__t.text('[data-testid="node-listening"]')[0]`)) === `0.0.0.0:${new URL(base).port}`,
+    await evaluate(`__t.text('[data-testid="node-listening"]')[0]`));
+  const apiNode = await (await api(`${base}/api/v1/node`)).json();
+  check('the API says the same', apiNode.id === nodeId && apiNode.role === 'edge', JSON.stringify(apiNode));
   await evaluate(`__t.click('Users')`); await sleep(800);
   const accounts = await evaluate(`__t.text('[data-testid="user-row"] td:first-child')`);
   check('an administrator sees the accounts of the controller', accounts.some((a) => a.startsWith(user)), accounts.join(', '));

@@ -190,6 +190,17 @@ const VIEW: (&str, &str) = (
     "\"draft\" (default) for the version being edited, \"active\" for the released one",
 );
 
+fn node_body() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string", "maxLength": 64 },
+            "site": { "type": "string", "maxLength": 128 },
+            "role": { "type": "string", "enum": ["workstation", "edge", "server"] }
+        }
+    })
+}
+
 fn object(description: &str) -> Value {
     json!({ "type": "object", "description": description })
 }
@@ -414,6 +425,28 @@ pub const TOOLS: &[Tool] = &[
         body: None,
         read_only: false,
         destructive: true,
+    },
+    Tool {
+        name: "get_node",
+        title: "This node",
+        description: "This MythOS installation as a node: its id (never changes), name, site, role (workstation, edge or server), version, the module protocol it speaks, where it listens, and whether a restart is needed for the role's listening address to apply.",
+        method: "GET",
+        path: "/api/v1/node",
+        query: &[],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "update_node",
+        title: "Rename this node or change its role",
+        description: "Change this node's name, site or role. A workstation listens on its own computer only, an edge or a server on every interface; a new listening address applies when the server next starts.",
+        method: "PUT",
+        path: "/api/v1/node",
+        query: &[],
+        body: Some(node_body),
+        read_only: false,
+        destructive: false,
     },
     Tool {
         name: "get_update_status",
