@@ -43,6 +43,25 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     // The node: anyone may see what it is; only an administrator renames it or changes its role.
     ("GET", "/api/v1/node", V),
     ("PUT", "/api/v1/node", A),
+    // Plant projects (ADR-012 §2.4): an engineer changes the devices and downloads; a download
+    // reaches a node as a slice, which that node accepts from an engineer (a paired node is
+    // granted the role it was given).
+    ("GET", "/api/v1/projects/:id/plant", V),
+    ("PUT", "/api/v1/projects/:id/plant/devices/:device", E),
+    ("DELETE", "/api/v1/projects/:id/plant/devices/:device", E),
+    (
+        "GET",
+        "/api/v1/projects/:id/plant/devices/:device/compare",
+        V,
+    ),
+    (
+        "POST",
+        "/api/v1/projects/:id/plant/devices/:device/download",
+        E,
+    ),
+    ("POST", "/api/v1/projects/:id/plant/download", E),
+    ("GET", "/api/v1/slices/:project", V),
+    ("PUT", "/api/v1/slices/:project", E),
     // Pairing (ADR-012 §2.3): an administrator pairs and unpairs; another node pairs by the code
     // it was given, which is its only credential; a paired node says it unpaired, as itself.
     ("POST", "/api/v1/pairing/code", A),

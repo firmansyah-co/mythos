@@ -30,6 +30,8 @@ sha2.workspace = true
 zip.workspace = true
 rand.workspace = true
 hex.workspace = true
+# A device's configuration, sent to its node in a JSON body (ADR-012 §2.5).
+base64 = "0.22"
 # Each node's own certificate and HTTPS, with ring only (no aws-lc-rs: no cmake or nasm on
 # Windows), and the pinned client nodes use to reach each other (ADR-012 §2.3).
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }

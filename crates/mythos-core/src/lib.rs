@@ -14,6 +14,7 @@ pub mod mcp;
 pub mod modules;
 pub mod node;
 pub mod pairing;
+pub mod plant;
 /// Tag URIs, shared with modules through the module protocol crate.
 pub use mythos_module::namespace;
 pub mod pal;

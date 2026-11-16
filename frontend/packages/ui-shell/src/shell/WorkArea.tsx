@@ -5,6 +5,7 @@ import { useWorkbench, type EditorRef } from '../data/workbench';
 import { ConnectionDiagnostics } from '../editors/ConnectionDiagnostics';
 import { ConnectionEditor } from '../editors/ConnectionEditor';
 import { ConfigBar, DevicesAndNetworks } from '../editors/DevicesAndNetworks';
+import { PlantEditor } from '../editors/PlantEditor';
 import { ProjectOverview } from '../editors/ProjectOverview';
 import { TagTable } from '../editors/TagTable';
 import { ModuleMount } from '../modules/ModuleMount';
@@ -40,6 +41,8 @@ function EditorBody({ editor }: { editor: EditorRef }) {
   switch (editor.kind) {
     case 'overview':
       return <ProjectOverview />;
+    case 'plant':
+      return <PlantEditor />;
     case 'devices':
       return <DevicesAndNetworks />;
     case 'connection':

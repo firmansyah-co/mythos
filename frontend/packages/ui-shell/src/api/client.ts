@@ -190,6 +190,29 @@ export interface AccessToken {
 export type ReleaseChannel = 'release' | 'rc' | 'dev';
 export const CHANNELS: readonly ReleaseChannel[] = ['release', 'rc', 'dev'];
 
+/** A device of a plant (ADR-012 §2.4). */
+export interface PlantDevice {
+  id: string;
+  name: string;
+  /** The project holding its configuration. */
+  project: string;
+  /** The node it is assigned to; `null` when none yet. */
+  node: { id: string; name: string | null; this?: boolean; paired?: boolean } | null;
+}
+
+/** What compare says of a device. Unreachable is never reported as the same. */
+export interface DeviceComparison {
+  device: string;
+  state: 'same' | 'differs' | 'not_running' | 'never_downloaded' | 'unreachable' | 'not_assigned' | 'unreadable';
+  error?: string;
+}
+
+export interface DeviceDownload {
+  device: string;
+  state: 'done' | 'refused' | 'unreachable' | 'skipped';
+  error?: string;
+}
+
 /** A node this one is paired with (ADR-012 §2.3). Never a token. */
 export interface PairedNode {
   id: string;
@@ -442,6 +465,27 @@ export const api = {
 
   // Updates
   getNode: () => request<NodeInfo>('/api/v1/node'),
+  getPlant: (projectId: string) =>
+    request<{ implicit: boolean; devices: PlantDevice[] }>(`/api/v1/projects/${encodeURIComponent(projectId)}/plant`),
+  setPlantDevice: (projectId: string, deviceId: string, name: string, node: string | null) =>
+    request<PlantDevice>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/plant/devices/${encodeURIComponent(deviceId)}`,
+      json('PUT', { name, node })
+    ),
+  compareDevice: (projectId: string, deviceId: string) =>
+    request<DeviceComparison>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/plant/devices/${encodeURIComponent(deviceId)}/compare`
+    ),
+  downloadDevice: (projectId: string, deviceId: string) =>
+    request<DeviceDownload>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/plant/devices/${encodeURIComponent(deviceId)}/download`,
+      json('POST', { confirm: true })
+    ),
+  downloadPlant: (projectId: string) =>
+    request<{ complete: boolean; devices: DeviceDownload[] }>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/plant/download`,
+      json('POST', { confirm: true })
+    ),
   makePairingCode: (role: Role) =>
     request<{ code: string; expires_unix_s: number; granted: Role }>('/api/v1/pairing/code', json('POST', { role })),
   listPairings: () => request<{ peers: PairedNode[] }>('/api/v1/pairings'),

@@ -7,6 +7,7 @@ import type { ProjectConfig } from '../api/client';
 /** The workbench's own editors. */
 export type CoreEditorKind =
   | 'overview'
+  | 'plant'
   | 'devices'
   | 'connection'
   | 'tags'
@@ -17,6 +18,7 @@ export type EditorKind = CoreEditorKind | (string & {});
 
 export const CORE_EDITOR_KINDS: readonly CoreEditorKind[] = [
   'overview',
+  'plant',
   'devices',
   'connection',
   'tags',
