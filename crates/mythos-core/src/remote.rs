@@ -252,7 +252,12 @@ fn with_link(links: &Links, node: &str, f: impl FnOnce(&mut Link)) -> bool {
     }
 }
 
-/// One batch from a node: its samples, the quality named here from its code.
+/// One batch from a node: the samples of its own tags, the quality named here from its code.
+///
+/// A node's stream also carries the tags it reads from other devices (they have no slot on its
+/// tag bus). Those are left out: each device answers for its own tags only. Two devices of one
+/// plant follow each other, so taking them would hand each one back what it had just been given,
+/// under a longer name each time, without end.
 fn samples(data: &str) -> Option<Vec<TagValueUpdate>> {
     #[derive(serde::Deserialize)]
     struct Batch {
@@ -263,6 +268,7 @@ fn samples(data: &str) -> Option<Vec<TagValueUpdate>> {
         batch
             .updates
             .into_iter()
+            .filter(|u| u.slot_id.is_some())
             .map(|mut u| {
                 // The name and class are this build's for the code, as for a local tag: what
                 // the other node called it is not trusted to agree with the word.
@@ -395,6 +401,18 @@ mod tests {
         assert_eq!(got[0].quality, "BAD");
         assert_eq!(got[0].quality_name, "BAD_COMM_FAILURE");
         assert_eq!(got[0].value, serde_json::json!(1.5));
+    }
+
+    #[test]
+    fn a_batch_gives_the_nodes_own_tags_never_those_it_reads_from_another_device() {
+        let data = r#"{"timestamp_ms":1,"batch_window_ms":100,"updates":[
+            {"uri":"external.p","slot_id":0,"type":"REAL","value":1.5,"quality":"GOOD",
+             "quality_code":192,"quality_name":"GOOD","timestamp_ns":7},
+            {"uri":"this:external.q","type":"REAL","value":2.5,"quality":"GOOD",
+             "quality_code":192,"quality_name":"GOOD","timestamp_ns":7}]}"#;
+        let got = samples(data).unwrap();
+        let uris: Vec<&str> = got.iter().map(|u| u.uri.as_str()).collect();
+        assert_eq!(uris, ["external.p"]);
     }
 
     fn link(state: LinkState, heard: Option<Instant>) -> Link {

@@ -517,6 +517,31 @@ fn a_device_reads_another_devices_tags_and_never_shows_a_lost_value_as_current()
         sample(&a, "edge1:external.Boiler.U1.p").filter(|s| s["value"] == 4321)
     });
 
+    // b runs a device of the same plant, so it follows a in turn, and a's stream carries the tag
+    // a read from b. Neither hands back what it was given: each device answers for its own tags.
+    until("b follows a", || {
+        Some(b.call("GET", "/api/v1/remote", None).1)
+            .filter(|links| links["devices"][0]["state"] == "connected")
+    });
+    // Long enough for a tag handed back to have gone round many times (a batch every 100 ms).
+    std::thread::sleep(Duration::from_secs(2));
+    let (_, values) = a.call("GET", "/api/v1/tags/values", None);
+    let read_here: Vec<&str> = values["updates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|u| u["uri"].as_str())
+        .filter(|uri| uri.contains(':'))
+        .collect();
+    assert_eq!(read_here, ["edge1:external.Boiler.U1.p"], "{values}");
+    let (_, links) = a.call("GET", "/api/v1/remote", None);
+    assert_eq!(links["devices"][0]["tags"], 1, "{links}");
+    let (_, links) = b.call("GET", "/api/v1/remote", None);
+    assert_eq!(
+        links["devices"][0]["tags"], 0,
+        "a has no tag of its own, and edge1's is not a's to give: {links}"
+    );
+
     // b gone: the tag is still there, without a value, and bad.
     let _ = b.child.kill();
     let _ = b.child.wait();
