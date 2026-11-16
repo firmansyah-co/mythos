@@ -14,6 +14,17 @@ struct Server {
     https: u16,
     cookie: String,
     _dir: tempfile::TempDir,
+    // After `child` is killed (Drop above), its tag bus segment goes too: a killed server
+    // cannot remove its own, and each one left is memory until a reboot.
+    _segment: Segment,
+}
+
+struct Segment(String);
+
+impl Drop for Segment {
+    fn drop(&mut self) {
+        let _ = mythos_pal::DefaultShm::unlink(&self.0);
+    }
 }
 
 impl Drop for Server {
@@ -78,6 +89,7 @@ fn start(name: &str) -> Server {
         .unwrap()
         .port();
     let code = format!("pair-test-{name}-{}", std::process::id());
+    let segment = Segment(format!("mythos_pair_test_{name}_{}", std::process::id()));
     let mut child = Command::new(env!("CARGO_BIN_EXE_mythos-server"))
         .env_remove("MYTHOS_ROLE")
         .env_remove("MYTHOS_BIND")
@@ -85,10 +97,7 @@ fn start(name: &str) -> Server {
         .env("MYTHOS_HTTP_PORT", http_port.to_string())
         .env("MYTHOS_HTTPS_PORT", "0")
         .env("MYTHOS_SETUP_CODE", &code)
-        .env(
-            "MYTHOS_SHM_NAME",
-            format!("mythos_pair_test_{name}_{}", std::process::id()),
-        )
+        .env("MYTHOS_SHM_NAME", &segment.0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -149,6 +158,7 @@ fn start(name: &str) -> Server {
         https,
         cookie,
         _dir: dir,
+        _segment: segment,
     }
 }
 
