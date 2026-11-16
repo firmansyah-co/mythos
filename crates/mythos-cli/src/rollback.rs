@@ -1,7 +1,10 @@
-//! Sub-second (<1.0s) atomic binary rollback engine.
+//! `mythos rollback`: make the previously current version current again.
+//!
+//! Nothing is downloaded: the previous version is still installed beside the current one, so
+//! rolling back moves the `current` link and nothing else.
 
 use crate::config::{CliConfig, CliConfigError};
-use crate::update::{atomic_symlink, binary_filename};
+use crate::install::{self, InstallError};
 use std::path::Path;
 use std::time::Instant;
 use thiserror::Error;
@@ -11,14 +14,14 @@ pub enum RollbackError {
     #[error("Configuration error: {0}")]
     Config(#[from] CliConfigError),
 
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Install(#[from] InstallError),
 
     #[error("No previous version available to roll back to")]
     NoPreviousVersion,
 
-    #[error("Target rollback version '{0}' directory does not exist")]
-    VersionDirectoryMissing(String),
+    #[error("No version is current, so there is nothing to roll back from")]
+    NoCurrentVersion,
 }
 
 #[derive(Debug, Clone)]
@@ -31,57 +34,27 @@ pub struct RollbackResult {
 pub struct RollbackManager;
 
 impl RollbackManager {
-    /// Instantaneous atomic rollback (< 1.0s) to the previous cached binary version.
     pub fn rollback(mythos_dir: &Path) -> Result<RollbackResult, RollbackError> {
         let start = Instant::now();
         let mut config = CliConfig::load_from(mythos_dir)?;
-
-        let prev = config
+        let previous = config
             .previous_version
             .clone()
             .ok_or(RollbackError::NoPreviousVersion)?;
-        let curr = config
+        let current = config
             .current_version
             .clone()
-            .unwrap_or_else(|| "unknown".to_string());
+            .ok_or(RollbackError::NoCurrentVersion)?;
 
-        let target_version_dir = mythos_dir.join("versions").join(&prev);
-        if !target_version_dir.exists() {
-            return Err(RollbackError::VersionDirectoryMissing(prev));
-        }
-
-        let target_bin = target_version_dir.join("bin").join(binary_filename());
-
-        // 1. Swap ~/.mythos/current symlink to previous version dir
-        let current_link = mythos_dir.join("current");
-        atomic_symlink(&target_version_dir, &current_link)?;
-
-        // 2. Swap ~/.mythos/bin/mythos symlink to previous binary
-        if target_bin.exists() {
-            let mythos_bin_link = mythos_dir.join("bin").join(binary_filename());
-            atomic_symlink(&target_bin, &mythos_bin_link)?;
-        }
-
-        // 3. Update configuration
-        config.previous_version = Some(curr.clone());
-        config.current_version = Some(prev.clone());
+        install::point_current(mythos_dir, &previous)?;
+        config.previous_version = Some(current.clone());
+        config.current_version = Some(previous.clone());
         config.save_to(mythos_dir)?;
 
-        let duration = start.elapsed();
-        let duration_ms = duration.as_secs_f64() * 1000.0;
-
-        // Invariant check: MUST be sub-second (< 1000ms)
-        if duration_ms >= 1000.0 {
-            tracing::warn!(
-                "Rollback duration exceeded sub-second SLA: {:.2}ms",
-                duration_ms
-            );
-        }
-
         Ok(RollbackResult {
-            from_version: curr,
-            to_version: prev,
-            duration_ms,
+            from_version: current,
+            to_version: previous,
+            duration_ms: start.elapsed().as_secs_f64() * 1000.0,
         })
     }
 }

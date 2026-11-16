@@ -1,8 +1,8 @@
-//! Atomic update engine caching releases and updating symlinks.
+//! `mythos update`: install a published release and make it current.
 
-use crate::config::{CliConfig, CliConfigError};
-use crate::versions::VersionManager;
-use std::fs;
+use crate::config::{CliConfig, CliConfigError, ReleaseChannel};
+use crate::install::{self, InstallError};
+use crate::release::{self, FeedError, Release};
 use std::path::Path;
 use std::time::Instant;
 use thiserror::Error;
@@ -12,92 +12,108 @@ pub enum UpdateError {
     #[error("Configuration error: {0}")]
     Config(#[from] CliConfigError),
 
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Feed(#[from] FeedError),
 
-    #[error("Version resolution failed for channel '{0}'")]
-    VersionResolutionFailed(String),
+    #[error(transparent)]
+    Install(#[from] InstallError),
 
-    #[error("Target version '{0}' is already installed")]
-    AlreadyInstalled(String),
-}
+    #[error("nothing has been published on the {channel} channel at {feed}")]
+    NothingPublished {
+        channel: ReleaseChannel,
+        feed: String,
+    },
 
-pub struct UpdateManager;
+    #[error("version {version} has not been published at {feed}")]
+    VersionNotPublished { version: String, feed: String },
 
-impl UpdateManager {
-    /// Perform or simulate an update to a target version or latest channel version.
-    pub fn update(
-        mythos_dir: &Path,
-        target_version: Option<String>,
-    ) -> Result<UpdateResult, UpdateError> {
-        let start = Instant::now();
-        let mut config = CliConfig::load_from(mythos_dir)?;
-
-        let catalog =
-            VersionManager::fetch_remote_versions(&config.remote_url, Some(config.channel));
-        let version_to_install = match target_version {
-            Some(v) => v,
-            None => VersionManager::resolve_latest(&catalog, config.channel)
-                .ok_or_else(|| UpdateError::VersionResolutionFailed(config.channel.to_string()))?,
-        };
-
-        // Cache directory: ~/.mythos/versions/<version>/bin/mythos
-        let version_dir = mythos_dir.join("versions").join(&version_to_install);
-        let bin_dir = version_dir.join("bin");
-        fs::create_dir_all(&bin_dir)?;
-
-        let target_bin = bin_dir.join(binary_filename());
-        if !target_bin.exists() {
-            // Write payload (binary)
-            let current_exe = std::env::current_exe().ok();
-            if let Some(exe_path) = current_exe {
-                if exe_path.exists() && exe_path.is_file() {
-                    let _ = fs::copy(&exe_path, &target_bin);
-                }
-            }
-            if !target_bin.exists() {
-                // If current_exe couldn't be copied, create simulated executable binary
-                fs::write(
-                    &target_bin,
-                    format!("#!/bin/sh\necho 'MythOS v{}'\n", version_to_install),
-                )?;
-            }
-            set_executable_permission(&target_bin)?;
-        }
-
-        // Atomic symlink switch:
-        // 1. ~/.mythos/current -> ~/.mythos/versions/<version>
-        let current_link = mythos_dir.join("current");
-        atomic_symlink(&version_dir, &current_link)?;
-
-        // 2. ~/.mythos/bin/mythos -> ~/.mythos/current/bin/mythos
-        let mythos_bin_dir = mythos_dir.join("bin");
-        fs::create_dir_all(&mythos_bin_dir)?;
-        let mythos_bin_link = mythos_bin_dir.join(binary_filename());
-        atomic_symlink(&target_bin, &mythos_bin_link)?;
-
-        // Update persistent config
-        let prev_version = config.current_version.clone();
-        if prev_version.as_deref() != Some(&version_to_install) {
-            config.previous_version = prev_version;
-        }
-        config.current_version = Some(version_to_install.clone());
-        config.save_to(mythos_dir)?;
-
-        let duration = start.elapsed();
-        Ok(UpdateResult {
-            version: version_to_install,
-            duration_ms: duration.as_secs_f64() * 1000.0,
-        })
-    }
+    #[error("'{0}' is not a version (expected something like 1.2.0 or 1.2.0-rc.1)")]
+    NotAVersion(String),
 }
 
 #[derive(Debug, Clone)]
 pub struct UpdateResult {
     pub version: String,
+    /// What the installed `mythos --version` printed, or `None` when the version was already
+    /// installed and nothing was downloaded.
+    pub reported: Option<String>,
     pub duration_ms: f64,
 }
 
+pub struct UpdateManager;
+
+impl UpdateManager {
+    /// Install `version`, or the newest release on the configured channel, and make it current.
+    pub fn update(mythos_dir: &Path, version: Option<String>) -> Result<UpdateResult, UpdateError> {
+        let start = Instant::now();
+        let mut config = CliConfig::load_from(mythos_dir)?;
+        let feed = config.feed_url();
+        let releases = release::fetch(&feed)?;
+        let chosen = choose(&releases, version.as_deref(), config.channel, &feed)?;
+        let version = chosen.version.to_string();
+
+        let reported = if install::is_installed(mythos_dir, &version) {
+            None
+        } else {
+            Some(install::install(mythos_dir, chosen)?)
+        };
+        install::point_current(mythos_dir, &version)?;
+
+        if config.current_version.as_deref() != Some(version.as_str()) {
+            config.previous_version = config.current_version.take();
+            config.current_version = Some(version.clone());
+        }
+        config.save_to(mythos_dir)?;
+
+        Ok(UpdateResult {
+            version,
+            reported,
+            duration_ms: start.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+}
+
+/// The release to install: the one asked for, or the newest the channel follows.
+fn choose<'a>(
+    releases: &'a [Release],
+    version: Option<&str>,
+    channel: ReleaseChannel,
+    feed: &str,
+) -> Result<&'a Release, UpdateError> {
+    match version {
+        Some(asked) => {
+            let wanted = semver::Version::parse(asked.trim().trim_start_matches('v'))
+                .map_err(|_| UpdateError::NotAVersion(asked.to_string()))?;
+            releases
+                .iter()
+                .find(|r| r.version == wanted)
+                .ok_or_else(|| UpdateError::VersionNotPublished {
+                    version: wanted.to_string(),
+                    feed: feed.to_string(),
+                })
+        }
+        None => release::on_channel(releases, channel)
+            .into_iter()
+            .next()
+            .ok_or_else(|| UpdateError::NothingPublished {
+                channel,
+                feed: feed.to_string(),
+            }),
+    }
+}
+
+/// Whether what `mythos --version` printed names the release it was installed from. The
+/// executable carries the base version of its tag (`1.2.0` for `1.2.0-rc.3`).
+pub fn reports_release(reported: &str, version: &str) -> bool {
+    match semver::Version::parse(version) {
+        Ok(v) => reported
+            .split_whitespace()
+            .any(|word| word == format!("{}.{}.{}", v.major, v.minor, v.patch) || word == version),
+        Err(_) => false,
+    }
+}
+
+/// The file name of the `mythos` executable on this platform.
 pub fn binary_filename() -> &'static str {
     if cfg!(windows) {
         "mythos.exe"
@@ -106,49 +122,15 @@ pub fn binary_filename() -> &'static str {
     }
 }
 
-pub fn atomic_symlink(target: &Path, link_path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::symlink;
-        if let Some(parent) = link_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let tmp_link = link_path.with_extension(format!("tmp.{}", std::process::id()));
-        if tmp_link.exists() || fs::symlink_metadata(&tmp_link).is_ok() {
-            let _ = fs::remove_file(&tmp_link);
-        }
-        symlink(target, &tmp_link)?;
-        fs::rename(&tmp_link, link_path)?;
-        Ok(())
-    }
+#[cfg(test)]
+mod tests {
+    use super::reports_release;
 
-    #[cfg(not(unix))]
-    {
-        if let Some(parent) = link_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        // Not atomic, and a directory link needs the right to create symlinks; but a failure is
-        // reported, never taken for a switch that happened.
-        if target.is_dir() {
-            if fs::symlink_metadata(link_path).is_ok() {
-                fs::remove_dir(link_path).or_else(|_| fs::remove_file(link_path))?;
-            }
-            std::os::windows::fs::symlink_dir(target, link_path)?;
-        } else {
-            fs::copy(target, link_path)?;
-        }
-        Ok(())
+    #[test]
+    fn the_reported_version_is_checked_against_the_release() {
+        assert!(reports_release("mythos 1.2.0", "1.2.0"));
+        assert!(reports_release("mythos 1.2.0", "1.2.0-rc.3"));
+        assert!(!reports_release("mythos 0.1.0", "1.2.0"));
+        assert!(!reports_release("mythos 11.2.0", "1.2.0"));
     }
-}
-
-fn set_executable_permission(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(path, perms)?;
-    }
-    let _ = path;
-    Ok(())
 }

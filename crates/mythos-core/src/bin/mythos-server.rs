@@ -32,6 +32,14 @@ async fn shutdown_signal() {
     }
 }
 
+/// The workbench of a release bundle: `web/` beside the `bin/` this executable is in. Used when
+/// `MYTHOS_STATIC_DIR` is not set; `None` when there is none (a build from source).
+fn installed_workbench() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let web = exe.parent()?.parent()?.join("web");
+    web.join("index.html").is_file().then_some(web)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -42,7 +50,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shm_name = shm_name_from_env();
 
     let server = bootstrap::<DefaultShm>(&storage_root, &shm_name).await?;
-    let app = create_router(server.state);
+    let mut state = server.state;
+    if std::env::var_os("MYTHOS_STATIC_DIR").is_none() {
+        if let Some(web) = installed_workbench() {
+            tracing::info!(
+                "Serving the workbench installed beside the server: {}",
+                web.display()
+            );
+            state = state.with_static_dir(web);
+        }
+    }
+    let app = create_router(state);
 
     let port: u16 = std::env::var("MYTHOS_HTTP_PORT")
         .ok()

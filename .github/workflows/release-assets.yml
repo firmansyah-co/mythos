@@ -1,0 +1,146 @@
+name: Release Bundles
+
+# Builds the bundle `mythos update` installs, one per platform: mythos-<version>-<target>.zip
+# holding bin/ (the CLI, the server, the driver modules) and web/ (the workbench), plus a
+# SHA256SUMS listing them. Each bundle is then installed with its own CLI from a local feed and
+# its server started from the install (scripts/release-smoke.py), on the platform it is for.
+#
+# IT PUBLISHES ONLY TO A RELEASE THAT ALREADY EXISTS. Creating a tag or a release stays where it
+# is gated (release-versioning.yml, VERSION_TAG_PUSH_ENABLED); this workflow attaches files to a
+# release once a human has published one, and does nothing else outward. On a pull request or a
+# manual run without a tag it builds and checks the bundles and keeps them as workflow artifacts.
+#
+# A release created with the workflow token (release-versioning.yml's softprops step) does NOT
+# fire `release: published`: GitHub starts no workflow for events caused by GITHUB_TOKEN. For
+# such a release, run this workflow by hand with its tag; the bundles are then built from that
+# tag and attached to it.
+
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - .github/workflows/release-assets.yml
+      - scripts/package-release.py
+      - scripts/release-smoke.py
+      - crates/mythos-cli/**
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of an existing release to build from and attach the bundles to (empty builds a check only)
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The version the bundles carry: the release's tag, or a development version for a check.
+  VERSION: ${{ github.event.release.tag_name || inputs.tag || format('v0.0.0-dev.{0}', github.run_number) }}
+  # The release to attach to, if this run attaches anything.
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  workbench:
+    name: Build the workbench
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pnpm
+        # The version that generated pnpm-lock.yaml, as in ci.yml.
+        run: npm install --global pnpm@12.14.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workbench
+          path: frontend/packages/ui-shell/dist
+          if-no-files-found: error
+
+  bundle:
+    name: Bundle for ${{ matrix.target }}
+    needs: workbench
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: workbench
+          path: workbench
+      - name: Build the executables
+        shell: bash
+        run: >
+          cargo build --release --locked --target ${{ matrix.target }}
+          -p mythos-cli -p mythos-core -p driver-modbus
+          --bin mythos --bin mythos-server --bin mythos-module-modbus
+      - name: Pack the bundle
+        shell: bash
+        run: >
+          python scripts/package-release.py --version "$VERSION" --target ${{ matrix.target }}
+          --bin-dir target/${{ matrix.target }}/release --web workbench --out dist
+      - name: Install it and run what it installed
+        shell: bash
+        run: |
+          V="${VERSION#v}"
+          python scripts/release-smoke.py --bundle "dist/mythos-${V}-${{ matrix.target }}.zip" --version "$V"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.target }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Attach to the release
+    needs: bundle
+    if: github.event_name == 'release' || inputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum *.zip > SHA256SUMS
+          cat SHA256SUMS
+      - name: Attach the bundles and SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$RELEASE_TAG" dist/*.zip dist/SHA256SUMS --clobber --repo "${{ github.repository }}"

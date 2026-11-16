@@ -47,8 +47,9 @@ intent and may describe things that do not exist.
 - **Alarms, historian, recipes, device discovery, disaster recovery.**
 - **Authentication and access control.** The API has none and the server listens on every
   interface. Do not expose it to a network you do not trust.
-- **Releases and installers.** Nothing has been published. The `mythos` CLI's `update`,
-  `versions` and `rollback` commands work against a built-in version list, not a release feed.
+- **A published release.** Nothing has been published yet, so `mythos update` has nothing to
+  install and says so. The one-line installers (`scripts/install.sh`, `scripts/install.ps1`)
+  still name download hosts that do not exist.
 
 ## Repository layout
 
@@ -169,6 +170,33 @@ a separate process that is only read when a connection is pointed at it:
 ```bash
 cargo run -p driver-modbus --features sim --example modbus_sim -- 127.0.0.1:1502
 ```
+
+## Installing and updating
+
+A release publishes one bundle per platform, `mythos-<version>-<target>.zip`, and a
+`SHA256SUMS` file. The bundles are built for Linux (x86-64 and arm64), macOS (Apple silicon) and
+Windows (x86-64) by `.github/workflows/release-assets.yml`, which also installs each one with
+its own CLI and starts its server before attaching it to the release. A bundle holds `bin/`
+(`mythos`, `mythos-server`, the driver modules) and `web/` (the workbench, which the server
+serves from there when `MYTHOS_STATIC_DIR` is not set).
+
+```bash
+mythos update                    # newest release on the configured channel
+mythos update --version 1.2.0    # a given version
+mythos versions --remote         # what has been published, and whether this platform has a bundle
+mythos versions                  # what is installed
+mythos rollback                  # back to the previous version, which is still installed
+mythos channel switch rc         # follow release candidates too (or dev for everything)
+```
+
+`update` reads GitHub's release list for this repository (`MYTHOS_RELEASE_FEED` or
+`remote_url` in `~/.mythos/config.json` point it elsewhere). It refuses a bundle whose SHA-256
+does not match `SHA256SUMS`, an archive with an entry outside its directory, and a bundle whose
+`mythos` does not run on this machine; only then does it move `~/.mythos/current` (a symlink,
+or a junction on Windows) to `~/.mythos/versions/<version>`. Put `~/.mythos/current/bin` on
+`PATH`. No executable is ever overwritten, so updating while the server runs is safe; the
+running server keeps its version until it is restarted from `current`. The checksum guards
+against a damaged download, not against a compromised release: bundles are not signed yet.
 
 ## Connecting an AI agent
 
