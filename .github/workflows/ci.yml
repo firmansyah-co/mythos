@@ -316,8 +316,9 @@ jobs:
       - name: Cargo Clippy Audit
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # --no-fail-fast: a failure in one test binary must not hide what the others say.
       - name: Run All Workspace Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
   frontend-tests:
     name: Frontend Web Workbench Test Suite & Lints

@@ -99,6 +99,30 @@ mod tests {
         PosixShm::unlink(name).expect("POSIX shm unlink should succeed");
     }
 
+    /// The macOS segment is sized once, by its creator; a second opener maps the same memory
+    /// without resizing it. (Runs on every Unix: the code is the same, only macOS refuses a
+    /// second `ftruncate`.)
+    #[cfg(unix)]
+    #[test]
+    fn test_macos_shm_second_opener_shares_without_resizing() {
+        let name = format!("mythos_test_mac_{}", std::process::id());
+        let _ = MacOsShm::unlink(&name);
+        let mut first = MacOsShm::open_or_create(&name, 4096).expect("create");
+        let second = MacOsShm::open_or_create(&name, 4096).expect("open existing");
+        first.as_mut_slice()[..4].copy_from_slice(&[1, 2, 3, 4]);
+        assert_eq!(&second.as_slice()[..4], &[1, 2, 3, 4]);
+
+        // Asking for more than the segment holds is refused, not silently mapped short.
+        match MacOsShm::open_or_create(&name, 1 << 20) {
+            Err(PalError::ShmTruncateFailed { reason, .. }) => {
+                assert!(reason.contains("already exists"), "{reason}")
+            }
+            other => panic!("expected ShmTruncateFailed, got {other:?}"),
+        }
+        drop((first, second));
+        MacOsShm::unlink(&name).unwrap();
+    }
+
     #[test]
     fn test_noop_scheduler_operations() {
         NoopScheduler::set_realtime_priority(80).expect("NoopScheduler priority should succeed");

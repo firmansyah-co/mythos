@@ -64,6 +64,94 @@ impl MacOsShm {
     }
 }
 
+impl MacOsShm {
+    /// Open the segment, creating it at `size_bytes` if it does not exist.
+    ///
+    /// macOS sets a shared memory object's size once: `ftruncate` on one that already has a size
+    /// fails with `EINVAL`, even to the same size. So the segment is created exclusively and sized
+    /// by whoever creates it; everyone else opens it and checks that it is large enough.
+    fn open_sized(formatted: &str, c_name: &CString, size_bytes: usize) -> Result<c_int, PalError> {
+        let mode = 0o660 as libc::c_uint;
+        let open_error = |err: std::io::Error| {
+            if err.raw_os_error() == Some(libc::EACCES) {
+                PalError::PermissionDenied {
+                    operation: "shm_open".into(),
+                    reason: err.to_string(),
+                }
+            } else {
+                PalError::ShmOpenFailed {
+                    name: formatted.to_string(),
+                    reason: err.to_string(),
+                }
+            }
+        };
+
+        let fd = unsafe {
+            libc::shm_open(
+                c_name.as_ptr(),
+                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+                mode,
+            )
+        };
+        if fd >= 0 {
+            if unsafe { libc::ftruncate(fd, size_bytes as libc::off_t) } != 0 {
+                let err = std::io::Error::last_os_error();
+                unsafe {
+                    libc::close(fd);
+                    libc::shm_unlink(c_name.as_ptr());
+                }
+                return Err(PalError::ShmTruncateFailed {
+                    name: formatted.to_string(),
+                    size: size_bytes,
+                    reason: err.to_string(),
+                });
+            }
+            return Ok(fd);
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EEXIST) {
+            return Err(open_error(err));
+        }
+
+        let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, mode) };
+        if fd < 0 {
+            return Err(open_error(std::io::Error::last_os_error()));
+        }
+        // The creator sizes the segment just after creating it; a size of zero means it has not
+        // got there yet. Wait for it briefly rather than map an empty object.
+        for _ in 0..200 {
+            let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+            if unsafe { libc::fstat(fd, &mut stat) } != 0 {
+                let err = std::io::Error::last_os_error();
+                unsafe { libc::close(fd) };
+                return Err(open_error(err));
+            }
+            let existing = stat.st_size as usize;
+            if existing >= size_bytes {
+                return Ok(fd);
+            }
+            if existing > 0 {
+                unsafe { libc::close(fd) };
+                return Err(PalError::ShmTruncateFailed {
+                    name: formatted.to_string(),
+                    size: size_bytes,
+                    reason: format!(
+                        "the segment already exists with {existing} bytes, and macOS cannot \
+                         resize it"
+                    ),
+                });
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        unsafe { libc::close(fd) };
+        Err(PalError::ShmTruncateFailed {
+            name: formatted.to_string(),
+            size: size_bytes,
+            reason: "the segment exists but its creator never gave it a size".into(),
+        })
+    }
+}
+
 impl PlatformShm for MacOsShm {
     fn open_or_create(name: &str, size_bytes: usize) -> Result<Self, PalError> {
         if size_bytes == 0 {
@@ -79,33 +167,7 @@ impl PlatformShm for MacOsShm {
             reason: format!("CString conversion error: {}", e),
         })?;
 
-        let oflags = libc::O_RDWR | libc::O_CREAT;
-        let mode = 0o660;
-        let fd = unsafe { libc::shm_open(c_name.as_ptr(), oflags, mode as libc::c_uint) };
-        if fd < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EACCES) {
-                return Err(PalError::PermissionDenied {
-                    operation: "shm_open".into(),
-                    reason: err.to_string(),
-                });
-            }
-            return Err(PalError::ShmOpenFailed {
-                name: formatted,
-                reason: err.to_string(),
-            });
-        }
-
-        let trunc_res = unsafe { libc::ftruncate(fd, size_bytes as libc::off_t) };
-        if trunc_res != 0 {
-            let err = std::io::Error::last_os_error();
-            unsafe { libc::close(fd) };
-            return Err(PalError::ShmTruncateFailed {
-                name: formatted,
-                size: size_bytes,
-                reason: err.to_string(),
-            });
-        }
+        let fd = Self::open_sized(&formatted, &c_name, size_bytes)?;
 
         let map_ptr = unsafe {
             libc::mmap(
