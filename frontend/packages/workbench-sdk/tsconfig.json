@@ -20,7 +20,9 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
-    "types": []
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "src"

@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "The workbench UI of the MythOS HMI module: screen editor and operator runtime (ADR-011)",
+  "mythos": {
+    "module": "org.mythos.hmi",
+    "crate": "plugins/hmi"
+  },
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
