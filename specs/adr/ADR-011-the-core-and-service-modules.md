@@ -140,7 +140,7 @@ after step 4 unchanged.
 | Section | Built |
 | :--- | :--- |
 | 2.1 Core boundary | Decided; HMI, data types and deploy are still in the core |
-| 2.2 Service modules | No |
+| 2.2 Service modules | Yes: `mythos_module::service` (both sides), `crate::services` (host, forwarding, roles, data directories, events, swap), MCP tools from manifests; proven by `crates/mythos-module-tests/tests/service_module.rs` with a test module. No real service module yet |
 | 2.3 Module UI | No |
 | 2.4 Enable/disable, packages | No |
 | 2.5 Library | No |

@@ -23,6 +23,8 @@ pub const TAG_CAPACITY: usize = 32768;
 pub struct Server<S: PlatformShm + 'static> {
     pub state: ApiState<S>,
     pub io: Arc<IoManager<S>>,
+    /// The service modules (ADR-011); stop them with [`ServiceHost::shutdown`] on exit.
+    pub services: Arc<crate::services::ServiceHost>,
 }
 
 /// The tag bus segment name from `MYTHOS_SHM_NAME`, or the default.
@@ -154,10 +156,27 @@ async fn assemble<S: PlatformShm + 'static>(
         );
     }
 
-    let state = ApiState::new(storage, tag_catalog, shm_reader)
+    let state = ApiState::new(storage, tag_catalog, shm_reader);
+    // Service modules are found with the drivers, and follow every later reading of the module
+    // directories (the watcher, or POST /api/v1/modules/rescan).
+    let services = crate::services::ServiceHost::new(state.hmi_events.clone());
+    services.sync(io.service_modules()).await;
+    {
+        let services = Arc::clone(&services);
+        io.when_services_change(Arc::new(move |modules| {
+            let services = Arc::clone(&services);
+            tokio::spawn(async move { services.sync(modules).await });
+        }));
+    }
+    let state = state
+        .with_services(Arc::clone(&services))
         .with_io_manager(Arc::clone(&io))
         .with_auth(Arc::new(accounts))
         .with_updates(Arc::new(crate::updates::Updates::detect()));
 
-    Ok(Server { state, io })
+    Ok(Server {
+        state,
+        io,
+        services,
+    })
 }

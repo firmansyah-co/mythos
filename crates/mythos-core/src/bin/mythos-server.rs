@@ -82,5 +82,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     server.io.shutdown().await;
+    server.services.shutdown().await;
     Ok(())
 }

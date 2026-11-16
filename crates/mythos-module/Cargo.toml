@@ -11,6 +11,7 @@ description = "MythOS module contract: the process protocol between the host and
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
 mythos-plugin-sdk.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -23,5 +24,4 @@ tracing-subscriber.workspace = true
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
-async-trait.workspace = true
 tempfile = "3.10"

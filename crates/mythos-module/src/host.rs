@@ -161,11 +161,11 @@ fn is_module_file_name_on(name: &str, windows: bool) -> bool {
 /// Linux refuses to execute a file that some process holds open for writing (`ETXTBSY`). That
 /// happens briefly while a module is being installed, and whenever another thread of this
 /// process forks while a file is being written. It passes; anything else does not.
-fn is_text_file_busy(e: &std::io::Error) -> bool {
+pub(crate) fn is_text_file_busy(e: &std::io::Error) -> bool {
     cfg!(target_os = "linux") && e.raw_os_error() == Some(26)
 }
 
-const BUSY_RETRIES: u32 = 10;
+pub(crate) const BUSY_RETRIES: u32 = 10;
 
 /// Run `path --manifest` and read what it prints.
 pub async fn read_manifest(path: &Path) -> Result<ModuleManifest, String> {
@@ -689,6 +689,7 @@ impl MythosPlugin for ProcessDriver {
             description: manifest.description.clone(),
             plugin_type: match manifest.kind {
                 ModuleKind::Driver => PluginType::ProtocolDriver,
+                ModuleKind::Service => PluginType::Extension,
             },
             capabilities: manifest.capabilities.clone(),
         }

@@ -26,11 +26,20 @@ path = "src/bin/modbus-module-under-test.rs"
 name = "module-fixture"
 path = "src/bin/module-fixture.rs"
 
+# A service module (ADR-011) for the service module tests; see its source.
+[[bin]]
+name = "service-module-under-test"
+path = "src/bin/service-module-under-test.rs"
+
 [dependencies]
 driver-modbus.workspace = true
+mythos-module.workspace = true
+async-trait.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
+tower = { workspace = true, features = ["util"] }
 driver-modbus = { workspace = true, features = ["sim"] }
 mythos-core.workspace = true
 mythos-module.workspace = true

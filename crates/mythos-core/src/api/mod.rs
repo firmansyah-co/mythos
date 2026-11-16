@@ -9,6 +9,7 @@ pub mod datatypes;
 pub mod faceplates;
 mod io;
 mod screens;
+mod services;
 pub mod state;
 pub mod telemetry;
 mod updates;
@@ -64,7 +65,11 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
     let api: Router = routes.with_state(state.clone());
     Router::new()
         .merge(api.clone())
-        .merge(crate::mcp::router(api, state.auth.clone()))
+        .merge(crate::mcp::router(
+            api,
+            state.auth.clone(),
+            state.services.clone(),
+        ))
         // Web HMI Static Asset Serving & SPA Routing
         .merge(web::web_router::<S>().with_state(state))
 }
@@ -204,6 +209,21 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
         )
         // Control logic deployment: answers 501, nothing is compiled (see the handler)
         .route("/api/v1/control/deploy", post(control_deploy_handler::<S>))
+        // Every route of a service module (ADR-011), forwarded to its process
+        .route(
+            "/api/v1/projects/:id/:module/*rest",
+            get(services::project_route::<S>)
+                .post(services::project_route::<S>)
+                .put(services::project_route::<S>)
+                .delete(services::project_route::<S>),
+        )
+        .route(
+            "/api/v1/m/:module/*rest",
+            get(services::global_route::<S>)
+                .post(services::global_route::<S>)
+                .put(services::global_route::<S>)
+                .delete(services::global_route::<S>),
+        )
         // CRDT Collaboration WebSocket Gateway (TSK-311)
         .route("/api/v1/collab/ws/:room_id", get(collab_ws_handler::<S>))
 }

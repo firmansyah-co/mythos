@@ -16,13 +16,17 @@ use tokio::sync::{broadcast::Sender as BroadcastSender, RwLock};
 /// screen reaches every open operator station through the stream that is already open.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HmiEvent {
-    pub event: &'static str,
+    /// The SSE event name. A service module chooses its own (ADR-011 §2.2).
+    pub event: String,
     pub data: serde_json::Value,
 }
 
 impl HmiEvent {
-    pub fn new(event: &'static str, data: serde_json::Value) -> Self {
-        Self { event, data }
+    pub fn new(event: impl Into<String>, data: serde_json::Value) -> Self {
+        Self {
+            event: event.into(),
+            data,
+        }
     }
 }
 
@@ -46,6 +50,8 @@ pub struct ApiState<S: PlatformShm + 'static = mythos_pal::DefaultShm> {
     pub auth: Option<Arc<crate::auth::Auth>>,
     /// The server's own version and installation, and the published releases.
     pub updates: Option<Arc<crate::updates::Updates>>,
+    /// The service modules (ADR-011) whose routes this server forwards.
+    pub services: Option<Arc<crate::services::ServiceHost>>,
 }
 
 impl<S: PlatformShm + 'static> Clone for ApiState<S> {
@@ -61,6 +67,7 @@ impl<S: PlatformShm + 'static> Clone for ApiState<S> {
             io_manager: self.io_manager.clone(),
             auth: self.auth.clone(),
             updates: self.updates.clone(),
+            services: self.services.clone(),
         }
     }
 }
@@ -89,6 +96,7 @@ impl<S: PlatformShm + 'static> ApiState<S> {
             io_manager: None,
             auth: None,
             updates: None,
+            services: None,
         }
     }
 
@@ -118,6 +126,11 @@ impl<S: PlatformShm + 'static> ApiState<S> {
     /// Require accounts: every route is checked against `crate::auth::policy`.
     pub fn with_auth(mut self, auth: Arc<crate::auth::Auth>) -> Self {
         self.auth = Some(auth);
+        self
+    }
+
+    pub fn with_services(mut self, services: Arc<crate::services::ServiceHost>) -> Self {
+        self.services = Some(services);
         self
     }
 

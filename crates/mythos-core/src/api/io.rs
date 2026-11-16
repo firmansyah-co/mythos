@@ -59,12 +59,17 @@ pub async fn rescan_modules<S: PlatformShm + 'static>(
 /// `GET /api/v1/modules` — the modules this server found, what each provides, the schema of
 /// the configuration it accepts, and the executables that could not be used as modules.
 pub async fn modules<S: PlatformShm + 'static>(State(state): State<ApiState<S>>) -> Json<Value> {
+    let services = match &state.services {
+        Some(host) => json!(host.statuses().await),
+        None => json!([]),
+    };
     match &state.io_manager {
         Some(io) => Json(json!({
             "drivers": io.drivers(),
+            "services": services,
             "problems": io.module_problems(),
         })),
-        None => Json(json!({ "drivers": [], "problems": [] })),
+        None => Json(json!({ "drivers": [], "services": services, "problems": [] })),
     }
 }
 

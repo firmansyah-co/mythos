@@ -31,6 +31,8 @@ pub const MODULE_FILE_PREFIX: &str = "mythos-module-";
 pub enum ModuleKind {
     /// Reads field devices: a protocol driver. `provides` is the driver name `io.json` uses.
     Driver,
+    /// Serves routes of the API, with data of its own (ADR-011): the HMI, logic, …
+    Service,
 }
 
 /// What a module says about itself.
@@ -51,8 +53,115 @@ pub struct ModuleManifest {
     #[serde(default)]
     pub capabilities: Vec<String>,
     /// JSON Schema of the configuration the module accepts. A workbench draws its form from it;
-    /// the module itself remains the authority on what is valid.
+    /// the module itself remains the authority on what is valid. A service has none.
+    #[serde(default)]
     pub config_schema: Value,
+    /// The routes a service serves (ADR-011 §2.2). A driver has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<RouteDecl>,
+}
+
+/// Where a service's route is mounted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteScope {
+    /// `/api/v1/projects/:id/<provides><path>`: the route works on one project's data.
+    Project,
+    /// `/api/v1/m/<provides><path>`.
+    Global,
+}
+
+/// One route a service module serves. The server mounts it, enforces `role`, makes it an MCP
+/// tool named `tool`, and forwards each request as a [`Call::Http`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RouteDecl {
+    /// `GET`, `POST`, `PUT` or `DELETE`.
+    pub method: String,
+    /// Below the module's mount point, starting with `/`; `:name` is a path parameter.
+    pub path: String,
+    pub scope: RouteScope,
+    /// The least role that may call it: `viewer`, `operator`, `engineer` or `admin`. Absent is
+    /// administrators only.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Its MCP tool name, unique across the server.
+    pub tool: String,
+    /// What it does, for the tool's description.
+    pub summary: String,
+    /// JSON Schema of its request body, when it takes one.
+    #[serde(default)]
+    pub body: Option<Value>,
+    /// Query parameters it reads, and what each means.
+    #[serde(default)]
+    pub query: Vec<(String, String)>,
+}
+
+/// Who a forwarded request is from, as the server established it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireIdentity {
+    pub username: String,
+    pub role: String,
+}
+
+/// A request forwarded to a service module.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HttpCall {
+    pub method: String,
+    /// The route as declared (`/screens/:screen`), so the module needs no router of its own.
+    pub route: String,
+    /// The path parameters of `route`, by name.
+    #[serde(default)]
+    pub params: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub query: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub body: Option<Value>,
+    /// `None` when the server has no accounts (a test).
+    #[serde(default)]
+    pub identity: Option<WireIdentity>,
+    /// For a project route: the project's id, and the directory of this module's data for it.
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub data_dir: Option<String>,
+}
+
+/// A service module's answer to an [`HttpCall`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HttpReply {
+    pub status: u16,
+    #[serde(default)]
+    pub body: Value,
+}
+
+impl HttpReply {
+    pub fn json(status: u16, body: Value) -> Self {
+        Self { status, body }
+    }
+
+    pub fn error(status: u16, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            body: serde_json::json!({ "error": message.into() }),
+        }
+    }
+}
+
+/// Something a service module tells the server without being asked, written as its own line:
+/// `{"event": {"name": "...", "data": ...}}`. The server relays it on the telemetry stream.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WireEvent {
+    pub name: String,
+    #[serde(default)]
+    pub data: Value,
+}
+
+/// A line a module writes: an answer to a request, or an event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Outgoing {
+    Event { event: WireEvent },
+    Response(Response),
 }
 
 /// Identity and permissions the host grants one module instance.
@@ -87,6 +196,8 @@ pub enum Call {
     Health,
     /// Stop. Answers with `null`; the module may then be closed.
     Stop,
+    /// A request to one of a service module's routes. Answers with an [`HttpReply`].
+    Http(HttpCall),
 }
 
 /// The module's answer to one request: `result` or `error`, never both.

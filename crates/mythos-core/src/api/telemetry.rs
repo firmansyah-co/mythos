@@ -137,7 +137,7 @@ pub async fn telemetry_stream_handler<S: PlatformShm + 'static>(
                         Ok(hmi) => {
                             let data = serde_json::to_string(&hmi.data)
                                 .unwrap_or_else(|_| "{}".to_string());
-                            let event = Event::default().event(hmi.event).data(data);
+                            let event = Event::default().event(hmi.event.as_str()).data(data);
                             if tx.send(Ok(event)).await.is_err() {
                                 break;
                             }
