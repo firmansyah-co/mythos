@@ -5,6 +5,16 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// The tag bus segment a test's server makes, removed when the test ends however it ends: a
+/// server that is killed cannot remove its own, and each one left is memory until a reboot.
+struct Segment(String);
+
+impl Drop for Segment {
+    fn drop(&mut self) {
+        let _ = mythos_pal::DefaultShm::unlink(&self.0);
+    }
+}
+
 #[test]
 fn a_new_server_tells_whoever_started_it_the_setup_code_and_logs_by_default() {
     let dir = tempfile::tempdir().unwrap();
@@ -13,16 +23,14 @@ fn a_new_server_tells_whoever_started_it_the_setup_code_and_logs_by_default() {
         .local_addr()
         .unwrap()
         .port();
+    let segment = Segment(format!("mythos_binary_test_{}", std::process::id()));
     let mut child = Command::new(env!("CARGO_BIN_EXE_mythos-server"))
         .env_remove("RUST_LOG")
         .env_remove("MYTHOS_SETUP_CODE")
         .env("MYTHOS_HTTPS_PORT", "0")
         .env("MYTHOS_STORAGE_ROOT", dir.path())
         .env("MYTHOS_HTTP_PORT", port.to_string())
-        .env(
-            "MYTHOS_SHM_NAME",
-            format!("mythos_binary_test_{}", std::process::id()),
-        )
+        .env("MYTHOS_SHM_NAME", &segment.0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -64,13 +72,25 @@ fn a_new_server_tells_whoever_started_it_the_setup_code_and_logs_by_default() {
     );
 }
 
+/// A started server's storage, and its tag bus segment, which goes when this does.
+struct Home {
+    dir: tempfile::TempDir,
+    _segment: Segment,
+}
+
+impl Home {
+    fn path(&self) -> &std::path::Path {
+        self.dir.path()
+    }
+}
+
 /// Start the server with `env` on a free port; return it, its port, its storage and its lines.
 fn start(
     env: &[(&str, &str)],
 ) -> (
     std::process::Child,
     u16,
-    tempfile::TempDir,
+    Home,
     std::sync::mpsc::Receiver<String>,
 ) {
     start_with_args(env, &[])
@@ -83,7 +103,7 @@ fn start_with_args(
 ) -> (
     std::process::Child,
     u16,
-    tempfile::TempDir,
+    Home,
     std::sync::mpsc::Receiver<String>,
 ) {
     let dir = tempfile::tempdir().unwrap();
@@ -92,6 +112,7 @@ fn start_with_args(
         .local_addr()
         .unwrap()
         .port();
+    let segment = Segment(format!("mythos_role_test_{}_{port}", std::process::id()));
     let mut command = Command::new(env!("CARGO_BIN_EXE_mythos-server"));
     command
         .env_remove("MYTHOS_ROLE")
@@ -100,10 +121,7 @@ fn start_with_args(
         .env("MYTHOS_HTTPS_PORT", "0")
         .env("MYTHOS_STORAGE_ROOT", dir.path())
         .env("MYTHOS_HTTP_PORT", port.to_string())
-        .env(
-            "MYTHOS_SHM_NAME",
-            format!("mythos_role_test_{}_{port}", std::process::id()),
-        )
+        .env("MYTHOS_SHM_NAME", &segment.0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (key, value) in env {
@@ -123,7 +141,15 @@ fn start_with_args(
             }
         });
     }
-    (child, port, dir, rx)
+    (
+        child,
+        port,
+        Home {
+            dir,
+            _segment: segment,
+        },
+        rx,
+    )
 }
 
 /// The address the server says it listens on.

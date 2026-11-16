@@ -91,6 +91,17 @@ struct Rig {
     admin: String,
     viewer: String,
     _dirs: Vec<tempfile::TempDir>,
+    _segment: Segment,
+}
+
+/// The tag bus segment a test makes, removed when the test ends however it ends: one left
+/// behind is memory until a reboot.
+struct Segment(String);
+
+impl Drop for Segment {
+    fn drop(&mut self) {
+        let _ = DefaultShm::unlink(&self.0);
+    }
 }
 
 /// A server as `server::assemble` builds one: its module directories are `extra` (the MythOS
@@ -117,14 +128,15 @@ async fn rig(extra: Option<&Path>) -> Rig {
     let mut registry = DriverRegistry::discover(&dirs).await;
     registry.apply_disabled(&settings.disabled());
     let catalog = Arc::new(RwLock::new(TagCatalog::new()));
+    let segment = Segment(format!(
+        "mythos_pkg_test_{}_{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::SeqCst)
+    ));
     let io = IoManager::<DefaultShm>::with_module_dirs(
         Arc::clone(&storage),
         Arc::clone(&catalog),
-        format!(
-            "mythos_pkg_test_{}_{}",
-            std::process::id(),
-            SEQ.fetch_add(1, Ordering::SeqCst)
-        ),
+        segment.0.clone(),
         16,
         registry,
         dirs,
@@ -153,6 +165,7 @@ async fn rig(extra: Option<&Path>) -> Rig {
         admin,
         viewer,
         _dirs: vec![root],
+        _segment: segment,
     }
 }
 

@@ -222,3 +222,53 @@ async fn two_nodes_hear_each_other_as_candidates() {
     a.services.shutdown().await;
     b.services.shutdown().await;
 }
+
+/// The real module process, told its node (so its listener holds on to the event channel for as
+/// long as it lives), stops when its server is gone: its input closes and nothing stops it
+/// first. It used to run on, its mDNS daemon with it, one more for every server that died.
+#[test]
+fn the_module_process_stops_when_its_server_is_gone() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(DISCOVERY)
+        .arg("--serve")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    writeln!(
+        input,
+        r#"{{"id":1,"call":{{"method":"node","params":{{"node":{{"id":"7f3c2a10-5b9e-4c1d-9a2f-0e6b8d4c1a77","name":"n","role":"edge","announce":false,"port":18503,"version":"0.0.0","protocol":1}}}}}}}}"#
+    )
+    .unwrap();
+    input.flush().unwrap();
+    // Answered: the module has been told its node and is listening.
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    while !line.contains(r#""id":1"#) {
+        line.clear();
+        assert_ne!(
+            output.read_line(&mut line).unwrap(),
+            0,
+            "the module closed its output before answering"
+        );
+    }
+
+    drop(input);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the module went on running after its server was gone");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(status.success(), "{status}");
+}

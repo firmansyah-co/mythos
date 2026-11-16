@@ -33,6 +33,24 @@ import urllib.request
 import zipfile
 
 
+# What this run made, to remove when it ends: its working directory (kept after a failure, for
+# the server's log) and the server's tag bus segment.
+MADE = {"work": None, "segment": None}
+
+
+def tidy(code: int) -> None:
+    segment = MADE["segment"]
+    if segment and os.path.exists(f"/dev/shm/{segment}"):
+        os.remove(f"/dev/shm/{segment}")
+    work = MADE["work"]
+    if not work:
+        return
+    if code == 0:
+        shutil.rmtree(work, ignore_errors=True)
+    else:
+        print(f"release-smoke: what it ran is kept in {work}", file=sys.stderr)
+
+
 def fail(step: str, detail: str) -> int:
     print(f"release-smoke: FAILED at {step}: {detail}", file=sys.stderr)
     return 1
@@ -53,6 +71,7 @@ def main() -> int:
     exe = ".exe" if os.name == "nt" else ""
 
     work = tempfile.mkdtemp(prefix="mythos-smoke-")
+    MADE["work"] = work
     feed_dir = os.path.join(work, "feed")
     os.makedirs(feed_dir)
     name = os.path.basename(args.bundle)
@@ -126,6 +145,7 @@ def main() -> int:
         MYTHOS_HTTPS_PORT="0",
         MYTHOS_SHM_NAME=f"mythos_smoke_{os.getpid()}",
     )
+    MADE["segment"] = server_env["MYTHOS_SHM_NAME"]
     server_env.pop("MYTHOS_STATIC_DIR", None)
     server_env.pop("MYTHOS_MODULE_PATH", None)
     server_env.pop("MYTHOS_HOME", None)
@@ -231,4 +251,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = 1
+    try:
+        code = main()
+    finally:
+        tidy(code)
+    sys.exit(code)
