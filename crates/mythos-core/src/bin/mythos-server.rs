@@ -42,7 +42,7 @@ fn installed_workbench() -> Option<std::path::PathBuf> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    mythos_core::server::init_logging();
 
     let storage_root = std::env::var_os("MYTHOS_STORAGE_ROOT")
         .map(std::path::PathBuf::from)
@@ -50,6 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shm_name = shm_name_from_env();
 
     let server = bootstrap::<DefaultShm>(&storage_root, &shm_name).await?;
+    mythos_core::server::announce_setup_code(&server);
     let mut state = server.state;
     if std::env::var_os("MYTHOS_STATIC_DIR").is_none() {
         if let Some(web) = installed_workbench() {
