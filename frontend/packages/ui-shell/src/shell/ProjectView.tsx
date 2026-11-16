@@ -3,14 +3,13 @@ import { editorTitle } from '../data/derive';
 import { isDirty, useIoConfig } from '../data/ioConfig';
 import { useLog } from '../data/log';
 import { useRuntimeScope } from '../data/scope';
-import { anyScreenDirty, useScreens } from '../data/screens';
 import { goOffline, goOnline, useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
 import { Inspector } from './Inspector';
 import { MenuBar, type Menu } from './MenuBar';
 import { ProjectTree } from './ProjectTree';
 import { useModuleUi } from '../modules/registry';
-import { ModuleTaskCards, OnlineTools, Toolbox } from './TaskCards';
+import { ModuleTaskCards, OnlineTools } from './TaskCards';
 import { useEditorNames } from './useEditorNames';
 import { useResizable } from './useResizable';
 import { WorkArea } from './WorkArea';
@@ -55,17 +54,16 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
   const closeProject = useWorkbench((state) => state.closeProject);
   const showPortal = useWorkbench((state) => state.showPortal);
   const showSettings = useWorkbench((state) => state.showSettings);
-  const startRuntime = useWorkbench((state) => state.startRuntime);
+  const showModuleView = useWorkbench((state) => state.showModuleView);
   const stream = useTelemetry((state) => state.stream);
   const wantOnline = useTelemetry((state) => state.wantOnline);
   const lastLog = useLog((state) => state.entries[state.entries.length - 1]);
   const running = useRuntimeScope().kind === 'active';
   const ioDirty = useIoConfig(isDirty);
-  const screensDirty = useScreens(anyScreenDirty);
-  const dirty = ioDirty || screensDirty;
+  const modulesDirty = useModuleUi((state) => Object.keys(state.unsaved).length > 0);
+  const dirty = ioDirty || modulesDirty;
   const names = useEditorNames();
   const modules = useModuleUi();
-  const activeEditor = editors.find((editor) => editor.id === activeEditorId);
 
   /** Close the project, unless there are unsaved changes the engineer wants to keep. */
   const close = () => {
@@ -85,6 +83,7 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
 
   if (!project) return null;
 
+  const launchable = modules.views.filter((view) => view.item.launch);
   const menus: Menu[] = [
     {
       label: 'Project',
@@ -107,7 +106,11 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
       items: [
         { label: 'Go online', disabled: wantOnline || !running, run: goOnline },
         { label: 'Go offline', disabled: !wantOnline, run: goOffline },
-        { label: 'Start runtime', run: () => startRuntime() },
+        // A module's full-window views that ask for a button (the HMI's operator runtime).
+        ...launchable.map((view) => ({
+          label: view.item.launch ?? view.item.id,
+          run: () => showModuleView(view.item.id),
+        })),
       ],
     },
     { label: 'Help', items: [{ label: 'About MythOS Workbench', run: onAbout }] },
@@ -141,15 +144,19 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
         <button type="button" className="btn btn--flat" disabled={!wantOnline} onClick={goOffline}>
           <Unplug size={14} aria-hidden /> Go offline
         </button>
-        <span className="toolbar__sep" aria-hidden />
-        <button
-          type="button"
-          className="btn btn--flat"
-          title="Show the released screens as an operator sees them"
-          onClick={() => startRuntime()}
-        >
-          <MonitorPlay size={14} aria-hidden /> Start runtime
-        </button>
+        {launchable.map((view) => (
+          <span key={view.item.id} className="toolbar__group">
+            <span className="toolbar__sep" aria-hidden />
+            <button
+              type="button"
+              className="btn btn--flat"
+              data-testid={`launch-${view.item.id}`}
+              onClick={() => showModuleView(view.item.id)}
+            >
+              <MonitorPlay size={14} aria-hidden /> {view.item.launch}
+            </button>
+          </span>
+        ))}
         <span className="toolbar__sep" aria-hidden />
         <span className={`badge badge--${words.tone}`} data-testid="toolbar-stream">
           {words.label}
@@ -210,9 +217,6 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
                 </button>
               </header>
               <div className="pane__body">
-                {activeEditor?.kind === 'screen' && activeEditor.target && (
-                  <Toolbox screenId={activeEditor.target} />
-                )}
                 <ModuleTaskCards />
                 <OnlineTools />
               </div>

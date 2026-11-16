@@ -1,0 +1,27 @@
+[package]
+name = "mythos-hmi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "The MythOS HMI: screens, faceplates and the operator runtime, as a service module (ADR-011)"
+
+[lints]
+workspace = true
+
+[dependencies]
+mythos-module.workspace = true
+async-trait.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "mythos-module-hmi"
+path = "src/bin/mythos-module-hmi.rs"

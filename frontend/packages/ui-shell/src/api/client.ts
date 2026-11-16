@@ -131,14 +131,6 @@ export class ConfigRejected extends Error {
   }
 }
 
-/** An HMI screen as the controller stores it. `canvasData` is the workbench's own format. */
-export interface StoredScreen {
-  id: string;
-  name: string;
-  is_root: boolean;
-  canvasData: unknown;
-}
-
 /** A tag as the catalog describes it. Only the fields this workbench shows are typed. */
 export interface TagMetadata {
   uri: string;
@@ -369,31 +361,6 @@ export const api = {
     ),
   removeModule: (id: string) =>
     request<{ removed: string }>(`/api/v1/modules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  listScreens: (projectId: string, view: 'draft' | 'active') =>
-    request<StoredScreen[]>(
-      `/api/v1/projects/${encodeURIComponent(projectId)}/hmi/screens?view=${view}`
-    ),
-  createScreen: (projectId: string, name: string) =>
-    request<StoredScreen>(
-      `/api/v1/projects/${encodeURIComponent(projectId)}/hmi/screens`,
-      json('POST', { name, is_root: false })
-    ),
-  saveScreenDraft: (projectId: string, screenId: string, canvas: unknown) =>
-    send(
-      `/api/v1/projects/${encodeURIComponent(projectId)}/hmi/screens/${encodeURIComponent(screenId)}/draft`,
-      json('PUT', canvas)
-    ),
-  deleteScreen: (projectId: string, screenId: string) =>
-    send(
-      `/api/v1/projects/${encodeURIComponent(projectId)}/hmi/screens/${encodeURIComponent(screenId)}`,
-      { method: 'DELETE' }
-    ),
-  /** Release every screen's draft: what operators see becomes what was last saved. */
-  releaseScreens: (projectId: string) =>
-    request<Record<string, unknown>>(
-      `/api/v1/projects/${encodeURIComponent(projectId)}/hmi/commit`,
-      { method: 'POST' }
-    ),
   getIoConfig: async (projectId: string) =>
     (await request<{ config: IoConfig | null }>(`/api/v1/projects/${encodeURIComponent(projectId)}/io`))
       .config,

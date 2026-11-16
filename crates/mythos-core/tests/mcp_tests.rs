@@ -317,7 +317,7 @@ async fn the_endpoint_speaks_the_protocol() {
 }
 
 #[tokio::test]
-async fn an_agent_can_configure_and_read_a_device_and_publish_a_screen() {
+async fn an_agent_can_configure_and_read_a_device() {
     let sim = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
     sim.set_holding(0, 4242).await;
     let rig = rig().await;
@@ -399,38 +399,7 @@ async fn an_agent_can_configure_and_read_a_device_and_publish_a_screen() {
     let (_, _, tag) = rig.tool("get_tag", json!({"uri": PRESSURE})).await;
     assert_eq!(tag["uri"], PRESSURE);
 
-    // A screen with a field bound to that tag, saved and released.
-    let (error, _, screen) = rig
-        .tool(
-            "create_screen",
-            json!({"project_id": "plant", "body": {"name": "Overview", "is_root": true}}),
-        )
-        .await;
-    assert!(!error, "{screen}");
-    let screen_id = screen["id"].as_str().unwrap().to_string();
-    let canvas = json!({"title": "Overview", "components": [{"id": "e1", "type": "io_field",
-        "x": 0, "y": 0, "width": 160, "height": 32, "tag": PRESSURE, "label": "Pressure", "unit": "bar"}]});
-    let (error, _, saved) = rig
-        .tool(
-            "save_screen_draft",
-            json!({"project_id": "plant", "screen_id": screen_id, "body": canvas}),
-        )
-        .await;
-    assert!(!error, "{saved}");
-    let (error, _, released) = rig
-        .tool("release_screens", json!({"project_id": "plant"}))
-        .await;
-    assert!(!error, "{released}");
-    let (_, _, screens) = rig
-        .tool(
-            "list_screens",
-            json!({"project_id": "plant", "view": "active"}),
-        )
-        .await;
-    assert_eq!(
-        screens[0]["canvasData"]["components"][0]["tag"], PRESSURE,
-        "{screens}"
-    );
+    // Publishing a screen is the HMI module's (ADR-011): `mythos-module-tests/tests/hmi_mcp.rs`.
 
     let (error, _, modules) = rig.tool("list_modules", json!({})).await;
     assert!(!error);
@@ -485,56 +454,7 @@ async fn the_bodies_the_tools_document_are_what_the_routes_accept() {
         .await;
     assert!(!error, "{created}");
 
-    // A faceplate type and an instance, with the names the schemas document.
-    let (error, _, faceplate) = rig
-        .tool(
-            "create_faceplate_type",
-            json!({"project_id": "p", "body": {"name": "MotorFp", "udt": udt}}),
-        )
-        .await;
-    assert!(!error, "{faceplate}");
-    let type_id = faceplate["id"]
-        .as_str()
-        .expect("a faceplate type id")
-        .to_string();
-
-    let instance_schema = schema_of("create_faceplate_instance");
-    assert_eq!(required(&instance_schema), vec!["name", "typeId"]);
-    let binding = &instance_schema["properties"]["bindings"]["items"];
-    assert_eq!(required(binding), vec!["faceplateKey", "tagUri"]);
-    // A fresh type declares no binding keys, so the route refuses this one. That it names the
-    // key proves it read the binding with the field names documented; a misnamed field would be
-    // refused as unreadable instead.
-    let (error, _, refused) = rig
-        .tool(
-            "create_faceplate_instance",
-            json!({"project_id": "p", "body": {"name": "M0", "typeId": type_id,
-                "bindings": [{"faceplateKey": "running", "tagUri": ""}]}}),
-        )
-        .await;
-    assert!(error);
-    assert!(
-        refused["error"]
-            .as_str()
-            .unwrap()
-            .contains("binding 'running'"),
-        "{refused}"
-    );
-    let (error, _, instance) = rig
-        .tool(
-            "create_faceplate_instance",
-            json!({"project_id": "p", "body": {"name": "M1", "typeId": type_id, "bindings": []}}),
-        )
-        .await;
-    assert!(!error, "{instance}");
-    let instance_id = instance["id"].as_str().expect("an instance id").to_string();
-    let (error, _, updated) = rig
-        .tool(
-            "update_faceplate_instance",
-            json!({"project_id": "p", "instance_id": instance_id, "body": {"typeVersion": null}}),
-        )
-        .await;
-    assert!(!error, "{updated}");
+    // The faceplate tools are the HMI module's: `mythos-module-tests/tests/hmi_mcp.rs`.
 
     rig.io.shutdown().await;
 }

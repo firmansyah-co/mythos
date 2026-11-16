@@ -1,15 +1,13 @@
 //! # MythOS Axum REST and SSE API Gateway
 //!
-//! REST endpoints for health, tags (read-only), projects and their HMI, data-type, faceplate
-//! and I/O configuration, and the SSE telemetry stream (`/api/v1/telemetry/stream`, one batch
+//! REST endpoints for health, tags (read-only), projects and their data-type and I/O
+//! configuration, the routes of service modules (the HMI among them), and the SSE telemetry stream (`/api/v1/telemetry/stream`, one batch
 //! every 100 ms).
 
 pub mod auth;
 pub mod datatypes;
-pub mod faceplates;
 mod io;
 pub mod modules;
-mod screens;
 mod services;
 pub mod state;
 pub mod telemetry;
@@ -130,27 +128,6 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
             "/api/v1/projects/:id/activate",
             post(activate_project_handler::<S>),
         )
-        // Project-scoped persisted HMI drafts
-        .route(
-            "/api/v1/projects/:id/hmi/screens",
-            get(screens::list::<S>).post(screens::create::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/hmi/screens/:screen",
-            axum::routing::delete(screens::delete::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/hmi/screens/:screen/subscreens",
-            post(screens::create_subscreen::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/hmi/screens/:screen/draft",
-            axum::routing::put(screens::save_draft::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/hmi/commit",
-            post(screens::commit::<S>),
-        )
         // Project-scoped DUT/UDT registry (logic editor data types)
         .route(
             "/api/v1/projects/:id/datatypes",
@@ -167,31 +144,6 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
         .route(
             "/api/v1/projects/:id/datatypes/:dut/release",
             post(datatypes::release::<S>),
-        )
-        // Project-scoped master faceplate types and instances (TSK-309)
-        .route(
-            "/api/v1/projects/:id/faceplates/types",
-            get(faceplates::list_types::<S>).post(faceplates::create_type::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/faceplates/types/:type",
-            get(faceplates::get_type::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/faceplates/types/:type/draft",
-            put(faceplates::save_draft::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/faceplates/types/:type/release",
-            post(faceplates::release::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/faceplates/instances",
-            get(faceplates::list_instances::<S>).post(faceplates::create_instance::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/faceplates/instances/:instance",
-            put(faceplates::update_instance::<S>),
         )
         // Telemetry Stream (100ms batched SSE)
         .route(

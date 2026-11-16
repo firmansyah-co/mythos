@@ -1,19 +1,19 @@
 //! # MythOS Core
 //!
 //! The HTTP/SSE API gateway, the field I/O runtime that feeds the tag bus, controller project
-//! storage, the tag catalog and namespace rules, the device catalog parser, HMI screen /
-//! faceplate / data-type registries, the collaboration room, and the plugin package format.
+//! storage, the tag catalog, the device catalog parser, the data-type registry, accounts, the
+//! module host and the collaboration room. The HMI is a service module (`plugins/hmi`, ADR-011).
 
 pub mod api;
 pub mod auth;
 pub mod catalog;
 pub mod collab;
 pub mod datatype;
-pub mod faceplate;
 pub mod io;
 pub mod mcp;
 pub mod modules;
-pub mod namespace;
+/// Tag URIs, shared with modules through the module protocol crate.
+pub use mythos_module::namespace;
 pub mod pal;
 pub mod sdui;
 pub mod server;

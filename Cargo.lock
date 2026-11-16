@@ -2436,6 +2436,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mythos-hmi"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "mythos-module",
+ "rand",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "mythos-module"
 version = "0.1.0"
 dependencies = [
@@ -2458,7 +2472,9 @@ dependencies = [
  "async-trait",
  "axum",
  "driver-modbus",
+ "futures-util",
  "mythos-core",
+ "mythos-hmi",
  "mythos-module",
  "mythos-pal",
  "mythos-plugin-sdk",

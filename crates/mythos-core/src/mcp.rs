@@ -296,56 +296,6 @@ fn create_project_body() -> Value {
     })
 }
 
-fn create_screen_body() -> Value {
-    json!({
-        "type": "object",
-        "required": ["name"],
-        "properties": {
-            "name": { "type": "string" },
-            "is_root": { "type": "boolean", "default": false }
-        }
-    })
-}
-
-fn create_subscreen_body() -> Value {
-    json!({
-        "type": "object",
-        "required": ["name", "type"],
-        "properties": { "name": { "type": "string" }, "type": { "type": "string" } }
-    })
-}
-
-fn canvas_body() -> Value {
-    json!({
-        "type": "object",
-        "required": ["components"],
-        "description": "The screen's whole canvas; it replaces the saved draft. Saving does not release.",
-        "properties": {
-            "title": { "type": "string" },
-            "components": {
-                "type": "array",
-                "description": "What the workbench draws. It knows two kinds; any other is kept as it is and not drawn.",
-                "items": {
-                    "type": "object",
-                    "required": ["id", "type", "x", "y", "width", "height"],
-                    "properties": {
-                        "id": { "type": "string" },
-                        "type": { "type": "string", "enum": ["text", "io_field"] },
-                        "x": { "type": "number" },
-                        "y": { "type": "number" },
-                        "width": { "type": "number" },
-                        "height": { "type": "number" },
-                        "text": { "type": "string", "description": "text: what it shows" },
-                        "tag": { "type": "string", "description": "io_field: the tag URI it shows, \"\" for none" },
-                        "label": { "type": "string", "description": "io_field" },
-                        "unit": { "type": "string", "description": "io_field" }
-                    }
-                }
-            }
-        }
-    })
-}
-
 fn udt_schema() -> Value {
     json!({
         "type": "object",
@@ -368,58 +318,9 @@ fn udt_schema() -> Value {
     })
 }
 
-fn binding_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["faceplateKey", "tagUri"],
-        "properties": {
-            "faceplateKey": { "type": "string" },
-            "tagUri": { "type": "string", "description": "A registered tag URI, or \"\" for none" }
-        }
-    })
-}
-
 /// The data type routes take the definition itself as the body.
 fn datatype_body() -> Value {
     udt_schema()
-}
-
-fn faceplate_type_create_body() -> Value {
-    json!({
-        "type": "object",
-        "required": ["name", "udt"],
-        "properties": { "name": { "type": "string" }, "udt": udt_schema() }
-    })
-}
-
-fn faceplate_type_body() -> Value {
-    object("The whole faceplate type, as get_faceplate_type returns it, with the changes made")
-}
-
-fn faceplate_instance_create_body() -> Value {
-    json!({
-        "type": "object",
-        "required": ["name", "typeId"],
-        "properties": {
-            "name": { "type": "string" },
-            "typeId": { "type": "string" },
-            "typeVersion": { "type": "integer", "description": "A published version to freeze to; omit to follow the active one" },
-            "bindings": { "type": "array", "items": binding_schema() }
-        }
-    })
-}
-
-fn faceplate_instance_update_body() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "typeVersion": {
-                "type": ["integer", "null"],
-                "description": "Absent: unchanged. null: follow the active version. A number: freeze to it."
-            },
-            "bindings": { "type": "array", "items": binding_schema() }
-        }
-    })
 }
 
 fn io_config_body() -> Value {
@@ -746,72 +647,6 @@ pub const TOOLS: &[Tool] = &[
         destructive: true,
     },
     Tool {
-        name: "list_screens",
-        title: "List HMI screens",
-        description: "A project's HMI screens with their canvases.",
-        method: "GET",
-        path: "/api/v1/projects/:id/hmi/screens",
-        query: &[VIEW],
-        body: None,
-        read_only: true,
-        destructive: false,
-    },
-    Tool {
-        name: "create_screen",
-        title: "Create an HMI screen",
-        description: "Add an empty screen to a project's draft.",
-        method: "POST",
-        path: "/api/v1/projects/:id/hmi/screens",
-        query: &[],
-        body: Some(create_screen_body),
-        read_only: false,
-        destructive: false,
-    },
-    Tool {
-        name: "delete_screen",
-        title: "Delete an HMI screen",
-        description: "Remove a screen from a project's draft.",
-        method: "DELETE",
-        path: "/api/v1/projects/:id/hmi/screens/:screen",
-        query: &[],
-        body: None,
-        read_only: false,
-        destructive: true,
-    },
-    Tool {
-        name: "create_subscreen",
-        title: "Create a sub-screen",
-        description: "Add a sub-screen to a screen.",
-        method: "POST",
-        path: "/api/v1/projects/:id/hmi/screens/:screen/subscreens",
-        query: &[],
-        body: Some(create_subscreen_body),
-        read_only: false,
-        destructive: false,
-    },
-    Tool {
-        name: "save_screen_draft",
-        title: "Save a screen's canvas",
-        description: "Replace a screen's draft canvas. Operators do not see it until release_screens.",
-        method: "PUT",
-        path: "/api/v1/projects/:id/hmi/screens/:screen/draft",
-        query: &[],
-        body: Some(canvas_body),
-        read_only: false,
-        destructive: false,
-    },
-    Tool {
-        name: "release_screens",
-        title: "Release HMI screens",
-        description: "Release every screen's saved draft to the operator runtime, which shows it without a reload.",
-        method: "POST",
-        path: "/api/v1/projects/:id/hmi/commit",
-        query: &[],
-        body: None,
-        read_only: false,
-        destructive: false,
-    },
-    Tool {
         name: "list_datatypes",
         title: "List data types",
         description: "A project's user data types (UDTs).",
@@ -874,94 +709,6 @@ pub const TOOLS: &[Tool] = &[
         path: "/api/v1/projects/:id/datatypes/:dut/release",
         query: &[],
         body: None,
-        read_only: false,
-        destructive: false,
-    },
-    Tool {
-        name: "list_faceplate_types",
-        title: "List faceplate types",
-        description: "A project's faceplate types.",
-        method: "GET",
-        path: "/api/v1/projects/:id/faceplates/types",
-        query: &[],
-        body: None,
-        read_only: true,
-        destructive: false,
-    },
-    Tool {
-        name: "create_faceplate_type",
-        title: "Create a faceplate type",
-        description: "Add a faceplate type built on a UDT.",
-        method: "POST",
-        path: "/api/v1/projects/:id/faceplates/types",
-        query: &[],
-        body: Some(faceplate_type_create_body),
-        read_only: false,
-        destructive: false,
-    },
-    Tool {
-        name: "get_faceplate_type",
-        title: "Get a faceplate type",
-        description: "One faceplate type.",
-        method: "GET",
-        path: "/api/v1/projects/:id/faceplates/types/:type",
-        query: &[VIEW],
-        body: None,
-        read_only: true,
-        destructive: false,
-    },
-    Tool {
-        name: "save_faceplate_type_draft",
-        title: "Save a faceplate type draft",
-        description: "Replace a faceplate type's draft.",
-        method: "PUT",
-        path: "/api/v1/projects/:id/faceplates/types/:type/draft",
-        query: &[],
-        body: Some(faceplate_type_body),
-        read_only: false,
-        destructive: false,
-    },
-    Tool {
-        name: "release_faceplate_type",
-        title: "Release a faceplate type",
-        description: "Release a faceplate type's draft and propagate it to its instances.",
-        method: "POST",
-        path: "/api/v1/projects/:id/faceplates/types/:type/release",
-        query: &[],
-        body: None,
-        read_only: false,
-        destructive: false,
-    },
-    Tool {
-        name: "list_faceplate_instances",
-        title: "List faceplate instances",
-        description: "A project's faceplate instances.",
-        method: "GET",
-        path: "/api/v1/projects/:id/faceplates/instances",
-        query: &[("stage", "Which stage to list")],
-        body: None,
-        read_only: true,
-        destructive: false,
-    },
-    Tool {
-        name: "create_faceplate_instance",
-        title: "Create a faceplate instance",
-        description: "Place an instance of a faceplate type, bound to registered tags.",
-        method: "POST",
-        path: "/api/v1/projects/:id/faceplates/instances",
-        query: &[],
-        body: Some(faceplate_instance_create_body),
-        read_only: false,
-        destructive: false,
-    },
-    Tool {
-        name: "update_faceplate_instance",
-        title: "Update a faceplate instance",
-        description: "Change an instance's pinned type version or its bindings.",
-        method: "PUT",
-        path: "/api/v1/projects/:id/faceplates/instances/:instance",
-        query: &[],
-        body: Some(faceplate_instance_update_body),
         read_only: false,
         destructive: false,
     },
@@ -1202,9 +949,12 @@ impl ModuleTool {
             properties.insert("project_id".into(), json!({ "type": "string" }));
             required.push(json!("project_id"));
         }
+        // Path parameters are named as the core's tools name them (`:screen` is `screen_id`), so
+        // a route that moves from the core into a module keeps its tool's arguments.
         for param in path_params(&self.decl.path) {
-            properties.insert(param.to_string(), json!({ "type": "string" }));
-            required.push(json!(param));
+            let name = argument_name(param);
+            properties.insert(name.to_string(), json!({ "type": "string" }));
+            required.push(json!(name));
         }
         for (name, description) in &self.decl.query {
             properties.insert(
@@ -1261,7 +1011,7 @@ impl ModuleTool {
         for segment in self.decl.path.split('/').skip(1) {
             path.push('/');
             match segment.strip_prefix(':') {
-                Some(param) => path.push_str(&percent_encode(&text(param)?)),
+                Some(param) => path.push_str(&percent_encode(&text(argument_name(param))?)),
                 None => path.push_str(segment),
             }
         }
@@ -1287,7 +1037,9 @@ impl ModuleTool {
             key == "body"
                 || (key == "project_id" && self.project_scoped())
                 || self.decl.query.iter().any(|(q, _)| q == key)
-                || path_params(&self.decl.path).contains(&key)
+                || path_params(&self.decl.path)
+                    .iter()
+                    .any(|param| argument_name(param) == key)
         };
         if let Some(unknown) = arguments.keys().find(|k| !known(k)) {
             return Err(format!(
@@ -1459,7 +1211,7 @@ async fn answer(
                         "version": env!("CARGO_PKG_VERSION")
                     },
                     "instructions": "MythOS is a SCADA controller. Projects hold field I/O \
-                        configurations, HMI screens, data types and faceplates; one project is \
+                        configurations, data types and the data of service modules such as the HMI's screens; one project is \
                         active and its connections feed the tags. Only a tag whose quality_name is \
                         GOOD has a current value: never report a value with any other quality as \
                         a measurement. Saving an I/O configuration or activating a project changes \

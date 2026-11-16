@@ -174,6 +174,19 @@ def main() -> int:
         if drivers.get("modbus") != "module":
             return fail("module discovery", json.dumps(modules)[:2000])
 
+        # The HMI is a service module with a workbench UI (ADR-011): the installed server must
+        # run it and serve its UI from the bundle's modules-ui/.
+        hmi = next((m for m in modules.get("modules", []) if m.get("id") == "org.mythos.hmi"), None)
+        if not hmi or not hmi.get("enabled") or not hmi.get("ui"):
+            return fail("HMI module", json.dumps(modules)[:2000])
+        try:
+            with opener.open(f"{api}{hmi['ui']}", timeout=10) as r:
+                entry = r.read()
+        except OSError as e:
+            return fail("HMI module UI", str(e))
+        if b"org.mythos.hmi" not in entry:
+            return fail("HMI module UI", entry[:300].decode("utf-8", "replace"))
+
         updates = get("/api/v1/updates")
         installation = updates.get("installation") or {}
         if installation.get("current_version") != version or updates["running"].get("installed_version") != version:
@@ -185,7 +198,8 @@ def main() -> int:
             return fail("workbench", page[:500])
 
         print(
-            f"release-smoke: OK — installed {version}; the server found the Modbus module, knows it "
+            f"release-smoke: OK — installed {version}; the server found the Modbus and HMI modules, serves "
+            f"the HMI's UI, knows it "
             f"runs {version} from {installation.get('home')}, and serves the workbench"
         )
         return 0

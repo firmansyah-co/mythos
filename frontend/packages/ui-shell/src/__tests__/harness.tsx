@@ -20,8 +20,6 @@ import type { JsonSchema } from '../data/schemaForm';
 import modbusManifest from './fixtures/modbus-manifest.json';
 import { useLog } from '../data/log';
 import type { TagSample } from '../data/quality';
-import { useRuntime } from '../data/runtime';
-import { useScreens } from '../data/screens';
 import { useSession } from '../data/session';
 import { goOffline, useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
@@ -70,15 +68,12 @@ export function resetStores(): void {
   useController.setState({ activeProjectId: undefined, io: null, tagMeta: new Map(), error: null });
   useLog.setState({ entries: [] });
   useIoConfig.getState().reset();
-  useScreens.getState().reset();
-  useRuntime.getState().reset();
   useIoConfig.setState({ drivers: [], driverInfo: [], schemas: {} });
   useSession.setState({ phase: 'loading', user: null, error: null, notice: null });
   useWorkbench.setState({
     view: 'portal',
     settingsSection: 'account',
     settingsReturn: 'portal',
-    runtimeScreenId: null,
     moduleView: null,
     project: null,
     editors: [],

@@ -15,7 +15,7 @@ could only feed tags.
 
 ## 1. Context
 
-On 2026-11-16, `crates/mythos-core` holds, beside the core:
+On 2026-11-16, before this decision, `crates/mythos-core` held, beside the core:
 
 | Part | Where | Lines |
 | :--- | :--- | ---: |
@@ -156,8 +156,9 @@ after step 4 unchanged.
 
 | Section | Built |
 | :--- | :--- |
-| 2.1 Core boundary | Decided; HMI, data types and deploy are still in the core |
-| 2.2 Service modules | Yes: `mythos_module::service` (both sides), `crate::services` (host, forwarding, roles, data directories, events, swap), MCP tools from manifests; proven by `crates/mythos-module-tests/tests/service_module.rs` with a test module. No real service module yet |
-| 2.3 Module UI | Yes: `api/modules.rs` (`ui_file`, `ModuleRow.ui`), `frontend/packages/workbench-sdk`, `ui-shell/src/modules` (loader, registries, mounts in the tree, work area, inspector, task cards and a full-window view; stream events by any name). Proven by `module_packages.rs` (serving), `moduleUi.test.tsx`, and the e2e scenario with the notes test module's UI (`crates/mythos-module-tests/ui/entry.js`). The HMI is still in the shell |
+| 2.1 Core boundary | HMI out of the core and the shell (step 4); data types and the deploy route are still in the core until step 5 |
+| 2.2 Service modules | Yes: `mythos_module::service` (both sides), `crate::services` (host, forwarding, roles, data directories, events, swap), MCP tools from manifests, `needs: ["tags"]` for a route that checks against the tag catalog; proven by `crates/mythos-module-tests/tests/service_module.rs` with a test module. The HMI is the first real one |
+| 2.3 Module UI | Yes: `api/modules.rs` (`ui_file`, `ModuleRow.ui`), `frontend/packages/workbench-sdk`, `ui-shell/src/modules` (loader, registries, mounts in the tree, work area, inspector, task cards and a full-window view; stream events by any name). Proven by `module_packages.rs` (serving), `moduleUi.test.tsx`, and the e2e scenario with the notes test module's UI (`crates/mythos-module-tests/ui/entry.js`) and the HMI's |
 | 2.4 Enable/disable, packages | Yes: `crate::modules`, `api/modules.rs`, Settings → Modules, `mythos module pack`; `.mythos-plugin` retired. Proven by `crates/mythos-module-tests/tests/module_packages.rs` |
 | 2.5 Library | No |
+| §3 step 4, HMI module | Yes: `plugins/hmi` (`mythos-module-hmi`: screens and faceplates at `/api/v1/projects/:id/hmi/…`, data in `<project>/hmi/`, earlier files copied in on first use, `SCREENS_RELEASED` and `FACEPLATE_PROPAGATED` sent as module events, faceplate bindings checked against the tag catalog through `needs: ["tags"]`) and `frontend/packages/hmi-ui` (tree section, screen editor with toolbox and element properties, operator runtime at `#/runtime/<project>`). Shipped in every release bundle (`bin/`, `modules-ui/org.mythos.hmi/`). The screen URLs are unchanged; the faceplate routes moved from `/api/v1/projects/:id/faceplates/…` to `…/hmi/faceplates/…`, because a module's routes live under its own name (§2.2); nothing but MCP called them, and the MCP tool names are unchanged. Proven by `crates/mythos-module-tests/tests/hmi_screens.rs` and `hmi_faceplates.rs` (the core's former tests, run against the module process), the HMI UI tests run against the workbench's own host, and the e2e scenario unchanged |

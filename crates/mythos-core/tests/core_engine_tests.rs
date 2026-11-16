@@ -105,7 +105,10 @@ fn test_controller_storage_layout_and_symlink_switch() {
     let _path2 = storage.create_project(&proj2).unwrap();
 
     assert!(path1.join("logic/active").is_dir());
-    assert!(path1.join("screens/active").is_dir());
+    // The HMI's files belong to the HMI module (`<project>/hmi/`, ADR-011): the core makes no
+    // place for them.
+    assert!(!path1.join("screens").exists());
+    assert!(!path1.join("faceplates").exists());
     assert!(path1.join("project.active.json").is_file());
 
     let mut projects = storage.list_projects().unwrap();

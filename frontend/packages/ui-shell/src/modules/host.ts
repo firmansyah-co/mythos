@@ -1,18 +1,23 @@
 // The `WorkbenchHost` each module's UI is activated with (ADR-011 §2.3).
 
 import type {
+  ControllerView,
   Dispose,
   Editor,
   Identity,
   Project,
+  TelemetrySnapshot,
   TreeSection,
   View,
   WorkbenchHost,
 } from '@mythos/workbench-sdk';
 import { ApiError, apiRequest, type ProjectConfig } from '../api/client';
+import { useController } from '../data/controller';
+import { useIoConfig } from '../data/ioConfig';
+import { connectionTags } from '../data/ioForm';
 import { log } from '../data/log';
 import { useSession } from '../data/session';
-import { onStreamEvent, useTelemetry } from '../data/telemetry';
+import { goOnline, onStreamEvent, useTelemetry } from '../data/telemetry';
 import { CORE_EDITOR_KINDS, editorId, useWorkbench } from '../data/workbench';
 import { useModuleUi, type ModuleUiState, type Owned } from './registry';
 
@@ -44,6 +49,48 @@ function claim<K extends 'treeSections' | 'editors' | 'views'>(
     );
 }
 
+// One snapshot per change of what it is made from, so a module comparing snapshots sees a new
+// one only when something changed.
+let lastSources: unknown[] = [];
+let lastView: ControllerView | null = null;
+
+/** The controller as a module sees it (`host.controller.get()`). */
+export function controllerView(): ControllerView {
+  const controller = useController.getState();
+  const io = useIoConfig.getState();
+  const sources = [controller.activeProjectId, controller.io, controller.error, io.draft, io.schemas];
+  if (lastView && sources.every((source, index) => source === lastSources[index])) return lastView;
+  lastSources = sources;
+  lastView = {
+    activeProjectId: controller.activeProjectId,
+    io: controller.io,
+    error: controller.error,
+    configuredTags: [
+      ...new Set(io.draft.flatMap((connection) => connectionTags(connection, io.schemas) ?? [])),
+    ]
+      .filter((uri) => uri !== '')
+      .sort((a, b) => a.localeCompare(b)),
+  };
+  return lastView;
+}
+
+let lastTelemetry: TelemetrySnapshot | null = null;
+
+/** `host.telemetry.snapshot()`: a new object only when the cache or the stream changed. */
+export function telemetrySnapshot(): TelemetrySnapshot {
+  const { tags, stream, lastBatchAtMs } = useTelemetry.getState();
+  if (
+    lastTelemetry &&
+    lastTelemetry.tags === tags &&
+    lastTelemetry.stream === stream &&
+    lastTelemetry.lastBatchAtMs === lastBatchAtMs
+  ) {
+    return lastTelemetry;
+  }
+  lastTelemetry = { tags, stream, lastBatchAtMs };
+  return lastTelemetry;
+}
+
 export function createHost(module: string): WorkbenchHost {
   return {
     sdk: 1,
@@ -71,9 +118,34 @@ export function createHost(module: string): WorkbenchHost {
       get: (uri) => useTelemetry.getState().tags.get(uri),
       subscribe: (listener) =>
         useTelemetry.subscribe((state, previous) => {
-          if (state.tags !== previous.tags || state.stream !== previous.stream) listener();
+          if (
+            state.tags !== previous.tags ||
+            state.stream !== previous.stream ||
+            state.lastBatchAtMs !== previous.lastBatchAtMs
+          ) {
+            listener();
+          }
         }),
       online: () => useTelemetry.getState().stream === 'OPEN',
+      stream: () => useTelemetry.getState().stream,
+      snapshot: telemetrySnapshot,
+      goOnline: () => goOnline(),
+    },
+
+    controller: {
+      get: controllerView,
+      subscribe: (listener) => {
+        let last = controllerView();
+        const check = () => {
+          const next = controllerView();
+          if (next !== last) {
+            last = next;
+            listener();
+          }
+        };
+        const stops = [useController.subscribe(check), useIoConfig.subscribe(check)];
+        return () => stops.forEach((stop) => stop());
+      },
     },
 
     events: { subscribe: (name, listener) => onStreamEvent(name, listener) },
@@ -101,6 +173,14 @@ export function createHost(module: string): WorkbenchHost {
       if (panel) workbench.select({ kind: 'module', owner });
       else if (selected) workbench.select(null);
     },
+
+    setUnsaved: (owner, unsaved) =>
+      useModuleUi.setState((state) => {
+        const next = { ...state.unsaved };
+        if (unsaved) next[owner] = module;
+        else delete next[owner];
+        return { unsaved: next };
+      }),
 
     setTaskCard: (owner, panel) =>
       useModuleUi.setState((state) => {

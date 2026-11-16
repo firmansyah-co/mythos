@@ -31,6 +31,7 @@ fn route(
         summary: format!("{method} {path}"),
         body,
         query: vec![],
+        needs: vec![],
     }
 }
 

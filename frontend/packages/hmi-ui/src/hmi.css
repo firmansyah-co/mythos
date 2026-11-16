@@ -1,0 +1,354 @@
+/* The HMI module's styles: the screen editor, its elements, and the operator runtime. The
+   workbench's tokens (var(--c-…)) are defined by the workbench and shared. */
+
+/* HMI screens -------------------------------------------------------------- */
+
+.editor__tools-end {
+  margin-left: auto;
+}
+
+.screen__viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  background: var(--c-surface-sunken);
+}
+
+.screen__sizer {
+  position: relative;
+}
+
+.screen__canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+  background-color: var(--c-surface);
+  background-image: radial-gradient(var(--c-rule) 1px, transparent 1px);
+  border: 1px solid var(--c-chrome-border);
+  outline: 0;
+}
+
+.screen__canvas:focus-visible {
+  border-color: var(--c-focus);
+}
+
+.screen__element {
+  position: absolute;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+  outline: 1px dashed transparent;
+}
+
+.screen__element:hover {
+  outline-color: var(--c-chrome-border);
+}
+
+.screen__element.is-selected {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 1px;
+}
+
+.textfield {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 0 6px;
+  font-size: 15px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.iofield {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto 1fr;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 3px 8px 4px;
+  border: 1px solid var(--c-chrome-border);
+  border-left: 4px solid var(--c-neutral);
+  background: var(--c-surface-alt);
+  overflow: hidden;
+}
+
+.iofield--good {
+  border-left-color: var(--c-good);
+}
+
+.iofield--bad {
+  border-left-color: var(--c-bad);
+  background: var(--c-bad-soft);
+}
+
+.iofield--warn {
+  border-left-color: var(--c-warn);
+  background: var(--c-warn-soft);
+}
+
+.iofield__label {
+  grid-column: 1 / -1;
+  color: var(--c-text-muted);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.iofield__value {
+  font-size: 18px;
+  white-space: nowrap;
+}
+
+.iofield__unit {
+  margin-left: 5px;
+  color: var(--c-text-muted);
+  font-size: var(--fs-sm);
+}
+
+.iofield__state {
+  justify-self: end;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--c-text-muted);
+  white-space: nowrap;
+}
+
+.iofield--bad .iofield__state {
+  color: var(--c-bad);
+}
+
+.iofield--warn .iofield__state {
+  color: var(--c-warn);
+}
+
+.iofield--unbound {
+  border-style: dashed;
+}
+
+.toolbox {
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+}
+
+.toolbox__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--c-chrome-border);
+  border-radius: var(--radius);
+  background: var(--c-surface);
+  text-align: left;
+  color: var(--c-accent);
+}
+
+.toolbox__item:hover {
+  background: var(--c-hover);
+}
+
+.toolbox__item span {
+  display: grid;
+  color: var(--c-text);
+}
+
+.toolbox__item small {
+  color: var(--c-text-muted);
+}
+
+.prop-input {
+  height: 22px;
+  width: 96px;
+  padding: 0 6px;
+  border: 1px solid var(--c-chrome-border);
+  border-radius: var(--radius);
+  background: var(--c-surface);
+}
+
+.prop-input--wide {
+  width: min(100%, 520px);
+}
+
+.prop-input[aria-invalid='true'] {
+  border-color: var(--c-bad);
+  background: var(--c-bad-soft);
+}
+
+.tree__node--action {
+  color: var(--c-text-muted);
+}
+
+.tree__node--input input {
+  flex: 1;
+  height: 20px;
+  min-width: 0;
+  margin-right: 8px;
+  padding: 0 4px;
+  border: 1px solid var(--c-focus);
+  border-radius: var(--radius);
+}
+
+
+/* Operator runtime -------------------------------------------------------- */
+
+.rt {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--c-surface-sunken);
+}
+
+.rt__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 36px;
+  padding: 0 12px;
+  background: var(--c-titlebar);
+  color: var(--c-titlebar-text);
+  flex: none;
+}
+
+.rt__logo {
+  width: 18px;
+  height: 18px;
+}
+
+.rt__project {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.rt__mode {
+  padding: 1px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: var(--radius);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.rt__updated {
+  flex: 1;
+  font-size: var(--fs-xs);
+  opacity: 0.75;
+}
+
+.rt__exit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+}
+
+.rt__exit:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.rt__screens {
+  display: flex;
+  gap: 2px;
+  padding: 4px 8px 0;
+  background: var(--c-chrome-strong);
+  border-bottom: 1px solid var(--c-chrome-border);
+  flex: none;
+}
+
+.rt__screen {
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--c-chrome-border);
+  border-bottom: 0;
+  background: var(--c-chrome);
+  font-size: var(--fs-md);
+}
+
+.rt__screen.is-active {
+  background: var(--c-surface);
+  box-shadow: inset 0 2px 0 var(--c-accent);
+  font-weight: 600;
+}
+
+.rt__alert {
+  padding: 8px 14px;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  flex: none;
+}
+
+.rt__alert--bad {
+  background: var(--c-bad);
+  color: var(--c-text-inverse);
+}
+
+.rt__alert--warn {
+  background: var(--c-warn-soft);
+  color: var(--c-text);
+  border-bottom: 2px solid var(--c-warn);
+}
+
+.rt__stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 12px;
+}
+
+.rt__sizer {
+  position: relative;
+  flex: none;
+}
+
+.rt__canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+  background: var(--c-surface);
+  border: 1px solid var(--c-chrome-border);
+}
+
+.rt__element {
+  position: absolute;
+}
+
+.rt__message {
+  max-width: 560px;
+  padding: 20px 24px;
+  border: 1px solid var(--c-chrome-border);
+  background: var(--c-surface);
+  font-size: var(--fs-md);
+}
+
+.rt__message h2 {
+  margin: 0 0 6px;
+  font-size: var(--fs-lg);
+}
+
+.rt__message p {
+  margin: 0;
+}
+
+.rt__message--bad {
+  border-left: 4px solid var(--c-bad);
+}
+
+/* The element each React root of the module draws into fills what the workbench gave it. */
+.hmi-root {
+  display: contents;
+}
