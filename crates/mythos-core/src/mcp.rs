@@ -73,6 +73,11 @@ pub const NOT_TOOLS: &[NotATool] = &[
     },
     NotATool {
         method: "POST",
+        path: "/api/v1/callhome",
+        reason: "called by a paired node calling this one home, as itself; list_fleet shows which do",
+    },
+    NotATool {
+        method: "POST",
         path: "/api/v1/pairing/accept",
         reason: "called by another node pairing with this one, with the code it was given; pair_with_node is the tool",
     },
@@ -248,7 +253,18 @@ fn pair_body() -> Value {
             "address": { "type": "string", "description": "host:port where the node answers HTTPS" },
             "fingerprint": { "type": "string", "description": "SHA-256 of its certificate, 64 hex characters (spaces allowed)" },
             "code": { "type": "string", "description": "The pairing code made on that node" },
-            "grant": { "type": "string", "enum": ROLES, "description": "What that node may do here; viewer when absent" }
+            "grant": { "type": "string", "enum": ROLES, "description": "What that node may do here; viewer when absent" },
+            "call_home": { "type": "boolean", "description": "Call that node home: this node opens the connection and is reached over it, for when that node cannot reach this one (another subnet, NAT)" }
+        }
+    })
+}
+
+fn call_home_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["call_home"],
+        "properties": {
+            "call_home": { "type": "boolean", "description": "Call that node home (this node opens the connection and is reached over it), or stop" }
         }
     })
 }
@@ -611,6 +627,28 @@ pub const TOOLS: &[Tool] = &[
         query: &[],
         body: Some(pair_body),
         read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "set_call_home",
+        title: "Call a paired node home",
+        description: "Call a paired node home, or stop: this node opens the connection to it and is reached over that, for when that node cannot reach this one (another subnet, NAT). Set on the node that cannot be reached.",
+        method: "PUT",
+        path: "/api/v1/pairings/:node",
+        query: &[],
+        body: Some(call_home_body),
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "list_fleet",
+        title: "List the fleet",
+        description: "Every paired node, asked now: how it is reached (direct, or calling home), whether it answered and why not, its name, role, site and version, and what it runs (project and slice hash).",
+        method: "GET",
+        path: "/api/v1/fleet",
+        query: &[],
+        body: None,
+        read_only: true,
         destructive: false,
     },
     Tool {

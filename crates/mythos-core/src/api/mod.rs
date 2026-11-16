@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod datatypes;
+mod fleet;
 mod io;
 pub mod modules;
 mod node;
@@ -138,9 +139,17 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
         )
         .route(
             "/api/v1/pairings/:node",
-            axum::routing::delete(pairing::unpair::<S>),
+            axum::routing::delete(pairing::unpair::<S>).put(pairing::change::<S>),
         )
         .route("/api/v1/pairings/:node/status", get(pairing::status::<S>))
+        // The fleet and call home (ADR-012 §2.6). A poll brings an answer, which may be large.
+        .route("/api/v1/fleet", get(fleet::fleet::<S>))
+        .route(
+            "/api/v1/callhome",
+            post(fleet::poll::<S>).layer(axum::extract::DefaultBodyLimit::max(
+                crate::callhome::ANSWER_LIMIT + 1024 * 1024,
+            )),
+        )
         .route("/api/v1/updates", get(updates::status::<S>))
         .route("/api/v1/updates/releases", get(updates::releases::<S>))
         .route("/api/v1/updates/follow", put(updates::follow::<S>))

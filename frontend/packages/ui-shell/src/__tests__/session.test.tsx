@@ -148,7 +148,7 @@ describe('signing in', () => {
 });
 
 describe('settings', () => {
-  it('a viewer sees their account, the node, the versions and the modules, not the accounts, and cannot create a project', async () => {
+  it('a viewer sees their account, the node, the pairings, the fleet, the versions and the modules, not the accounts, and cannot create a project', async () => {
     controller({ setup: false, user: who('viewer') });
     const view = render(<App />);
     await settle();
@@ -160,6 +160,7 @@ describe('settings', () => {
       'Account',
       'Node',
       'Pairing',
+      'Fleet',
       'Updates',
       'Modules',
     ]);

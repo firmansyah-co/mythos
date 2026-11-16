@@ -5,10 +5,11 @@
 // entry here and a component.
 
 import type { ComponentType } from 'react';
-import { Link2, Puzzle, RefreshCcw, Server, UserRound, Users } from 'lucide-react';
+import { Link2, Network, Puzzle, RefreshCcw, Server, UserRound, Users } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Role } from '../../api/client';
 import { AccountSettings } from './AccountSettings';
+import { FleetSettings } from './FleetSettings';
 import { ModulesSettings } from './ModulesSettings';
 import { NodeSettings } from './NodeSettings';
 import { PairingSettings } from './PairingSettings';
@@ -30,6 +31,8 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   { id: 'node', label: 'Node', icon: Server, minRole: null, component: NodeSettings },
   // Anyone may see which nodes are paired; only an administrator pairs and unpairs.
   { id: 'pairing', label: 'Pairing', icon: Link2, minRole: null, component: PairingSettings },
+  // Every paired node asked now: how it is reached and what it runs (ADR-012 §2.6).
+  { id: 'fleet', label: 'Fleet', icon: Network, minRole: null, component: FleetSettings },
   { id: 'users', label: 'Users', icon: Users, minRole: 'admin', component: UsersSettings },
   // Anyone may see the versions; only an administrator changes them (the section says so).
   { id: 'updates', label: 'Updates', icon: RefreshCcw, minRole: null, component: UpdatesSettings },

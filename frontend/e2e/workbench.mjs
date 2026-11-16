@@ -352,6 +352,8 @@ try {
   await evaluate(`__t.click('Make a pairing code')`); await sleep(600);
   const pairingCode = (await evaluate(`__t.text('[data-testid="pairing-code"] code')[0]`)) ?? '';
   check('and makes a pairing code to read to the node that pairs', /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(pairingCode), pairingCode);
+  await evaluate(`__t.click('Fleet')`); await sleep(800);
+  check('Settings → Fleet says this node is paired with no other', await evaluate(`__t.has('[data-testid="fleet-empty"]')`));
   await evaluate(`__t.click('Users')`); await sleep(800);
   const accounts = await evaluate(`__t.text('[data-testid="user-row"] td:first-child')`);
   check('an administrator sees the accounts of the controller', accounts.some((a) => a.startsWith(user)), accounts.join(', '));
