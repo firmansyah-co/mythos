@@ -4,7 +4,6 @@ import { startControllerPolling, stopControllerPolling, useController } from './
 import { useIoConfig } from './data/ioConfig';
 import { formatLocation, parseLocation } from './data/location';
 import { log } from './data/log';
-import { useScreens } from './data/screens';
 import { useSession } from './data/session';
 import { goOffline, goOnline, useTelemetry } from './data/telemetry';
 import { CORE_EDITOR_KINDS, useWorkbench } from './data/workbench';
@@ -13,7 +12,6 @@ import { ModuleViewHost } from './modules/ModuleViewHost';
 import { AboutDialog } from './shell/AboutDialog';
 import { PortalView } from './shell/PortalView';
 import { ProjectView } from './shell/ProjectView';
-import { RuntimeView } from './shell/RuntimeView';
 import { SettingsView } from './shell/SettingsView';
 import { SignIn } from './shell/SignIn';
 
@@ -69,7 +67,6 @@ function Workbench() {
         const workbench = useWorkbench.getState();
         workbench.openProject(project);
         if (target.editor) workbench.openEditor(target.editor.kind, target.editor.connectionId);
-        if (target.runtime) workbench.startRuntime(target.runtime.screenId);
         if (target.view) workbench.showModuleView(target.view.id, target.view.target);
         log.info(`Project “${project.name}” opened.`);
       })
@@ -94,18 +91,12 @@ function Workbench() {
         const next = formatLocation(
           state.project && state.view === 'module' && state.moduleView
             ? { projectId: state.project.id, view: state.moduleView }
-            : state.project && state.view === 'runtime'
-            ? {
-                projectId: state.project.id,
-                runtime: state.runtimeScreenId ? { screenId: state.runtimeScreenId } : {},
-              }
             : state.project
             ? {
                 projectId: state.project.id,
                 editor:
                   editor &&
                   editor.kind !== 'connection' &&
-                  editor.kind !== 'screen' &&
                   (CORE_EDITOR_KINDS as readonly string[]).includes(editor.kind)
                     ? { kind: editor.kind as 'overview', connectionId: editor.target }
                     : undefined,
@@ -124,15 +115,6 @@ function Workbench() {
       return;
     }
     void useIoConfig.getState().load(projectId);
-  }, [projectId]);
-
-  // So are its HMI screens.
-  useEffect(() => {
-    if (projectId === null) {
-      useScreens.getState().reset();
-      return;
-    }
-    void useScreens.getState().load(projectId);
   }, [projectId]);
 
   // The controller's own state is read for as long as a project is open.
@@ -190,8 +172,6 @@ function Workbench() {
     <>
       {view === 'portal' ? (
         <PortalView />
-      ) : view === 'runtime' ? (
-        <RuntimeView />
       ) : view === 'settings' ? (
         <SettingsView />
       ) : view === 'module' ? (

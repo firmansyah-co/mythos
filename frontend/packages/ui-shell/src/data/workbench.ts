@@ -10,8 +10,7 @@ export type CoreEditorKind =
   | 'devices'
   | 'connection'
   | 'tags'
-  | 'diagnostics'
-  | 'screen';
+  | 'diagnostics';
 
 /** An editor kind: the workbench's own, or one a module registered (ADR-011 §2.3). */
 export type EditorKind = CoreEditorKind | (string & {});
@@ -22,7 +21,6 @@ export const CORE_EDITOR_KINDS: readonly CoreEditorKind[] = [
   'connection',
   'tags',
   'diagnostics',
-  'screen',
 ];
 
 export interface EditorRef {
@@ -32,7 +30,7 @@ export interface EditorRef {
   /**
    * What the editor is scoped to, for the kinds that are scoped. For `tags` and `diagnostics`
    * it is a connection's id; for `connection` it is the key of the draft row, because the id
-   * itself is one of the things that editor changes; for `screen` it is the screen's id.
+   * itself is one of the things that editor changes; for a module's editor, whatever it edits.
    */
   target?: string;
 }
@@ -41,7 +39,6 @@ export type Selection =
   | { kind: 'project' }
   | { kind: 'connection'; id: string }
   | { kind: 'tag'; uri: string }
-  | { kind: 'element'; screenId: string; elementId: string }
   /** What a module showed in the inspector, by the owner it gave. */
   | { kind: 'module'; owner: string }
   | null;
@@ -53,15 +50,13 @@ export function editorId(kind: EditorKind, target?: string): string {
 }
 
 export interface WorkbenchState {
-  view: 'portal' | 'project' | 'runtime' | 'settings' | 'module';
+  view: 'portal' | 'project' | 'settings' | 'module';
   /** The full-window view of a module shown when `view` is `module`. */
   moduleView: { id: string; target?: string } | null;
   /** The settings section shown, by its id in the settings registry. */
   settingsSection: string;
   /** Where closing the settings returns to. */
   settingsReturn: 'portal' | 'project';
-  /** The screen the operator runtime is showing. `null` shows the project's first screen. */
-  runtimeScreenId: string | null;
   project: ProjectConfig | null;
   editors: EditorRef[];
   activeEditorId: string | null;
@@ -73,8 +68,6 @@ export interface WorkbenchState {
   closeProject: () => void;
   showPortal: () => void;
   showProject: () => void;
-  startRuntime: (screenId?: string) => void;
-  exitRuntime: () => void;
   showModuleView: (id: string, target?: string) => void;
   exitModuleView: () => void;
   showSettings: (section?: string) => void;
@@ -91,7 +84,6 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
   view: 'portal',
   settingsSection: 'account',
   settingsReturn: 'portal',
-  runtimeScreenId: null,
   moduleView: null,
   project: null,
   editors: [],
@@ -121,9 +113,6 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
 
   showPortal: () => set({ view: 'portal' }),
   showProject: () => set((state) => (state.project ? { view: 'project' } : {})),
-  startRuntime: (screenId) =>
-    set((state) => (state.project ? { view: 'runtime', runtimeScreenId: screenId ?? null } : {})),
-  exitRuntime: () => set((state) => (state.view === 'runtime' ? { view: 'project' } : {})),
   showModuleView: (id, target) =>
     set((state) => (state.project ? { view: 'module', moduleView: { id, target } } : {})),
   exitModuleView: () =>

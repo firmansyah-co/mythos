@@ -139,10 +139,6 @@ impl ControllerStorage {
         // Create standard directory tree
         fs::create_dir_all(pdir.join("logic/active"))?;
         fs::create_dir_all(pdir.join("logic/draft"))?;
-        fs::create_dir_all(pdir.join("screens/active"))?;
-        fs::create_dir_all(pdir.join("screens/draft"))?;
-        fs::create_dir_all(pdir.join("faceplates/active"))?;
-        fs::create_dir_all(pdir.join("faceplates/draft"))?;
 
         // Write initial project.active.json and project.draft.json atomically
         let json_data = serde_json::to_string_pretty(config)?;

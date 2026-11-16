@@ -298,6 +298,8 @@ pub struct Forward {
     pub identity: Option<crate::auth::Identity>,
     /// `(project id, its directory)` for a project route.
     pub project: Option<(String, PathBuf)>,
+    /// The tag catalog, read for a route that declares `needs: ["tags"]`.
+    pub catalog: Option<Arc<tokio::sync::RwLock<crate::tag::TagCatalog>>>,
 }
 
 /// What forwarding answered, as an HTTP status and body.
@@ -357,6 +359,38 @@ pub async fn forward(service: &RunningService, request: Forward) -> HttpReply {
         }
         None => (None, None),
     };
+    if let Some(unknown) = decl
+        .needs
+        .iter()
+        .find(|need| !mythos_module::protocol::ROUTE_NEEDS.contains(&need.as_str()))
+    {
+        return HttpReply::error(
+            500,
+            format!(
+                "module '{}' needs '{unknown}' for {} {}, which this server cannot give",
+                module.provides, decl.method, decl.path
+            ),
+        );
+    }
+    let tags = if decl.needs.iter().any(|need| need == "tags") {
+        match &request.catalog {
+            Some(catalog) => Some(
+                catalog
+                    .read()
+                    .await
+                    .iter()
+                    .map(|meta| meta.uri.clone())
+                    .collect(),
+            ),
+            // The module asked for the tags and this server cannot give them: an empty list
+            // would read as "no tag exists" and refuse every binding for the wrong reason.
+            None => {
+                return HttpReply::error(503, "this server has no tag catalog to give the module")
+            }
+        }
+    } else {
+        None
+    };
     let call = HttpCall {
         method: decl.method.to_ascii_uppercase(),
         route: decl.path.clone(),
@@ -372,6 +406,7 @@ pub async fn forward(service: &RunningService, request: Forward) -> HttpReply {
             }),
         project,
         data_dir,
+        tags,
     };
     let session = match service.session().await {
         Ok(session) => session,
@@ -424,6 +459,7 @@ mod tests {
             summary: String::new(),
             body: None,
             query: vec![],
+            needs: vec![],
         };
         assert_eq!(declared_role(&decl(None)), Role::Admin);
         assert_eq!(declared_role(&decl(Some("superuser"))), Role::Admin);

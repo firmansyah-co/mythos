@@ -4,8 +4,9 @@
 //! a frontend logic editor (since removed) as a hardcoded sample list, so an engineer authoring a
 //! DUT got no persistence and saw two types that belonged to no project (SYS-REQ-098).
 //!
-//! The UDT representation itself is shared with faceplate types ([`crate::faceplate`]): a faceplate
-//! type's inline `udt` is exactly a [`UdtDefinition`], the same shape a registry entry carries. That
+//! The UDT representation itself is shared with faceplate types (the HMI module's
+//! `mythos_hmi::udt`, the same JSON): a faceplate type's inline `udt` is exactly a
+//! [`UdtDefinition`], the same shape a registry entry carries. That
 //! is deliberate — it means a faceplate type can later reference a registry entry instead of
 //! inlining one without a data migration, and it means there is one representation rather than two.
 

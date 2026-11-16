@@ -18,6 +18,8 @@
 //! [`ProtocolDriver`]: mythos_plugin_sdk::ProtocolDriver
 
 pub mod host;
+/// Tag URIs: the names the tag bus, drivers and service modules share.
+pub mod namespace;
 pub mod protocol;
 pub mod serve;
 pub mod service;

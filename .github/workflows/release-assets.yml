@@ -69,6 +69,16 @@ jobs:
           name: workbench
           path: frontend/packages/ui-shell/dist
           if-no-files-found: error
+      # Each module's workbench UI, by module id, as the bundle carries them (ADR-011 §2.3).
+      - name: Collect the module UIs
+        run: |
+          mkdir -p ../modules-ui/org.mythos.hmi
+          cp packages/hmi-ui/dist/entry.js packages/hmi-ui/dist/hmi.css ../modules-ui/org.mythos.hmi/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: modules-ui
+          path: modules-ui
+          if-no-files-found: error
 
   bundle:
     name: Bundle for ${{ matrix.target }}
@@ -100,17 +110,21 @@ jobs:
         with:
           name: workbench
           path: workbench
+      - uses: actions/download-artifact@v4
+        with:
+          name: modules-ui
+          path: modules-ui
       - name: Build the executables
         shell: bash
         run: >
           cargo build --release --locked --target ${{ matrix.target }}
-          -p mythos-cli -p mythos-core -p driver-modbus
-          --bin mythos --bin mythos-server --bin mythos-module-modbus
+          -p mythos-cli -p mythos-core -p driver-modbus -p mythos-hmi
+          --bin mythos --bin mythos-server --bin mythos-module-modbus --bin mythos-module-hmi
       - name: Pack the bundle
         shell: bash
         run: >
           python scripts/package-release.py --version "$VERSION" --target ${{ matrix.target }}
-          --bin-dir target/${{ matrix.target }}/release --web workbench --out dist
+          --bin-dir target/${{ matrix.target }}/release --web workbench --modules-ui modules-ui --out dist
       - name: Install it and run what it installed
         shell: bash
         run: |

@@ -2,10 +2,22 @@
   "name": "@mythos/workbench-sdk",
   "version": "0.1.0",
   "private": true,
-  "description": "What a MythOS module's workbench UI may ask of the workbench (ADR-011 §2.3)",
+  "description": "What a MythOS module's workbench UI may ask of the workbench (ADR-011 \u00a72.3)",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./quality": "./src/quality.ts",
+    "./react": "./src/QualityBadge.tsx"
   },
-  "types": "./src/index.ts"
+  "types": "./src/index.ts",
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
 }

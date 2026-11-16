@@ -20,6 +20,10 @@ use std::collections::BTreeMap;
 
 fn reply(r: HttpReply) -> Response {
     let status = StatusCode::from_u16(r.status).unwrap_or(StatusCode::BAD_GATEWAY);
+    // A 204 has no body: HTTP forbids one, and a client must not be handed `null` to parse.
+    if status == StatusCode::NO_CONTENT {
+        return status.into_response();
+    }
     (status, Json(r.body)).into_response()
 }
 
@@ -73,13 +77,15 @@ pub async fn project_route<S: PlatformShm + 'static>(
     identity: Option<Extension<Identity>>,
     bytes: Bytes,
 ) -> Response {
-    let Some(service) = state.services.as_ref().and_then(|s| s.get(&module)) else {
-        return not_served(&state, &module);
-    };
+    // The project id first: one that names a place outside the storage root is refused
+    // whether or not a module of that name exists.
     let dir = match state.storage.project_dir(&id) {
         Ok(dir) if dir.is_dir() => dir,
         Ok(_) => return error(StatusCode::NOT_FOUND, format!("there is no project '{id}'")),
         Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    let Some(service) = state.services.as_ref().and_then(|s| s.get(&module)) else {
+        return not_served(&state, &module);
     };
     let body = match body_of(&bytes) {
         Ok(b) => b,
@@ -96,6 +102,7 @@ pub async fn project_route<S: PlatformShm + 'static>(
                 body,
                 identity: identity.map(|Extension(i)| i),
                 project: Some((id, dir)),
+                catalog: Some(state.tag_catalog.clone()),
             },
         )
         .await,
@@ -129,6 +136,7 @@ pub async fn global_route<S: PlatformShm + 'static>(
                 body,
                 identity: identity.map(|Extension(i)| i),
                 project: None,
+                catalog: Some(state.tag_catalog.clone()),
             },
         )
         .await,

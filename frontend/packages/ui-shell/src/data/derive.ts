@@ -78,8 +78,6 @@ export function connectionLabel(id: string | undefined): string {
 export interface EditorNames {
   /** A draft connection's name, by the key of its row. */
   connection: (key: string) => string | undefined;
-  /** A screen's name, by its id. */
-  screen: (id: string) => string | undefined;
 }
 
 export function editorTitle(
@@ -98,8 +96,6 @@ export function editorTitle(
       return editor.target ? `Tags [${editor.target}]` : 'All tags';
     case 'diagnostics':
       return `Online & diagnostics [${editor.target ?? ''}]`;
-    case 'screen':
-      return `Screen [${names.screen(editor.target ?? '') ?? 'removed'}]`;
     default: {
       const registered = modules && moduleEditor(modules, editor.kind);
       if (!registered) return editor.kind;
@@ -127,8 +123,6 @@ export function editorPath(
       return editor.target ? [projectName, editor.target, 'Tags'] : [projectName, 'All tags'];
     case 'diagnostics':
       return [projectName, editor.target ?? '', 'Online & diagnostics'];
-    case 'screen':
-      return [projectName, 'HMI screens', names.screen(editor.target ?? '') ?? 'removed'];
     default: {
       const registered = modules && moduleEditor(modules, editor.kind);
       // Before the module has loaded, or with it disabled, the kind is all that is known.

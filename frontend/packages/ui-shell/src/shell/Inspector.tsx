@@ -1,22 +1,15 @@
-import { useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import type { IoStatus } from '../api/client';
 import { useController } from '../data/controller';
 import { connectionById, connectionOfTag, currentProblems } from '../data/derive';
-import { elementKind } from '../data/elementKinds';
-import { useIoConfig } from '../data/ioConfig';
-import { connectionTags } from '../data/ioForm';
 import { useLog } from '../data/log';
 import { formatClock, formatTimestampNs, viewTag } from '../data/quality';
 import { useProjectIo } from '../data/scope';
-import { GRID, type KnownElement } from '../data/screenModel';
-import { useScreens } from '../data/screens';
 import { useTelemetry } from '../data/telemetry';
 import { useWorkbench, type InspectorTab } from '../data/workbench';
 import { ModuleMount } from '../modules/ModuleMount';
 import { useModuleUi } from '../modules/registry';
 import { ConnectionStateBadge } from '../editors/ConnectionStateBadge';
-import { viewOf } from '../editors/elementViews';
 import { QualityBadge, TagValue } from './QualityBadge';
 import { RuntimeGate } from './RuntimeGate';
 
@@ -111,121 +104,7 @@ function ProjectProperties() {
  * A whole-number property. The text typed is applied only when it is a number in range; until
  * then the element keeps its value and the field says what is wrong.
  */
-function NumberProperty({
-  label,
-  value,
-  min,
-  max,
-  onCommit,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  onCommit: (value: number) => void;
-}) {
-  const [text, setText] = useState<string | null>(null);
-  const shown = text ?? String(value);
-  const trimmed = shown.trim();
-  const parsed = /^-?\d+$/.test(trimmed) ? Number(trimmed) : null;
-  const error =
-    text === null
-      ? null
-      : parsed === null
-        ? 'Must be a whole number'
-        : parsed < min || parsed > max
-          ? `Must be between ${min} and ${max}`
-          : null;
 
-  return (
-    <>
-      <dt>{label}</dt>
-      <dd>
-        <input
-          className="mono prop-input"
-          inputMode="numeric"
-          aria-label={label}
-          aria-invalid={error !== null}
-          value={shown}
-          onChange={(event) => {
-            const next = event.target.value;
-            setText(next);
-            const candidate = /^-?\d+$/.test(next.trim()) ? Number(next.trim()) : null;
-            if (candidate !== null && candidate >= min && candidate <= max) onCommit(candidate);
-          }}
-          onBlur={() => setText(null)}
-        />
-        {error && (
-          <span className="field__error" role="alert">
-            {error}
-          </span>
-        )}
-      </dd>
-    </>
-  );
-}
-
-function ElementProperties({ screenId, elementId }: { screenId: string; elementId: string }) {
-  const doc = useScreens((state) => state.screens.find((screen) => screen.id === screenId));
-  const updateElement = useScreens((state) => state.updateElement);
-  const removeElement = useScreens((state) => state.removeElement);
-  const select = useWorkbench((state) => state.select);
-  const draft = useIoConfig((state) => state.draft);
-  const schemas = useIoConfig((state) => state.schemas);
-
-  const element = doc?.canvas.elements.find((candidate) => candidate.id === elementId);
-  if (!doc || !element || element.type === 'unknown') {
-    return <p className="inspector__empty muted">This element is no longer on the screen.</p>;
-  }
-
-  const update = (change: Partial<KnownElement>) => updateElement(screenId, elementId, change);
-  const { Properties } = viewOf(element);
-  // The tags a field can be bound to are the ones the project's I/O configuration provides.
-  const configured = [
-    ...new Set(draft.flatMap((connection) => connectionTags(connection, schemas) ?? [])),
-  ]
-    .filter((uri) => uri !== '')
-    .sort((a, b) => a.localeCompare(b));
-
-  return (
-    <dl className="props" data-testid="element-properties">
-      <dt>Element</dt>
-      <dd>{elementKind(element.type)?.label ?? element.type}</dd>
-
-      <Properties element={element} update={update} configuredTags={configured} />
-
-      <NumberProperty label="X" value={element.x} min={0} max={doc.canvas.width} onCommit={(x) => update({ x })} />
-      <NumberProperty label="Y" value={element.y} min={0} max={doc.canvas.height} onCommit={(y) => update({ y })} />
-      <NumberProperty
-        label="Width"
-        value={element.width}
-        min={GRID}
-        max={doc.canvas.width}
-        onCommit={(width) => update({ width })}
-      />
-      <NumberProperty
-        label="Height"
-        value={element.height}
-        min={GRID}
-        max={doc.canvas.height}
-        onCommit={(height) => update({ height })}
-      />
-      <dt />
-      <dd>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => {
-            removeElement(screenId, elementId);
-            select(null);
-          }}
-        >
-          Remove element
-        </button>
-      </dd>
-    </dl>
-  );
-}
 
 /** What a module put in the inspector for `owner`. */
 function ModulePanel({ owner }: { owner: string }) {
@@ -249,15 +128,6 @@ function PropertiesTab() {
   const selection = useWorkbench((state) => state.selection);
   if (!selection) {
     return <p className="inspector__empty muted">Nothing is selected.</p>;
-  }
-  if (selection.kind === 'element') {
-    return (
-      <ElementProperties
-        key={`${selection.screenId}:${selection.elementId}`}
-        screenId={selection.screenId}
-        elementId={selection.elementId}
-      />
-    );
   }
   if (selection.kind === 'module') return <ModulePanel owner={selection.owner} />;
   if (selection.kind === 'tag') return <TagProperties uri={selection.uri} />;

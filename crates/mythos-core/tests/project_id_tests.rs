@@ -239,11 +239,11 @@ async fn a_project_planted_outside_the_root_can_be_neither_read_nor_activated() 
         ("GET", format!("/api/v1/projects/{traversal}/datatypes")),
         (
             "GET",
-            format!("/api/v1/projects/{traversal}/faceplates/types"),
+            format!("/api/v1/projects/{traversal}/hmi/faceplates/types"),
         ),
         (
             "GET",
-            format!("/api/v1/projects/{traversal}/faceplates/instances"),
+            format!("/api/v1/projects/{traversal}/hmi/faceplates/instances"),
         ),
     ] {
         let status = sandbox.send(method, &uri, None).await;

@@ -1,12 +1,9 @@
 import { useController } from '../data/controller';
-import { ELEMENT_KINDS } from '../data/elementKinds';
 import { allTagUris } from '../data/derive';
 import { formatClock, viewTag } from '../data/quality';
 import { useProjectIo, useRuntimeScope } from '../data/scope';
-import { useScreens } from '../data/screens';
 import { useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
-import { ELEMENT_VIEWS } from '../editors/elementViews';
 import { ModuleMount } from '../modules/ModuleMount';
 import { useModuleUi } from '../modules/registry';
 
@@ -94,36 +91,6 @@ export function OnlineTools() {
   );
 }
 
-/** The "Toolbox" task card: the elements that can be placed on the open screen. */
-export function Toolbox({ screenId }: { screenId: string }) {
-  const addElement = useScreens((state) => state.addElement);
-  const select = useWorkbench((state) => state.select);
-
-  const add = (type: string) => {
-    const elementId = addElement(screenId, type);
-    if (elementId) select({ kind: 'element', screenId, elementId });
-  };
-
-  return (
-    <div className="card" data-testid="toolbox">
-      <h3 className="card__title">Toolbox</h3>
-      <div className="toolbox">
-        {ELEMENT_KINDS.map((kind) => {
-          const Icon = ELEMENT_VIEWS[kind.type].icon;
-          return (
-            <button key={kind.type} type="button" className="toolbox__item" onClick={() => add(kind.type)}>
-              <Icon size={16} aria-hidden />
-              <span>
-                <strong>{kind.label}</strong>
-                <small>{kind.summary}</small>
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 /** The task cards modules set, in the order they were set. */
 export function ModuleTaskCards() {

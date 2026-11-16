@@ -30,6 +30,8 @@ export interface ModuleUiState {
   taskCards: Record<string, Owned<Panel>>;
   /** Bumped when a module says its editor titles changed. */
   titles: number;
+  /** Owners that hold unsaved changes. */
+  unsaved: Record<string, string>;
 }
 
 const EMPTY: ModuleUiState = {
@@ -41,6 +43,7 @@ const EMPTY: ModuleUiState = {
   inspector: {},
   taskCards: {},
   titles: 0,
+  unsaved: {},
 };
 
 export const useModuleUi = create<ModuleUiState>(() => ({ ...EMPTY }));

@@ -1,11 +1,7 @@
 //! Integration tests for Server-Driven UI (SDUI) TypeScript type generation (TSK-302 / ADR-006).
 
 use mythos_core::datatype::{DataTypeEntry, DataTypeSummary};
-use mythos_core::faceplate::{
-    BindingAccess, FaceplateBinding, FaceplateInstance, FaceplateReleaseResult, FaceplateType,
-    FaceplateTypeSummary, FaceplateView, FaceplateViewKind, InstanceBinding, ReadStage,
-    ResolvedInstance, StrandedInstance, UdtDefinition, UdtKind, UdtMember,
-};
+use mythos_core::datatype::{UdtDefinition, UdtKind, UdtMember};
 use mythos_core::sdui::{
     ComponentType, DeploymentRequest, DeploymentResponse, FaceplateBindingConfig, HmiLifecycleMode,
     SduiComponent, SduiProperty, SduiScreenLayout, SduiZone,
@@ -39,24 +35,10 @@ fn test_sdui_typescript_type_export() {
         DeploymentRequest::export_all_to(target_dir).expect("Failed to export DeploymentRequest");
         DeploymentResponse::export_all_to(target_dir).expect("Failed to export DeploymentResponse");
 
-        // Master faceplate types and instances (TSK-309)
+        // The UDT shape shared by data types and the HMI module's faceplate types
         UdtKind::export_all_to(target_dir).expect("Failed to export UdtKind");
         UdtMember::export_all_to(target_dir).expect("Failed to export UdtMember");
         UdtDefinition::export_all_to(target_dir).expect("Failed to export UdtDefinition");
-        BindingAccess::export_all_to(target_dir).expect("Failed to export BindingAccess");
-        FaceplateBinding::export_all_to(target_dir).expect("Failed to export FaceplateBinding");
-        FaceplateViewKind::export_all_to(target_dir).expect("Failed to export FaceplateViewKind");
-        FaceplateView::export_all_to(target_dir).expect("Failed to export FaceplateView");
-        FaceplateType::export_all_to(target_dir).expect("Failed to export FaceplateType");
-        FaceplateTypeSummary::export_all_to(target_dir)
-            .expect("Failed to export FaceplateTypeSummary");
-        InstanceBinding::export_all_to(target_dir).expect("Failed to export InstanceBinding");
-        FaceplateInstance::export_all_to(target_dir).expect("Failed to export FaceplateInstance");
-        StrandedInstance::export_all_to(target_dir).expect("Failed to export StrandedInstance");
-        FaceplateReleaseResult::export_all_to(target_dir)
-            .expect("Failed to export FaceplateReleaseResult");
-        ResolvedInstance::export_all_to(target_dir).expect("Failed to export ResolvedInstance");
-        ReadStage::export_all_to(target_dir).expect("Failed to export ReadStage");
         DataTypeEntry::export_all_to(target_dir).expect("Failed to export DataTypeEntry");
         DataTypeSummary::export_all_to(target_dir).expect("Failed to export DataTypeSummary");
 
@@ -77,18 +59,6 @@ export * from './DeploymentResponse';
 export * from './UdtKind';
 export * from './UdtMember';
 export * from './UdtDefinition';
-export * from './BindingAccess';
-export * from './FaceplateBinding';
-export * from './FaceplateViewKind';
-export * from './FaceplateView';
-export * from './FaceplateType';
-export * from './FaceplateTypeSummary';
-export * from './InstanceBinding';
-export * from './FaceplateInstance';
-export * from './StrandedInstance';
-export * from './FaceplateReleaseResult';
-export * from './ResolvedInstance';
-export * from './ReadStage';
 export * from './DataTypeEntry';
 export * from './DataTypeSummary';
 "#;
@@ -107,15 +77,6 @@ export * from './DataTypeSummary';
         assert!(target_dir.join("DeploymentRequest.ts").exists());
         assert!(target_dir.join("DeploymentResponse.ts").exists());
         assert!(target_dir.join("UdtDefinition.ts").exists());
-        assert!(target_dir.join("FaceplateType.ts").exists());
-        assert!(target_dir.join("FaceplateView.ts").exists());
-        assert!(target_dir.join("FaceplateInstance.ts").exists());
-        assert!(target_dir.join("FaceplateTypeSummary.ts").exists());
-        assert!(target_dir.join("ResolvedInstance.ts").exists());
-        assert!(target_dir.join("FaceplateReleaseResult.ts").exists());
-        assert!(target_dir.join("InstanceBinding.ts").exists());
-        assert!(target_dir.join("StrandedInstance.ts").exists());
-        assert!(target_dir.join("ReadStage.ts").exists());
         assert!(target_dir.join("DataTypeEntry.ts").exists());
         assert!(target_dir.join("DataTypeSummary.ts").exists());
         assert!(target_dir.join("index.ts").exists());

@@ -21,18 +21,43 @@ export interface Project {
   name: string;
 }
 
-/** One tag's last reading, exactly as the workbench holds it. */
-export interface TagSample {
-  uri: string;
-  /** Declared type name: "BOOL", "REAL", …, or "UNSPECIFIED". */
-  type: string;
-  /** The value in the tag's own JSON type; `null` when it has none. */
-  value: unknown;
-  /** "GOOD", "BAD_COMM_FAILURE", …; empty when the controller sent none. */
-  qualityName: string;
-  qualityCode: number;
-  /** Unix time in nanoseconds of the last good read; `0` when there has been none. */
-  timestampNs: number;
+import type { StreamState, TagSample } from './quality';
+export type { StreamState, TagSample, TagView, QualityTone } from './quality';
+
+export interface TelemetrySnapshot {
+  tags: ReadonlyMap<string, TagSample>;
+  stream: StreamState;
+  lastBatchAtMs: number | null;
+}
+
+/** One connection of the running project, as the controller reports it. */
+export interface ConnectionStatus {
+  id: string;
+  driver: string;
+  /** `RUNNING`, `CONFIG_ERROR` or `STOPPED`. */
+  state: string;
+  /** The URIs of the tags it provides. */
+  tags: string[];
+}
+
+/** The running project's field I/O. */
+export interface IoStatus {
+  connections: ConnectionStatus[];
+}
+
+/** What the workbench knows of the controller, as it last polled it. */
+export interface ControllerView {
+  /** The project the controller runs; `null` when none, `undefined` before it has answered. */
+  activeProjectId: string | null | undefined;
+  /** The running project's connections; `null` until known. */
+  io: IoStatus | null;
+  /** Why the controller cannot be reached, when it cannot. */
+  error: string | null;
+  /**
+   * The tag URIs the open project's I/O configuration provides, as the engineer is editing it:
+   * what a binding may name, whether or not the project runs.
+   */
+  configuredTags: string[];
 }
 
 export interface Identity {
@@ -80,7 +105,10 @@ export interface Editor {
 
 /** A full-window view (an operator runtime), shown with `host.showView(id, target)`. */
 export interface View {
+  /** Also the first word of its address: `#/<id>/<project>[/<target>]`. */
   id: string;
+  /** When set, the project toolbar has a button with this label that shows the view. */
+  launch?: string;
   mount: Mount<ViewContext>;
 }
 
@@ -114,6 +142,21 @@ export interface WorkbenchHost {
     subscribe(listener: () => void): Dispose;
     /** Whether the stream is open now: a value is only live while it is. */
     online(): boolean;
+    /** The stream's state, for saying why there is no value. */
+    stream(): StreamState;
+    /**
+     * Everything at once: the last batch by tag URI, the stream's state, and the controller's
+     * time of the last batch. The same object until one of them changes.
+     */
+    snapshot(): TelemetrySnapshot;
+    /** Open the stream (go online), as the engineer's Go online does. */
+    goOnline(): void;
+  };
+
+  /** The controller's state as the workbench polls it, and when it changes. */
+  controller: {
+    get(): ControllerView;
+    subscribe(listener: () => void): Dispose;
   };
 
   /** Named events the controller sends on the stream (a module's own included). */
@@ -138,6 +181,12 @@ export interface WorkbenchHost {
    * connection) hides it until it is set again.
    */
   setInspector(owner: string, panel: Panel | null): void;
+  /**
+   * Say whether `owner` holds changes not yet saved; closing the project asks first while any
+   * owner does.
+   */
+  setUnsaved(owner: string, unsaved: boolean): void;
+
   /** Show `panel` above the workbench's own task cards (or take it away, with `null`). */
   setTaskCard(owner: string, panel: Panel | null): void;
 

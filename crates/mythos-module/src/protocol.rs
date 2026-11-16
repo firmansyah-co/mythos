@@ -94,7 +94,15 @@ pub struct RouteDecl {
     /// Query parameters it reads, and what each means.
     #[serde(default)]
     pub query: Vec<(String, String)>,
+    /// What of the server's state the module needs with each call. `"tags"`: the URIs of the
+    /// tags registered in the tag catalog now, in [`HttpCall::tags`], so a module can refuse a
+    /// binding to a tag that does not exist. Anything else is refused when the module is found.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
 }
+
+/// What a route may ask for in [`RouteDecl::needs`].
+pub const ROUTE_NEEDS: &[&str] = &["tags"];
 
 /// Who a forwarded request is from, as the server established it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +132,9 @@ pub struct HttpCall {
     pub project: Option<String>,
     #[serde(default)]
     pub data_dir: Option<String>,
+    /// The registered tag URIs, when the route declares that it needs them (`needs: ["tags"]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
 }
 
 /// A service module's answer to an [`HttpCall`].

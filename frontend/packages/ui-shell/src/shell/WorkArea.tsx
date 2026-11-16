@@ -6,7 +6,6 @@ import { ConnectionDiagnostics } from '../editors/ConnectionDiagnostics';
 import { ConnectionEditor } from '../editors/ConnectionEditor';
 import { ConfigBar, DevicesAndNetworks } from '../editors/DevicesAndNetworks';
 import { ProjectOverview } from '../editors/ProjectOverview';
-import { ScreenEditor } from '../editors/ScreenEditor';
 import { TagTable } from '../editors/TagTable';
 import { ModuleMount } from '../modules/ModuleMount';
 import { moduleEditor, useModuleUi } from '../modules/registry';
@@ -52,8 +51,6 @@ function EditorBody({ editor }: { editor: EditorRef }) {
       );
     case 'tags':
       return <TagTable connectionId={editor.target} />;
-    case 'screen':
-      return <ScreenEditor screenId={editor.target ?? ''} />;
     case 'diagnostics':
       return editor.target ? (
         <ConnectionDiagnostics connectionId={editor.target} />
@@ -85,11 +82,8 @@ export function WorkArea() {
   }
 
   const path = editorPath(editor, project.name, names, modules);
-  // The tag table, a screen and a module's live editors show values from the telemetry stream.
-  const live =
-    editor.kind === 'tags' ||
-    editor.kind === 'screen' ||
-    moduleEditor(modules, editor.kind)?.item.live === true;
+  // The tag table and a module's live editors (an HMI screen) show values from the stream.
+  const live = editor.kind === 'tags' || moduleEditor(modules, editor.kind)?.item.live === true;
   const online = stream === 'OPEN' && live;
 
   return (
