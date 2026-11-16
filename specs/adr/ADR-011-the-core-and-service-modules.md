@@ -124,6 +124,29 @@ platforms, protocol version, the least server version, checksums. Settings → M
 it, installs and updates from it. Packages will be signed before a public library exists; until
 then only packages from a feed the administrator configures are offered.
 
+### 2.6 Boundaries and versions
+
+Modules live in this repository beside the core while the protocol and the SDK are still
+moving: a change to both lands, and is tested, in one pull request. They are kept separable,
+so a module can move to a repository of its own (a vendor's or a customer's driver, or any
+module once the library of §2.5 distributes it) without being rewritten:
+
+- A module (a crate under `plugins/`) depends on the protocol (`mythos-module`), never on the
+  core and never on another module. Nothing of the platform depends on a module, except
+  `mythos-module-tests` and dev-dependencies.
+- A module's UI uses the workbench only through `@mythos/workbench-sdk`: it imports neither the
+  shell, nor another module's UI, nor a file outside its package. The shell and the SDK import
+  no module UI. Tests are exempt: a module's UI is tested against the shell's real host.
+- A module has its own version, in its Cargo.toml; its UI package (`"mythos": {"module": …,
+  "crate": …}` in package.json) carries the same one. The platform's version (core, CLI, shell,
+  SDK) follows the release tag (`scripts/version.sh`) and is never stamped onto a module.
+  Whether a module can run on a server is decided by `PROTOCOL_VERSION`, which the server
+  checks when it finds the module; a module's version says which build of it runs.
+
+Checked by `crates/mythos-module-tests/tests/module_boundaries.rs` (from `cargo metadata`,
+transitively) and `frontend/packages/workbench-sdk/src/__tests__/boundaries.test.ts`, each with a
+test feeding the guard every kind of break, and by `version_agreement_tests.rs`.
+
 ## 3. Order of work
 
 1. **Service module host:** the `service` kind; routes with roles, forwarded calls, data
@@ -161,4 +184,5 @@ after step 4 unchanged.
 | 2.3 Module UI | Yes: `api/modules.rs` (`ui_file`, `ModuleRow.ui`), `frontend/packages/workbench-sdk`, `ui-shell/src/modules` (loader, registries, mounts in the tree, work area, inspector, task cards and a full-window view; stream events by any name). Proven by `module_packages.rs` (serving), `moduleUi.test.tsx`, and the e2e scenario with the notes test module's UI (`crates/mythos-module-tests/ui/entry.js`) and the HMI's |
 | 2.4 Enable/disable, packages | Yes: `crate::modules`, `api/modules.rs`, Settings → Modules, `mythos module pack`; `.mythos-plugin` retired. Proven by `crates/mythos-module-tests/tests/module_packages.rs` |
 | 2.5 Library | No |
+| 2.6 Boundaries and versions | Yes: the two boundary guards and the version agreement tests named in §2.6; `mythos-hmi` and `driver-modbus` have versions of their own |
 | §3 step 4, HMI module | Yes: `plugins/hmi` (`mythos-module-hmi`: screens and faceplates at `/api/v1/projects/:id/hmi/…`, data in `<project>/hmi/`, earlier files copied in on first use, `SCREENS_RELEASED` and `FACEPLATE_PROPAGATED` sent as module events, faceplate bindings checked against the tag catalog through `needs: ["tags"]`) and `frontend/packages/hmi-ui` (tree section, screen editor with toolbox and element properties, operator runtime at `#/runtime/<project>`). Shipped in every release bundle (`bin/`, `modules-ui/org.mythos.hmi/`). The screen URLs are unchanged; the faceplate routes moved from `/api/v1/projects/:id/faceplates/…` to `…/hmi/faceplates/…`, because a module's routes live under its own name (§2.2); nothing but MCP called them, and the MCP tool names are unchanged. Proven by `crates/mythos-module-tests/tests/hmi_screens.rs` and `hmi_faceplates.rs` (the core's former tests, run against the module process), the HMI UI tests run against the workbench's own host, and the e2e scenario unchanged |

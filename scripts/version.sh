@@ -144,10 +144,13 @@ esac
 
 # Every manifest that carries a version. Listed explicitly: a glob that silently matches
 # nothing is the failure mode this repository keeps removing.
+# A module (plugins/*, and its UI under frontend/packages with "mythos": {"module": …}) has
+# its own version and is not stamped with the platform's (ADR-011 §2.6).
 STAMP_FILES=(
   Cargo.toml
   frontend/package.json
   frontend/packages/ui-shell/package.json
+  frontend/packages/workbench-sdk/package.json
 )
 
 current_version_of() {
