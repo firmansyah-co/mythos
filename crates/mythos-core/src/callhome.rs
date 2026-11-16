@@ -291,9 +291,10 @@ async fn run(router: &Router, job: &Job) -> JobAnswer {
         Ok(request) => request,
         Err(e) => return answer(400, Value::String(e.to_string())),
     };
+    // The router cannot fail to answer: its error type has no value.
     let response = match router.clone().oneshot(request).await {
         Ok(response) => response,
-        Err(e) => return answer(500, Value::String(e.to_string())),
+        Err(never) => match never {},
     };
     let status = response.status().as_u16();
     match axum::body::to_bytes(response.into_body(), ANSWER_LIMIT).await {
