@@ -36,8 +36,14 @@ path = "src/bin/service-module-under-test.rs"
 name = "hmi-module-under-test"
 path = "src/bin/hmi-module-under-test.rs"
 
+# The discovery service module (ADR-012 §2.2).
+[[bin]]
+name = "discovery-module-under-test"
+path = "src/bin/discovery-module-under-test.rs"
+
 [dependencies]
 driver-modbus.workspace = true
+mythos-discovery = { path = "../../plugins/discovery" }
 mythos-hmi = { path = "../../plugins/hmi" }
 mythos-module.workspace = true
 async-trait.workspace = true

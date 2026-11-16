@@ -141,6 +141,7 @@ pub fn manifest() -> ModuleManifest {
         description: "HMI screens, faceplates and the operator runtime".into(),
         capabilities: vec![],
         config_schema: Value::Null,
+        always_on: false,
         routes: vec![
             route("GET", "/screens", "viewer", "list_screens",
                 "A project's HMI screens with their canvases.", None, &[VIEW]),

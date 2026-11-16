@@ -209,6 +209,10 @@ async fn assemble<S: PlatformShm + 'static>(
     // Service modules are found with the drivers, and follow every later reading of the module
     // directories (the watcher, or POST /api/v1/modules/rescan).
     let services = crate::services::ServiceHost::new(state.hmi_events.clone());
+    {
+        let node = Arc::clone(&node);
+        services.set_node(Arc::new(move || Some(node.wire())));
+    }
     services.sync(io.service_modules()).await;
     {
         let services = Arc::clone(&services);

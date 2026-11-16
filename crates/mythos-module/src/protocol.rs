@@ -59,6 +59,32 @@ pub struct ModuleManifest {
     /// The routes a service serves (ADR-011 §2.2). A driver has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<RouteDecl>,
+    /// A service that runs for as long as the server does (it announces something, or watches
+    /// the network), not only when one of its routes is asked for: the server starts it when it
+    /// finds it and starts it again when it stops.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub always_on: bool,
+}
+
+/// The node a service module runs on (ADR-012 §2.1), sent as [`Call::Node`] after `hello` and
+/// again whenever it changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireNode {
+    pub id: String,
+    pub name: String,
+    /// `workstation`, `edge` or `server`.
+    pub role: String,
+    #[serde(default)]
+    pub site: String,
+    /// Whether the node announces itself on the network (its role's default or its own setting).
+    pub announce: bool,
+    /// The port its server listens on, once it does.
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// The server's version.
+    pub version: String,
+    /// The module protocol the server speaks.
+    pub protocol: u32,
 }
 
 /// Where a service's route is mounted.
@@ -194,6 +220,8 @@ pub struct Request {
 pub enum Call {
     /// Initialise with this context. Answers with the module's [`ModuleManifest`].
     Hello { context: WireContext },
+    /// The node a service runs on, after `hello` and whenever it changes. Answers with `null`.
+    Node { node: WireNode },
     /// Check a configuration and list the tags it would provide. Starts nothing, needs no
     /// `hello`. Answers with a list of [`WireDeclaration`].
     Describe { config: Value },

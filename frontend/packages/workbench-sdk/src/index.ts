@@ -103,6 +103,14 @@ export interface Editor {
   mount: Mount<EditorContext>;
 }
 
+/** A page of the Portal, the start page shown before a project is open. */
+export interface PortalSection {
+  id: string;
+  /** Its entry in the Portal's navigation. */
+  label: string;
+  mount: Mount<Record<string, never>>;
+}
+
 /** A full-window view (an operator runtime), shown with `host.showView(id, target)`. */
 export interface View {
   /** Also the first word of its address: `#/<id>/<project>[/<target>]`. */
@@ -194,6 +202,7 @@ export interface WorkbenchHost {
     treeSection(section: TreeSection): Dispose;
     editor(editor: Editor): Dispose;
     view(view: View): Dispose;
+    portalSection(section: PortalSection): Dispose;
   };
 }
 

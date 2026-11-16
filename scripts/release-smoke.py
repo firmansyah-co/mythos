@@ -187,6 +187,18 @@ def main() -> int:
         if b"org.mythos.hmi" not in entry:
             return fail("HMI module UI", entry[:300].decode("utf-8", "replace"))
 
+        # Discovery (ADR-012): always on, told its node; an installed edge announces itself.
+        node = get("/api/v1/node")
+        heard = None
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            heard = get("/api/v1/m/discovery/nodes")
+            if heard.get("self") == node.get("id"):
+                break
+            time.sleep(0.5)
+        if not heard or heard.get("self") != node.get("id") or not heard.get("listening"):
+            return fail("discovery module", json.dumps(heard)[:2000])
+
         updates = get("/api/v1/updates")
         installation = updates.get("installation") or {}
         if installation.get("current_version") != version or updates["running"].get("installed_version") != version:
@@ -199,7 +211,7 @@ def main() -> int:
 
         print(
             f"release-smoke: OK — installed {version}; the server found the Modbus and HMI modules, serves "
-            f"the HMI's UI, knows it "
+            f"the HMI's UI, discovery knows the node, knows it "
             f"runs {version} from {installation.get('home')}, and serves the workbench"
         )
         return 0

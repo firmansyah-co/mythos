@@ -75,6 +75,10 @@ pub async fn update<S: PlatformShm + 'static>(
                     io.reload().await;
                 }
             }
+            // The service modules learn the change (the discovery module announces the new name).
+            if let Some(services) = &state.services {
+                services.node_changed().await;
+            }
             Json(view(&node)).into_response()
         }
         Err(NodeError::Invalid(message)) => (

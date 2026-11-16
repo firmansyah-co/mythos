@@ -120,6 +120,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = SocketAddr::new(server.node.listen_ip()?, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     server.node.set_listening(listener.local_addr()?);
+    // Now that the port is known, the service modules are told (discovery announces it).
+    server.services.node_changed().await;
     tracing::info!("MythOS server listening on http://{}", addr);
 
     // Telemetry streams never end on their own, so a graceful HTTP shutdown would wait for

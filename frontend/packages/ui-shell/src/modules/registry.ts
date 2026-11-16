@@ -1,7 +1,7 @@
 // What the modules' workbench UIs contributed (ADR-011 §2.3), and whether they have loaded.
 
 import { create } from 'zustand';
-import type { Editor, Panel, TreeSection, View } from '@mythos/workbench-sdk';
+import type { Editor, Panel, PortalSection, TreeSection, View } from '@mythos/workbench-sdk';
 
 export interface ModuleLoad {
   id: string;
@@ -24,6 +24,7 @@ export interface ModuleUiState {
   treeSections: Owned<TreeSection>[];
   editors: Owned<Editor>[];
   views: Owned<View>[];
+  portalSections: Owned<PortalSection>[];
   /** Inspector panels by owner. */
   inspector: Record<string, Owned<Panel>>;
   /** Task cards by owner. */
@@ -40,6 +41,7 @@ const EMPTY: ModuleUiState = {
   treeSections: [],
   editors: [],
   views: [],
+  portalSections: [],
   inspector: {},
   taskCards: {},
   titles: 0,

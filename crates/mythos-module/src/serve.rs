@@ -211,5 +211,7 @@ where
             kind: ErrorKind::Protocol,
             message: format!("{} is a driver; it serves no routes", manifest.id),
         }),
+        // A driver does not need to know the node; it is told nothing it must act on.
+        Call::Node { .. } => Ok(json!(null)),
     }
 }
