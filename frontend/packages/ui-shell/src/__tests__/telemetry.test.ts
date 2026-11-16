@@ -4,6 +4,7 @@ import {
   goOnline,
   MAX_RECONNECT_DELAY_MS,
   MIN_RECONNECT_DELAY_MS,
+  onStreamEvent,
   useTelemetry,
 } from '../data/telemetry';
 import { resetStores } from './harness';
@@ -176,5 +177,49 @@ describe('the connection to the controller', () => {
 
     first.emit('tag_update', batch([good('external.A.B.ghost', 1)]));
     expect(useTelemetry.getState().tags.size).toBe(0);
+  });
+});
+
+describe("a module's own events (ADR-011 §2.2)", () => {
+  it('reaches a listener asked for before the stream opened, after, and after a reconnect', () => {
+    const early: unknown[] = [];
+    const late: unknown[] = [];
+    const stopEarly = onStreamEvent('NOTES_CHANGED', (data) => early.push(data));
+    goOnline();
+    const first = FakeEventSource.last();
+    first.onopen?.();
+    first.emit('NOTES_CHANGED', JSON.stringify({ n: 1 }));
+
+    // A name nobody asked for before the stream opened is still heard on that stream.
+    const stopLate = onStreamEvent('TREND_SAVED', (data) => late.push(data));
+    first.emit('TREND_SAVED', JSON.stringify({ t: 1 }));
+
+    first.onerror?.();
+    vi.advanceTimersByTime(MIN_RECONNECT_DELAY_MS);
+    const second = FakeEventSource.last();
+    expect(second).not.toBe(first);
+    second.onopen?.();
+    second.emit('NOTES_CHANGED', JSON.stringify({ n: 2 }));
+    second.emit('TREND_SAVED', JSON.stringify({ t: 2 }));
+    // The closed stream's listeners are deaf: nothing it still delivers counts.
+    first.emit('NOTES_CHANGED', JSON.stringify({ n: 'stale' }));
+
+    expect(early).toEqual([{ n: 1 }, { n: 2 }]);
+    expect(late).toEqual([{ t: 1 }, { t: 2 }]);
+
+    stopEarly();
+    stopLate();
+    second.emit('NOTES_CHANGED', JSON.stringify({ n: 3 }));
+    expect(early).toHaveLength(2);
+  });
+
+  it('skips a frame that is not JSON', () => {
+    const seen: unknown[] = [];
+    const stop = onStreamEvent('NOTES_CHANGED', (data) => seen.push(data));
+    goOnline();
+    FakeEventSource.last().emit('NOTES_CHANGED', '{not json');
+    FakeEventSource.last().emit('NOTES_CHANGED', '"ok"');
+    expect(seen).toEqual(['ok']);
+    stop();
   });
 });

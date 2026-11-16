@@ -1,0 +1,162 @@
+// The contract between the MythOS workbench and the workbench UI of a module (ADR-011 §2.3).
+//
+// A module's UI is an ES module, `entry.js`, served by the controller and imported by the
+// workbench after sign-in. Its default export is a `WorkbenchModule`: the workbench calls
+// `activate(host)` once, and the module registers what it contributes through `host.register`.
+//
+// Every contribution is a `mount`: the workbench gives it an element to draw into and gets back
+// a function that takes it down. A module brings whatever it draws with (React, plain DOM, …);
+// nothing of the workbench's own code is shared at run time, so a module built against this
+// contract keeps working when the workbench is rebuilt. The workbench's CSS is shared: using its
+// class names (`tree__row`, `btn`, `grid`, …) makes a module look like the rest of it.
+
+/** Stop something: an unsubscribe, an unregister, an unmount. */
+export type Dispose = () => void;
+
+/** Draw into `container`; return what takes it down again. */
+export type Mount<Context> = (container: HTMLElement, context: Context) => Dispose | void;
+
+export interface Project {
+  id: string;
+  name: string;
+}
+
+/** One tag's last reading, exactly as the workbench holds it. */
+export interface TagSample {
+  uri: string;
+  /** Declared type name: "BOOL", "REAL", …, or "UNSPECIFIED". */
+  type: string;
+  /** The value in the tag's own JSON type; `null` when it has none. */
+  value: unknown;
+  /** "GOOD", "BAD_COMM_FAILURE", …; empty when the controller sent none. */
+  qualityName: string;
+  qualityCode: number;
+  /** Unix time in nanoseconds of the last good read; `0` when there has been none. */
+  timestampNs: number;
+}
+
+export interface Identity {
+  username: string;
+  display_name: string;
+  role: 'viewer' | 'operator' | 'engineer' | 'admin';
+}
+
+export interface EditorContext {
+  project: Project;
+  /** What the editor was opened on (a screen id, …), if anything. */
+  target?: string;
+}
+
+export interface TreeContext {
+  project: Project;
+}
+
+export interface ViewContext {
+  project: Project;
+  /** What the view was shown with (a screen id, …), if anything. */
+  target?: string;
+}
+
+/** A section of the project tree. */
+export interface TreeSection {
+  id: string;
+  /** Sections are drawn in this order after the workbench's own; lower first. */
+  order?: number;
+  mount: Mount<TreeContext>;
+}
+
+/** An editor in the work area, opened with `host.openEditor(kind, target)`. */
+export interface Editor {
+  kind: string;
+  /**
+   * Where the editor is, after the project's name: one segment (`"Pumps"`) or several
+   * (`["HMI screens", "Pumps"]`). Asked again on every render and after `host.titlesChanged()`.
+   */
+  title: (target?: string) => string | string[];
+  /** Whether it shows live values, which makes its header say ONLINE while the stream is open. */
+  live?: boolean;
+  mount: Mount<EditorContext>;
+}
+
+/** A full-window view (an operator runtime), shown with `host.showView(id, target)`. */
+export interface View {
+  id: string;
+  mount: Mount<ViewContext>;
+}
+
+/** A panel for the inspector or the task cards, set by an editor while it wants it shown. */
+export interface Panel {
+  title: string;
+  mount: Mount<{ project: Project }>;
+}
+
+export interface WorkbenchHost {
+  /** The version of this contract the workbench speaks. */
+  readonly sdk: 1;
+
+  /** The open project, if any, and changes to it. */
+  project(): Project | null;
+  onProject(listener: (project: Project | null) => void): Dispose;
+
+  /** Who is signed in, if the controller has accounts. */
+  user(): Identity | null;
+
+  /**
+   * A request to the controller, as the signed-in user. Resolves with the JSON body; throws an
+   * `Error` whose message says what the controller answered, and ends the session on a 401.
+   */
+  api<T = unknown>(path: string, init?: RequestInit): Promise<T>;
+
+  /** Live tag values from the workbench's one telemetry stream. */
+  telemetry: {
+    get(uri: string): TagSample | undefined;
+    /** Called after every batch, and when the stream opens or closes. */
+    subscribe(listener: () => void): Dispose;
+    /** Whether the stream is open now: a value is only live while it is. */
+    online(): boolean;
+  };
+
+  /** Named events the controller sends on the stream (a module's own included). */
+  events: {
+    subscribe(name: string, listener: (data: unknown) => void): Dispose;
+  };
+
+  /** The session log at the bottom of the workbench. */
+  log: { info(message: string): void; error(message: string): void };
+
+  openEditor(kind: string, target?: string): void;
+  /** Close the editor of `kind` on `target`, if it is open (the thing it edits was deleted). */
+  closeEditor(kind: string, target?: string): void;
+  /** The module's editor titles changed (something was renamed); the workbench redraws them. */
+  titlesChanged(): void;
+  showView(id: string, target?: string): void;
+  exitView(): void;
+
+  /**
+   * Show `panel` in the inspector's Properties tab (or take it away, with `null`) on behalf of
+   * `owner`. Setting a panel selects it: selecting anything else in the workbench (a tag, a
+   * connection) hides it until it is set again.
+   */
+  setInspector(owner: string, panel: Panel | null): void;
+  /** Show `panel` above the workbench's own task cards (or take it away, with `null`). */
+  setTaskCard(owner: string, panel: Panel | null): void;
+
+  register: {
+    treeSection(section: TreeSection): Dispose;
+    editor(editor: Editor): Dispose;
+    view(view: View): Dispose;
+  };
+}
+
+/** What a module's `entry.js` exports by default. */
+export interface WorkbenchModule {
+  /** The module's manifest id. */
+  id: string;
+  /** Called once, after sign-in. May return what undoes it. */
+  activate(host: WorkbenchHost): Dispose | void;
+}
+
+/** Type-checks a module's default export. */
+export function defineModule(module: WorkbenchModule): WorkbenchModule {
+  return module;
+}

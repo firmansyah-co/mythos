@@ -203,6 +203,8 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
         .route("/api/v1/io/drivers", get(io::drivers::<S>))
         .route("/api/v1/modules", get(io::modules::<S>))
         .route("/api/v1/modules/rescan", post(io::rescan_modules::<S>))
+        // A module's workbench UI (ADR-011 §2.3)
+        .route("/modules/:module/ui/*path", get(modules::ui_file::<S>))
         // Settings → Modules (administrators)
         .route(
             "/api/v1/modules/install",

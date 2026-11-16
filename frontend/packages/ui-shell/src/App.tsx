@@ -7,7 +7,9 @@ import { log } from './data/log';
 import { useScreens } from './data/screens';
 import { useSession } from './data/session';
 import { goOffline, goOnline, useTelemetry } from './data/telemetry';
-import { useWorkbench } from './data/workbench';
+import { CORE_EDITOR_KINDS, useWorkbench } from './data/workbench';
+import { loadModuleUis, unloadModuleUis } from './modules/loader';
+import { ModuleViewHost } from './modules/ModuleViewHost';
 import { AboutDialog } from './shell/AboutDialog';
 import { PortalView } from './shell/PortalView';
 import { ProjectView } from './shell/ProjectView';
@@ -37,7 +39,16 @@ export function App() {
     []
   );
 
-  return phase === 'signed-in' || phase === 'open' ? <Workbench /> : <SignIn />;
+  // The modules' workbench UIs are loaded once someone may use the workbench, and taken down
+  // when they sign out: what a module shows is read with the signed-in user's rights.
+  const signedIn = phase === 'signed-in' || phase === 'open';
+  useEffect(() => {
+    if (!signedIn) return;
+    void loadModuleUis();
+    return unloadModuleUis;
+  }, [signedIn]);
+
+  return signedIn ? <Workbench /> : <SignIn />;
 }
 
 function Workbench() {
@@ -59,6 +70,7 @@ function Workbench() {
         workbench.openProject(project);
         if (target.editor) workbench.openEditor(target.editor.kind, target.editor.connectionId);
         if (target.runtime) workbench.startRuntime(target.runtime.screenId);
+        if (target.view) workbench.showModuleView(target.view.id, target.view.target);
         log.info(`Project “${project.name}” opened.`);
       })
       .catch((cause: unknown) => {
@@ -80,7 +92,9 @@ function Workbench() {
       useWorkbench.subscribe((state) => {
         const editor = state.editors.find((candidate) => candidate.id === state.activeEditorId);
         const next = formatLocation(
-          state.project && state.view === 'runtime'
+          state.project && state.view === 'module' && state.moduleView
+            ? { projectId: state.project.id, view: state.moduleView }
+            : state.project && state.view === 'runtime'
             ? {
                 projectId: state.project.id,
                 runtime: state.runtimeScreenId ? { screenId: state.runtimeScreenId } : {},
@@ -89,8 +103,11 @@ function Workbench() {
             ? {
                 projectId: state.project.id,
                 editor:
-                  editor && editor.kind !== 'connection' && editor.kind !== 'screen'
-                    ? { kind: editor.kind, connectionId: editor.target }
+                  editor &&
+                  editor.kind !== 'connection' &&
+                  editor.kind !== 'screen' &&
+                  (CORE_EDITOR_KINDS as readonly string[]).includes(editor.kind)
+                    ? { kind: editor.kind as 'overview', connectionId: editor.target }
                     : undefined,
               }
             : null
@@ -177,6 +194,8 @@ function Workbench() {
         <RuntimeView />
       ) : view === 'settings' ? (
         <SettingsView />
+      ) : view === 'module' ? (
+        <ModuleViewHost />
       ) : (
         <ProjectView onAbout={() => setAbout(true)} />
       )}

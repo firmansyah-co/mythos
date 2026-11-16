@@ -13,6 +13,8 @@ import { GRID, type KnownElement } from '../data/screenModel';
 import { useScreens } from '../data/screens';
 import { useTelemetry } from '../data/telemetry';
 import { useWorkbench, type InspectorTab } from '../data/workbench';
+import { ModuleMount } from '../modules/ModuleMount';
+import { useModuleUi } from '../modules/registry';
 import { ConnectionStateBadge } from '../editors/ConnectionStateBadge';
 import { viewOf } from '../editors/elementViews';
 import { QualityBadge, TagValue } from './QualityBadge';
@@ -225,6 +227,24 @@ function ElementProperties({ screenId, elementId }: { screenId: string; elementI
   );
 }
 
+/** What a module put in the inspector for `owner`. */
+function ModulePanel({ owner }: { owner: string }) {
+  const panel = useModuleUi((state) => state.inspector[owner]);
+  const project = useWorkbench((state) => state.project);
+  if (!panel || !project) {
+    return <p className="inspector__empty muted">Nothing is selected.</p>;
+  }
+  return (
+    <ModuleMount
+      mount={panel.item.mount}
+      context={{ project: { id: project.id, name: project.name } }}
+      deps={[project.id, owner]}
+      className="module-mount"
+      testId="inspector-module"
+    />
+  );
+}
+
 function PropertiesTab() {
   const selection = useWorkbench((state) => state.selection);
   if (!selection) {
@@ -239,6 +259,7 @@ function PropertiesTab() {
       />
     );
   }
+  if (selection.kind === 'module') return <ModulePanel owner={selection.owner} />;
   if (selection.kind === 'tag') return <TagProperties uri={selection.uri} />;
   if (selection.kind === 'connection') return <ConnectionProperties id={selection.id} />;
   return <ProjectProperties />;

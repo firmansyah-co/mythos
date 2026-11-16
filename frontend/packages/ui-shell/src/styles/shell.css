@@ -1002,3 +1002,26 @@
   justify-content: flex-end;
   padding: 10px 14px;
 }
+
+/* Where a module draws (ADR-011 §2.3). A module uses the workbench's own classes inside. */
+.module-mount--editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.module-view {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--c-surface-sunken);
+}
+
+.module-view--missing {
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}

@@ -8,7 +8,34 @@ import { ConfigBar, DevicesAndNetworks } from '../editors/DevicesAndNetworks';
 import { ProjectOverview } from '../editors/ProjectOverview';
 import { ScreenEditor } from '../editors/ScreenEditor';
 import { TagTable } from '../editors/TagTable';
+import { ModuleMount } from '../modules/ModuleMount';
+import { moduleEditor, useModuleUi } from '../modules/registry';
 import { useEditorNames } from './useEditorNames';
+
+/** An editor a module registered; says so plainly when no loaded module has it. */
+function ModuleEditorBody({ editor }: { editor: EditorRef }) {
+  const entry = useModuleUi((state) => moduleEditor(state, editor.kind));
+  const phase = useModuleUi((state) => state.phase);
+  const project = useWorkbench((state) => state.project);
+  if (!entry || !project) {
+    return (
+      <p className="muted" data-testid="module-editor-missing">
+        {phase === 'ready'
+          ? `No enabled module provides the editor “${editor.kind}”.`
+          : 'The modules are loading.'}
+      </p>
+    );
+  }
+  return (
+    <ModuleMount
+      mount={entry.item.mount}
+      context={{ project: { id: project.id, name: project.name }, target: editor.target }}
+      deps={[project.id, editor.target]}
+      className="module-mount module-mount--editor"
+      testId={`module-editor-${editor.kind}`}
+    />
+  );
+}
 
 function EditorBody({ editor }: { editor: EditorRef }) {
   switch (editor.kind) {
@@ -31,6 +58,8 @@ function EditorBody({ editor }: { editor: EditorRef }) {
       return editor.target ? (
         <ConnectionDiagnostics connectionId={editor.target} />
       ) : null;
+    default:
+      return <ModuleEditorBody editor={editor} />;
   }
 }
 
@@ -43,6 +72,7 @@ export function WorkArea() {
   const closeEditor = useWorkbench((state) => state.closeEditor);
   const stream = useTelemetry((state) => state.stream);
   const names = useEditorNames();
+  const modules = useModuleUi();
 
   const editor = editors.find((candidate) => candidate.id === activeEditorId);
 
@@ -54,9 +84,13 @@ export function WorkArea() {
     );
   }
 
-  const path = editorPath(editor, project.name, names);
-  // The tag table and a screen are the editors whose values arrive on the telemetry stream.
-  const online = stream === 'OPEN' && (editor.kind === 'tags' || editor.kind === 'screen');
+  const path = editorPath(editor, project.name, names, modules);
+  // The tag table, a screen and a module's live editors show values from the telemetry stream.
+  const live =
+    editor.kind === 'tags' ||
+    editor.kind === 'screen' ||
+    moduleEditor(modules, editor.kind)?.item.live === true;
+  const online = stream === 'OPEN' && live;
 
   return (
     <section className="workarea" aria-label="Work area">

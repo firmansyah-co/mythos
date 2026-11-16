@@ -6,6 +6,7 @@
 //   #/project/<project id>/<editor kind>/<connection id>
 //   #/runtime/<project id>
 //   #/runtime/<project id>/<screen id>
+//   #/<module view id>/<project id>[/<target>]   a module's full-window view (ADR-011 §2.3)
 
 import type { EditorKind } from './workbench';
 
@@ -20,7 +21,12 @@ export interface WorkbenchLocation {
   editor?: { kind: AddressableKind; connectionId?: string };
   /** Present when the address is the operator runtime, optionally on one screen. */
   runtime?: { screenId?: string };
+  /** Present when the address is a module's full-window view. */
+  view?: { id: string; target?: string };
 }
+
+/** First words of an address that are the workbench's own, never a module view's. */
+const OWN_WORDS = ['project', 'runtime'];
 
 const EDITOR_KINDS: readonly AddressableKind[] = ['overview', 'devices', 'tags', 'diagnostics'];
 
@@ -28,6 +34,9 @@ export function parseLocation(hash: string): WorkbenchLocation | null {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
   if (parts[0] === 'runtime' && parts[1]) {
     return { projectId: parts[1], runtime: parts[2] ? { screenId: parts[2] } : {} };
+  }
+  if (parts[0] && parts[1] && !OWN_WORDS.includes(parts[0])) {
+    return { projectId: parts[1], view: parts[2] ? { id: parts[0], target: parts[2] } : { id: parts[0] } };
   }
   if (parts[0] !== 'project' || !parts[1]) return null;
 
@@ -42,6 +51,11 @@ export function formatLocation(location: WorkbenchLocation | null): string {
   if (location.runtime) {
     const parts = ['runtime', location.projectId];
     if (location.runtime.screenId) parts.push(location.runtime.screenId);
+    return `#/${parts.map(encodeURIComponent).join('/')}`;
+  }
+  if (location.view) {
+    const parts = [location.view.id, location.projectId];
+    if (location.view.target) parts.push(location.view.target);
     return `#/${parts.map(encodeURIComponent).join('/')}`;
   }
   const parts = ['project', location.projectId];

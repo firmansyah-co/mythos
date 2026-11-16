@@ -25,6 +25,7 @@ import { useScreens } from '../data/screens';
 import { useSession } from '../data/session';
 import { goOffline, useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
+import { unloadModuleUis } from '../modules/loader';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -64,6 +65,7 @@ export function unmountAll(): void {
 
 export function resetStores(): void {
   goOffline();
+  unloadModuleUis();
   useTelemetry.setState({ tags: new Map(), stream: 'IDLE', lastBatchAtMs: null, wantOnline: false });
   useController.setState({ activeProjectId: undefined, io: null, tagMeta: new Map(), error: null });
   useLog.setState({ entries: [] });
@@ -77,6 +79,7 @@ export function resetStores(): void {
     settingsSection: 'account',
     settingsReturn: 'portal',
     runtimeScreenId: null,
+    moduleView: null,
     project: null,
     editors: [],
     activeEditorId: null,

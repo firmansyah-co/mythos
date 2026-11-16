@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   Activity,
@@ -18,6 +18,8 @@ import { isDirty, useIoConfig } from '../data/ioConfig';
 import { useRuntimeScope } from '../data/scope';
 import { anyScreenDirty, useScreens } from '../data/screens';
 import { useWorkbench, type EditorKind } from '../data/workbench';
+import { ModuleMount } from '../modules/ModuleMount';
+import { orderedTreeSections, useModuleUi } from '../modules/registry';
 
 interface NodeProps {
   depth: number;
@@ -163,6 +165,8 @@ export function ProjectTree() {
   const screensPhase = useScreens((state) => state.phase);
   const screensDirty = useScreens(anyScreenDirty);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const registered = useModuleUi((state) => state.treeSections);
+  const sections = useMemo(() => orderedTreeSections(registered), [registered]);
 
   if (!project) return null;
 
@@ -331,6 +335,18 @@ export function ProjectTree() {
           The screens could not be read.
         </p>
       )}
+
+      {isOpen('project') &&
+        sections.map((section) => (
+          <ModuleMount
+            key={`${section.module}:${section.item.id}`}
+            mount={section.item.mount}
+            context={{ project: { id: project.id, name: project.name } }}
+            deps={[project.id, project.name]}
+            className="tree__module"
+            testId={`tree-module-${section.item.id}`}
+          />
+        ))}
 
       {isOpen('project') && scope.kind !== 'active' && (
         <p className="tree__note" data-testid="tree-not-active">

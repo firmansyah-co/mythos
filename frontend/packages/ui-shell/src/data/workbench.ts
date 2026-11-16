@@ -4,7 +4,26 @@
 import { create } from 'zustand';
 import type { ProjectConfig } from '../api/client';
 
-export type EditorKind = 'overview' | 'devices' | 'connection' | 'tags' | 'diagnostics' | 'screen';
+/** The workbench's own editors. */
+export type CoreEditorKind =
+  | 'overview'
+  | 'devices'
+  | 'connection'
+  | 'tags'
+  | 'diagnostics'
+  | 'screen';
+
+/** An editor kind: the workbench's own, or one a module registered (ADR-011 §2.3). */
+export type EditorKind = CoreEditorKind | (string & {});
+
+export const CORE_EDITOR_KINDS: readonly CoreEditorKind[] = [
+  'overview',
+  'devices',
+  'connection',
+  'tags',
+  'diagnostics',
+  'screen',
+];
 
 export interface EditorRef {
   /** Stable identity: opening the same thing twice focuses the existing editor. */
@@ -23,6 +42,8 @@ export type Selection =
   | { kind: 'connection'; id: string }
   | { kind: 'tag'; uri: string }
   | { kind: 'element'; screenId: string; elementId: string }
+  /** What a module showed in the inspector, by the owner it gave. */
+  | { kind: 'module'; owner: string }
   | null;
 
 export type InspectorTab = 'properties' | 'info' | 'diagnostics';
@@ -32,7 +53,9 @@ export function editorId(kind: EditorKind, target?: string): string {
 }
 
 export interface WorkbenchState {
-  view: 'portal' | 'project' | 'runtime' | 'settings';
+  view: 'portal' | 'project' | 'runtime' | 'settings' | 'module';
+  /** The full-window view of a module shown when `view` is `module`. */
+  moduleView: { id: string; target?: string } | null;
   /** The settings section shown, by its id in the settings registry. */
   settingsSection: string;
   /** Where closing the settings returns to. */
@@ -52,6 +75,8 @@ export interface WorkbenchState {
   showProject: () => void;
   startRuntime: (screenId?: string) => void;
   exitRuntime: () => void;
+  showModuleView: (id: string, target?: string) => void;
+  exitModuleView: () => void;
   showSettings: (section?: string) => void;
   closeSettings: () => void;
   openEditor: (kind: EditorKind, target?: string) => void;
@@ -67,6 +92,7 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
   settingsSection: 'account',
   settingsReturn: 'portal',
   runtimeScreenId: null,
+  moduleView: null,
   project: null,
   editors: [],
   activeEditorId: null,
@@ -84,13 +110,24 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
     }),
 
   closeProject: () =>
-    set({ view: 'portal', project: null, editors: [], activeEditorId: null, selection: null }),
+    set({
+      view: 'portal',
+      project: null,
+      editors: [],
+      activeEditorId: null,
+      selection: null,
+      moduleView: null,
+    }),
 
   showPortal: () => set({ view: 'portal' }),
   showProject: () => set((state) => (state.project ? { view: 'project' } : {})),
   startRuntime: (screenId) =>
     set((state) => (state.project ? { view: 'runtime', runtimeScreenId: screenId ?? null } : {})),
   exitRuntime: () => set((state) => (state.view === 'runtime' ? { view: 'project' } : {})),
+  showModuleView: (id, target) =>
+    set((state) => (state.project ? { view: 'module', moduleView: { id, target } } : {})),
+  exitModuleView: () =>
+    set((state) => (state.view === 'module' ? { view: 'project', moduleView: null } : {})),
   showSettings: (section) =>
     set((state) => ({
       view: 'settings',
