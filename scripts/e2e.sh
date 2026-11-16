@@ -56,11 +56,17 @@ echo "=== build ==="
 WORK="$(mktemp -d -t mythos-e2e-XXXXXX)"
 SHM="mythos_tagbus_e2e_$$"
 SRV=""; SIM=""
+# What a run leaves behind is what somebody will read: nothing after a pass (set
+# MYTHOS_E2E_KEEP=1 to keep the screenshots), the screenshots, logs and storage after a failure.
+# The copies of the built executables go either way: they are the bulk, and can be built again.
+KEEP_WORK=1
 cleanup() {
     [ -n "$SRV" ] && kill "$SRV" 2>/dev/null
     [ -n "$SIM" ] && kill "$SIM" 2>/dev/null
     wait 2>/dev/null
     rm -f "/dev/shm/$SHM"
+    rm -rf "$WORK/install"
+    [ "$KEEP_WORK" = 1 ] || rm -rf "$WORK"
 }
 trap cleanup EXIT
 
@@ -157,9 +163,15 @@ MYTHOS_E2E_USER="$E2E_USER" MYTHOS_E2E_PASSWORD="$E2E_PASSWORD" MYTHOS_E2E_TOKEN
 status=$?
 
 echo
-echo "screenshots and logs: $WORK"
 if [ "$status" -ne 0 ]; then
+    echo "screenshots and logs: $WORK"
     echo "VERDICT: FAIL"
     exit 1
+fi
+if [ "${MYTHOS_E2E_KEEP:-0}" = 1 ]; then
+    echo "screenshots and logs: $WORK"
+else
+    KEEP_WORK=0
+    echo "screenshots and logs removed (MYTHOS_E2E_KEEP=1 keeps them)"
 fi
 echo "VERDICT: PASS"
