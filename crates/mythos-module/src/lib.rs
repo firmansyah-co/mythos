@@ -20,6 +20,7 @@
 pub mod host;
 pub mod protocol;
 pub mod serve;
+pub mod service;
 pub mod settle;
 
 pub use host::{
@@ -28,4 +29,5 @@ pub use host::{
 };
 pub use protocol::{ModuleKind, ModuleManifest, MODULE_FILE_PREFIX, PROTOCOL_VERSION};
 pub use serve::{run_driver_module, serve_driver};
+pub use service::{run_service_module, serve_service, Events, Service, ServiceSession};
 pub use settle::Settle;

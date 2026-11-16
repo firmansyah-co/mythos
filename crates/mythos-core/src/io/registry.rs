@@ -35,6 +35,8 @@ pub struct DriverInfo {
 #[derive(Clone, Default)]
 pub struct DriverRegistry {
     drivers: BTreeMap<String, DriverSource>,
+    /// Service modules found beside the drivers (ADR-011); `crate::services` runs them.
+    services: Vec<Arc<ModuleBinary>>,
     problems: Vec<ModuleProblem>,
 }
 
@@ -52,17 +54,26 @@ impl DriverRegistry {
     pub fn from_discovery(discovery: Discovery) -> Self {
         let mut registry = Self {
             drivers: BTreeMap::new(),
+            services: Vec::new(),
             problems: discovery.problems,
         };
         for module in discovery.modules {
-            if module.manifest.kind == ModuleKind::Driver {
-                registry.drivers.insert(
-                    module.manifest.provides.clone(),
-                    DriverSource::Module(Arc::new(module)),
-                );
+            match module.manifest.kind {
+                ModuleKind::Driver => {
+                    registry.drivers.insert(
+                        module.manifest.provides.clone(),
+                        DriverSource::Module(Arc::new(module)),
+                    );
+                }
+                ModuleKind::Service => registry.services.push(Arc::new(module)),
             }
         }
         registry
+    }
+
+    /// The service modules found.
+    pub fn services(&self) -> &[Arc<ModuleBinary>] {
+        &self.services
     }
 
     /// Register an in-process driver under `name`, replacing any driver of that name.

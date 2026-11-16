@@ -55,6 +55,10 @@ pub struct NotATool {
     pub reason: &'static str,
 }
 
+/// Why the routes that forward to service modules are not tools themselves.
+const MODULE_ROUTES: &str =
+    "forwards to a service module; each route a module declares is its own tool, listed by tools/list";
+
 /// Routes that are not tools.
 pub const NOT_TOOLS: &[NotATool] = &[
     NotATool {
@@ -91,6 +95,46 @@ pub const NOT_TOOLS: &[NotATool] = &[
         method: "POST",
         path: "/api/v1/auth/logout",
         reason: "ends a browser session; an MCP connection has none (revoke_my_token ends a token)",
+    },
+    NotATool {
+        method: "GET",
+        path: "/api/v1/projects/:id/:module/*rest",
+        reason: MODULE_ROUTES,
+    },
+    NotATool {
+        method: "POST",
+        path: "/api/v1/projects/:id/:module/*rest",
+        reason: MODULE_ROUTES,
+    },
+    NotATool {
+        method: "PUT",
+        path: "/api/v1/projects/:id/:module/*rest",
+        reason: MODULE_ROUTES,
+    },
+    NotATool {
+        method: "DELETE",
+        path: "/api/v1/projects/:id/:module/*rest",
+        reason: MODULE_ROUTES,
+    },
+    NotATool {
+        method: "GET",
+        path: "/api/v1/m/:module/*rest",
+        reason: MODULE_ROUTES,
+    },
+    NotATool {
+        method: "POST",
+        path: "/api/v1/m/:module/*rest",
+        reason: MODULE_ROUTES,
+    },
+    NotATool {
+        method: "PUT",
+        path: "/api/v1/m/:module/*rest",
+        reason: MODULE_ROUTES,
+    },
+    NotATool {
+        method: "DELETE",
+        path: "/api/v1/m/:module/*rest",
+        reason: MODULE_ROUTES,
     },
     NotATool {
         method: "GET",
@@ -1049,15 +1093,176 @@ fn percent_encode(text: &str) -> String {
 struct McpState {
     api: Router,
     auth: Option<Arc<crate::auth::Auth>>,
+    services: Option<Arc<crate::services::ServiceHost>>,
+}
+
+/// A route a service module declares, as a tool (ADR-011 §2.2): its arguments are the project
+/// for a project route, the route's path parameters, its query parameters and its body.
+struct ModuleTool {
+    provides: String,
+    version: String,
+    decl: mythos_module::protocol::RouteDecl,
+}
+
+impl ModuleTool {
+    fn all(services: &crate::services::ServiceHost) -> Vec<ModuleTool> {
+        let mut tools = Vec::new();
+        for service in services.all() {
+            let manifest = &service.module.manifest;
+            for decl in &manifest.routes {
+                if TOOLS.iter().any(|t| t.name == decl.tool) {
+                    tracing::warn!(
+                        "module '{}' declares tool '{}', which a core route already has; it is left out",
+                        manifest.provides,
+                        decl.tool
+                    );
+                    continue;
+                }
+                tools.push(ModuleTool {
+                    provides: manifest.provides.clone(),
+                    version: manifest.version.clone(),
+                    decl: decl.clone(),
+                });
+            }
+        }
+        tools
+    }
+
+    fn project_scoped(&self) -> bool {
+        self.decl.scope == mythos_module::protocol::RouteScope::Project
+    }
+
+    fn describe(&self) -> Value {
+        let mut properties = Map::new();
+        let mut required: Vec<Value> = Vec::new();
+        if self.project_scoped() {
+            properties.insert("project_id".into(), json!({ "type": "string" }));
+            required.push(json!("project_id"));
+        }
+        for param in path_params(&self.decl.path) {
+            properties.insert(param.to_string(), json!({ "type": "string" }));
+            required.push(json!(param));
+        }
+        for (name, description) in &self.decl.query {
+            properties.insert(
+                name.clone(),
+                json!({ "type": "string", "description": description }),
+            );
+        }
+        if let Some(body) = &self.decl.body {
+            properties.insert("body".into(), body.clone());
+            required.push(json!("body"));
+        }
+        let role = crate::services::declared_role(&self.decl);
+        let read_only = self.decl.method.eq_ignore_ascii_case("GET");
+        json!({
+            "name": self.decl.tool,
+            "title": self.decl.summary,
+            "description": format!(
+                "{} (module '{}' {}; needs the {role} role)",
+                self.decl.summary, self.provides, self.version
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": false
+            },
+            "annotations": {
+                "title": self.decl.summary,
+                "readOnlyHint": read_only,
+                "destructiveHint": self.decl.method.eq_ignore_ascii_case("DELETE"),
+                "idempotentHint": read_only || self.decl.method.eq_ignore_ascii_case("PUT"),
+                "openWorldHint": false
+            }
+        })
+    }
+
+    fn request(&self, arguments: &Map<String, Value>) -> Result<Request<Body>, String> {
+        let text = |name: &str| -> Result<String, String> {
+            match arguments.get(name) {
+                Some(Value::String(s)) => Ok(s.clone()),
+                Some(other) => Ok(other.to_string()),
+                None => Err(format!("'{name}' is required")),
+            }
+        };
+        let mut path = if self.project_scoped() {
+            format!(
+                "/api/v1/projects/{}/{}",
+                percent_encode(&text("project_id")?),
+                self.provides
+            )
+        } else {
+            format!("/api/v1/m/{}", self.provides)
+        };
+        for segment in self.decl.path.split('/').skip(1) {
+            path.push('/');
+            match segment.strip_prefix(':') {
+                Some(param) => path.push_str(&percent_encode(&text(param)?)),
+                None => path.push_str(segment),
+            }
+        }
+        let query: Vec<String> = self
+            .decl
+            .query
+            .iter()
+            .filter_map(|(name, _)| {
+                arguments.get(name).map(|v| {
+                    let v = v
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| v.to_string());
+                    format!("{}={}", percent_encode(name), percent_encode(&v))
+                })
+            })
+            .collect();
+        if !query.is_empty() {
+            path.push('?');
+            path.push_str(&query.join("&"));
+        }
+        let known = |key: &str| {
+            key == "body"
+                || (key == "project_id" && self.project_scoped())
+                || self.decl.query.iter().any(|(q, _)| q == key)
+                || path_params(&self.decl.path).contains(&key)
+        };
+        if let Some(unknown) = arguments.keys().find(|k| !known(k)) {
+            return Err(format!(
+                "'{unknown}' is not an argument of {}",
+                self.decl.tool
+            ));
+        }
+        let method = Method::from_bytes(self.decl.method.to_ascii_uppercase().as_bytes())
+            .map_err(|e| e.to_string())?;
+        let builder = Request::builder().method(method).uri(path);
+        let request = match &self.decl.body {
+            Some(_) => {
+                let body = arguments.get("body").ok_or("'body' is required")?;
+                builder
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+            }
+            None => builder.body(Body::empty()),
+        };
+        request.map_err(|e| e.to_string())
+    }
 }
 
 /// The `/mcp` route, dispatching tools to `api`. With `auth`, a client must send an access
 /// token (`Authorization: Bearer ...`) or a session cookie, and each tool runs with that
 /// account's role: the credentials are passed on to the route the tool calls.
-pub fn router(api: Router, auth: Option<Arc<crate::auth::Auth>>) -> Router {
+pub fn router(
+    api: Router,
+    auth: Option<Arc<crate::auth::Auth>>,
+    services: Option<Arc<crate::services::ServiceHost>>,
+) -> Router {
     Router::new()
         .route("/mcp", post(handle).get(no_stream).delete(no_stream))
-        .with_state(McpState { api, auth })
+        .with_state(McpState {
+            api,
+            auth,
+            services,
+        })
 }
 
 /// The headers of the MCP request that carry who sent it.
@@ -1200,23 +1405,37 @@ async fn answer(
             )
         }
         "ping" => rpc_result(id, json!({})),
-        "tools/list" => rpc_result(
-            id,
-            json!({ "tools": TOOLS.iter().map(Tool::describe).collect::<Vec<_>>() }),
-        ),
+        "tools/list" => {
+            let mut tools: Vec<Value> = TOOLS.iter().map(Tool::describe).collect();
+            if let Some(services) = &state.services {
+                tools.extend(ModuleTool::all(services).iter().map(ModuleTool::describe));
+            }
+            rpc_result(id, json!({ "tools": tools }))
+        }
         "tools/call" => {
             let Some(name) = params.get("name").and_then(Value::as_str) else {
                 return Some(rpc_error(id, -32602, "tools/call needs a tool 'name'"));
-            };
-            let Some(tool) = TOOLS.iter().find(|t| t.name == name) else {
-                return Some(rpc_error(id, -32602, format!("unknown tool '{name}'")));
             };
             let arguments = match params.get("arguments") {
                 None | Some(Value::Null) => Map::new(),
                 Some(Value::Object(map)) => map.clone(),
                 Some(_) => return Some(rpc_error(id, -32602, "'arguments' must be an object")),
             };
-            rpc_result(id, call(state, credentials, tool, &arguments).await)
+            let request = if let Some(tool) = TOOLS.iter().find(|t| t.name == name) {
+                tool.request(&arguments)
+            } else if let Some(tool) = state
+                .services
+                .as_deref()
+                .map(ModuleTool::all)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|t| t.decl.tool == name)
+            {
+                tool.request(&arguments)
+            } else {
+                return Some(rpc_error(id, -32602, format!("unknown tool '{name}'")));
+            };
+            rpc_result(id, call(state, credentials, request).await)
         }
         other => rpc_error(id, -32601, format!("method '{other}' is not supported")),
     })
@@ -1226,10 +1445,9 @@ async fn answer(
 async fn call(
     state: &McpState,
     credentials: &[(header::HeaderName, header::HeaderValue)],
-    tool: &Tool,
-    arguments: &Map<String, Value>,
+    request: Result<Request<Body>, String>,
 ) -> Value {
-    let mut request = match tool.request(arguments) {
+    let mut request = match request {
         Ok(request) => request,
         Err(message) => {
             return json!({

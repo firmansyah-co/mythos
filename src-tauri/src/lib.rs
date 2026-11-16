@@ -31,6 +31,7 @@ pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::Joi
         };
         mythos_core::server::announce_setup_code(&server);
         let io = server.io;
+        let services = server.services;
         let app = create_router(server.state);
 
         let port: u16 = std::env::var("MYTHOS_HTTP_PORT")
@@ -61,6 +62,7 @@ pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::Joi
         }
 
         io.shutdown().await;
+        services.shutdown().await;
         info!("Embedded server terminated cleanly.");
     })
 }

@@ -17,6 +17,7 @@ pub mod pal;
 pub mod plugin;
 pub mod sdui;
 pub mod server;
+pub mod services;
 pub mod storage;
 pub mod tag;
 pub mod updates;

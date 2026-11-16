@@ -207,5 +207,9 @@ where
             }
             Ok(json!(null))
         }
+        Call::Http(_) => Err(WireError {
+            kind: ErrorKind::Protocol,
+            message: format!("{} is a driver; it serves no routes", manifest.id),
+        }),
     }
 }

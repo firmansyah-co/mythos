@@ -58,8 +58,13 @@ pub struct IoManager<S: PlatformShm + 'static> {
     status: IoStatusHandle,
     /// Held for the whole of a reload, so two reloads cannot interleave.
     running: Mutex<Running>,
+    /// Told the service modules of every new registry (`crate::services`).
+    on_services: StdRwLock<Option<ServicesHook>>,
     _shm: PhantomData<fn() -> S>,
 }
+
+/// Called with the service modules each time the module directories are read again.
+pub type ServicesHook = Arc<dyn Fn(Vec<Arc<mythos_module::ModuleBinary>>) + Send + Sync>;
 
 impl<S: PlatformShm + 'static> IoManager<S> {
     /// A manager with a fixed set of drivers. [`Self::rescan`] leaves it as it is.
@@ -105,8 +110,23 @@ impl<S: PlatformShm + 'static> IoManager<S> {
                 runtime: None,
                 config: None,
             }),
+            on_services: StdRwLock::new(None),
             _shm: PhantomData,
         })
+    }
+
+    /// Tell `hook` the service modules found by every later rescan.
+    pub fn when_services_change(&self, hook: ServicesHook) {
+        *self.on_services.write().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    /// The service modules the last reading of the module directories found.
+    pub fn service_modules(&self) -> Vec<Arc<mythos_module::ModuleBinary>> {
+        self.registry
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .services()
+            .to_vec()
     }
 
     /// The status of whatever is running. The same handle for the life of the manager.
@@ -299,7 +319,16 @@ impl<S: PlatformShm + 'static> IoManager<S> {
                 problem.message
             );
         }
+        let services = registry.services().to_vec();
         *self.registry.write().unwrap_or_else(|e| e.into_inner()) = registry;
+        let hook = self
+            .on_services
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(hook) = hook {
+            hook(services);
+        }
 
         let mut running = self.running.lock().await;
         let applied = match running.config.clone() {

@@ -99,6 +99,32 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     ("PUT", "/api/v1/projects/:id/io", E),
     ("POST", "/api/v1/modules/rescan", E),
     ("POST", "/api/v1/control/deploy", E),
+    // A service module's routes: any signed-in account gets as far as the module host, which
+    // then requires the role the module's manifest declares for the route (crate::services).
+    (
+        "GET",
+        "/api/v1/projects/:id/:module/*rest",
+        Access::SignedIn,
+    ),
+    (
+        "POST",
+        "/api/v1/projects/:id/:module/*rest",
+        Access::SignedIn,
+    ),
+    (
+        "PUT",
+        "/api/v1/projects/:id/:module/*rest",
+        Access::SignedIn,
+    ),
+    (
+        "DELETE",
+        "/api/v1/projects/:id/:module/*rest",
+        Access::SignedIn,
+    ),
+    ("GET", "/api/v1/m/:module/*rest", Access::SignedIn),
+    ("POST", "/api/v1/m/:module/*rest", Access::SignedIn),
+    ("PUT", "/api/v1/m/:module/*rest", Access::SignedIn),
+    ("DELETE", "/api/v1/m/:module/*rest", Access::SignedIn),
     // Editing together: the collaboration room changes what it edits.
     ("GET", "/api/v1/collab/ws/:room_id", E),
 ];
@@ -134,7 +160,10 @@ mod tests {
     #[test]
     fn nothing_that_changes_the_controller_is_open_to_viewers() {
         for (method, path, access) in POLICY {
-            if *method != "GET" && path.starts_with("/api/v1/projects") {
+            // A module's route passes here as SignedIn; the module host then requires the role
+            // its manifest declares (crate::services::forward, tested in service_module tests).
+            let module_route = path.ends_with("/:module/*rest");
+            if *method != "GET" && path.starts_with("/api/v1/projects") && !module_route {
                 assert_eq!(*access, E, "{method} {path}");
             }
         }
