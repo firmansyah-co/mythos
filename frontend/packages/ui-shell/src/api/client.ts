@@ -190,6 +190,19 @@ export interface AccessToken {
 export type ReleaseChannel = 'release' | 'rc' | 'dev';
 export const CHANNELS: readonly ReleaseChannel[] = ['release', 'rc', 'dev'];
 
+/** A node this one is paired with (ADR-012 §2.3). Never a token. */
+export interface PairedNode {
+  id: string;
+  name: string;
+  role: string;
+  address: string | null;
+  fingerprint: string;
+  /** What it may do here. */
+  granted: Role;
+  paired_unix_s: number;
+  last_seen_unix_s: number | null;
+}
+
 export type NodeRole = 'workstation' | 'edge' | 'server';
 export const NODE_ROLES: readonly NodeRole[] = ['workstation', 'edge', 'server'];
 
@@ -429,6 +442,23 @@ export const api = {
 
   // Updates
   getNode: () => request<NodeInfo>('/api/v1/node'),
+  makePairingCode: (role: Role) =>
+    request<{ code: string; expires_unix_s: number; granted: Role }>('/api/v1/pairing/code', json('POST', { role })),
+  listPairings: () => request<{ peers: PairedNode[] }>('/api/v1/pairings'),
+  pairWith: (address: string, fingerprint: string, code: string, grant: Role) =>
+    request<{ peer: PairedNode; granted_there: Role }>(
+      '/api/v1/pairings',
+      json('POST', { address, fingerprint, code, grant })
+    ),
+  pairedNodeStatus: (id: string) =>
+    request<{ reachable: boolean; node?: { name: string; role: string; version: string }; error?: string }>(
+      `/api/v1/pairings/${encodeURIComponent(id)}/status`
+    ),
+  unpair: (id: string) =>
+    request<{ removed: string; told: boolean; told_error: string | null }>(
+      `/api/v1/pairings/${encodeURIComponent(id)}`,
+      { method: 'DELETE' }
+    ),
   updateNode: (
     change: Partial<Pick<NodeInfo, 'name' | 'site' | 'role'>> & {
       field_io?: NodeSettingChange;

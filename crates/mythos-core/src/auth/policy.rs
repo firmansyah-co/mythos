@@ -43,6 +43,15 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     // The node: anyone may see what it is; only an administrator renames it or changes its role.
     ("GET", "/api/v1/node", V),
     ("PUT", "/api/v1/node", A),
+    // Pairing (ADR-012 §2.3): an administrator pairs and unpairs; another node pairs by the code
+    // it was given, which is its only credential; a paired node says it unpaired, as itself.
+    ("POST", "/api/v1/pairing/code", A),
+    ("POST", "/api/v1/pairing/accept", Access::Public),
+    ("DELETE", "/api/v1/pairing/peers/:node", Access::SignedIn),
+    ("GET", "/api/v1/pairings", V),
+    ("POST", "/api/v1/pairings", A),
+    ("DELETE", "/api/v1/pairings/:node", A),
+    ("GET", "/api/v1/pairings/:node/status", V),
     ("GET", "/api/v1/updates", V),
     ("GET", "/api/v1/updates/releases", V),
     ("PUT", "/api/v1/updates/follow", A),

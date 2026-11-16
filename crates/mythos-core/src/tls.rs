@@ -139,7 +139,12 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     }
 }
 
-/// Serve `app` over TLS on `listener` until the task is dropped.
+/// The address a request over TLS came from, as its connection says (not as it claims).
+#[derive(Debug, Clone, Copy)]
+pub struct Remote(pub SocketAddr);
+
+/// Serve `app` over TLS on `listener` until the task is dropped. Each request carries the
+/// [`Remote`] address of its connection.
 pub async fn serve(
     listener: tokio::net::TcpListener,
     config: Arc<rustls::ServerConfig>,
@@ -147,7 +152,7 @@ pub async fn serve(
 ) {
     let acceptor = tokio_rustls::TlsAcceptor::from(config);
     loop {
-        let (stream, _) = match listener.accept().await {
+        let (stream, remote) = match listener.accept().await {
             Ok(accepted) => accepted,
             Err(e) => {
                 tracing::warn!("HTTPS accept failed: {e}");
@@ -155,7 +160,7 @@ pub async fn serve(
             }
         };
         let acceptor = acceptor.clone();
-        let app = app.clone();
+        let app = app.clone().layer(axum::Extension(Remote(remote)));
         tokio::spawn(async move {
             // A client that never finishes its handshake must not hold a task forever.
             let handshake =

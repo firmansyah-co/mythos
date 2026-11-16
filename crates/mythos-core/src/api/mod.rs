@@ -9,6 +9,7 @@ pub mod datatypes;
 mod io;
 pub mod modules;
 mod node;
+mod pairing;
 mod services;
 pub mod state;
 pub mod telemetry;
@@ -97,6 +98,22 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
         // Settings → Updates
         // This installation as a node (ADR-012)
         .route("/api/v1/node", get(node::get::<S>).put(node::update::<S>))
+        // Pairing with other nodes (ADR-012 §2.3)
+        .route("/api/v1/pairing/code", post(pairing::make_code::<S>))
+        .route("/api/v1/pairing/accept", post(pairing::accept::<S>))
+        .route(
+            "/api/v1/pairing/peers/:node",
+            axum::routing::delete(pairing::peer_left::<S>),
+        )
+        .route(
+            "/api/v1/pairings",
+            get(pairing::list::<S>).post(pairing::pair::<S>),
+        )
+        .route(
+            "/api/v1/pairings/:node",
+            axum::routing::delete(pairing::unpair::<S>),
+        )
+        .route("/api/v1/pairings/:node/status", get(pairing::status::<S>))
         .route("/api/v1/updates", get(updates::status::<S>))
         .route("/api/v1/updates/releases", get(updates::releases::<S>))
         .route("/api/v1/updates/follow", put(updates::follow::<S>))

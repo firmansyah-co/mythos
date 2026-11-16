@@ -62,6 +62,16 @@ const MODULE_ROUTES: &str =
 /// Routes that are not tools.
 pub const NOT_TOOLS: &[NotATool] = &[
     NotATool {
+        method: "POST",
+        path: "/api/v1/pairing/accept",
+        reason: "called by another node pairing with this one, with the code it was given; pair_with_node is the tool",
+    },
+    NotATool {
+        method: "DELETE",
+        path: "/api/v1/pairing/peers/:node",
+        reason: "called by a paired node to say it unpaired; unpair_node is the tool",
+    },
+    NotATool {
         method: "GET",
         path: "/api/v1/telemetry/stream",
         reason:
@@ -169,6 +179,7 @@ const PARAMS: &[(&str, &str)] = &[
     ("token", "token_id"),
     ("username", "username"),
     ("module", "module_id"),
+    ("node", "node_id"),
 ];
 
 fn argument_name(param: &str) -> &str {
@@ -189,6 +200,28 @@ const VIEW: (&str, &str) = (
     "view",
     "\"draft\" (default) for the version being edited, \"active\" for the released one",
 );
+
+fn pairing_code_body() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "role": { "type": "string", "enum": ROLES, "description": "What the node that pairs may do here; engineer when absent" }
+        }
+    })
+}
+
+fn pair_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["address", "fingerprint", "code"],
+        "properties": {
+            "address": { "type": "string", "description": "host:port where the node answers HTTPS" },
+            "fingerprint": { "type": "string", "description": "SHA-256 of its certificate, 64 hex characters (spaces allowed)" },
+            "code": { "type": "string", "description": "The pairing code made on that node" },
+            "grant": { "type": "string", "enum": ROLES, "description": "What that node may do here; viewer when absent" }
+        }
+    })
+}
 
 fn node_body() -> Value {
     json!({
@@ -450,6 +483,61 @@ pub const TOOLS: &[Tool] = &[
         body: Some(node_body),
         read_only: false,
         destructive: false,
+    },
+    Tool {
+        name: "create_pairing_code",
+        title: "Make a pairing code",
+        description: "Make a one-use code, valid ten minutes, that another node pairs with this one by; the node that uses it may act here with the role given (an engineer when absent). Give the code to whoever pairs, with this node's certificate fingerprint (get_node) to compare.",
+        method: "POST",
+        path: "/api/v1/pairing/code",
+        query: &[],
+        body: Some(pairing_code_body),
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "list_pairings",
+        title: "Paired nodes",
+        description: "The nodes this one is paired with: id, name, role, address, the certificate fingerprint pinned, the role each may act with here. Never a token.",
+        method: "GET",
+        path: "/api/v1/pairings",
+        query: &[],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "pair_with_node",
+        title: "Pair with a node",
+        description: "Pair with the node at an address (host:https-port), which must present the certificate with the fingerprint given (compare it with the one that node shows; a node heard by list_network_nodes announces it, but heard is not trusted), using a pairing code made on it.",
+        method: "POST",
+        path: "/api/v1/pairings",
+        query: &[],
+        body: Some(pair_body),
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "paired_node_status",
+        title: "Reach a paired node",
+        description: "Ask a paired node who it is, over its pinned certificate and as this node: whether it can be reached, and what it says.",
+        method: "GET",
+        path: "/api/v1/pairings/:node/status",
+        query: &[],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "unpair_node",
+        title: "Unpair a node",
+        description: "Forget a paired node (its token is refused at once) and tell it, so it forgets this node too.",
+        method: "DELETE",
+        path: "/api/v1/pairings/:node",
+        query: &[],
+        body: None,
+        read_only: false,
+        destructive: true,
     },
     Tool {
         name: "get_update_status",

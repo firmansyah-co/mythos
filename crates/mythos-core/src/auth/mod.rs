@@ -197,22 +197,30 @@ pub struct Auth {
     /// A hash to check a password against when the username does not exist, so the answer takes
     /// as long either way.
     decoy_hash: String,
+    /// Who a paired node's token (`mythos_pair_…`) belongs to (ADR-012 §2.3, `crate::pairing`).
+    pairing_lookup: std::sync::RwLock<Option<PairingLookup>>,
 }
 
-fn now_unix_s() -> u64 {
+/// Finds the identity of a paired node from the token it presents.
+pub type PairingLookup = std::sync::Arc<dyn Fn(&str) -> Option<Identity> + Send + Sync>;
+
+/// The prefix of a token a paired node presents.
+pub const PAIRING_TOKEN_PREFIX: &str = "mythos_pair_";
+
+pub fn now_unix_s() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
-fn random_hex(bytes: usize) -> String {
+pub(crate) fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
     OsRng.fill_bytes(&mut buf);
     hex::encode(buf)
 }
 
-fn sha256_hex(text: &str) -> String {
+pub fn sha256_hex(text: &str) -> String {
     hex::encode(Sha256::digest(text.as_bytes()))
 }
 
@@ -235,7 +243,7 @@ fn password_matches(password: &str, hash: &str) -> bool {
 }
 
 /// Compare two secrets without stopping at the first difference.
-fn same_secret(a: &str, b: &str) -> bool {
+pub(crate) fn same_secret(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
             .zip(b.bytes())
@@ -280,6 +288,7 @@ impl Auth {
             failures: Mutex::new(HashMap::new()),
             setup_code,
             decoy_hash: hash_password(&random_hex(16))?,
+            pairing_lookup: std::sync::RwLock::new(None),
         })
     }
 
@@ -434,8 +443,24 @@ impl Auth {
         self.identity_of(&username, "session".into())
     }
 
-    /// Who an access token belongs to.
+    /// Recognise paired nodes' tokens with `lookup` (`crate::pairing`).
+    pub fn set_pairing_lookup(&self, lookup: PairingLookup) {
+        *self
+            .pairing_lookup
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(lookup);
+    }
+
+    /// Who an access token belongs to: an account's, or a paired node's.
     pub fn from_token(&self, token: &str) -> Option<Identity> {
+        if token.starts_with(PAIRING_TOKEN_PREFIX) {
+            let lookup = self
+                .pairing_lookup
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            return lookup.and_then(|lookup| lookup(token));
+        }
         if !token.starts_with(TOKEN_PREFIX) {
             return None;
         }
