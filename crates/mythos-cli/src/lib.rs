@@ -1,13 +1,10 @@
 //! MythOS CLI library definitions and commands.
 
 pub mod channel;
-pub mod config;
-pub mod install;
 pub mod plugin_cmd;
-pub mod release;
-pub mod rollback;
-pub mod update;
-pub mod versions;
+
+// The updater lives in `mythos-update`, shared with the server; its modules keep their paths here.
+pub use mythos_update::{config, install, release, rollback, update, versions};
 
 pub use clap::Parser;
 use clap::Subcommand;
@@ -52,6 +49,13 @@ pub enum Commands {
     },
     /// Make the previously current version current again (it is still installed)
     Rollback,
+    /// Stay on one version: `update` without --version installs it instead of following the channel
+    Pin {
+        /// The version to stay on
+        version: String,
+    },
+    /// Follow the channel again
+    Unpin,
     /// Plugin package management (pack, install, list, inspect)
     Plugin {
         #[command(subcommand)]
@@ -153,6 +157,20 @@ pub async fn execute_command(
                 "Run it from {}",
                 install::current_link(mythos_dir).join("bin").display()
             );
+        }
+        Commands::Pin { version } => {
+            let parsed = semver::Version::parse(version.trim().trim_start_matches('v'))
+                .map_err(|_| format!("'{version}' is not a version"))?;
+            let mut config = CliConfig::load_from(mythos_dir)?;
+            config.pinned_version = Some(parsed.to_string());
+            config.save_to(mythos_dir)?;
+            println!("Pinned to {parsed}: `mythos update` installs it until `mythos unpin`.");
+        }
+        Commands::Unpin => {
+            let mut config = CliConfig::load_from(mythos_dir)?;
+            config.pinned_version = None;
+            config.save_to(mythos_dir)?;
+            println!("Following the {} channel again.", config.channel);
         }
         Commands::Rollback => {
             let res = rollback::RollbackManager::rollback(mythos_dir)?;

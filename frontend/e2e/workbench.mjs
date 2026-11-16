@@ -281,6 +281,12 @@ try {
   const accounts = await evaluate(`__t.text('[data-testid="user-row"] td:first-child')`);
   check('an administrator sees the accounts of the controller', accounts.some((a) => a.startsWith(user)), accounts.join(', '));
   await shot('e2e_8_settings_users');
+  await evaluate(`__t.click('Updates')`); await sleep(1500);
+  check('Updates says this server runs from no installation, and why',
+    (await evaluate(`__t.text('[data-testid="no-installation"]')`)).join(' ').includes('does not run from an installation'));
+  check('a release feed that cannot be read is said so, not shown as an empty list',
+    (await evaluate(`__t.text('[data-testid="feed-error"]')`)).join(' ').includes('could not be read'));
+  await shot('e2e_9_settings_updates');
   await evaluate(`__t.click('Sign out')`); await sleep(600);
   check('signing out returns to the sign-in page', await evaluate(`__t.has('[data-testid="sign-in"]')`));
   ws.close();

@@ -48,6 +48,14 @@ pub struct Release {
     pub version: Version,
     pub channel: ReleaseChannel,
     pub assets: Vec<Asset>,
+    /// The release's title, as published.
+    pub name: Option<String>,
+    /// Its release notes (Markdown), as published.
+    pub notes: Option<String>,
+    /// When it was published (RFC 3339), as the feed says.
+    pub published_at: Option<String>,
+    /// Its page, for reading it in full.
+    pub url: Option<String>,
 }
 
 impl Release {
@@ -108,6 +116,14 @@ struct WireRelease {
     draft: bool,
     #[serde(default)]
     assets: Vec<WireAsset>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    published_at: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -129,10 +145,15 @@ pub fn parse_feed(url: &str, body: &str) -> Result<Vec<Release>, FeedError> {
         .filter_map(|r| {
             let version = Version::parse(r.tag_name.trim_start_matches('v')).ok()?;
             let channel = channel_of(&version)?;
+            let text = |t: Option<String>| t.filter(|t| !t.trim().is_empty());
             Some(Release {
                 tag: r.tag_name,
                 version,
                 channel,
+                name: text(r.name),
+                notes: text(r.body),
+                published_at: text(r.published_at),
+                url: text(r.html_url),
                 assets: r
                     .assets
                     .into_iter()

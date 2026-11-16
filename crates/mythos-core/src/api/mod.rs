@@ -11,6 +11,7 @@ mod io;
 mod screens;
 pub mod state;
 pub mod telemetry;
+mod updates;
 pub mod web;
 
 use crate::sdui::{DeploymentRequest, DeploymentResponse};
@@ -88,6 +89,12 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
             "/api/v1/auth/me/tokens/:token",
             axum::routing::delete(auth::revoke_token::<S>),
         )
+        // Settings → Updates
+        .route("/api/v1/updates", get(updates::status::<S>))
+        .route("/api/v1/updates/releases", get(updates::releases::<S>))
+        .route("/api/v1/updates/follow", put(updates::follow::<S>))
+        .route("/api/v1/updates/install", post(updates::install::<S>))
+        .route("/api/v1/updates/rollback", post(updates::rollback::<S>))
         // Accounts (administrators)
         .route(
             "/api/v1/users",

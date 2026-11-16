@@ -19,6 +19,7 @@ pub mod sdui;
 pub mod server;
 pub mod storage;
 pub mod tag;
+pub mod updates;
 
 pub use api::{create_router, ApiState, HealthResponse, TelemetryBatch, DEFAULT_INDEX_HTML};
 pub use catalog::{

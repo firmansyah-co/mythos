@@ -39,6 +39,12 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     ("POST", "/api/v1/users", A),
     ("PUT", "/api/v1/users/:username", A),
     ("DELETE", "/api/v1/users/:username", A),
+    // Updates: anyone may see the versions; only an administrator changes them.
+    ("GET", "/api/v1/updates", V),
+    ("GET", "/api/v1/updates/releases", V),
+    ("PUT", "/api/v1/updates/follow", A),
+    ("POST", "/api/v1/updates/install", A),
+    ("POST", "/api/v1/updates/rollback", A),
     // Reading the controller
     ("GET", "/api/v1/tags", V),
     ("GET", "/api/v1/tags/values", V),

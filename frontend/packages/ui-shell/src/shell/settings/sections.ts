@@ -5,10 +5,11 @@
 // entry here and a component.
 
 import type { ComponentType } from 'react';
-import { UserRound, Users } from 'lucide-react';
+import { RefreshCcw, UserRound, Users } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Role } from '../../api/client';
 import { AccountSettings } from './AccountSettings';
+import { UpdatesSettings } from './UpdatesSettings';
 import { UsersSettings } from './UsersSettings';
 
 export interface SettingsSection {
@@ -23,4 +24,6 @@ export interface SettingsSection {
 export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   { id: 'account', label: 'Account', icon: UserRound, minRole: null, component: AccountSettings },
   { id: 'users', label: 'Users', icon: Users, minRole: 'admin', component: UsersSettings },
+  // Anyone may see the versions; only an administrator changes them (the section says so).
+  { id: 'updates', label: 'Updates', icon: RefreshCcw, minRole: null, component: UpdatesSettings },
 ];

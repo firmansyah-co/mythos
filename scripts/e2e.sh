@@ -69,6 +69,9 @@ API="http://127.0.0.1:${HTTP_PORT}"
 SETUP_CODE="e2e-$$-$RANDOM$RANDOM"
 E2E_USER="e2e-admin"
 E2E_PASSWORD="e2e password $RANDOM$RANDOM"
+# The release feed is a port nothing listens on: Settings → Updates must say it cannot be read,
+# and the run never depends on the internet.
+MYTHOS_RELEASE_FEED="http://127.0.0.1:9/releases" \
 MYTHOS_SETUP_CODE="$SETUP_CODE" \
 MYTHOS_STORAGE_ROOT="$WORK/data" MYTHOS_HTTP_PORT="$HTTP_PORT" MYTHOS_SHM_NAME="$SHM" \
 MYTHOS_STATIC_DIR="$ROOT/frontend/packages/ui-shell/dist" \

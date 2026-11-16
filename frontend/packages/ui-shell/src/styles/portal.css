@@ -250,3 +250,87 @@
   font-size: var(--fs-sm);
   opacity: 0.85;
 }
+
+.settings__indent {
+  display: grid;
+  gap: 4px;
+  margin: 4px 0 10px 24px;
+  max-width: 420px;
+}
+
+.settings__releases {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--c-chrome-border);
+  background: var(--c-surface);
+}
+
+.settings__release + .settings__release {
+  border-top: 1px solid var(--c-chrome-border);
+}
+
+.settings__release-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+}
+
+.settings__release-version {
+  font-weight: 600;
+}
+
+.settings__release-date {
+  margin-left: auto;
+  font-size: var(--fs-sm);
+}
+
+.settings__release-body {
+  padding: 4px 12px 12px 38px;
+}
+
+.settings__notes {
+  margin: 6px 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+}
+
+.settings__badge {
+  padding: 1px 6px;
+  border: 1px solid var(--c-chrome-border);
+  border-radius: var(--radius);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+}
+
+.settings__badge--release {
+  border-color: var(--c-good, var(--c-chrome-border));
+}
+
+.settings__badge--rc,
+.settings__badge--dev {
+  border-color: var(--c-warn, var(--c-chrome-border));
+}
+
+.settings__badge--current {
+  background: var(--c-brand);
+  border-color: var(--c-brand);
+  color: #fff;
+}
+
+.settings__badge--muted {
+  opacity: 0.7;
+}
+
+.settings__heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings__heading h3 {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
