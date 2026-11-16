@@ -1,0 +1,8 @@
+[Unit]
+Description=Rebuild the MythOS CI runner image from origin/dev (ci/runner)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The checkout that follows origin/dev, so a merged change to ci/runner is what gets built.
+ExecStart=/home/adrian/Projects/mythos/.claude/worktrees/dev-live/ci/runner/build.sh
