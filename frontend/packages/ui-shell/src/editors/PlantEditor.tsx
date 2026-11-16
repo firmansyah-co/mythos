@@ -7,6 +7,7 @@ import {
   type DeviceComparison,
   type PairedNode,
   type PlantDevice,
+  type RemoteLink,
 } from '../api/client';
 import { log } from '../data/log';
 import { useSession } from '../data/session';
@@ -23,6 +24,16 @@ const STATES: Record<DeviceComparison['state'], { label: string; tone: string }>
   unreadable: { label: 'UNREADABLE', tone: 'bad' },
 };
 
+/** A link to another device: its tags are current only while it is connected. */
+const LINKS: Record<RemoteLink['state'], { label: string; tone: string }> = {
+  connected: { label: 'LIVE', tone: 'good' },
+  connecting: { label: 'CONNECTING', tone: 'neutral' },
+  lost: { label: 'CONNECTION LOST — NOT CURRENT', tone: 'bad' },
+};
+
+/** How often the links are read again. */
+const LINKS_EVERY_MS = 2000;
+
 function errorText(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
@@ -31,6 +42,29 @@ function errorText(cause: unknown): string {
  * The plant (ADR-012 §2.4): every MythOS device of this project, the node each is assigned to,
  * whether that node runs what the project says, and downloading one or all.
  */
+/**
+ * Whether this node reads the device's tags, named `device:tag`. Only a device of the plant this
+ * node runs, on another node, is read here; for any other there is nothing to say, and nothing is
+ * shown as if it were.
+ */
+function LinkCell({ link, known }: { link: RemoteLink | undefined; known: boolean }) {
+  if (!known) return <span className="muted">unknown</span>;
+  if (!link) {
+    return (
+      <span className="muted" title="Read here only when this node runs this plant and the device is on another node.">
+        not read here
+      </span>
+    );
+  }
+  const words = LINKS[link.state];
+  return (
+    <span className={`badge badge--${words.tone}`} data-testid="plant-device-link" title={link.reason ?? undefined}>
+      {words.label}
+      {link.state === 'connected' && ` · ${link.tags} tag${link.tags === 1 ? '' : 's'}`}
+    </span>
+  );
+}
+
 export function PlantEditor() {
   const project = useWorkbench((state) => state.project);
   const openProject = useWorkbench((state) => state.openProject);
@@ -41,6 +75,7 @@ export function PlantEditor() {
   const [peers, setPeers] = useState<PairedNode[]>([]);
   const [thisNode, setThisNode] = useState<{ id: string; name: string } | null>(null);
   const [states, setStates] = useState<Record<string, DeviceComparison>>({});
+  const [links, setLinks] = useState<Record<string, RemoteLink> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [adding, setAdding] = useState({ id: '', name: '' });
@@ -80,6 +115,25 @@ export function PlantEditor() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // The tags of other devices read on this node, and whether each link is up.
+  useEffect(() => {
+    let alive = true;
+    const read = async () => {
+      try {
+        const answer = await api.getRemoteLinks();
+        if (alive) setLinks(Object.fromEntries(answer.devices.map((l) => [l.device, l])));
+      } catch {
+        if (alive) setLinks(null);
+      }
+    };
+    void read();
+    const timer = window.setInterval(() => void read(), LINKS_EVERY_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   if (!project) return null;
 
@@ -177,6 +231,7 @@ export function PlantEditor() {
                 <th>Device</th>
                 <th>Node</th>
                 <th>Compared with its node</th>
+                <th>Its tags here</th>
                 <th />
               </tr>
             </thead>
@@ -217,6 +272,9 @@ export function PlantEditor() {
                       ) : (
                         <span className="muted">comparing…</span>
                       )}
+                    </td>
+                    <td>
+                      <LinkCell link={links?.[device.id]} known={links !== null} />
                     </td>
                     <td className="settings__row-actions">
                       {device.project !== project.id && (

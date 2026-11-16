@@ -255,24 +255,7 @@ pub fn request_pinned(
     bearer: Option<&str>,
     body: Option<&serde_json::Value>,
 ) -> Result<Answer, String> {
-    let provider = ring();
-    let config = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
-        .with_safe_default_protocol_versions()
-        .map_err(|e| e.to_string())?
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(Pinned {
-            expected: fingerprint.to_ascii_lowercase(),
-            provider,
-        }))
-        .with_no_client_auth();
-    let name = ServerName::try_from("mythos-node").map_err(|e| e.to_string())?;
-    let connection =
-        rustls::ClientConnection::new(Arc::new(config), name).map_err(|e| e.to_string())?;
-    let tcp = TcpStream::connect_timeout(&address, Duration::from_secs(5))
-        .map_err(|e| format!("{address} cannot be reached: {e}"))?;
-    tcp.set_read_timeout(Some(Duration::from_secs(15)))
-        .map_err(|e| e.to_string())?;
-    let mut stream = rustls::StreamOwned::new(connection, tcp);
+    let mut stream = connect_pinned(address, fingerprint, Duration::from_secs(15))?;
     let body_text = body.map(|b| b.to_string()).unwrap_or_default();
     let mut request = format!(
         "{method} {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nAccept: application/json\r\nContent-Length: {}\r\n",
@@ -320,6 +303,168 @@ pub fn request_pinned(
         serde_json::from_str(&payload).unwrap_or(serde_json::Value::String(payload))
     };
     Ok(Answer { status, body })
+}
+
+/// A TLS connection to another node, accepting only the certificate whose fingerprint is
+/// `fingerprint`.
+fn connect_pinned(
+    address: SocketAddr,
+    fingerprint: &str,
+    read_timeout: Duration,
+) -> Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>, String> {
+    let provider = ring();
+    let config = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(Pinned {
+            expected: fingerprint.to_ascii_lowercase(),
+            provider,
+        }))
+        .with_no_client_auth();
+    let name = ServerName::try_from("mythos-node").map_err(|e| e.to_string())?;
+    let connection =
+        rustls::ClientConnection::new(Arc::new(config), name).map_err(|e| e.to_string())?;
+    let tcp = TcpStream::connect_timeout(&address, Duration::from_secs(5))
+        .map_err(|e| format!("{address} cannot be reached: {e}"))?;
+    tcp.set_read_timeout(Some(read_timeout))
+        .map_err(|e| e.to_string())?;
+    Ok(rustls::StreamOwned::new(connection, tcp))
+}
+
+/// Follow a server-sent event stream on another node over TLS pinned to `fingerprint`, calling
+/// `on_event(event, data)` for every event until it returns `false` (then `Ok`). Anything else
+/// that ends it is the `Err`: the node cannot be reached, presents another certificate, refuses,
+/// ends the stream, or says nothing for `silence`. Blocking: call it from a thread of its own.
+pub fn stream_pinned(
+    address: SocketAddr,
+    fingerprint: &str,
+    path: &str,
+    bearer: Option<&str>,
+    silence: Duration,
+    mut on_event: impl FnMut(&str, &str) -> bool,
+) -> Result<(), String> {
+    let mut stream = connect_pinned(address, fingerprint, silence)?;
+    let mut request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nAccept: text/event-stream\r\n"
+    );
+    if let Some(token) = bearer {
+        request.push_str(&format!("Authorization: Bearer {token}\r\n"));
+    }
+    request.push_str("\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("{address}: {e}"))?;
+    let mut reader = std::io::BufReader::new(stream);
+    let said = |e: std::io::Error| match e.kind() {
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+            format!("nothing heard from {address} for {} s", silence.as_secs())
+        }
+        _ => format!("{address}: {e}"),
+    };
+    let mut line = String::new();
+    let read_line = |reader: &mut std::io::BufReader<_>, line: &mut String| {
+        line.clear();
+        match std::io::BufRead::read_line(reader, line) {
+            Ok(0) => Err(format!("{address} ended the stream")),
+            Ok(_) => Ok(()),
+            Err(e) => Err(said(e)),
+        }
+    };
+    read_line(&mut reader, &mut line)?;
+    let status: u16 = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| format!("{address} answered something that is not HTTP"))?;
+    let mut chunked = false;
+    loop {
+        read_line(&mut reader, &mut line)?;
+        let header = line.trim_end();
+        if header.is_empty() {
+            break;
+        }
+        let lower = header.to_ascii_lowercase();
+        if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
+            chunked = true;
+        }
+    }
+    if status != 200 {
+        return Err(format!("{address} refused the stream: HTTP {status}"));
+    }
+
+    let mut events = SseEvents::default();
+    let mut buf = vec![0u8; 16 * 1024];
+    loop {
+        let bytes: Vec<u8> = if chunked {
+            read_line(&mut reader, &mut line)?;
+            let size = line.trim().split(';').next().unwrap_or("");
+            let size = usize::from_str_radix(size.trim(), 16)
+                .map_err(|_| format!("{address} sent a malformed chunk"))?;
+            if size == 0 {
+                return Err(format!("{address} ended the stream"));
+            }
+            let mut chunk = vec![0u8; size];
+            reader.read_exact(&mut chunk).map_err(said)?;
+            let mut crlf = [0u8; 2];
+            reader.read_exact(&mut crlf).map_err(said)?;
+            chunk
+        } else {
+            let n = reader.read(&mut buf).map_err(said)?;
+            if n == 0 {
+                return Err(format!("{address} ended the stream"));
+            }
+            buf[..n].to_vec()
+        };
+        for (event, data) in events.feed(&bytes) {
+            if !on_event(&event, &data) {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Server-sent events, decoded from bytes as they arrive.
+#[derive(Default)]
+struct SseEvents {
+    pending: Vec<u8>,
+    event: String,
+    data: Vec<String>,
+}
+
+impl SseEvents {
+    fn feed(&mut self, bytes: &[u8]) -> Vec<(String, String)> {
+        self.pending.extend_from_slice(bytes);
+        let mut out = Vec::new();
+        while let Some(end) = self.pending.iter().position(|&b| b == b'\n') {
+            let raw: Vec<u8> = self.pending.drain(..=end).collect();
+            let text = String::from_utf8_lossy(&raw);
+            let line = text.trim_end_matches(['\n', '\r']);
+            if line.is_empty() {
+                if !self.data.is_empty() {
+                    let event = if self.event.is_empty() {
+                        "message".to_string()
+                    } else {
+                        std::mem::take(&mut self.event)
+                    };
+                    out.push((event, self.data.join("\n")));
+                }
+                self.event.clear();
+                self.data.clear();
+            } else if line.starts_with(':') {
+                // A comment: the stream is alive, nothing to say.
+            } else {
+                let (field, value) = line.split_once(':').unwrap_or((line, ""));
+                let value = value.strip_prefix(' ').unwrap_or(value);
+                match field {
+                    "event" => self.event = value.to_string(),
+                    "data" => self.data.push(value.to_string()),
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
 }
 
 fn dechunk(mut text: &str) -> String {

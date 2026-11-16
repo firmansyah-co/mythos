@@ -79,6 +79,7 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     // Reading the controller
     ("GET", "/api/v1/tags", V),
     ("GET", "/api/v1/tags/values", V),
+    ("GET", "/api/v1/remote", V),
     ("GET", "/api/v1/tags/:uri", V),
     ("GET", "/api/v1/projects", V),
     ("GET", "/api/v1/projects/active", V),
