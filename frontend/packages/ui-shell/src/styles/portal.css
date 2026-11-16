@@ -238,6 +238,13 @@
   gap: 6px;
 }
 
+.settings__choice {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
 .settings__check {
   display: inline-flex;
   align-items: center;

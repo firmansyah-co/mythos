@@ -54,6 +54,8 @@ pub struct ApiState<S: PlatformShm + 'static = mythos_pal::DefaultShm> {
     pub services: Option<Arc<crate::services::ServiceHost>>,
     /// Which modules are switched off, and where packages are installed.
     pub modules: Option<Arc<crate::modules::ModuleSettings>>,
+    /// This installation as a node: its id, name and role (ADR-012).
+    pub node: Option<Arc<crate::node::Node>>,
 }
 
 impl<S: PlatformShm + 'static> Clone for ApiState<S> {
@@ -71,6 +73,7 @@ impl<S: PlatformShm + 'static> Clone for ApiState<S> {
             updates: self.updates.clone(),
             services: self.services.clone(),
             modules: self.modules.clone(),
+            node: self.node.clone(),
         }
     }
 }
@@ -101,6 +104,7 @@ impl<S: PlatformShm + 'static> ApiState<S> {
             updates: None,
             services: None,
             modules: None,
+            node: None,
         }
     }
 
@@ -140,6 +144,11 @@ impl<S: PlatformShm + 'static> ApiState<S> {
 
     pub fn with_services(mut self, services: Arc<crate::services::ServiceHost>) -> Self {
         self.services = Some(services);
+        self
+    }
+
+    pub fn with_node(mut self, node: Arc<crate::node::Node>) -> Self {
+        self.node = Some(node);
         self
     }
 

@@ -62,3 +62,110 @@ fn a_new_server_tells_whoever_started_it_the_setup_code_and_logs_by_default() {
         "nothing was logged at the info level without RUST_LOG"
     );
 }
+
+/// Start the server with `env` on a free port; return it, its port, its storage and its lines.
+fn start(
+    env: &[(&str, &str)],
+) -> (
+    std::process::Child,
+    u16,
+    tempfile::TempDir,
+    std::sync::mpsc::Receiver<String>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mythos-server"));
+    command
+        .env_remove("MYTHOS_ROLE")
+        .env_remove("MYTHOS_BIND")
+        .env("MYTHOS_STORAGE_ROOT", dir.path())
+        .env("MYTHOS_HTTP_PORT", port.to_string())
+        .env(
+            "MYTHOS_SHM_NAME",
+            format!("mythos_role_test_{}_{port}", std::process::id()),
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let mut child = command.spawn().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    for stream in [
+        Box::new(child.stdout.take().unwrap()) as Box<dyn std::io::Read + Send>,
+        Box::new(child.stderr.take().unwrap()),
+    ] {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                let _ = tx.send(line);
+            }
+        });
+    }
+    (child, port, dir, rx)
+}
+
+/// The address the server says it listens on.
+fn listening(rx: &std::sync::mpsc::Receiver<String>) -> Option<String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) {
+            if let Some(rest) = line.split("listening on http://").nth(1) {
+                return rest.split_whitespace().next().map(str::to_string);
+            }
+        }
+    }
+    None
+}
+
+fn role_in(dir: &std::path::Path) -> String {
+    let node: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.join(".mythos-system").join("node.json")).expect("node.json"),
+    )
+    .unwrap();
+    node["role"].as_str().unwrap().to_string()
+}
+
+/// ADR-012 §2.1: the role decides where the server listens; MYTHOS_BIND overrides it.
+#[test]
+fn where_the_server_listens_follows_the_node_role() {
+    for (env, address, role) in [
+        (vec![], "0.0.0.0", "edge"),
+        (
+            vec![("MYTHOS_ROLE", "workstation")],
+            "127.0.0.1",
+            "workstation",
+        ),
+        (vec![("MYTHOS_ROLE", "server")], "0.0.0.0", "server"),
+        (vec![("MYTHOS_BIND", "127.0.0.1")], "127.0.0.1", "edge"),
+    ] {
+        let (mut child, port, dir, rx) = start(&env);
+        let heard = listening(&rx);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(
+            heard.as_deref(),
+            Some(format!("{address}:{port}").as_str()),
+            "{env:?}"
+        );
+        assert_eq!(role_in(dir.path()), role, "{env:?}");
+    }
+}
+
+#[test]
+fn a_role_that_does_not_exist_stops_the_server_and_says_why() {
+    let (mut child, _, _dir, rx) = start(&[("MYTHOS_ROLE", "plc")]);
+    let status = child.wait().unwrap();
+    // Every line, until both streams have closed.
+    let said: Vec<String> = rx.iter().collect();
+    assert!(!status.success());
+    assert!(
+        said.iter()
+            .any(|l| l.contains("MYTHOS_ROLE=plc names no role")),
+        "{said:?}"
+    );
+}

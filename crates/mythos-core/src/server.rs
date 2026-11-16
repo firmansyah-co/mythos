@@ -22,6 +22,8 @@ pub const TAG_CAPACITY: usize = 32768;
 /// A bootstrapped server: the state for the router, and the manager of its field I/O.
 pub struct Server<S: PlatformShm + 'static> {
     pub state: ApiState<S>,
+    /// This installation as a node (ADR-012): where to listen comes from its role.
+    pub node: Arc<crate::node::Node>,
     pub io: Arc<IoManager<S>>,
     /// The service modules (ADR-011); stop them with [`ServiceHost::shutdown`] on exit.
     pub services: Arc<crate::services::ServiceHost>,
@@ -43,6 +45,17 @@ pub fn shm_name_from_env() -> String {
 pub async fn bootstrap<S: PlatformShm + 'static>(
     storage_root: &std::path::Path,
     shm_name: &str,
+) -> Result<Server<S>, StorageError> {
+    bootstrap_as(storage_root, shm_name, crate::node::NodeRole::Edge).await
+}
+
+/// [`bootstrap`] for a node whose role, on its first start, is `first_role` (the desktop app is
+/// a workstation; `mythos-server` an edge). `MYTHOS_ROLE` overrides it; `node.json` wins once it
+/// exists.
+pub async fn bootstrap_as<S: PlatformShm + 'static>(
+    storage_root: &std::path::Path,
+    shm_name: &str,
+    first_role: crate::node::NodeRole,
 ) -> Result<Server<S>, StorageError> {
     // Packages installed in Settings → Modules live in the storage's system directory, which is
     // always searched, so an update of MythOS (a new version directory) keeps them.
@@ -79,7 +92,7 @@ pub async fn bootstrap<S: PlatformShm + 'static>(
             dirs
         );
     }
-    let server = assemble(storage_root, shm_name, registry, Some(dirs)).await?;
+    let server = assemble(storage_root, shm_name, registry, Some(dirs), first_role).await?;
     server.io.spawn_module_watcher(MODULE_WATCH_INTERVAL);
     Ok(server)
 }
@@ -112,7 +125,14 @@ pub async fn bootstrap_with<S: PlatformShm + 'static>(
     shm_name: &str,
     registry: DriverRegistry,
 ) -> Result<Server<S>, StorageError> {
-    assemble(storage_root, shm_name, registry, None).await
+    assemble(
+        storage_root,
+        shm_name,
+        registry,
+        None,
+        crate::node::NodeRole::Edge,
+    )
+    .await
 }
 
 async fn assemble<S: PlatformShm + 'static>(
@@ -120,8 +140,20 @@ async fn assemble<S: PlatformShm + 'static>(
     shm_name: &str,
     mut registry: DriverRegistry,
     module_dirs: Option<Vec<std::path::PathBuf>>,
+    first_role: crate::node::NodeRole,
 ) -> Result<Server<S>, StorageError> {
     let storage = Arc::new(ControllerStorage::new(storage_root)?);
+    let node = Arc::new(
+        crate::node::Node::open(&storage.system_dir(), first_role)
+            .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?,
+    );
+    let identity = node.identity();
+    info!(
+        "This node is '{}' ({}), role {}",
+        identity.name,
+        identity.id,
+        identity.role.as_str()
+    );
     let module_settings = Arc::new(
         crate::modules::ModuleSettings::open(&storage.system_dir())
             .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?,
@@ -188,10 +220,12 @@ async fn assemble<S: PlatformShm + 'static>(
         .with_services(Arc::clone(&services))
         .with_io_manager(Arc::clone(&io))
         .with_auth(Arc::new(accounts))
-        .with_updates(Arc::new(crate::updates::Updates::detect()));
+        .with_updates(Arc::new(crate::updates::Updates::detect()))
+        .with_node(Arc::clone(&node));
 
     Ok(Server {
         state,
+        node,
         io,
         services,
     })

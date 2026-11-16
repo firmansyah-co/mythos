@@ -183,7 +183,7 @@ Each step leaves `dev` working: a single controller, as today, keeps working at 
 
 | Section | Built |
 | :--- | :--- |
-| 2.1 Identity and role | No |
+| 2.1 Identity and role | Step 1 built: `crate::node` (`node.json`: id, name, role, site; `MYTHOS_ROLE` on first start), `GET`/`PUT /api/v1/node` with MCP tools `get_node`/`update_node`, Settings → Node; the role decides where the server listens (`MYTHOS_BIND` overrides), the desktop app is a workstation. Proven by `node_api_tests.rs`, `server_binary_tests.rs` (`where_the_server_listens_follows_the_node_role`), `node.test.tsx`, e2e. The other presets of the table and the system services are step 2 |
 | 2.2 Discovery | No |
 | 2.3 Pairing and TLS | No |
 | 2.4 Plant projects | No |

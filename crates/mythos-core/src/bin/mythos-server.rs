@@ -68,10 +68,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("MythOS server listening on http://{}", addr);
-
+    // Where to listen is the node's role (ADR-012 §2.1): an edge or a server on every interface,
+    // a workstation on this computer only. MYTHOS_BIND overrides it.
+    let addr = SocketAddr::new(server.node.listen_ip()?, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    server.node.set_listening(listener.local_addr()?);
+    tracing::info!("MythOS server listening on http://{}", addr);
 
     // Telemetry streams never end on their own, so a graceful HTTP shutdown would wait for
     // every browser to close. Stop serving on the signal instead, then let the I/O runtime mark

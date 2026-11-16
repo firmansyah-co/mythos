@@ -3,7 +3,7 @@
 //! Entry point for the Tauri v2 desktop application, which embeds the MythOS server.
 
 use mythos_core::api::create_router;
-use mythos_core::server::{bootstrap, shm_name_from_env};
+use mythos_core::server::{bootstrap_as, shm_name_from_env};
 use mythos_core::storage::default_projects_dir;
 use mythos_pal::DefaultShm;
 use std::net::SocketAddr;
@@ -18,7 +18,14 @@ pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::Joi
             .map(std::path::PathBuf::from)
             .unwrap_or_else(default_projects_dir);
 
-        let server = match bootstrap::<DefaultShm>(&storage_root, &shm_name_from_env()).await {
+        // The desktop app is an engineer's workstation (ADR-012 §2.1) on its first start.
+        let server = match bootstrap_as::<DefaultShm>(
+            &storage_root,
+            &shm_name_from_env(),
+            mythos_core::node::NodeRole::Workstation,
+        )
+        .await
+        {
             Ok(server) => server,
             Err(e) => {
                 error!(
@@ -32,6 +39,7 @@ pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::Joi
         mythos_core::server::announce_setup_code(&server);
         let io = server.io;
         let services = server.services;
+        let node = server.node;
         let app = create_router(server.state);
 
         let port: u16 = std::env::var("MYTHOS_HTTP_PORT")
@@ -39,7 +47,16 @@ pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::Joi
             .and_then(|p| p.parse().ok())
             .unwrap_or(9090);
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        // A workstation listens on this computer only; another role, chosen in Settings → Node,
+        // on what that role says (MYTHOS_BIND overrides both).
+        let ip = match node.listen_ip() {
+            Ok(ip) => ip,
+            Err(e) => {
+                error!("{e}");
+                return;
+            }
+        };
+        let addr = SocketAddr::new(ip, port);
         info!("Embedded MythOS server listening on http://{}", addr);
 
         let listener = match tokio::net::TcpListener::bind(&addr).await {
@@ -49,6 +66,9 @@ pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::Joi
                 return;
             }
         };
+        if let Ok(bound) = listener.local_addr() {
+            node.set_listening(bound);
+        }
 
         // Telemetry streams never end on their own, so stop serving on the signal rather than
         // waiting for every stream to close.

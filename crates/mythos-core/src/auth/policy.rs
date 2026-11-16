@@ -40,6 +40,9 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     ("PUT", "/api/v1/users/:username", A),
     ("DELETE", "/api/v1/users/:username", A),
     // Updates: anyone may see the versions; only an administrator changes them.
+    // The node: anyone may see what it is; only an administrator renames it or changes its role.
+    ("GET", "/api/v1/node", V),
+    ("PUT", "/api/v1/node", A),
     ("GET", "/api/v1/updates", V),
     ("GET", "/api/v1/updates/releases", V),
     ("PUT", "/api/v1/updates/follow", A),
