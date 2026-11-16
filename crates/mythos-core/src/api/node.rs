@@ -13,8 +13,7 @@ use std::sync::Arc;
 
 fn view(node: &Node) -> Value {
     let identity = node.identity();
-    let wanted = node.listen_ip().ok();
-    let listening = node.listening();
+    let fingerprint = node.fingerprint();
     json!({
         "id": identity.id,
         "name": identity.name,
@@ -24,16 +23,21 @@ fn view(node: &Node) -> Value {
         "field_io": { "on": identity.field_io(), "from_role": identity.field_io.is_none() },
         "announce": { "on": identity.announce(), "from_role": identity.announce.is_none() },
         "field_io_off": identity.field_io_off_reason(),
+        "http_on_network": identity.http_on_network,
         "version": env!("CARGO_PKG_VERSION"),
         "module_protocol": mythos_module::PROTOCOL_VERSION,
-        // Where this run listens, and where the role (or MYTHOS_BIND) says to: they differ after
-        // the role changed, until the server is started again.
-        "listening": listening.map(|a| a.to_string()),
-        "listen_address": wanted.map(|ip| ip.to_string()),
-        "restart_required": match (listening, wanted) {
-            (Some(now), Some(ip)) => now.ip() != ip,
-            _ => false,
+        // Where this run answers HTTP and HTTPS, and where the node now says to: they differ after
+        // the role or `http_on_network` changed, until the server is started again.
+        "listening": node.listening().map(|a| a.to_string()),
+        "listen_address": node.http_ip().ok().map(|ip| ip.to_string()),
+        "https": {
+            "listening": node.listening_tls().map(|a| a.to_string()),
+            "listen_address": node.listen_ip().ok().map(|ip| ip.to_string()),
+            // What another node or an engineer compares before pairing (ADR-012 §2.3).
+            "fingerprint": fingerprint,
+            "fingerprint_spoken": fingerprint.as_deref().map(crate::tls::spoken),
         },
+        "restart_required": node.restart_required(),
     })
 }
 

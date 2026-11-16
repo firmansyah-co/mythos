@@ -197,6 +197,15 @@ async fn assemble<S: PlatformShm + 'static>(
     // Accounts are not optional for a server: every route is checked against its policy.
     let accounts = crate::auth::Auth::open(&storage.system_dir())
         .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+    // A paired node's token acts with the role it was granted (ADR-012 §2.3).
+    let pairings = Arc::new(
+        crate::pairing::Pairings::open(&storage.system_dir())
+            .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?,
+    );
+    {
+        let pairings = Arc::clone(&pairings);
+        accounts.set_pairing_lookup(Arc::new(move |token| pairings.identify(token)));
+    }
     if let Some(code) = accounts.setup_code() {
         warn!(
             "No account exists yet. Open the workbench and create the first administrator with \
@@ -227,7 +236,8 @@ async fn assemble<S: PlatformShm + 'static>(
         .with_io_manager(Arc::clone(&io))
         .with_auth(Arc::new(accounts))
         .with_updates(Arc::new(crate::updates::Updates::detect()))
-        .with_node(Arc::clone(&node));
+        .with_node(Arc::clone(&node))
+        .with_pairings(pairings);
 
     Ok(Server {
         state,

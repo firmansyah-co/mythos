@@ -159,6 +159,7 @@ describe('settings', () => {
     expect(Array.from(nav?.querySelectorAll('button') ?? []).map((b) => b.textContent?.trim())).toEqual([
       'Account',
       'Node',
+      'Pairing',
       'Updates',
       'Modules',
     ]);

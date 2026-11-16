@@ -321,12 +321,23 @@ try {
   await evaluate(`__t.click('Node')`); await sleep(800);
   const nodeId = (await evaluate(`__t.text('[data-testid="node-id"]')`))[0] ?? '';
   check('Settings → Node shows this node’s id', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(nodeId), nodeId);
-  check('and that it is an edge, listening on every interface',
+  check('and that it is an edge, answering plain HTTP on this computer only',
     (await evaluate(`document.querySelector('input[value="edge"]')?.checked`)) === true &&
-    (await evaluate(`__t.text('[data-testid="node-listening"]')[0]`)) === `0.0.0.0:${new URL(base).port}`,
+    (await evaluate(`__t.text('[data-testid="node-listening"]')[0]`)) === `127.0.0.1:${new URL(base).port}`,
     await evaluate(`__t.text('[data-testid="node-listening"]')[0]`));
+  const nodeHttps = (await evaluate(`__t.text('[data-testid="node-https"]')[0]`)) ?? '';
+  const nodeCert = (await evaluate(`__t.text('[data-testid="node-fingerprint"]')[0]`)) ?? '';
+  check('and HTTPS on every interface, with its certificate’s fingerprint to compare',
+    /^0\.0\.0\.0:\d+$/.test(nodeHttps) && /^([0-9a-f]{4} ){15}[0-9a-f]{4}$/.test(nodeCert), `${nodeHttps} ${nodeCert}`);
   const apiNode = await (await api(`${base}/api/v1/node`)).json();
-  check('the API says the same', apiNode.id === nodeId && apiNode.role === 'edge', JSON.stringify(apiNode));
+  check('the API says the same', apiNode.id === nodeId && apiNode.role === 'edge' &&
+    apiNode.https.fingerprint === nodeCert.replaceAll(' ', ''), JSON.stringify(apiNode));
+  // Pairing (ADR-012 §2.3): no node paired yet; an administrator makes a one-use code.
+  await evaluate(`__t.click('Pairing')`); await sleep(800);
+  check('Settings → Pairing says this node is paired with no other', await evaluate(`__t.has('[data-testid="pairings-empty"]')`));
+  await evaluate(`__t.click('Make a pairing code')`); await sleep(600);
+  const pairingCode = (await evaluate(`__t.text('[data-testid="pairing-code"] code')[0]`)) ?? '';
+  check('and makes a pairing code to read to the node that pairs', /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(pairingCode), pairingCode);
   await evaluate(`__t.click('Users')`); await sleep(800);
   const accounts = await evaluate(`__t.text('[data-testid="user-row"] td:first-child')`);
   check('an administrator sees the accounts of the controller', accounts.some((a) => a.startsWith(user)), accounts.join(', '));

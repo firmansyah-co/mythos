@@ -91,9 +91,12 @@ pub enum ServiceCommands {
         /// or edge for a new one)
         #[arg(long)]
         role: Option<String>,
-        /// The HTTP port
+        /// The HTTP port (answered on this computer only, unless the node says otherwise)
         #[arg(long, default_value_t = 8080)]
         port: u16,
+        /// The HTTPS port other computers use (default: the server's, 8443; 0 is any free one)
+        #[arg(long)]
+        https_port: Option<u16>,
         /// The mythos-server to run (default: the installation's current one)
         #[arg(long)]
         server: Option<PathBuf>,
@@ -159,6 +162,7 @@ fn service_spec(target: &ServiceTarget, server: PathBuf, port: u16) -> service::
             .clone()
             .unwrap_or_else(mythos_core::storage::default_projects_dir),
         port,
+        https_port: None,
         user: target.user,
         home: home_dir(),
         uid: if target.user { this_uid() } else { None },
@@ -176,6 +180,7 @@ pub fn execute_service(
             target,
             role,
             port,
+            https_port,
             server,
             dry_run,
         } => {
@@ -189,7 +194,8 @@ pub fn execute_service(
             let server = server
                 .or_else(|| service::default_server(mythos_dir))
                 .ok_or("no mythos-server found: install MythOS first (`mythos update`), or name one with --server")?;
-            let spec = service_spec(&target, server, port);
+            let mut spec = service_spec(&target, server, port);
+            spec.https_port = https_port;
             let plan = service::plan_install(os, &spec)?;
             let node_file = spec.storage.join(".mythos-system").join("node.json");
             if dry_run {

@@ -14,12 +14,14 @@ use std::net::SocketAddr;
 struct Args {
     storage_root: Option<std::path::PathBuf>,
     port: Option<u16>,
+    https_port: Option<u16>,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut parsed = Args {
         storage_root: None,
         port: None,
+        https_port: None,
     };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -38,9 +40,16 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
                         .map_err(|_| format!("--port {text} is not a port number"))?,
                 );
             }
+            "--https-port" => {
+                let text = args.next().ok_or("--https-port needs a number")?;
+                parsed.https_port = Some(
+                    text.parse()
+                        .map_err(|_| format!("--https-port {text} is not a port number"))?,
+                );
+            }
             other => {
                 return Err(format!(
-                    "unknown argument '{other}' (mythos-server takes --storage-root <dir> and --port <n>)"
+                    "unknown argument '{other}' (mythos-server takes --storage-root <dir>, --port <n> and --https-port <n>)"
                 ))
             }
         }
@@ -94,6 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let server = bootstrap::<DefaultShm>(&storage_root, &shm_name).await?;
     mythos_core::server::announce_setup_code(&server);
+    let system_dir = server.state.storage.system_dir();
     let mut state = server.state;
     if std::env::var_os("MYTHOS_STATIC_DIR").is_none() {
         if let Some(web) = installed_workbench() {
@@ -117,12 +127,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Where to listen is the node's role (ADR-012 §2.1): an edge or a server on every interface,
     // a workstation on this computer only. MYTHOS_BIND overrides it.
-    let addr = SocketAddr::new(server.node.listen_ip()?, port);
+    // ADR-012 §2.3: the network uses HTTPS, with this node's own certificate, on the role's
+    // address (an edge's or a server's every interface, a workstation's loopback). Plain HTTP is
+    // answered on this computer only, unless the node says `http_on_network`.
+    let https_port: u16 = args
+        .https_port
+        .or_else(|| {
+            std::env::var("MYTHOS_HTTPS_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+        })
+        .unwrap_or(8443);
+    let identity = server.node.identity();
+    let short: String = identity.id.chars().take(8).collect();
+    let cert = mythos_core::tls::NodeCert::load_or_create(
+        &system_dir,
+        &[format!("mythos-{short}.local")],
+    )?;
+
+    let addr = SocketAddr::new(server.node.http_ip()?, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     server.node.set_listening(listener.local_addr()?);
-    // Now that the port is known, the service modules are told (discovery announces it).
+    let tls_addr = SocketAddr::new(server.node.listen_ip()?, https_port);
+    let tls_listener = tokio::net::TcpListener::bind(&tls_addr).await?;
+    let tls_bound = tls_listener.local_addr()?;
+    server
+        .node
+        .set_listening_tls(tls_bound, cert.fingerprint.clone());
+    // Now that the ports are known, the service modules are told (discovery announces them).
     server.services.node_changed().await;
     tracing::info!("MythOS server listening on http://{}", addr);
+    tracing::info!(
+        "MythOS server listening on https://{} with certificate {}",
+        tls_bound,
+        mythos_core::tls::spoken(&cert.fingerprint)
+    );
+    let tls_server = tokio::spawn(mythos_core::tls::serve(
+        tls_listener,
+        cert.server_config()?,
+        app.clone(),
+    ));
 
     // Telemetry streams never end on their own, so a graceful HTTP shutdown would wait for
     // every browser to close. Stop serving on the signal instead, then let the I/O runtime mark
@@ -132,6 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ = shutdown_signal() => tracing::info!("Shutdown requested"),
     }
 
+    tls_server.abort();
     server.io.shutdown().await;
     server.services.shutdown().await;
     Ok(())

@@ -46,6 +46,8 @@ pub struct ServiceSpec {
     pub storage: PathBuf,
     /// Its HTTP port (`MYTHOS_HTTP_PORT`).
     pub port: u16,
+    /// Its HTTPS port, when not the server's default (8443); 0 is any free one.
+    pub https_port: Option<u16>,
     /// Installed for the signed-in user rather than the whole machine (Linux, macOS).
     pub user: bool,
     /// Home directory, for a user-level install.
@@ -209,7 +211,7 @@ pub fn plan_install(os: Os, spec: &ServiceSpec) -> Result<Plan, String> {
                  Wants=network-online.target\n\
                  \n\
                  [Service]\n\
-                 ExecStart=\"{server}\" --storage-root \"{storage}\" --port {port}\n\
+                 ExecStart=\"{server}\" --storage-root \"{storage}\" --port {port}{https}\n\
                  Restart=always\n\
                  RestartSec=5\n\
                  \n\
@@ -217,6 +219,10 @@ pub fn plan_install(os: Os, spec: &ServiceSpec) -> Result<Plan, String> {
                  WantedBy={target}\n",
                 name = spec.name,
                 port = spec.port,
+                https = spec
+                    .https_port
+                    .map(|p| format!(" --https-port {p}"))
+                    .unwrap_or_default(),
                 target = if spec.user {
                     "default.target"
                 } else {
@@ -257,7 +263,7 @@ pub fn plan_install(os: Os, spec: &ServiceSpec) -> Result<Plan, String> {
   <array>
     <string>{server}</string>
     <string>--storage-root</string><string>{storage}</string>
-    <string>--port</string><string>{port}</string>
+    <string>--port</string><string>{port}</string>{https}
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -270,6 +276,10 @@ pub fn plan_install(os: Os, spec: &ServiceSpec) -> Result<Plan, String> {
                 server = xml(&server),
                 storage = xml(&storage),
                 port = spec.port,
+                https = spec
+                    .https_port
+                    .map(|p| format!("\n    <string>--https-port</string><string>{p}</string>"))
+                    .unwrap_or_default(),
                 log = xml(&log.display().to_string()),
             );
             let path = macos_plist_path(spec);
@@ -304,7 +314,7 @@ pub fn plan_install(os: Os, spec: &ServiceSpec) -> Result<Plan, String> {
     <Enabled>true</Enabled>
   </Settings>
   <Actions Context="Author">
-    <Exec><Command>{server}</Command><Arguments>--storage-root "{storage}" --port {port}</Arguments></Exec>
+    <Exec><Command>{server}</Command><Arguments>--storage-root "{storage}" --port {port}{https}</Arguments></Exec>
   </Actions>
 </Task>
 "#,
@@ -312,6 +322,10 @@ pub fn plan_install(os: Os, spec: &ServiceSpec) -> Result<Plan, String> {
                 server = xml(&server),
                 storage = xml(&storage),
                 port = spec.port,
+                https = spec
+                    .https_port
+                    .map(|p| format!(" --https-port {p}"))
+                    .unwrap_or_default(),
             );
             let task_path = windows_task_path(spec);
             plan.files.push(PlannedFile {
@@ -477,6 +491,7 @@ mod tests {
             server: PathBuf::from("/opt/mythos/current/bin/mythos-server"),
             storage: PathBuf::from("/var/lib/mythos/projects"),
             port: 8080,
+            https_port: None,
             user,
             home: PathBuf::from("/home/eng"),
             uid: Some(501),
@@ -503,6 +518,21 @@ mod tests {
                 strings(&["systemctl", "daemon-reload"]),
                 strings(&["systemctl", "enable", "--now", "mythos.service"]),
             ]
+        );
+
+        let mut https = spec(false);
+        https.https_port = Some(9443);
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let text = describe(&plan_install(os, &https).unwrap());
+            assert!(
+                text.contains("--https-port 9443")
+                    || text.contains("<string>--https-port</string><string>9443</string>"),
+                "{os:?} passes the HTTPS port: {text}"
+            );
+        }
+        assert!(
+            !unit.contains("--https-port"),
+            "the server's default unless asked"
         );
 
         let user = plan_install(Os::Linux, &spec(true)).unwrap();

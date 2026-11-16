@@ -78,9 +78,15 @@ pub struct WireNode {
     pub site: String,
     /// Whether the node announces itself on the network (its role's default or its own setting).
     pub announce: bool,
-    /// The port its server listens on, once it does.
+    /// The port its server answers plain HTTP on, once it does.
     #[serde(default)]
     pub port: Option<u16>,
+    /// The port its server answers HTTPS on, once it does: what other nodes use (ADR-012 §2.3).
+    #[serde(default)]
+    pub https_port: Option<u16>,
+    /// SHA-256 of its certificate, lowercase hex: what another node pins when it pairs.
+    #[serde(default)]
+    pub fingerprint: Option<String>,
     /// The server's version.
     pub version: String,
     /// The module protocol the server speaks.

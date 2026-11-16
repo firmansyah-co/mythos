@@ -142,6 +142,7 @@ def main() -> int:
         MYTHOS_SETUP_CODE=setup_code,
         MYTHOS_STORAGE_ROOT=storage,
         MYTHOS_HTTP_PORT=str(http_port),
+        MYTHOS_HTTPS_PORT="0",
         MYTHOS_SHM_NAME=f"mythos_smoke_{os.getpid()}",
     )
     MADE["segment"] = server_env["MYTHOS_SHM_NAME"]
@@ -218,6 +219,10 @@ def main() -> int:
             time.sleep(0.5)
         if not heard or heard.get("self") != node.get("id") or not heard.get("listening"):
             return fail("discovery module", json.dumps(heard)[:2000])
+        # ADR-012 §2.3: HTTPS with the node's own certificate.
+        https = node.get("https") or {}
+        if not https.get("listening") or len(https.get("fingerprint") or "") != 64:
+            return fail("HTTPS", json.dumps(node)[:2000])
 
         updates = get("/api/v1/updates")
         installation = updates.get("installation") or {}

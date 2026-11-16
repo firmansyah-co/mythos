@@ -97,7 +97,7 @@ E2E_PASSWORD="e2e password $RANDOM$RANDOM"
 # and the run never depends on the internet.
 MYTHOS_RELEASE_FEED="http://127.0.0.1:9/releases" \
 MYTHOS_SETUP_CODE="$SETUP_CODE" \
-MYTHOS_MODULE_PATH="$WORK/install/bin" \
+MYTHOS_MODULE_PATH="$WORK/install/bin" MYTHOS_HTTPS_PORT=0 \
 MYTHOS_STORAGE_ROOT="$WORK/data" MYTHOS_HTTP_PORT="$HTTP_PORT" MYTHOS_SHM_NAME="$SHM" \
 MYTHOS_STATIC_DIR="$ROOT/frontend/packages/ui-shell/dist" \
     "$ROOT/target/debug/mythos-server" >"$WORK/server.log" 2>&1 & SRV=$!

@@ -49,7 +49,9 @@ pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::Joi
 
         // A workstation listens on this computer only; another role, chosen in Settings → Node,
         // on what that role says (MYTHOS_BIND overrides both).
-        let ip = match node.listen_ip() {
+        // The desktop app answers plain HTTP to its own window; HTTPS for other nodes is
+        // mythos-server's (ADR-012 §2.3).
+        let ip = match node.http_ip() {
             Ok(ip) => ip,
             Err(e) => {
                 error!("{e}");

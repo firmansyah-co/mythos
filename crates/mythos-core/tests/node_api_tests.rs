@@ -36,7 +36,8 @@ fn rig() -> Rig {
     let (_, viewer) = auth.sign_in("vera", "a good password").unwrap();
     let node = Arc::new(Node::open(&system, NodeRole::Edge).unwrap());
     // As mythos-server does once it is listening.
-    node.set_listening("0.0.0.0:8080".parse().unwrap());
+    node.set_listening("127.0.0.1:8080".parse().unwrap());
+    node.set_listening_tls("0.0.0.0:8443".parse().unwrap(), "ab".repeat(32));
     let state = ApiState::<mythos_pal::MemoryShm>::new(
         storage,
         Arc::new(RwLock::new(TagCatalog::new())),
@@ -97,8 +98,17 @@ async fn anyone_signed_in_sees_the_node_and_nobody_else_does() {
     assert_eq!(node["id"], identity.id);
     assert_eq!(node["name"], identity.name);
     assert_eq!(node["role"], "edge");
-    assert_eq!(node["listening"], "0.0.0.0:8080");
-    assert_eq!(node["listen_address"], "0.0.0.0");
+    assert_eq!(
+        node["listening"], "127.0.0.1:8080",
+        "plain HTTP on this computer only"
+    );
+    assert_eq!(node["listen_address"], "127.0.0.1");
+    assert_eq!(
+        node["https"]["listening"], "0.0.0.0:8443",
+        "HTTPS on the network"
+    );
+    assert_eq!(node["https"]["fingerprint"], "ab".repeat(32));
+    assert_eq!(node["http_on_network"], false);
     assert_eq!(node["restart_required"], false);
     assert_eq!(node["module_protocol"], mythos_module::PROTOCOL_VERSION);
 }
@@ -127,9 +137,9 @@ async fn only_an_administrator_changes_it_and_a_new_listening_address_waits_for_
             &json!("workstation")
         )
     );
-    // A workstation listens on this computer only, but this run still listens everywhere.
-    assert_eq!(node["listen_address"], "127.0.0.1");
-    assert_eq!(node["listening"], "0.0.0.0:8080");
+    // A workstation answers HTTPS on this computer only, but this run still does everywhere.
+    assert_eq!(node["https"]["listen_address"], "127.0.0.1");
+    assert_eq!(node["https"]["listening"], "0.0.0.0:8443");
     assert_eq!(node["restart_required"], true);
 
     let stored: Value =

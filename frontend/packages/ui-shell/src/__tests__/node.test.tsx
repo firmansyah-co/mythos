@@ -18,6 +18,13 @@ const EDGE: NodeInfo = {
   field_io: { on: true, from_role: true },
   announce: { on: true, from_role: true },
   field_io_off: null,
+  http_on_network: false,
+  https: {
+    listening: '0.0.0.0:8443',
+    listen_address: '0.0.0.0',
+    fingerprint: 'ab'.repeat(32),
+    fingerprint_spoken: 'abab abab abab abab abab abab abab abab abab abab abab abab abab abab abab abab',
+  },
 };
 
 function controller(node: NodeInfo, refuse?: string) {
@@ -71,6 +78,8 @@ describe('Settings → Node', () => {
     await settle();
     expect(view.querySelector('[data-testid="node-id"]')?.textContent).toBe(EDGE.id);
     expect(view.querySelector('[data-testid="node-listening"]')?.textContent).toBe('0.0.0.0:8080');
+    expect(view.querySelector('[data-testid="node-https"]')?.textContent).toBe('0.0.0.0:8443');
+    expect(view.querySelector('[data-testid="node-fingerprint"]')?.textContent).toBe(EDGE.https.fingerprint_spoken);
     expect((view.querySelector('input[aria-label="Node name"]') as HTMLInputElement).value).toBe('boiler-edge-1');
     expect((view.querySelector('input[value="edge"]') as HTMLInputElement).checked).toBe(true);
     expect(view.querySelector('[data-testid="node-restart"]')).toBeNull();
@@ -101,7 +110,7 @@ describe('Settings → Node', () => {
     await settle();
 
     expect(calls.filter((c) => c.method === 'PUT').map((c) => c.body)).toEqual([
-      { name: 'Boiler edge 1', site: '', role: 'workstation', field_io: null, announce: null },
+      { name: 'Boiler edge 1', site: '', role: 'workstation', field_io: null, announce: null, http_on_network: false },
     ]);
     const restart = view.querySelector('[data-testid="node-restart"]')?.textContent ?? '';
     expect(restart).toContain('127.0.0.1');

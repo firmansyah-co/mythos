@@ -89,6 +89,8 @@ fn a_service_starts_the_server_and_uninstalling_stops_it() {
             &[
                 "--port",
                 &port_text,
+                "--https-port",
+                "0",
                 "--server",
                 &server_text,
                 "--role",

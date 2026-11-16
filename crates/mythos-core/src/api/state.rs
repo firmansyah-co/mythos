@@ -56,6 +56,8 @@ pub struct ApiState<S: PlatformShm + 'static = mythos_pal::DefaultShm> {
     pub modules: Option<Arc<crate::modules::ModuleSettings>>,
     /// This installation as a node: its id, name and role (ADR-012).
     pub node: Option<Arc<crate::node::Node>>,
+    /// The nodes this one is paired with (ADR-012 §2.3).
+    pub pairings: Option<Arc<crate::pairing::Pairings>>,
 }
 
 impl<S: PlatformShm + 'static> Clone for ApiState<S> {
@@ -74,6 +76,7 @@ impl<S: PlatformShm + 'static> Clone for ApiState<S> {
             services: self.services.clone(),
             modules: self.modules.clone(),
             node: self.node.clone(),
+            pairings: self.pairings.clone(),
         }
     }
 }
@@ -105,6 +108,7 @@ impl<S: PlatformShm + 'static> ApiState<S> {
             services: None,
             modules: None,
             node: None,
+            pairings: None,
         }
     }
 
@@ -144,6 +148,11 @@ impl<S: PlatformShm + 'static> ApiState<S> {
 
     pub fn with_services(mut self, services: Arc<crate::services::ServiceHost>) -> Self {
         self.services = Some(services);
+        self
+    }
+
+    pub fn with_pairings(mut self, pairings: Arc<crate::pairing::Pairings>) -> Self {
+        self.pairings = Some(pairings);
         self
     }
 
