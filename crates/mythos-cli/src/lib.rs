@@ -2,7 +2,9 @@
 
 pub mod channel;
 pub mod config;
+pub mod install;
 pub mod plugin_cmd;
+pub mod release;
 pub mod rollback;
 pub mod update;
 pub mod versions;
@@ -36,7 +38,7 @@ pub enum Commands {
         #[command(subcommand)]
         action: Option<ChannelSubcommand>,
     },
-    /// Query and list available release versions across official channels
+    /// List installed versions, or with --remote the versions published on the release feed
     Versions {
         /// Query remote distribution catalog
         #[arg(long)]
@@ -48,7 +50,7 @@ pub enum Commands {
         #[arg(long)]
         version: Option<String>,
     },
-    /// Revert instantaneously (< 1.0s) to previous cached binary version
+    /// Make the previously current version current again (it is still installed)
     Rollback,
     /// Plugin package management (pack, install, list, inspect)
     Plugin {
@@ -85,59 +87,77 @@ pub async fn execute_command(
         Commands::Versions { remote } => {
             let config = CliConfig::load_from(mythos_dir)?;
             if remote {
-                let catalog = versions::VersionManager::fetch_remote_versions(
-                    &config.remote_url,
-                    Some(config.channel),
+                let feed = config.feed_url();
+                let releases = versions::VersionManager::fetch_remote_versions(&feed)?;
+                println!("Published versions ({feed}):");
+                let following = release::on_channel(&releases, config.channel);
+                if following.is_empty() {
+                    println!("  (nothing on the {} channel)", config.channel);
+                }
+                for (i, r) in following.iter().enumerate() {
+                    let latest = if i == 0 { " [latest]" } else { "" };
+                    let platform = if r.bundle_for(release::TARGET).is_some() {
+                        ""
+                    } else {
+                        " (no bundle for this platform)"
+                    };
+                    println!("  - {} ({}){latest}{platform}", r.version, r.channel);
+                }
+                println!(
+                    "Channel: {}. This platform: {}.",
+                    config.channel,
+                    release::TARGET
                 );
-                println!("Official Release Versions (Remote: {}):", config.remote_url);
-                for (ch, vers) in &catalog.channels {
-                    let active_marker = if *ch == config.channel.to_string() {
-                        " (active)"
+            } else {
+                let local = versions::VersionManager::list_local_versions(mythos_dir);
+                println!("Installed versions:");
+                if local.is_empty() {
+                    println!(
+                        "  (none in {})",
+                        install::versions_dir(mythos_dir).display()
+                    );
+                }
+                let current = install::current_version(mythos_dir);
+                for v in &local {
+                    let marker = if current.as_deref() == Some(v.as_str()) {
+                        " [current]"
                     } else {
                         ""
                     };
-                    println!("  [{}]{}", ch, active_marker);
-                    for v in vers {
-                        let latest_marker = if catalog.latest.get(ch) == Some(v) {
-                            " [latest]"
-                        } else {
-                            ""
-                        };
-                        println!("    - {}{}", v, latest_marker);
-                    }
-                }
-            } else {
-                let local = versions::VersionManager::list_local_versions(mythos_dir);
-                println!("Locally Installed Versions:");
-                if local.is_empty() {
-                    println!(
-                        "  (none cached in {})",
-                        mythos_dir.join("versions").display()
-                    );
-                } else {
-                    for v in &local {
-                        let current_marker =
-                            if config.current_version.as_deref() == Some(v.as_str()) {
-                                " [current]"
-                            } else {
-                                ""
-                            };
-                        println!("  - {}{}", v, current_marker);
-                    }
+                    println!("  - {v}{marker}");
                 }
             }
         }
         Commands::Update { version } => {
             let res = update::UpdateManager::update(mythos_dir, version)?;
+            match &res.reported {
+                Some(reported) => {
+                    println!(
+                        "Installed {} and made it current; it reports: {reported} ({:.0} ms)",
+                        res.version, res.duration_ms
+                    );
+                    if !update::reports_release(reported, &res.version) {
+                        println!(
+                            "Warning: the installed mythos reports \"{reported}\", not release {}. \
+                             The release was built from manifests that disagree with its tag.",
+                            res.version
+                        );
+                    }
+                }
+                None => println!(
+                    "{} was already installed; it is now current ({:.0} ms)",
+                    res.version, res.duration_ms
+                ),
+            }
             println!(
-                "Successfully updated to version {} (took {:.2} ms)",
-                res.version, res.duration_ms
+                "Run it from {}",
+                install::current_link(mythos_dir).join("bin").display()
             );
         }
         Commands::Rollback => {
             let res = rollback::RollbackManager::rollback(mythos_dir)?;
             println!(
-                "Successfully rolled back from {} to {} in {:.2} ms (< 1.0s)",
+                "Rolled back from {} to {} in {:.0} ms",
                 res.from_version, res.to_version, res.duration_ms
             );
         }

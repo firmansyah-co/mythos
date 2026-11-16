@@ -67,3 +67,8 @@ libloading = "0.8"
 crc32fast = "1.4"
 cfg-if = "1.0"
 
+# Hashing a release bundle (about 100 MB in a debug build) takes seconds unoptimised; the
+# updater's tests do it several times.
+[profile.dev.package.sha2]
+opt-level = 3
+

@@ -62,8 +62,18 @@ pub struct CliConfig {
     pub previous_version: Option<String>,
 }
 
+/// Where releases are published: this repository's GitHub Releases.
+pub const DEFAULT_RELEASE_FEED: &str =
+    "https://api.github.com/repos/firmansyah-co/mythos/releases?per_page=100";
+
+/// A feed earlier versions of this CLI wrote into `config.json`. Nothing was ever served there.
+const NEVER_SERVED_FEED: &str = "https://releases.mythos.firmansyah.co";
+
+/// Overrides the feed for one invocation, without touching `config.json`.
+pub const RELEASE_FEED_ENV: &str = "MYTHOS_RELEASE_FEED";
+
 fn default_remote_url() -> String {
-    "https://releases.mythos.firmansyah.co".to_string()
+    DEFAULT_RELEASE_FEED.to_string()
 }
 
 impl Default for CliConfig {
@@ -88,6 +98,20 @@ impl CliConfig {
         } else {
             PathBuf::from(".mythos")
         }
+    }
+
+    /// The release feed to ask: `MYTHOS_RELEASE_FEED` if set, else the configured one. A
+    /// configuration still naming the address earlier versions invented gets the real feed.
+    pub fn feed_url(&self) -> String {
+        if let Ok(url) = std::env::var(RELEASE_FEED_ENV) {
+            if !url.trim().is_empty() {
+                return url;
+            }
+        }
+        if self.remote_url.trim_end_matches('/') == NEVER_SERVED_FEED {
+            return default_remote_url();
+        }
+        self.remote_url.clone()
     }
 
     /// Load config from given mythos directory.

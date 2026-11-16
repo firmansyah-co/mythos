@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Install a release bundle the way an operator would, then run what it installed.
+
+1. Serve the bundle and its SHA256SUMS from a local release feed shaped like GitHub's.
+2. `mythos update --version <v>` with the CLI from the bundle: download, checksum, unpack,
+   run check, switch `current`.
+3. Start `current/bin/mythos-server` from the install, on a free port with its own storage.
+4. Require that it found the Modbus module beside itself (as a module process), and that it
+   serves the workbench from the bundle's web/.
+
+Exits non-zero, saying which step failed, otherwise.
+
+Usage:
+    release-smoke.py --bundle dist/mythos-1.2.0-<target>.zip --version 1.2.0
+"""
+
+import argparse
+import hashlib
+import http.server
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.request
+import zipfile
+
+
+def fail(step: str, detail: str) -> int:
+    print(f"release-smoke: FAILED at {step}: {detail}", file=sys.stderr)
+    return 1
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bundle", required=True)
+    parser.add_argument("--version", required=True)
+    args = parser.parse_args()
+    version = args.version.lstrip("v")
+    exe = ".exe" if os.name == "nt" else ""
+
+    work = tempfile.mkdtemp(prefix="mythos-smoke-")
+    feed_dir = os.path.join(work, "feed")
+    os.makedirs(feed_dir)
+    name = os.path.basename(args.bundle)
+    shutil.copy(args.bundle, os.path.join(feed_dir, name))
+    with open(args.bundle, "rb") as f:
+        digest = hashlib.sha256(f.read()).hexdigest()
+    with open(os.path.join(feed_dir, "SHA256SUMS"), "w") as f:
+        f.write(f"{digest}  {name}\n")
+
+    port = free_port()
+    base = f"http://127.0.0.1:{port}"
+    with open(os.path.join(feed_dir, "releases.json"), "w") as f:
+        json.dump(
+            [
+                {
+                    "tag_name": f"v{version}",
+                    "draft": False,
+                    "assets": [
+                        {"name": name, "browser_download_url": f"{base}/{name}"},
+                        {"name": "SHA256SUMS", "browser_download_url": f"{base}/SHA256SUMS"},
+                    ],
+                }
+            ],
+            f,
+        )
+
+    class Quiet(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=feed_dir, **kw)
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Quiet)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    # The CLI that does the installing comes out of the bundle itself.
+    unpacked = os.path.join(work, "unpacked")
+    with zipfile.ZipFile(args.bundle) as zf:
+        zf.extractall(unpacked)
+    cli = os.path.join(unpacked, "bin", "mythos" + exe)
+    if os.name != "nt":
+        os.chmod(cli, 0o755)
+
+    home = os.path.join(work, "home")
+    env = dict(os.environ, MYTHOS_RELEASE_FEED=f"{base}/releases.json")
+    run = subprocess.run(
+        [cli, f"--mythos-dir={home}", "update", "--version", version],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    print(run.stdout.strip())
+    if run.returncode != 0:
+        return fail("mythos update", run.stderr.strip() or run.stdout.strip())
+
+    current_bin = os.path.join(home, "current", "bin")
+    server_exe = os.path.join(current_bin, "mythos-server" + exe)
+    if not os.path.isfile(server_exe):
+        return fail("install layout", f"{server_exe} is missing")
+
+    http_port = free_port()
+    storage = os.path.join(work, "storage")
+    server_env = dict(
+        os.environ,
+        MYTHOS_STORAGE_ROOT=storage,
+        MYTHOS_HTTP_PORT=str(http_port),
+        MYTHOS_SHM_NAME=f"mythos_smoke_{os.getpid()}",
+    )
+    server_env.pop("MYTHOS_STATIC_DIR", None)
+    server_env.pop("MYTHOS_MODULE_PATH", None)
+    log_path = os.path.join(work, "server.log")
+    log = open(log_path, "w")
+    proc = subprocess.Popen([server_exe], env=server_env, stdout=log, stderr=subprocess.STDOUT)
+    try:
+        api = f"http://127.0.0.1:{http_port}"
+        modules = None
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break
+            try:
+                with urllib.request.urlopen(f"{api}/api/v1/modules", timeout=2) as r:
+                    modules = json.load(r)
+                break
+            except OSError:
+                time.sleep(0.25)
+        if modules is None:
+            log.flush()
+            return fail("server start", open(log_path).read()[-4000:])
+
+        drivers = {d.get("name"): d.get("source") for d in modules.get("drivers", [])}
+        if drivers.get("modbus") != "module":
+            return fail("module discovery", json.dumps(modules)[:2000])
+
+        with urllib.request.urlopen(f"{api}/", timeout=5) as r:
+            page = r.read().decode("utf-8", "replace")
+        if "<html" not in page.lower():
+            return fail("workbench", page[:500])
+
+        print(f"release-smoke: OK — installed {version}, server found the Modbus module and serves the workbench")
+        return 0
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        log.close()
+        server.shutdown()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

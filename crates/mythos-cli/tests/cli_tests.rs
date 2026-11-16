@@ -3,15 +3,11 @@
 use mythos_cli::channel::ChannelManager;
 use mythos_cli::config::{CliConfig, ReleaseChannel};
 use mythos_cli::plugin_cmd::PluginCliManager;
-use mythos_cli::rollback::RollbackManager;
-use mythos_cli::update::UpdateManager;
-use mythos_cli::versions::VersionManager;
 use mythos_cli::Parser;
 use mythos_cli::{execute_command, Cli, Commands};
 use mythos_core::plugin::PluginPackageManifest;
 use mythos_plugin_sdk::{PluginMetadata, PluginType};
 use std::fs;
-use std::time::Instant;
 
 #[test]
 fn test_cli_channel_default_and_switch() {
@@ -35,84 +31,6 @@ fn test_cli_channel_default_and_switch() {
     // Verify config file content directly
     let cfg = CliConfig::load_from(&mythos_dir).unwrap();
     assert_eq!(cfg.channel, ReleaseChannel::Dev);
-}
-
-#[test]
-fn test_cli_versions_discovery_and_resolution() {
-    let tmp = tempfile::tempdir().unwrap();
-    let mythos_dir = tmp.path().join(".mythos");
-
-    let catalog =
-        VersionManager::fetch_remote_versions("https://releases.mythos.firmansyah.co", None);
-    assert!(catalog.channels.contains_key("release"));
-    assert!(catalog.channels.contains_key("rc"));
-    assert!(catalog.channels.contains_key("dev"));
-
-    let rel_latest = VersionManager::resolve_latest(&catalog, ReleaseChannel::Release).unwrap();
-    assert_eq!(rel_latest, "0.1.0");
-
-    let rc_latest = VersionManager::resolve_latest(&catalog, ReleaseChannel::Rc).unwrap();
-    assert_eq!(rc_latest, "0.2.0-rc.1");
-
-    let dev_latest = VersionManager::resolve_latest(&catalog, ReleaseChannel::Dev).unwrap();
-    assert_eq!(dev_latest, "0.2.0-dev.20261019");
-
-    // Check local versions list
-    let local = VersionManager::list_local_versions(&mythos_dir);
-    assert!(local.is_empty());
-}
-
-#[test]
-fn test_cli_update_and_instantaneous_rollback_under_one_second() {
-    let tmp = tempfile::tempdir().unwrap();
-    let mythos_dir = tmp.path().join(".mythos");
-
-    // 1. Update to initial version 0.1.0
-    let res1 = UpdateManager::update(&mythos_dir, Some("0.1.0".to_string())).unwrap();
-    assert_eq!(res1.version, "0.1.0");
-    assert!(mythos_dir.join("current").exists());
-    assert!(mythos_dir
-        .join("bin")
-        .join(mythos_cli::update::binary_filename())
-        .exists());
-
-    let cfg1 = CliConfig::load_from(&mythos_dir).unwrap();
-    assert_eq!(cfg1.current_version.as_deref(), Some("0.1.0"));
-    assert_eq!(cfg1.previous_version, None);
-
-    // 2. Update to version 0.2.0-rc.1
-    let res2 = UpdateManager::update(&mythos_dir, Some("0.2.0-rc.1".to_string())).unwrap();
-    assert_eq!(res2.version, "0.2.0-rc.1");
-
-    let cfg2 = CliConfig::load_from(&mythos_dir).unwrap();
-    assert_eq!(cfg2.current_version.as_deref(), Some("0.2.0-rc.1"));
-    assert_eq!(cfg2.previous_version.as_deref(), Some("0.1.0"));
-
-    // Verify local versions cached
-    let cached = VersionManager::list_local_versions(&mythos_dir);
-    assert_eq!(cached, vec!["0.1.0", "0.2.0-rc.1"]);
-
-    // 3. Instantaneous Rollback to 0.1.0 (< 1.0s)
-    let start_rb = Instant::now();
-    let rb_res = RollbackManager::rollback(&mythos_dir).unwrap();
-    let elapsed = start_rb.elapsed();
-
-    assert_eq!(rb_res.from_version, "0.2.0-rc.1");
-    assert_eq!(rb_res.to_version, "0.1.0");
-    assert!(
-        elapsed.as_millis() < 1000,
-        "Rollback must take < 1.0s, took {} ms",
-        elapsed.as_millis()
-    );
-
-    // Config state updated
-    let cfg_rb = CliConfig::load_from(&mythos_dir).unwrap();
-    assert_eq!(cfg_rb.current_version.as_deref(), Some("0.1.0"));
-    assert_eq!(cfg_rb.previous_version.as_deref(), Some("0.2.0-rc.1"));
-
-    // Verify current symlink points to 0.1.0
-    let link_target = fs::read_link(mythos_dir.join("current")).unwrap();
-    assert!(link_target.ends_with("0.1.0"));
 }
 
 #[test]
@@ -189,21 +107,6 @@ async fn test_cli_subcommand_dispatch_and_argument_parsing() {
         ReleaseChannel::Rc
     );
 
-    // Test versions --remote
-    let cli_ver = Cli::try_parse_from(["mythos", &dir_arg, "versions", "--remote"]).unwrap();
-    execute_command(cli_ver.command, &mythos_dir).await.unwrap();
-
-    // Test update --version
-    let cli_up = Cli::try_parse_from(["mythos", &dir_arg, "update", "--version", "0.1.0"]).unwrap();
-    execute_command(cli_up.command, &mythos_dir).await.unwrap();
-
-    // Test rollback
-    let cli_up2 =
-        Cli::try_parse_from(["mythos", &dir_arg, "update", "--version", "0.2.0-rc.1"]).unwrap();
-    execute_command(cli_up2.command, &mythos_dir).await.unwrap();
-
-    let cli_rb = Cli::try_parse_from(["mythos", &dir_arg, "rollback"]).unwrap();
-    execute_command(cli_rb.command, &mythos_dir).await.unwrap();
-    let cfg = CliConfig::load_from(&mythos_dir).unwrap();
-    assert_eq!(cfg.current_version.as_deref(), Some("0.1.0"));
+    // update, versions --remote and rollback are exercised against a real feed in
+    // updater_tests.rs.
 }
