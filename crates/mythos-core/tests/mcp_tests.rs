@@ -1,9 +1,7 @@
 //! The MCP endpoint: every route is a tool, and an agent can run the controller through it.
 //!
-//! Run against the real router, a real I/O manager, a POSIX tag bus segment and a Modbus TCP
+//! Run against the real router, a real I/O manager, a real shared-memory tag bus segment and a Modbus TCP
 //! simulator, as `io_config_api_tests` is.
-
-#![cfg(target_os = "linux")]
 
 use axum::{
     body::Body,
@@ -18,7 +16,7 @@ use mythos_core::{
     storage::ControllerStorage,
     tag::TagCatalog,
 };
-use mythos_pal::PosixShm;
+use mythos_pal::DefaultShm;
 use mythos_shm::ShmReaderHandle;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -151,14 +149,14 @@ fn the_route_reader_sees_a_route_added_in_the_usual_form() {
 
 struct Rig {
     router: Router,
-    io: Arc<IoManager<PosixShm>>,
+    io: Arc<IoManager<DefaultShm>>,
     segment: String,
     _dir: tempfile::TempDir,
 }
 
 impl Drop for Rig {
     fn drop(&mut self) {
-        let _ = PosixShm::unlink(&self.segment);
+        let _ = DefaultShm::unlink(&self.segment);
     }
 }
 
@@ -170,11 +168,11 @@ async fn rig() -> Rig {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::SeqCst)
     );
-    let _ = PosixShm::unlink(&segment);
+    let _ = DefaultShm::unlink(&segment);
     let catalog = Arc::new(RwLock::new(TagCatalog::new()));
     let mut registry = DriverRegistry::empty();
     registry.register("modbus", || Box::new(driver_modbus::ModbusDriver::new()));
-    let io = IoManager::<PosixShm>::new(
+    let io = IoManager::<DefaultShm>::new(
         Arc::clone(&storage),
         Arc::clone(&catalog),
         segment.clone(),
@@ -182,9 +180,9 @@ async fn rig() -> Rig {
         registry,
     );
     io.reload().await;
-    let reader = ShmReaderHandle::<PosixShm>::new(&segment, CAPACITY).unwrap();
-    let state =
-        ApiState::<PosixShm>::new(storage, catalog, Some(reader)).with_io_manager(Arc::clone(&io));
+    let reader = ShmReaderHandle::<DefaultShm>::new(&segment, CAPACITY).unwrap();
+    let state = ApiState::<DefaultShm>::new(storage, catalog, Some(reader))
+        .with_io_manager(Arc::clone(&io));
     Rig {
         router: create_router(state),
         io,

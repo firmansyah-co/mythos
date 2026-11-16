@@ -35,6 +35,7 @@ impl PlatformScheduler for LinuxScheduler {
 
         #[cfg(not(target_os = "linux"))]
         {
+            let _ = priority_level;
             Err(PalError::UnsupportedPlatform {
                 operation: "LinuxScheduler::set_realtime_priority".into(),
                 platform: "non-linux".into(),
@@ -70,6 +71,7 @@ impl PlatformScheduler for LinuxScheduler {
 
         #[cfg(not(target_os = "linux"))]
         {
+            let _ = core_id;
             Err(PalError::UnsupportedPlatform {
                 operation: "LinuxScheduler::pin_to_core".into(),
                 platform: "non-linux".into(),

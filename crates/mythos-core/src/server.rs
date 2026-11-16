@@ -39,7 +39,7 @@ pub fn shm_name_from_env() -> String {
 ///
 /// Modules are looked for where [`module_dirs_from_env`] says.
 pub async fn bootstrap<S: PlatformShm + 'static>(
-    storage_root: &str,
+    storage_root: &std::path::Path,
     shm_name: &str,
 ) -> Result<Server<S>, StorageError> {
     let dirs = module_dirs_from_env();
@@ -78,7 +78,7 @@ pub const MODULE_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from
 
 /// [`bootstrap`] with a fixed set of drivers and no module directories to watch.
 pub async fn bootstrap_with<S: PlatformShm + 'static>(
-    storage_root: &str,
+    storage_root: &std::path::Path,
     shm_name: &str,
     registry: DriverRegistry,
 ) -> Result<Server<S>, StorageError> {
@@ -86,7 +86,7 @@ pub async fn bootstrap_with<S: PlatformShm + 'static>(
 }
 
 async fn assemble<S: PlatformShm + 'static>(
-    storage_root: &str,
+    storage_root: &std::path::Path,
     shm_name: &str,
     registry: DriverRegistry,
     module_dirs: Option<Vec<std::path::PathBuf>>,

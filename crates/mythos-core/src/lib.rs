@@ -32,7 +32,7 @@ pub use pal::*;
 pub use plugin::{PluginPackageManifest, PluginPackager, VerifiedPluginPackage};
 pub use sdui::*;
 pub use storage::{
-    ControllerStorage, ProjectConfig, ProjectWal, ProjectWalEntry, StorageError, TaskConfig,
-    WalError, DEFAULT_PROJECTS_DIR,
+    default_projects_dir, ControllerStorage, ProjectConfig, ProjectWal, ProjectWalEntry,
+    StorageError, TaskConfig, WalError,
 };
 pub use tag::{AccessMode, RetentionMode, TagCatalog, TagMetadata};

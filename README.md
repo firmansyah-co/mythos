@@ -22,12 +22,13 @@ intent and may describe things that do not exist.
 | Piece | Where | State |
 | :--- | :--- | :--- |
 | Tag bus | `crates/mythos-shm`, `crates/mythos-pal` | Triple-buffered shared-memory tag store with typed values and OPC-style quality codes. One writer: the field I/O runtime. |
-| Modules | `crates/mythos-module` | Every driver is a separate executable, `mythos-module-<name>`, that the server finds beside itself (or in `MYTHOS_MODULE_PATH`), starts as a child process and talks to over JSON lines on its standard streams. Nothing is compiled into the server. A module process that dies is replaced; its tags read `BAD_COMM_FAILURE` until it is back. A new build of a module put in the directory is noticed within two seconds and swapped in for the running one without its tags stopping; a new build that cannot start leaves the old one running. See [ADR-010](specs/adr/ADR-010-modules-are-processes.md). |
+| Modules | `crates/mythos-module` | Every driver is a separate executable, `mythos-module-<name>`, that the server finds beside itself (or in `MYTHOS_MODULE_PATH`), starts as a child process and talks to over JSON lines on its standard streams. Nothing is compiled into the server. A module process that dies is replaced; its tags read `BAD_COMM_FAILURE` until it is back. A new build of a module put in the directory is noticed within two to four seconds (a change is acted on once it has held still for one look, so a half-copied file is never started) and swapped in for the running one without its tags stopping; a new build that cannot start, or a module that goes missing, leaves the old one running. See [ADR-010](specs/adr/ADR-010-modules-are-processes.md). |
 | Field I/O runtime | `crates/mythos-core/src/io` | Each connection is a unit of its own: saving a configuration changes only the connections that differ, and one whose tags stay the same is swapped to its new settings without its tags stopping. Polls each configured connection and writes what the driver reports to the tag bus: a typed value with `GOOD` quality, or the last value read with a bad quality that names the fault. A tag that was never read has no value. |
 | API server | `crates/mythos-core` (`mythos-server`) | HTTP API for projects, HMI screens, data types, faceplate types and each project's I/O configuration; a 100 ms SSE telemetry stream of the tag bus; `GET /api/v1/io/status` for the state of each connection. |
 | Web workbench | `frontend/packages/ui-shell` | Portal view (open or create a project) and project view: project tree, devices & networks, a connection editor whose driver form is drawn from the driver module's JSON Schema (a new driver module brings its own form; a configuration without a drawable schema is shown and saved back as stored), live tag tables, connection diagnostics, HMI screens (text fields and I/O fields bound to tags, saved as a draft and released; element kinds come from one registry that the toolbox, canvas, runtime and inspector all read), an operator runtime that shows the released screens full window and follows a new release without a reload, inspector. |
 | Modbus TCP driver | `plugins/drivers/driver-modbus` (module `mythos-module-modbus`) | Reads holding and input registers as `u16`, `i16`, `u32`, `i32` or `f32`, with scaling and selectable word order. Exercised end to end against a simulated device, not yet against hardware. |
 | MCP endpoint | `crates/mythos-core/src/mcp.rs` | `POST /mcp`, the Model Context Protocol over Streamable HTTP. Every API route is a tool (35), or is listed with the reason it is not (the telemetry stream, the collaboration WebSocket, the 501 deploy route, static files); a test reads the router and fails on a route that is neither. A tool sends its route's own request through the same router. Checked with the official MCP TypeScript SDK client. |
+| Platforms | `crates/mythos-pal`, CI | Linux, macOS and Windows. CI builds every Rust crate and runs the whole Rust test suite on each, the module and tag bus tests included. The tag bus is POSIX shared memory on Linux and macOS and a paging-file mapping on Windows. Real-time thread priority and core pinning exist on Linux and Windows; on macOS they report that they are not implemented. |
 | Device catalog | `catalog/`, `crates/mythos-core/src/catalog` | Manifest format and parser, with two reference device packages. |
 | Desktop shell | `src-tauri` | A Tauri window that embeds the same API server. |
 | Collaboration | `crates/mythos-core/src/collab` | A Yjs (`yrs`) WebSocket room. Not verified end to end. |
@@ -69,7 +70,9 @@ intent and may describe things that do not exist.
 
 ## Building from source
 
-Requirements: Linux with `/dev/shm`, Rust 1.82 or newer, Node.js 22 and pnpm.
+Requirements: Linux, macOS or Windows; Rust 1.82 or newer, Node.js 22 and pnpm. On Windows the
+executables end in `.exe` (`target\debug\mythos-server.exe`) and the variables below are set with
+`$env:NAME = "value"` in PowerShell.
 
 ```bash
 git clone https://github.com/firmansyah-co/mythos.git
@@ -93,7 +96,7 @@ MYTHOS_STATIC_DIR="$PWD/frontend/packages/ui-shell/dist" \
 
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
-| `MYTHOS_STORAGE_ROOT` | `/var/lib/mythos/projects` | Where projects are stored. |
+| `MYTHOS_STORAGE_ROOT` | Linux: `/var/lib/mythos/projects`; macOS: `/Library/Application Support/MythOS/projects`; Windows: `%ProgramData%\MythOS\projects` | Where projects are stored. |
 | `MYTHOS_HTTP_PORT` | `8080` | Listening port. |
 | `MYTHOS_STATIC_DIR` | unset | Directory of the built web workbench to serve. |
 | `MYTHOS_SHM_NAME` | `mythos_tagbus` | Name of the tag bus segment. Two servers must not share one: the tag bus has a single writer. |
@@ -103,6 +106,11 @@ MYTHOS_STATIC_DIR="$PWD/frontend/packages/ui-shell/dist" \
 accepts, and any executable named like a module that could not be used, with the reason.
 `POST /api/v1/modules/rescan` looks again at once; the server also does that by itself when a
 module executable is added, removed or replaced.
+
+To replace a module, put the new build beside it under another name and rename it over the old
+one. Windows does not let a running executable be replaced: rename the old build away first (to
+any name that is not a module's, such as `mythos-module-modbus.old`), then move the new one in.
+The connections using the module keep running while it is missing.
 
 ## Reading a device
 

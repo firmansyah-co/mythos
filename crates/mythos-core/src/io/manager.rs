@@ -325,22 +325,24 @@ impl<S: PlatformShm + 'static> IoManager<S> {
     }
 
     /// Watch the module directories and [`Self::rescan`] whenever a module executable is added,
-    /// removed or replaced. Checking costs a directory listing and a `stat` per module.
+    /// removed or replaced, once the change has held still for one look: a change takes effect
+    /// one to two `every` after it is made. Checking costs a directory listing and a `stat` per
+    /// module.
     pub fn spawn_module_watcher(self: &Arc<Self>, every: Duration) -> Option<JoinHandle<()>> {
         let dirs = self.module_dirs.clone()?;
         let manager = Arc::downgrade(self);
         // The baseline is what is installed now, when the watch is asked for, not whenever the
         // task first gets to run: a module replaced in between would otherwise never be seen.
-        let mut last = mythos_module::snapshot(&dirs);
+        // A change is acted on once it has held still for one look (see `Settle`): replacing a
+        // module on Windows leaves it missing for a moment, and that must not stop it.
+        let mut settle = mythos_module::Settle::new(mythos_module::snapshot(&dirs));
         Some(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(every).await;
                 let Some(manager) = manager.upgrade() else {
                     return;
                 };
-                let now = mythos_module::snapshot(&dirs);
-                if now != last {
-                    last = now;
+                if settle.observe(mythos_module::snapshot(&dirs)).is_some() {
                     info!("Module directories changed; looking for modules again");
                     manager.rescan().await;
                 }

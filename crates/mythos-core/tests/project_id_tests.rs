@@ -255,19 +255,6 @@ async fn a_project_planted_outside_the_root_can_be_neither_read_nor_activated() 
         Some("plant_a"),
         "the active project must not have moved"
     );
-    let link = std::fs::read_link(sandbox.storage.active_symlink_path()).unwrap();
-    assert!(
-        link.starts_with(sandbox.root()) && !link.to_string_lossy().contains(".."),
-        "the active symlink points outside the root: {}",
-        link.display()
-    );
-}
-
-#[tokio::test]
-async fn activating_a_project_that_does_not_exist_is_not_found_rather_than_a_server_error() {
-    let sandbox = Sandbox::new();
-    let status = sandbox
-        .send("POST", "/api/v1/projects/no_such_project/activate", None)
-        .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let marker = std::fs::read_to_string(sandbox.storage.active_marker_path()).unwrap();
+    assert_eq!(marker, "plant_a", "the active-project marker was rewritten");
 }

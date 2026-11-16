@@ -4,8 +4,8 @@
 
 use mythos_core::api::create_router;
 use mythos_core::server::{bootstrap, shm_name_from_env};
-use mythos_core::storage::DEFAULT_PROJECTS_DIR;
-use mythos_pal::PosixShm;
+use mythos_core::storage::default_projects_dir;
+use mythos_pal::DefaultShm;
 use std::net::SocketAddr;
 
 /// Resolves when the process is asked to stop (Ctrl-C, or SIGTERM on Unix).
@@ -36,11 +36,12 @@ async fn shutdown_signal() {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
-    let storage_root =
-        std::env::var("MYTHOS_STORAGE_ROOT").unwrap_or_else(|_| DEFAULT_PROJECTS_DIR.to_string());
+    let storage_root = std::env::var_os("MYTHOS_STORAGE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(default_projects_dir);
     let shm_name = shm_name_from_env();
 
-    let server = bootstrap::<PosixShm>(&storage_root, &shm_name).await?;
+    let server = bootstrap::<DefaultShm>(&storage_root, &shm_name).await?;
     let app = create_router(server.state);
 
     let port: u16 = std::env::var("MYTHOS_HTTP_PORT")

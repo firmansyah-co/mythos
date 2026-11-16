@@ -10,7 +10,7 @@
 //! # End to end, not at either end
 //!
 //! The test drives the real handler through the real router and reads the SSE body, as the
-//! UI consumer does, and the quality words come from independent writes into a real POSIX segment
+//! UI consumer does, and the quality words come from independent writes into a real shared-memory segment
 //! rather than from a helper in front of the serialiser. Asserting the mapping function's output
 //! would only prove the function; asserting the parsed stream after a genuine slot write proves
 //! the distinction survived from the slot to the wire.
@@ -52,9 +52,8 @@ async fn the_wire_distinguishes_a_comm_failure_from_a_sensor_failure() {
     let tag_catalog = Arc::new(RwLock::new(catalog));
 
     let shm_name = format!("mythos_telemetry_quality_{}", std::process::id());
-    #[cfg(target_os = "linux")]
-    let _ = mythos_pal::PosixShm::unlink(&shm_name);
-    // DefaultShm (PosixShm), deliberately: MemoryShm::open_or_create allocates a fresh isolated
+    let _ = mythos_pal::DefaultShm::unlink(&shm_name);
+    // DefaultShm (the platform's real shared memory), deliberately: MemoryShm::open_or_create allocates a fresh isolated
     // buffer per call, so a writer and reader "on the same name" never share memory and a test
     // built on it silently measures nothing.
     let mut writer = ShmWriterHandle::<mythos_pal::DefaultShm>::new(&shm_name, 64).unwrap();
@@ -163,7 +162,7 @@ async fn the_wire_distinguishes_a_comm_failure_from_a_sensor_failure() {
         );
     }
 
-    let _ = mythos_pal::PosixShm::unlink(&shm_name);
+    let _ = mythos_pal::DefaultShm::unlink(&shm_name);
 }
 
 #[tokio::test]
@@ -178,8 +177,7 @@ async fn a_good_quality_slot_still_reports_good() {
     let tag_catalog = Arc::new(RwLock::new(catalog));
 
     let shm_name = format!("mythos_telemetry_good_{}", std::process::id());
-    #[cfg(target_os = "linux")]
-    let _ = mythos_pal::PosixShm::unlink(&shm_name);
+    let _ = mythos_pal::DefaultShm::unlink(&shm_name);
     let mut writer = ShmWriterHandle::<mythos_pal::DefaultShm>::new(&shm_name, 64).unwrap();
     writer
         .write_tag(
@@ -245,5 +243,5 @@ async fn a_good_quality_slot_still_reports_good() {
         Value::from(QualityCode::GOOD.code())
     );
 
-    let _ = mythos_pal::PosixShm::unlink(&shm_name);
+    let _ = mythos_pal::DefaultShm::unlink(&shm_name);
 }

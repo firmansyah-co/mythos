@@ -127,10 +127,15 @@ pub fn atomic_symlink(target: &Path, link_path: &Path) -> std::io::Result<()> {
         if let Some(parent) = link_path.parent() {
             fs::create_dir_all(parent)?;
         }
+        // Not atomic, and a directory link needs the right to create symlinks; but a failure is
+        // reported, never taken for a switch that happened.
         if target.is_dir() {
-            let _ = std::os::windows::fs::symlink_dir(target, link_path);
+            if fs::symlink_metadata(link_path).is_ok() {
+                fs::remove_dir(link_path).or_else(|_| fs::remove_file(link_path))?;
+            }
+            std::os::windows::fs::symlink_dir(target, link_path)?;
         } else {
-            let _ = fs::copy(target, link_path);
+            fs::copy(target, link_path)?;
         }
         Ok(())
     }

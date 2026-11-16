@@ -236,7 +236,7 @@ async fn test_axum_collab_ws_route_integration() {
     let tmp_dir = tempfile::tempdir().unwrap();
     let storage = Arc::new(ControllerStorage::new(tmp_dir.path()).unwrap());
     let catalog = Arc::new(tokio::sync::RwLock::new(crate::tag::TagCatalog::new()));
-    let state = ApiState::<mythos_pal::PosixShm>::new(storage, catalog, None);
+    let state = ApiState::<mythos_pal::DefaultShm>::new(storage, catalog, None);
     let room_mgr = Arc::clone(&state.room_manager);
     let app = crate::api::create_router(state);
 

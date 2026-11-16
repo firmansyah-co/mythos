@@ -20,8 +20,15 @@ workspace = true
 name = "modbus-module-under-test"
 path = "src/bin/modbus-module-under-test.rs"
 
+# A module that misbehaves as the file beside it says (see the source). No `mythos-module-`
+# prefix, for the same reason.
+[[bin]]
+name = "module-fixture"
+path = "src/bin/module-fixture.rs"
+
 [dependencies]
 driver-modbus.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 driver-modbus = { workspace = true, features = ["sim"] }
@@ -33,3 +40,4 @@ mythos-shm.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tempfile = "3.10"
+sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }

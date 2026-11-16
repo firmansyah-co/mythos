@@ -63,7 +63,6 @@ thiserror = "1.0"
 
 # Low-level and Systems
 libc = "0.2"
-memmap2 = "0.9"
 libloading = "0.8"
 crc32fast = "1.4"
 cfg-if = "1.0"

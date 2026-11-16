@@ -36,25 +36,59 @@ pub const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 pub const RESPAWN_BACKOFF: Duration = Duration::from_secs(2);
 
 /// Identifies one build of a module file: replacing the file changes it.
+///
+/// Size and modification time alone are not enough: on macOS `cp` and `std::fs::copy` clone a
+/// file with its modification time, so reinstalling a build leaves both unchanged. Which file it
+/// is settles that: a file installed by writing it beside the old one and renaming it over is a
+/// new file, whatever its contents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Fingerprint {
     pub len: u64,
     pub modified_unix_ns: u128,
+    /// Which file this is: device and inode on Unix, volume serial and file index on Windows.
+    /// (Not the creation time on Windows: NTFS gives a file created under a name that was just
+    /// renamed away the old file's creation time, which is exactly how a module is replaced.)
+    pub file_id: u128,
 }
 
 impl Fingerprint {
     pub fn of(path: &Path) -> std::io::Result<Self> {
         let meta = std::fs::metadata(path)?;
-        let modified_unix_ns = meta
-            .modified()?
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        let unix_ns = |t: SystemTime| {
+            t.duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        };
+        #[cfg(unix)]
+        let file_id = {
+            use std::os::unix::fs::MetadataExt;
+            ((meta.dev() as u128) << 64) | meta.ino() as u128
+        };
+        #[cfg(windows)]
+        let file_id = windows_file_id(path)?;
         Ok(Self {
             len: meta.len(),
-            modified_unix_ns,
+            modified_unix_ns: unix_ns(meta.modified()?),
+            file_id,
         })
     }
+}
+
+/// The volume serial number and file index of `path`: NTFS's equivalent of device and inode.
+#[cfg(windows)]
+fn windows_file_id(path: &Path) -> std::io::Result<u128> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let file = std::fs::File::open(path)?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(((info.dwVolumeSerialNumber as u128) << 64)
+        | ((info.nFileIndexHigh as u128) << 32)
+        | info.nFileIndexLow as u128)
 }
 
 /// A module executable whose manifest has been read.
@@ -90,19 +124,29 @@ fn is_executable(meta: &std::fs::Metadata) -> bool {
     meta.is_file()
 }
 
-/// Whether a file name is one a module executable may have.
+/// Whether a file name is one a module executable may have on this platform.
 fn is_module_file_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix(MODULE_FILE_PREFIX) else {
-        return false;
+    is_module_file_name_on(name, cfg!(windows))
+}
+
+/// Whether `name` is a module executable's name: `mythos-module-<name>`, plus `.exe` on
+/// Windows, and nothing else.
+///
+/// Build tools and installers leave other files beside an executable (`mythos-module-x.d`,
+/// `mythos-module-x.pdb`, a renamed old build): none of them is a module. On Windows only an
+/// `.exe` can be started at all, so a file without that extension is not one either.
+fn is_module_file_name_on(name: &str, windows: bool) -> bool {
+    let path = Path::new(name);
+    let ext = path.extension().and_then(|e| e.to_str());
+    let stem = match (windows, ext) {
+        (true, Some(ext)) if ext.eq_ignore_ascii_case("exe") => {
+            path.file_stem().and_then(|s| s.to_str()).unwrap_or("")
+        }
+        (false, None) => name,
+        _ => return false,
     };
-    if rest.is_empty() {
-        return false;
-    }
-    // Build tools leave files such as `mythos-module-x.d` beside the executable.
-    match Path::new(name).extension().and_then(|e| e.to_str()) {
-        None => true,
-        Some(ext) => cfg!(windows) && ext.eq_ignore_ascii_case("exe"),
-    }
+    stem.strip_prefix(MODULE_FILE_PREFIX)
+        .is_some_and(|rest| !rest.is_empty())
 }
 
 /// Linux refuses to execute a file that some process holds open for writing (`ETXTBSY`). That
@@ -755,12 +799,57 @@ impl ProtocolDriver for ProcessDriver {
 mod tests {
     use super::*;
 
+    /// macOS copies a file with its modification time: a reinstalled build has the same size
+    /// and time as the one it replaces, and must still count as a new build.
+    #[test]
+    fn a_file_moved_in_over_another_is_a_new_build_even_with_the_same_size_and_time() {
+        let dir = std::env::temp_dir().join(format!("mythos-fingerprint-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let installed = dir.join("mythos-module-x");
+        let staged = dir.join(".staged");
+        std::fs::write(&installed, b"build").unwrap();
+        let before = Fingerprint::of(&installed).unwrap();
+
+        std::fs::write(&staged, b"build").unwrap();
+        let mtime = std::fs::metadata(&installed).unwrap().modified().unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&staged)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        std::fs::rename(&staged, &installed).unwrap();
+        let after = Fingerprint::of(&installed).unwrap();
+
+        assert_eq!(
+            (after.len, after.modified_unix_ns),
+            (before.len, before.modified_unix_ns)
+        );
+        assert_ne!(
+            after, before,
+            "the replaced file was not seen as a new build"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn only_executables_named_like_modules_are_considered() {
-        assert!(is_module_file_name("mythos-module-modbus"));
-        assert!(!is_module_file_name("mythos-module-"));
-        assert!(!is_module_file_name("mythos-module-modbus.d"));
-        assert!(!is_module_file_name("mythos-server"));
-        assert!(!is_module_file_name("libmythos_module.rlib"));
+        for windows in [false, true] {
+            assert!(!is_module_file_name_on("mythos-module-", windows));
+            assert!(!is_module_file_name_on("mythos-module-.exe", windows));
+            assert!(!is_module_file_name_on("mythos-module-modbus.d", windows));
+            assert!(!is_module_file_name_on("mythos-module-modbus.pdb", windows));
+            assert!(!is_module_file_name_on("mythos-module-modbus.old", windows));
+            assert!(!is_module_file_name_on("mythos-server", windows));
+            assert!(!is_module_file_name_on("mythos-server.exe", windows));
+            assert!(!is_module_file_name_on("libmythos_module.rlib", windows));
+        }
+        // Unix: no extension at all.
+        assert!(is_module_file_name_on("mythos-module-modbus", false));
+        assert!(!is_module_file_name_on("mythos-module-modbus.exe", false));
+        // Windows: an .exe, and nothing without that extension can be started.
+        assert!(is_module_file_name_on("mythos-module-modbus.exe", true));
+        assert!(is_module_file_name_on("mythos-module-modbus.EXE", true));
+        assert!(!is_module_file_name_on("mythos-module-modbus", true));
     }
 }

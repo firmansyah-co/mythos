@@ -33,7 +33,9 @@ line-oriented JSON protocol on its standard streams (`crates/mythos-module`).
   `stop`) until stdin closes.
 
 The server finds modules by reading the directories in `MYTHOS_MODULE_PATH`, or the directory
-it runs from. Nothing is compiled in.
+it runs from. Nothing is compiled in. On Windows a module is `mythos-module-<name>.exe`; on Unix
+it has no extension and must be executable. Any other file beside it (`.d`, `.pdb`, a renamed
+old build) is not a module.
 
 **Why a process and not a shared library.** Rust has no stable ABI: a `dyn ProtocolDriver`
 loaded from a `.so` is valid only for the exact compiler and dependency versions of the host,
@@ -60,7 +62,12 @@ tags than the one it replaces is refused.
 
 - Changing one connection's configuration restarts that connection only.
 - Replacing a module executable with a new build swaps the running instances of that module
-  for new ones; a new instance that cannot start leaves the old one running.
+  for new ones; a new instance that cannot start leaves the old one running, and so does a
+  module that goes missing.
+- The server watches the module directories and acts on a change once it has held still for
+  one look (`mythos_module::Settle`), so a file still being copied is not started. Windows does
+  not allow a running executable to be replaced, so an installer there renames the old build
+  away and then moves the new one in; the module is missing in between, and that is ridden out.
 - HMI screens are released as data and followed by the runtime without a reload.
 
 ### 2.5 Every feature is reachable over MCP
@@ -96,3 +103,4 @@ The root README's status table is the record of what runs. When this ADR was acc
 | 2.4 Hot-swap per unit | Yes: `IoRuntime::apply`, `IoManager::rescan` and its watcher |
 | 2.5 MCP for every route | Yes: `crates/mythos-core/src/mcp.rs`, enforced by `every_route_of_the_api_is_a_tool_or_says_why_not` |
 | 2.6 Forms from the manifest | Yes: `frontend/packages/ui-shell/src/data/schemaForm.ts` |
+| Linux, macOS, Windows | Yes: the module tests run on all three in CI (`cross-platform-tests`) |

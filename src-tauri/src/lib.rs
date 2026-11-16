@@ -4,8 +4,8 @@
 
 use mythos_core::api::create_router;
 use mythos_core::server::{bootstrap, shm_name_from_env};
-use mythos_core::storage::DEFAULT_PROJECTS_DIR;
-use mythos_pal::PosixShm;
+use mythos_core::storage::default_projects_dir;
+use mythos_pal::DefaultShm;
 use std::net::SocketAddr;
 use tauri::{AppHandle, Manager, RunEvent};
 use tokio::sync::oneshot;
@@ -14,15 +14,17 @@ use tracing::{error, info};
 /// Spawn the embedded MythOS server in a background tokio task.
 pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let storage_root = std::env::var("MYTHOS_STORAGE_ROOT")
-            .unwrap_or_else(|_| DEFAULT_PROJECTS_DIR.to_string());
+        let storage_root = std::env::var_os("MYTHOS_STORAGE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(default_projects_dir);
 
-        let server = match bootstrap::<PosixShm>(&storage_root, &shm_name_from_env()).await {
+        let server = match bootstrap::<DefaultShm>(&storage_root, &shm_name_from_env()).await {
             Ok(server) => server,
             Err(e) => {
                 error!(
                     "Embedded server failed to initialize storage at {}: {}",
-                    storage_root, e
+                    storage_root.display(),
+                    e
                 );
                 return;
             }

@@ -1,7 +1,7 @@
 //! The read path, end to end: a field device, the driver, the tag bus, the telemetry stream.
 //!
 //! Every test runs the real pieces against each other: a Modbus TCP device simulator on a real
-//! socket, the real driver, a real POSIX shared-memory segment, and the SSE body read through
+//! socket, the real driver, a real shared-memory segment, and the SSE body read through
 //! the real router, as a browser reads it. `MemoryShm` is not used: it allocates an isolated
 //! buffer per open, so a writer and a reader "on the same name" would never share memory.
 //!
@@ -10,8 +10,6 @@
 //! - a value read from the device arrives with its type and a GOOD quality;
 //! - a value that can no longer be read is never presented as current;
 //! - a tag that was never read has no value at all, rather than a zero.
-
-#![cfg(target_os = "linux")]
 
 use axum::{
     body::Body,
@@ -26,7 +24,7 @@ use mythos_core::{
     storage::ControllerStorage,
     tag::TagCatalog,
 };
-use mythos_pal::PosixShm;
+use mythos_pal::DefaultShm;
 use mythos_plugin_sdk::{
     async_trait, MythosPlugin, PluginContext, PluginError, PluginHealthReport, PluginMetadata,
     PluginType, ProtocolDriver, SampleValue, TagDeclaration, TagSample,
@@ -52,14 +50,14 @@ impl Segment {
             std::process::id(),
             SEGMENT_SEQ.fetch_add(1, Ordering::SeqCst)
         );
-        let _ = PosixShm::unlink(&name);
+        let _ = DefaultShm::unlink(&name);
         Self(name)
     }
 }
 
 impl Drop for Segment {
     fn drop(&mut self) {
-        let _ = PosixShm::unlink(&self.0);
+        let _ = DefaultShm::unlink(&self.0);
     }
 }
 
@@ -80,7 +78,7 @@ async fn rig_with(config: Value, registry: DriverRegistry, segment: Segment) -> 
     let config: IoConfig = serde_json::from_value(config).expect("io config must parse");
     config.validate().expect("io config must validate");
 
-    let writer = ShmWriterHandle::<PosixShm>::new(&segment.0, CAPACITY).unwrap();
+    let writer = ShmWriterHandle::<DefaultShm>::new(&segment.0, CAPACITY).unwrap();
     let status = IoStatusHandle::default();
     let runtime = IoRuntime::start(
         config,
@@ -92,8 +90,8 @@ async fn rig_with(config: Value, registry: DriverRegistry, segment: Segment) -> 
     )
     .await;
 
-    let reader = ShmReaderHandle::<PosixShm>::new(&segment.0, CAPACITY).unwrap();
-    let state = ApiState::<PosixShm>::new(storage, Arc::clone(&catalog), Some(reader))
+    let reader = ShmReaderHandle::<DefaultShm>::new(&segment.0, CAPACITY).unwrap();
+    let state = ApiState::<DefaultShm>::new(storage, Arc::clone(&catalog), Some(reader))
         .with_io_status(status.clone());
 
     Rig {
@@ -315,7 +313,7 @@ async fn data_left_in_the_segment_by_an_earlier_process_is_never_served() {
     // left it there. Every bank is filled, because which one a reader lands on is not ours to
     // choose.
     {
-        let mut stale = ShmWriterHandle::<PosixShm>::new(&segment.0, CAPACITY).unwrap();
+        let mut stale = ShmWriterHandle::<DefaultShm>::new(&segment.0, CAPACITY).unwrap();
         for _ in 0..3 {
             stale
                 .write_tag(
@@ -658,7 +656,7 @@ async fn shutting_down_leaves_no_tag_reading_as_good() {
     rig.runtime.shutdown().await;
 
     // Read the segment the way the next process to attach would.
-    let mut reader = ShmReaderHandle::<PosixShm>::new(&segment_name, CAPACITY).unwrap();
+    let mut reader = ShmReaderHandle::<DefaultShm>::new(&segment_name, CAPACITY).unwrap();
     reader.update();
     let slot = reader.read_tag(0).unwrap();
     assert_eq!(slot.quality, QualityCode::BAD_NOT_CONNECTED);
@@ -672,7 +670,7 @@ async fn a_server_with_no_io_runtime_says_so() {
     let storage_dir = tempfile::tempdir().unwrap();
     let storage = Arc::new(ControllerStorage::new(storage_dir.path()).unwrap());
     let catalog = Arc::new(RwLock::new(TagCatalog::new()));
-    let state = ApiState::<PosixShm>::new(storage, catalog, None);
+    let state = ApiState::<DefaultShm>::new(storage, catalog, None);
     let router = create_router(state);
 
     let status = get_json(&router, "/api/v1/io/status").await;

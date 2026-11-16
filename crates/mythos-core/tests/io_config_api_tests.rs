@@ -1,6 +1,6 @@
 //! Reading, checking, saving and applying a project's field I/O configuration over the API.
 //!
-//! Run against the real pieces: a simulated Modbus TCP device on a socket, a POSIX
+//! Run against the real pieces: a simulated Modbus TCP device on a socket, a real
 //! shared-memory segment, the I/O manager, and the router. The properties that matter:
 //!
 //! - saving the active project's configuration changes what the controller reads, with no
@@ -8,8 +8,6 @@
 //! - a configuration with a problem is refused whole, nothing is written, and what was running
 //!   keeps running;
 //! - a project that is not active can be configured without touching the running I/O.
-
-#![cfg(target_os = "linux")]
 
 use axum::{
     body::Body,
@@ -24,12 +22,12 @@ use mythos_core::{
     storage::{ControllerStorage, ProjectConfig},
     tag::TagCatalog,
 };
-use mythos_pal::PosixShm;
+use mythos_pal::DefaultShm;
 use mythos_shm::ShmReaderHandle;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tower::ServiceExt;
 
@@ -44,14 +42,14 @@ struct Rig {
     router: Router,
     storage: Arc<ControllerStorage>,
     catalog: Arc<RwLock<TagCatalog>>,
-    io: Arc<IoManager<PosixShm>>,
+    io: Arc<IoManager<DefaultShm>>,
     segment: String,
     _dir: tempfile::TempDir,
 }
 
 impl Drop for Rig {
     fn drop(&mut self) {
-        let _ = PosixShm::unlink(&self.segment);
+        let _ = DefaultShm::unlink(&self.segment);
     }
 }
 
@@ -71,10 +69,10 @@ async fn rig() -> Rig {
         std::process::id(),
         SEGMENT_SEQ.fetch_add(1, Ordering::SeqCst)
     );
-    let _ = PosixShm::unlink(&segment);
+    let _ = DefaultShm::unlink(&segment);
 
     let catalog = Arc::new(RwLock::new(TagCatalog::new()));
-    let io = IoManager::<PosixShm>::new(
+    let io = IoManager::<DefaultShm>::new(
         Arc::clone(&storage),
         Arc::clone(&catalog),
         segment.clone(),
@@ -83,9 +81,10 @@ async fn rig() -> Rig {
     );
     io.reload().await;
 
-    let reader = ShmReaderHandle::<PosixShm>::new(&segment, CAPACITY).unwrap();
-    let state = ApiState::<PosixShm>::new(Arc::clone(&storage), Arc::clone(&catalog), Some(reader))
-        .with_io_manager(Arc::clone(&io));
+    let reader = ShmReaderHandle::<DefaultShm>::new(&segment, CAPACITY).unwrap();
+    let state =
+        ApiState::<DefaultShm>::new(Arc::clone(&storage), Arc::clone(&catalog), Some(reader))
+            .with_io_manager(Arc::clone(&io));
 
     Rig {
         router: create_router(state),
@@ -642,6 +641,7 @@ type GapLog = (u64, Vec<(String, String)>);
 
 struct GapWatch {
     stop: Arc<std::sync::atomic::AtomicBool>,
+    reads: Arc<std::sync::atomic::AtomicU64>,
     handle: Option<tokio::task::JoinHandle<GapLog>>,
 }
 
@@ -653,6 +653,8 @@ impl Drop for GapWatch {
 }
 
 impl GapWatch {
+    /// Start watching, and return once the first read is done: the watch covers everything
+    /// after this call.
     async fn start(rig: &Rig, uris: &[&str]) -> Self {
         let catalog = rig.catalog.read().await;
         let slots: Vec<(String, usize)> = uris
@@ -667,31 +669,45 @@ impl GapWatch {
         drop(catalog);
         let segment = rig.segment.clone();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = Arc::clone(&stop);
+        let reads = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (flag, count) = (Arc::clone(&stop), Arc::clone(&reads));
         let handle = tokio::task::spawn_blocking(move || {
-            let mut reader = ShmReaderHandle::<PosixShm>::new(&segment, CAPACITY).unwrap();
-            let mut reads = 0u64;
+            let mut reader = ShmReaderHandle::<DefaultShm>::new(&segment, CAPACITY).unwrap();
             let mut gaps = Vec::new();
             while !flag.load(Ordering::SeqCst) {
                 reader.update();
                 for (uri, slot) in &slots {
                     let quality = reader.read_tag(*slot).unwrap().quality;
-                    reads += 1;
                     if quality != mythos_shm::QualityCode::GOOD {
                         gaps.push((uri.clone(), format!("{quality:?}")));
                     }
                 }
+                count.fetch_add(1, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(1));
             }
-            (reads, gaps)
+            (count.load(Ordering::SeqCst), gaps)
         });
-        Self {
+        let watch = Self {
             stop,
+            reads,
             handle: Some(handle),
+        };
+        watch.wait_for_reads(1).await;
+        watch
+    }
+
+    async fn wait_for_reads(&self, at_least: u64) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.reads.load(Ordering::SeqCst) < at_least {
+            assert!(Instant::now() < deadline, "the watch stopped reading");
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
 
+    /// Stop once the watch has read again after this call, so it covers everything before it.
     async fn finish(mut self) -> GapLog {
+        self.wait_for_reads(self.reads.load(Ordering::SeqCst) + 1)
+            .await;
         self.stop.store(true, Ordering::SeqCst);
         self.handle.take().unwrap().await.unwrap()
     }
@@ -739,7 +755,8 @@ async fn changing_one_connection_swaps_it_in_place_and_leaves_the_others_untouch
     let (reads, gaps) = watch.finish().await;
 
     // What a reader of the tag bus saw comes first: the report is the runtime's own account.
-    assert!(reads > 100, "the watch hardly ran: {reads} reads");
+    // The watch read from before the change was sent until after it was applied (see GapWatch).
+    assert!(reads >= 2, "the watch did not run: {reads} reads");
     assert!(
         gaps.is_empty(),
         "a tag stopped being GOOD during the change: {gaps:?}"
