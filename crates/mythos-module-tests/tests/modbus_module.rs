@@ -198,6 +198,9 @@ async fn the_module_is_discovered_by_its_manifest() {
     let registry = registry(dir.path()).await;
     assert_eq!(registry.names(), vec!["modbus".to_string()]);
     assert_eq!(registry.drivers()[0].source, "module");
+    // What GET /api/v1/modules writes. A fingerprint used to fail here, so the route panicked.
+    let listed = serde_json::to_value(registry.drivers()).expect("the module list serialises");
+    assert_eq!(listed[0]["module"]["manifest"]["provides"], "modbus");
 }
 
 #[tokio::test]
