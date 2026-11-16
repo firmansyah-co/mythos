@@ -29,6 +29,7 @@ intent and may describe things that do not exist.
 | Modbus TCP driver | `plugins/drivers/driver-modbus` (module `mythos-module-modbus`) | Reads holding and input registers as `u16`, `i16`, `u32`, `i32` or `f32`, with scaling and selectable word order. Exercised end to end against a simulated device, not yet against hardware. |
 | MCP endpoint | `crates/mythos-core/src/mcp.rs` | `POST /mcp`, the Model Context Protocol over Streamable HTTP. Every API route is a tool (35), or is listed with the reason it is not (the telemetry stream, the collaboration WebSocket, the 501 deploy route, static files); a test reads the router and fails on a route that is neither. A tool sends its route's own request through the same router. Checked with the official MCP TypeScript SDK client. |
 | Platforms | `crates/mythos-pal`, CI | Linux, macOS and Windows. CI builds every Rust crate and runs the whole Rust test suite on each, the module and tag bus tests included. The tag bus is POSIX shared memory on Linux and macOS and a paging-file mapping on Windows. Real-time thread priority and core pinning exist on Linux and Windows; on macOS they report that they are not implemented. |
+| Accounts | `crates/mythos-core/src/auth`, Settings in the workbench | Every route requires an account with enough of a role: viewer (reads), operator (reserved for writing setpoints, which do not exist yet), engineer (changes projects), admin (manages accounts). The workbench signs in with a session cookie; programs and MCP agents use personal access tokens. A new controller prints a one-time setup code in its log for creating the first administrator. Passwords are Argon2id hashes; sessions live in memory, so a restart signs everyone out. |
 | Device catalog | `catalog/`, `crates/mythos-core/src/catalog` | Manifest format and parser, with two reference device packages. |
 | Desktop shell | `src-tauri` | A Tauri window that embeds the same API server. |
 | Collaboration | `crates/mythos-core/src/collab` | A Yjs (`yrs`) WebSocket room. Not verified end to end. |
@@ -45,8 +46,9 @@ intent and may describe things that do not exist.
   answers `501` and compiles nothing.
 - **Writes to field devices** from the API or the HMI.
 - **Alarms, historian, recipes, device discovery, disaster recovery.**
-- **Authentication and access control.** The API has none and the server listens on every
-  interface. Do not expose it to a network you do not trust.
+- **Encrypted transport.** The server speaks plain HTTP and listens on every interface: a
+  password or token crosses the network readable. Put it behind TLS (a reverse proxy) before
+  exposing it to a network you do not trust.
 - **A published release.** Nothing has been published yet, so `mythos update` has nothing to
   install and says so. The one-line installers (`scripts/install.sh`, `scripts/install.ps1`)
   still name download hosts that do not exist.
@@ -200,15 +202,30 @@ against a damaged download, not against a compromised release: bundles are not s
 
 ## Connecting an AI agent
 
-The server answers the Model Context Protocol at `/mcp`. In Claude Code:
+The server answers the Model Context Protocol at `/mcp`. Create an access token in the
+workbench (Settings → Account → Access tokens), then in Claude Code:
 
 ```bash
-claude mcp add --transport http mythos http://localhost:8080/mcp
+claude mcp add --transport http mythos http://localhost:8080/mcp \
+  --header "Authorization: Bearer mythos_pat_..."
 ```
 
 The agent then has a tool for every route: projects, field I/O configuration and status, tag
-values with their quality, modules, HMI screens, data types and faceplates. Like the HTTP API,
-it has no authentication; it refuses requests whose `Origin` is a web page on another host.
+values with their quality, modules, HMI screens, data types, faceplates, and accounts. It acts
+with the token owner's role: a tool the role does not allow answers 403. It refuses requests
+whose `Origin` is a web page on another host.
+
+## First start
+
+A controller starts with no account. Its log says:
+
+```text
+No account exists yet. Open the workbench and create the first administrator with setup code …
+```
+
+Open the workbench, enter that code, and choose the administrator's username and password.
+Further accounts are made in Settings → Users. `MYTHOS_SETUP_CODE` sets the code instead of a
+random one, for automated installs.
 
 ## Verifying a change
 

@@ -22,6 +22,7 @@ import { useLog } from '../data/log';
 import type { TagSample } from '../data/quality';
 import { useRuntime } from '../data/runtime';
 import { useScreens } from '../data/screens';
+import { useSession } from '../data/session';
 import { goOffline, useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
 
@@ -70,8 +71,11 @@ export function resetStores(): void {
   useScreens.getState().reset();
   useRuntime.getState().reset();
   useIoConfig.setState({ drivers: [], driverInfo: [], schemas: {} });
+  useSession.setState({ phase: 'loading', user: null, error: null, notice: null });
   useWorkbench.setState({
     view: 'portal',
+    settingsSection: 'account',
+    settingsReturn: 'portal',
     runtimeScreenId: null,
     project: null,
     editors: [],

@@ -124,7 +124,20 @@ async fn assemble<S: PlatformShm + 'static>(
     };
     io.reload().await;
 
-    let state = ApiState::new(storage, tag_catalog, shm_reader).with_io_manager(Arc::clone(&io));
+    // Accounts are not optional for a server: every route is checked against its policy.
+    let accounts = crate::auth::Auth::open(&storage.system_dir())
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+    if let Some(code) = accounts.setup_code() {
+        warn!(
+            "No account exists yet. Open the workbench and create the first administrator with \
+             setup code {code} (set {} to choose it).",
+            crate::auth::SETUP_CODE_ENV
+        );
+    }
+
+    let state = ApiState::new(storage, tag_catalog, shm_reader)
+        .with_io_manager(Arc::clone(&io))
+        .with_auth(Arc::new(accounts));
 
     Ok(Server { state, io })
 }

@@ -106,6 +106,12 @@ impl ControllerStorage {
         &self.root_dir
     }
 
+    /// Where the controller keeps what belongs to no project, such as its accounts
+    /// (`<root>/.mythos-system`). Its name is not a valid project id, so it is never one.
+    pub fn system_dir(&self) -> PathBuf {
+        self.root_dir.join(".mythos-system")
+    }
+
     /// Path to the marker naming the active project (`<root>/active`).
     pub fn active_marker_path(&self) -> PathBuf {
         self.root_dir.join(ACTIVE_LINK_NAME)
@@ -152,9 +158,13 @@ impl ControllerStorage {
         for entry in fs::read_dir(&self.root_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_dir() && entry.file_name() != ACTIVE_LINK_NAME {
+            // Only directories named like a project: the marker and the system directory
+            // (`.mythos-system`) live here too and are not projects.
+            if path.is_dir() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    list.push(name.to_string());
+                    if is_valid_project_id(name) {
+                        list.push(name.to_string());
+                    }
                 }
             }
         }

@@ -53,6 +53,7 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
   const closeEditor = useWorkbench((state) => state.closeEditor);
   const closeProject = useWorkbench((state) => state.closeProject);
   const showPortal = useWorkbench((state) => state.showPortal);
+  const showSettings = useWorkbench((state) => state.showSettings);
   const startRuntime = useWorkbench((state) => state.startRuntime);
   const stream = useTelemetry((state) => state.stream);
   const wantOnline = useTelemetry((state) => state.wantOnline);
@@ -88,6 +89,7 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
       items: [
         { label: 'Open or create a project…', run: showPortal },
         { label: 'Close project', run: close },
+        { label: 'Settings…', run: () => showSettings() },
       ],
     },
     {

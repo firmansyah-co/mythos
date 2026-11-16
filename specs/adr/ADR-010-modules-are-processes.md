@@ -88,8 +88,8 @@ module adds its form without a workbench change.
   in-process type remains, for tests and for embedding.
 - A server installation is the server executable plus the module executables beside it. The
   desktop shell must bundle them as sidecars.
-- The API has no authentication (see the root README). MCP access is as open as HTTP access;
-  neither should be exposed to an untrusted network.
+- MCP access is the HTTP API's: an access token acts with its owner's role (see the root
+  README, Accounts).
 
 ## 4. Status of implementation
 

@@ -32,7 +32,11 @@ export function editorId(kind: EditorKind, target?: string): string {
 }
 
 export interface WorkbenchState {
-  view: 'portal' | 'project' | 'runtime';
+  view: 'portal' | 'project' | 'runtime' | 'settings';
+  /** The settings section shown, by its id in the settings registry. */
+  settingsSection: string;
+  /** Where closing the settings returns to. */
+  settingsReturn: 'portal' | 'project';
   /** The screen the operator runtime is showing. `null` shows the project's first screen. */
   runtimeScreenId: string | null;
   project: ProjectConfig | null;
@@ -48,6 +52,8 @@ export interface WorkbenchState {
   showProject: () => void;
   startRuntime: (screenId?: string) => void;
   exitRuntime: () => void;
+  showSettings: (section?: string) => void;
+  closeSettings: () => void;
   openEditor: (kind: EditorKind, target?: string) => void;
   closeEditor: (id: string) => void;
   focusEditor: (id: string) => void;
@@ -58,6 +64,8 @@ export interface WorkbenchState {
 
 export const useWorkbench = create<WorkbenchState>((set) => ({
   view: 'portal',
+  settingsSection: 'account',
+  settingsReturn: 'portal',
   runtimeScreenId: null,
   project: null,
   editors: [],
@@ -83,6 +91,23 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
   startRuntime: (screenId) =>
     set((state) => (state.project ? { view: 'runtime', runtimeScreenId: screenId ?? null } : {})),
   exitRuntime: () => set((state) => (state.view === 'runtime' ? { view: 'project' } : {})),
+  showSettings: (section) =>
+    set((state) => ({
+      view: 'settings',
+      settingsSection: section ?? state.settingsSection,
+      settingsReturn:
+        state.view === 'settings'
+          ? state.settingsReturn
+          : state.view === 'portal' || !state.project
+          ? 'portal'
+          : 'project',
+    })),
+  closeSettings: () =>
+    set((state) =>
+      state.view === 'settings'
+        ? { view: state.settingsReturn === 'project' && state.project ? 'project' : 'portal' }
+        : {}
+    ),
 
   openEditor: (kind, target) =>
     set((state) => {

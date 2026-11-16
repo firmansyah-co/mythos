@@ -168,3 +168,85 @@
   border-left: 3px solid var(--c-bad);
   background: var(--c-bad-soft);
 }
+
+/* Settings ---------------------------------------------------------------- */
+
+.settings__block {
+  margin-top: 18px;
+}
+
+.settings__block h3 {
+  margin: 0 0 12px;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.settings__facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0 0 8px;
+}
+
+.settings__facts dt {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.settings__facts dd {
+  margin: 0;
+}
+
+.settings__fact {
+  display: contents;
+}
+
+.settings__inline {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.settings__inline input {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--c-chrome-border);
+  border-radius: var(--radius);
+}
+
+.settings__secret {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.settings__secret code {
+  padding: 3px 6px;
+  background: var(--c-surface-sunken);
+  word-break: break-all;
+}
+
+.settings__users {
+  margin-top: 16px;
+  background: var(--c-surface);
+}
+
+.settings__row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.portal__user {
+  padding: 12px 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: var(--fs-sm);
+  opacity: 0.85;
+}

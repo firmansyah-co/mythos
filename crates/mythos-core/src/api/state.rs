@@ -40,6 +40,10 @@ pub struct ApiState<S: PlatformShm + 'static = mythos_pal::DefaultShm> {
     /// The manager of the field I/O runtime, when this server has one. Without it an I/O
     /// configuration can be read and saved but not applied.
     pub io_manager: Option<Arc<IoManager<S>>>,
+    /// The controller's accounts. With them every route requires what `crate::auth::policy`
+    /// says; without them (a state built for a test, or for embedding) nothing is checked. The
+    /// server always has them: `crate::server` attaches them.
+    pub auth: Option<Arc<crate::auth::Auth>>,
 }
 
 impl<S: PlatformShm + 'static> Clone for ApiState<S> {
@@ -53,6 +57,7 @@ impl<S: PlatformShm + 'static> Clone for ApiState<S> {
             hmi_events: self.hmi_events.clone(),
             io_status: self.io_status.clone(),
             io_manager: self.io_manager.clone(),
+            auth: self.auth.clone(),
         }
     }
 }
@@ -79,6 +84,7 @@ impl<S: PlatformShm + 'static> ApiState<S> {
                 "no field I/O runtime is attached to this server",
             ),
             io_manager: None,
+            auth: None,
         }
     }
 
@@ -105,6 +111,12 @@ impl<S: PlatformShm + 'static> ApiState<S> {
     }
 
     /// Configure custom static asset directory for Web HMI serving.
+    /// Require accounts: every route is checked against `crate::auth::policy`.
+    pub fn with_auth(mut self, auth: Arc<crate::auth::Auth>) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
     pub fn with_static_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.static_dir = Some(path.into());
         self

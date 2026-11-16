@@ -1,0 +1,136 @@
+//! Which account may call which route.
+//!
+//! Every route of the API is listed here by its method and its pattern as the router declares
+//! it. A route that is not listed is for administrators only: a new route is closed until
+//! someone decides who may use it, and `every_route_has_a_policy` fails until they do.
+
+use super::Role;
+
+/// What a route requires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// Anyone, signed in or not: signing in itself, and the health check.
+    Public,
+    /// Any signed-in account, whatever its role: its own account and session.
+    SignedIn,
+    /// An account with at least this role.
+    Role(Role),
+}
+
+const V: Access = Access::Role(Role::Viewer);
+const E: Access = Access::Role(Role::Engineer);
+const A: Access = Access::Role(Role::Admin);
+
+/// `(method, route pattern, access)` for every route.
+pub const POLICY: &[(&str, &str, Access)] = &[
+    ("GET", "/api/v1/health", Access::Public),
+    // Signing in
+    ("GET", "/api/v1/auth/status", Access::Public),
+    ("POST", "/api/v1/auth/setup", Access::Public),
+    ("POST", "/api/v1/auth/login", Access::Public),
+    ("POST", "/api/v1/auth/logout", Access::SignedIn),
+    ("GET", "/api/v1/auth/me", Access::SignedIn),
+    ("PUT", "/api/v1/auth/me/password", Access::SignedIn),
+    ("GET", "/api/v1/auth/me/tokens", Access::SignedIn),
+    ("POST", "/api/v1/auth/me/tokens", Access::SignedIn),
+    ("DELETE", "/api/v1/auth/me/tokens/:token", Access::SignedIn),
+    // Accounts
+    ("GET", "/api/v1/users", A),
+    ("POST", "/api/v1/users", A),
+    ("PUT", "/api/v1/users/:username", A),
+    ("DELETE", "/api/v1/users/:username", A),
+    // Reading the controller
+    ("GET", "/api/v1/tags", V),
+    ("GET", "/api/v1/tags/values", V),
+    ("GET", "/api/v1/tags/:uri", V),
+    ("GET", "/api/v1/projects", V),
+    ("GET", "/api/v1/projects/active", V),
+    ("GET", "/api/v1/projects/:id", V),
+    ("GET", "/api/v1/projects/:id/hmi/screens", V),
+    ("GET", "/api/v1/projects/:id/datatypes", V),
+    ("GET", "/api/v1/projects/:id/datatypes/:dut", V),
+    ("GET", "/api/v1/projects/:id/faceplates/types", V),
+    ("GET", "/api/v1/projects/:id/faceplates/types/:type", V),
+    ("GET", "/api/v1/projects/:id/faceplates/instances", V),
+    ("GET", "/api/v1/projects/:id/io", V),
+    ("GET", "/api/v1/telemetry/stream", V),
+    ("GET", "/api/v1/io/status", V),
+    ("GET", "/api/v1/io/drivers", V),
+    ("GET", "/api/v1/modules", V),
+    // Engineering
+    ("POST", "/api/v1/projects", E),
+    ("POST", "/api/v1/projects/:id/activate", E),
+    ("POST", "/api/v1/projects/:id/hmi/screens", E),
+    ("DELETE", "/api/v1/projects/:id/hmi/screens/:screen", E),
+    (
+        "POST",
+        "/api/v1/projects/:id/hmi/screens/:screen/subscreens",
+        E,
+    ),
+    ("PUT", "/api/v1/projects/:id/hmi/screens/:screen/draft", E),
+    ("POST", "/api/v1/projects/:id/hmi/commit", E),
+    ("POST", "/api/v1/projects/:id/datatypes", E),
+    ("DELETE", "/api/v1/projects/:id/datatypes/:dut", E),
+    ("PUT", "/api/v1/projects/:id/datatypes/:dut/draft", E),
+    ("POST", "/api/v1/projects/:id/datatypes/:dut/release", E),
+    ("POST", "/api/v1/projects/:id/faceplates/types", E),
+    (
+        "PUT",
+        "/api/v1/projects/:id/faceplates/types/:type/draft",
+        E,
+    ),
+    (
+        "POST",
+        "/api/v1/projects/:id/faceplates/types/:type/release",
+        E,
+    ),
+    ("POST", "/api/v1/projects/:id/faceplates/instances", E),
+    (
+        "PUT",
+        "/api/v1/projects/:id/faceplates/instances/:instance",
+        E,
+    ),
+    ("PUT", "/api/v1/projects/:id/io", E),
+    ("POST", "/api/v1/modules/rescan", E),
+    ("POST", "/api/v1/control/deploy", E),
+    // Editing together: the collaboration room changes what it edits.
+    ("GET", "/api/v1/collab/ws/:room_id", E),
+];
+
+/// What `method pattern` requires. Unlisted is administrators only.
+pub fn required_access(method: &str, pattern: &str) -> Access {
+    POLICY
+        .iter()
+        .find(|(m, p, _)| m.eq_ignore_ascii_case(method) && *p == pattern)
+        .map(|(_, _, access)| *access)
+        .unwrap_or(A)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unlisted_route_is_for_administrators_only() {
+        assert_eq!(required_access("POST", "/api/v1/something/new"), A);
+        assert_eq!(required_access("GET", "/api/v1/something/new"), A);
+    }
+
+    #[test]
+    fn a_route_is_listed_once() {
+        let mut seen: Vec<(&str, &str)> = POLICY.iter().map(|(m, p, _)| (*m, *p)).collect();
+        seen.sort();
+        let before = seen.len();
+        seen.dedup();
+        assert_eq!(seen.len(), before);
+    }
+
+    #[test]
+    fn nothing_that_changes_the_controller_is_open_to_viewers() {
+        for (method, path, access) in POLICY {
+            if *method != "GET" && path.starts_with("/api/v1/projects") {
+                assert_eq!(*access, E, "{method} {path}");
+            }
+        }
+    }
+}
