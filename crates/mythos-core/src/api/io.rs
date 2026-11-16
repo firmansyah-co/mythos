@@ -63,13 +63,28 @@ pub async fn modules<S: PlatformShm + 'static>(State(state): State<ApiState<S>>)
         Some(host) => json!(host.statuses().await),
         None => json!([]),
     };
+    let modules = super::modules::rows(&state);
+    let install_dir = state
+        .modules
+        .as_ref()
+        .map(|m| m.install_dir().display().to_string());
     match &state.io_manager {
         Some(io) => Json(json!({
+            "modules": modules,
             "drivers": io.drivers(),
             "services": services,
             "problems": io.module_problems(),
+            "install_dir": install_dir,
+            "target": crate::modules::TARGET,
         })),
-        None => Json(json!({ "drivers": [], "services": services, "problems": [] })),
+        None => Json(json!({
+            "modules": modules,
+            "drivers": [],
+            "services": services,
+            "problems": [],
+            "install_dir": install_dir,
+            "target": crate::modules::TARGET,
+        })),
     }
 }
 

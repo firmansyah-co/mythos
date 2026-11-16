@@ -27,6 +27,29 @@ fn error(status: StatusCode, message: String) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
+/// Why no module answers for `module`: it is switched off, or there is none.
+fn not_served<S: PlatformShm + 'static>(state: &ApiState<S>, module: &str) -> Response {
+    let disabled = state.io_manager.as_ref().and_then(|io| {
+        io.disabled_modules().into_iter().find(|m| {
+            m.manifest.kind == mythos_module::protocol::ModuleKind::Service
+                && m.manifest.provides == module
+        })
+    });
+    match disabled {
+        Some(m) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "module '{}' serves '{module}' but is disabled in Settings → Modules",
+                m.manifest.id
+            ),
+        ),
+        None => error(
+            StatusCode::NOT_FOUND,
+            format!("no module serves '{module}'"),
+        ),
+    }
+}
+
 // A handler returns the `Response` at once; boxing it only to unbox it on the next line gains nothing.
 #[allow(clippy::result_large_err)]
 fn body_of(bytes: &Bytes) -> Result<Option<serde_json::Value>, Response> {
@@ -51,10 +74,7 @@ pub async fn project_route<S: PlatformShm + 'static>(
     bytes: Bytes,
 ) -> Response {
     let Some(service) = state.services.as_ref().and_then(|s| s.get(&module)) else {
-        return error(
-            StatusCode::NOT_FOUND,
-            format!("no module serves '{module}'"),
-        );
+        return not_served(&state, &module);
     };
     let dir = match state.storage.project_dir(&id) {
         Ok(dir) if dir.is_dir() => dir,
@@ -92,10 +112,7 @@ pub async fn global_route<S: PlatformShm + 'static>(
     bytes: Bytes,
 ) -> Response {
     let Some(service) = state.services.as_ref().and_then(|s| s.get(&module)) else {
-        return error(
-            StatusCode::NOT_FOUND,
-            format!("no module serves '{module}'"),
-        );
+        return not_served(&state, &module);
     };
     let body = match body_of(&bytes) {
         Ok(b) => b,

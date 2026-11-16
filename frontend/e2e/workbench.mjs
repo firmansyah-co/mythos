@@ -287,6 +287,10 @@ try {
   check('a release feed that cannot be read is said so, not shown as an empty list',
     (await evaluate(`__t.text('[data-testid="feed-error"]')`)).join(' ').includes('could not be read'));
   await shot('e2e_9_settings_updates');
+  await evaluate(`__t.click('Modules')`); await sleep(1200);
+  const modules = await evaluate(`__t.text('[data-testid="module-row"]')`);
+  check('Settings → Modules lists the Modbus driver module the server runs', modules.some((m) => m.includes('org.mythos.driver.modbus') && m.includes('built in')), modules.join(' | '));
+  await shot('e2e_10_settings_modules');
   await evaluate(`__t.click('Sign out')`); await sleep(600);
   check('signing out returns to the sign-in page', await evaluate(`__t.has('[data-testid="sign-in"]')`));
   ws.close();

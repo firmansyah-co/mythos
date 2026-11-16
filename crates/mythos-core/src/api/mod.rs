@@ -8,6 +8,7 @@ pub mod auth;
 pub mod datatypes;
 pub mod faceplates;
 mod io;
+pub mod modules;
 mod screens;
 mod services;
 pub mod state;
@@ -202,6 +203,25 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
         .route("/api/v1/io/drivers", get(io::drivers::<S>))
         .route("/api/v1/modules", get(io::modules::<S>))
         .route("/api/v1/modules/rescan", post(io::rescan_modules::<S>))
+        // Settings → Modules (administrators)
+        .route(
+            "/api/v1/modules/install",
+            post(modules::install::<S>)
+                // A package carries an executable per platform: allow far more than the default.
+                .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024)),
+        )
+        .route(
+            "/api/v1/modules/install-url",
+            post(modules::install_url::<S>),
+        )
+        .route(
+            "/api/v1/modules/:module/enabled",
+            put(modules::set_enabled::<S>),
+        )
+        .route(
+            "/api/v1/modules/:module",
+            axum::routing::delete(modules::remove::<S>),
+        )
         // A project's field I/O configuration
         .route(
             "/api/v1/projects/:id/io",

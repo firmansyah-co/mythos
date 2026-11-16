@@ -5,10 +5,11 @@
 // entry here and a component.
 
 import type { ComponentType } from 'react';
-import { RefreshCcw, UserRound, Users } from 'lucide-react';
+import { Puzzle, RefreshCcw, UserRound, Users } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Role } from '../../api/client';
 import { AccountSettings } from './AccountSettings';
+import { ModulesSettings } from './ModulesSettings';
 import { UpdatesSettings } from './UpdatesSettings';
 import { UsersSettings } from './UsersSettings';
 
@@ -26,4 +27,6 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   { id: 'users', label: 'Users', icon: Users, minRole: 'admin', component: UsersSettings },
   // Anyone may see the versions; only an administrator changes them (the section says so).
   { id: 'updates', label: 'Updates', icon: RefreshCcw, minRole: null, component: UpdatesSettings },
+  // Anyone may see the modules; only an administrator changes them.
+  { id: 'modules', label: 'Modules', icon: Puzzle, minRole: null, component: ModulesSettings },
 ];

@@ -71,10 +71,41 @@ export interface DriverInfo {
   module: { path: string; manifest: ModuleManifest } | null;
 }
 
+/** One module the controller found, used or switched off (Settings → Modules). */
+export interface ModuleRow {
+  id: string;
+  name: string;
+  version: string;
+  kind: 'driver' | 'service';
+  provides: string;
+  description: string;
+  path: string;
+  enabled: boolean;
+  /** Installed from a package, so it can be removed; otherwise it belongs to the installation. */
+  removable: boolean;
+}
+
+/** A running service module (ADR-011). */
+export interface ServiceStatus {
+  provides: string;
+  id: string;
+  version: string;
+  path: string;
+  pid: number | null;
+  starts: number;
+  last_error: string | null;
+}
+
 export interface ModuleList {
+  /** Absent from servers older than Settings → Modules. */
+  modules?: ModuleRow[];
   drivers: DriverInfo[];
+  services?: ServiceStatus[];
   /** Executables named like modules that could not be used, and why. */
   problems: { path: string; message: string }[];
+  install_dir?: string | null;
+  /** The platform the server runs on, which picks a package's executable. */
+  target?: string;
 }
 
 export interface IoConfig {
@@ -293,6 +324,26 @@ export const api = {
   getIoStatus: () => request<IoStatus>('/api/v1/io/status'),
   listDrivers: () => request<string[]>('/api/v1/io/drivers'),
   listModules: () => request<ModuleList>('/api/v1/modules'),
+  rescanModules: () => request<unknown>('/api/v1/modules/rescan', { method: 'POST' }),
+  setModuleEnabled: (id: string, enabled: boolean) =>
+    request<{ modules: ModuleRow[] }>(
+      `/api/v1/modules/${encodeURIComponent(id)}/enabled`,
+      json('PUT', { enabled })
+    ),
+  /** Install a module package: the file itself is the request body. */
+  installModule: (pkg: Blob) =>
+    request<{ installed: string; version: string; enabled: boolean }>('/api/v1/modules/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: pkg,
+    }),
+  installModuleFromUrl: (url: string, sha256: string) =>
+    request<{ installed: string; version: string; enabled: boolean }>(
+      '/api/v1/modules/install-url',
+      json('POST', { url, sha256 })
+    ),
+  removeModule: (id: string) =>
+    request<{ removed: string }>(`/api/v1/modules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   listScreens: (projectId: string, view: 'draft' | 'active') =>
     request<StoredScreen[]>(
       `/api/v1/projects/${encodeURIComponent(projectId)}/hmi/screens?view=${view}`

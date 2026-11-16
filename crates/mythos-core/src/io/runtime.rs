@@ -441,6 +441,22 @@ impl IoRuntime {
         let mut not_started: Vec<(ConnectionConfig, String)> = Vec::new();
 
         for connection in &config.connections {
+            // A driver switched off in Settings → Modules stops its connections and says why.
+            // (A module file that is merely missing for a moment, while it is being replaced,
+            // leaves the running connection alone: see `prepare` failing below.)
+            if let Some(module) = registry.disabled_driver(&connection.driver) {
+                if self.connections.contains_key(&connection.id) {
+                    self.remove(&connection.id).await;
+                }
+                not_started.push((
+                    connection.clone(),
+                    format!(
+                        "driver '{}' is provided by module '{}', which is disabled in Settings → Modules",
+                        connection.driver, module.manifest.id
+                    ),
+                ));
+                continue;
+            }
             let identity = registry.identity(&connection.driver);
             if let Some(running) = self.connections.get(&connection.id) {
                 let unchanged =

@@ -162,6 +162,13 @@ pub fn checksum_in(listing: &str, name: &str) -> Option<String> {
     })
 }
 
+/// The whole body at `url`, for a file small enough to hold in memory (a module package).
+pub fn download_bytes(url: &str) -> Result<Vec<u8>, InstallError> {
+    let mut out = Vec::new();
+    download(url, &mut out)?;
+    Ok(out)
+}
+
 fn download(url: &str, out: &mut dyn Write) -> Result<(), InstallError> {
     let failed = |reason: String| InstallError::Download {
         url: url.to_string(),

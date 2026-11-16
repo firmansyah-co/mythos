@@ -37,6 +37,8 @@ pub struct DriverRegistry {
     drivers: BTreeMap<String, DriverSource>,
     /// Service modules found beside the drivers (ADR-011); `crate::services` runs them.
     services: Vec<Arc<ModuleBinary>>,
+    /// Modules found but switched off in Settings → Modules (`crate::modules`).
+    disabled: Vec<Arc<ModuleBinary>>,
     problems: Vec<ModuleProblem>,
 }
 
@@ -55,6 +57,7 @@ impl DriverRegistry {
         let mut registry = Self {
             drivers: BTreeMap::new(),
             services: Vec::new(),
+            disabled: Vec::new(),
             problems: discovery.problems,
         };
         for module in discovery.modules {
@@ -69,6 +72,55 @@ impl DriverRegistry {
             }
         }
         registry
+    }
+
+    /// Set aside the modules whose manifest id is in `disabled`: they are listed, not used.
+    pub fn apply_disabled(&mut self, disabled: &std::collections::BTreeSet<String>) {
+        let mut off = Vec::new();
+        self.drivers.retain(|_, source| match source {
+            DriverSource::Module(m) if disabled.contains(&m.manifest.id) => {
+                off.push(Arc::clone(m));
+                false
+            }
+            _ => true,
+        });
+        self.services.retain(|m| {
+            if disabled.contains(&m.manifest.id) {
+                off.push(Arc::clone(m));
+                false
+            } else {
+                true
+            }
+        });
+        self.disabled.extend(off);
+    }
+
+    /// The modules found but switched off.
+    pub fn disabled_modules(&self) -> &[Arc<ModuleBinary>] {
+        &self.disabled
+    }
+
+    /// The disabled module that would provide driver `name`, if that is why it is missing.
+    pub fn disabled_driver(&self, name: &str) -> Option<&ModuleBinary> {
+        self.disabled
+            .iter()
+            .find(|m| m.manifest.kind == ModuleKind::Driver && m.manifest.provides == name)
+            .map(|m| m.as_ref())
+    }
+
+    /// Every module found, used or not: its manifest and where it is.
+    pub fn all_modules(&self) -> Vec<Arc<ModuleBinary>> {
+        let mut all: Vec<Arc<ModuleBinary>> = self
+            .drivers
+            .values()
+            .filter_map(|s| match s {
+                DriverSource::Module(m) => Some(Arc::clone(m)),
+                DriverSource::InProcess(_) => None,
+            })
+            .collect();
+        all.extend(self.services.iter().cloned());
+        all.extend(self.disabled.iter().cloned());
+        all
     }
 
     /// The service modules found.

@@ -52,6 +52,8 @@ pub struct ApiState<S: PlatformShm + 'static = mythos_pal::DefaultShm> {
     pub updates: Option<Arc<crate::updates::Updates>>,
     /// The service modules (ADR-011) whose routes this server forwards.
     pub services: Option<Arc<crate::services::ServiceHost>>,
+    /// Which modules are switched off, and where packages are installed.
+    pub modules: Option<Arc<crate::modules::ModuleSettings>>,
 }
 
 impl<S: PlatformShm + 'static> Clone for ApiState<S> {
@@ -68,6 +70,7 @@ impl<S: PlatformShm + 'static> Clone for ApiState<S> {
             auth: self.auth.clone(),
             updates: self.updates.clone(),
             services: self.services.clone(),
+            modules: self.modules.clone(),
         }
     }
 }
@@ -97,6 +100,7 @@ impl<S: PlatformShm + 'static> ApiState<S> {
             auth: None,
             updates: None,
             services: None,
+            modules: None,
         }
     }
 
@@ -126,6 +130,11 @@ impl<S: PlatformShm + 'static> ApiState<S> {
     /// Require accounts: every route is checked against `crate::auth::policy`.
     pub fn with_auth(mut self, auth: Arc<crate::auth::Auth>) -> Self {
         self.auth = Some(auth);
+        self
+    }
+
+    pub fn with_modules(mut self, modules: Arc<crate::modules::ModuleSettings>) -> Self {
+        self.modules = Some(modules);
         self
     }
 

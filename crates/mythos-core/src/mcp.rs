@@ -137,6 +137,11 @@ pub const NOT_TOOLS: &[NotATool] = &[
         reason: MODULE_ROUTES,
     },
     NotATool {
+        method: "POST",
+        path: "/api/v1/modules/install",
+        reason: "takes the package file itself as the request body; install_module_from_url installs one from where it is published",
+    },
+    NotATool {
         method: "GET",
         path: "/",
         reason: "the workbench's web page",
@@ -158,6 +163,7 @@ const PARAMS: &[(&str, &str)] = &[
     ("uri", "uri"),
     ("token", "token_id"),
     ("username", "username"),
+    ("module", "module_id"),
 ];
 
 fn argument_name(param: &str) -> &str {
@@ -249,6 +255,25 @@ fn install_body() -> Value {
         "properties": {
             "version": { "type": "string",
                          "description": "The version to install; absent installs the pinned version, or the newest on the channel" }
+        }
+    })
+}
+
+fn module_enabled_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["enabled"],
+        "properties": { "enabled": { "type": "boolean" } }
+    })
+}
+
+fn install_url_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["url", "sha256"],
+        "properties": {
+            "url": { "type": "string", "description": "Where the package (a zip) is published" },
+            "sha256": { "type": "string", "description": "The SHA-256 the package must have" }
         }
     })
 }
@@ -538,6 +563,39 @@ pub const TOOLS: &[Tool] = &[
         body: None,
         read_only: false,
         destructive: false,
+    },
+    Tool {
+        name: "set_module_enabled",
+        title: "Switch a module on or off",
+        description: "Disable or enable a module by its manifest id. A disabled driver's connections stop with CONFIG_ERROR naming the reason; a disabled service answers nothing. Administrators only.",
+        method: "PUT",
+        path: "/api/v1/modules/:module/enabled",
+        query: &[],
+        body: Some(module_enabled_body),
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "install_module_from_url",
+        title: "Install a module package",
+        description: "Download a module package from a URL, check that its SHA-256 is the one given, check every file against its checksums and that its executable for this platform runs and is the module its manifest says, then install it and start using it. Administrators only.",
+        method: "POST",
+        path: "/api/v1/modules/install-url",
+        query: &[],
+        body: Some(install_url_body),
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "remove_module",
+        title: "Remove an installed module",
+        description: "Stop a module installed from a package and remove its executable and UI. A module that is part of the MythOS installation cannot be removed, only disabled. Administrators only.",
+        method: "DELETE",
+        path: "/api/v1/modules/:module",
+        query: &[],
+        body: None,
+        read_only: false,
+        destructive: true,
     },
     Tool {
         name: "list_users",

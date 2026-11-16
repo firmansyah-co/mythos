@@ -12,9 +12,9 @@ pub mod datatype;
 pub mod faceplate;
 pub mod io;
 pub mod mcp;
+pub mod modules;
 pub mod namespace;
 pub mod pal;
-pub mod plugin;
 pub mod sdui;
 pub mod server;
 pub mod services;
@@ -32,7 +32,6 @@ pub use catalog::{
 pub use collab::{handle_collab_ws, CollabRoom, RoomManager};
 pub use namespace::{TagDomain, TagNamespaceError, TagUri};
 pub use pal::*;
-pub use plugin::{PluginPackageManifest, PluginPackager, VerifiedPluginPackage};
 pub use sdui::*;
 pub use storage::{
     default_projects_dir, ControllerStorage, ProjectConfig, ProjectWal, ProjectWalEntry,
