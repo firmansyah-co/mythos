@@ -92,14 +92,46 @@ pub fn valid_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn linux_unit_path(spec: &ServiceSpec) -> PathBuf {
-    if spec.user {
-        spec.home
-            .join(".config/systemd/user")
-            .join(format!("{}.service", spec.name))
+/// The separator of `os`'s paths. A plan is made for one platform on any platform (its tests run
+/// everywhere), so it never joins paths with the separator of the machine it runs on.
+fn separator(os: Os) -> char {
+    if os == Os::Windows {
+        '\\'
     } else {
-        PathBuf::from("/etc/systemd/system").join(format!("{}.service", spec.name))
+        '/'
     }
+}
+
+/// `dir` and then `name`, as `os` writes a path.
+fn join(os: Os, dir: &Path, name: &str) -> PathBuf {
+    let dir = dir.display().to_string();
+    let sep = separator(os);
+    let dir = dir.trim_end_matches(['/', '\\']);
+    PathBuf::from(format!("{dir}{sep}{name}"))
+}
+
+/// The directory `path` is in, as `os` reads a path; `path` itself when it has none.
+fn parent(os: Os, path: &Path) -> PathBuf {
+    let text = path.display().to_string();
+    let cut = if os == Os::Windows {
+        text.rfind(['/', '\\'])
+    } else {
+        text.rfind('/')
+    };
+    match cut {
+        Some(0) => PathBuf::from(&text[..1]),
+        Some(at) => PathBuf::from(&text[..at]),
+        None => path.to_path_buf(),
+    }
+}
+
+fn linux_unit_path(spec: &ServiceSpec) -> PathBuf {
+    let dir = if spec.user {
+        join(Os::Linux, &spec.home, ".config/systemd/user")
+    } else {
+        PathBuf::from("/etc/systemd/system")
+    };
+    join(Os::Linux, &dir, &format!("{}.service", spec.name))
 }
 
 fn macos_label(spec_name: &str) -> String {
@@ -108,11 +140,15 @@ fn macos_label(spec_name: &str) -> String {
 
 fn macos_plist_path(spec: &ServiceSpec) -> PathBuf {
     let dir = if spec.user {
-        spec.home.join("Library/LaunchAgents")
+        join(Os::MacOs, &spec.home, "Library/LaunchAgents")
     } else {
         PathBuf::from("/Library/LaunchDaemons")
     };
-    dir.join(format!("{}.plist", macos_label(&spec.name)))
+    join(
+        Os::MacOs,
+        &dir,
+        &format!("{}.plist", macos_label(&spec.name)),
+    )
 }
 
 fn macos_domain(spec: &ServiceSpec) -> String {
@@ -151,10 +187,11 @@ fn utf16(text: &str) -> Vec<u8> {
 }
 
 fn windows_task_path(spec: &ServiceSpec) -> PathBuf {
-    spec.storage
-        .parent()
-        .unwrap_or(&spec.storage)
-        .join(format!("{}-service.xml", spec.name))
+    join(
+        Os::Windows,
+        &parent(Os::Windows, &spec.storage),
+        &format!("{}-service.xml", spec.name),
+    )
 }
 
 /// What installing `spec` on `os` writes and runs.
@@ -205,11 +242,11 @@ pub fn plan_install(os: Os, spec: &ServiceSpec) -> Result<Plan, String> {
         }
         Os::MacOs => {
             let label = macos_label(&spec.name);
-            let log = spec
-                .storage
-                .parent()
-                .unwrap_or(&spec.storage)
-                .join(format!("{}.log", spec.name));
+            let log = join(
+                Os::MacOs,
+                &parent(Os::MacOs, &spec.storage),
+                &format!("{}.log", spec.name),
+            );
             let plist = format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -515,7 +552,15 @@ mod tests {
                 "/Library/LaunchDaemons/org.mythos.mythos.plist"
             ])
         );
+        assert!(
+            plist.contains("<string>/var/lib/mythos/mythos.log</string>"),
+            "the log beside the storage: {plist}"
+        );
         let user = plan_install(Os::MacOs, &spec(true)).unwrap();
+        assert_eq!(
+            user.files[0].path,
+            PathBuf::from("/home/eng/Library/LaunchAgents/org.mythos.mythos.plist")
+        );
         assert_eq!(user.commands[0][2], "gui/501");
         let gone = plan_uninstall(Os::MacOs, &spec(true)).unwrap();
         assert_eq!(
@@ -534,6 +579,11 @@ mod tests {
             plan.files.len(),
             1,
             "no wrapper script: the task runs the server itself"
+        );
+        assert_eq!(
+            plan.files[0].path,
+            PathBuf::from(r"C:\ProgramData\MythOS\mythos-service.xml"),
+            "beside the storage, as Windows writes a path, wherever the plan is made"
         );
         let task = &plan.files[0].bytes;
         assert_eq!(
