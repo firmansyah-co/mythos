@@ -63,6 +63,11 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     ("GET", "/api/v1/io/status", V),
     ("GET", "/api/v1/io/drivers", V),
     ("GET", "/api/v1/modules", V),
+    // Settings → Modules: an executable put on the controller is an administrator's decision.
+    ("POST", "/api/v1/modules/install", A),
+    ("POST", "/api/v1/modules/install-url", A),
+    ("PUT", "/api/v1/modules/:module/enabled", A),
+    ("DELETE", "/api/v1/modules/:module", A),
     // Engineering
     ("POST", "/api/v1/projects", E),
     ("POST", "/api/v1/projects/:id/activate", E),

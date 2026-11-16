@@ -60,6 +60,8 @@ pub struct IoManager<S: PlatformShm + 'static> {
     running: Mutex<Running>,
     /// Told the service modules of every new registry (`crate::services`).
     on_services: StdRwLock<Option<ServicesHook>>,
+    /// Which modules are switched off (Settings → Modules); applied to every reading.
+    module_settings: StdRwLock<Option<Arc<crate::modules::ModuleSettings>>>,
     _shm: PhantomData<fn() -> S>,
 }
 
@@ -111,8 +113,35 @@ impl<S: PlatformShm + 'static> IoManager<S> {
                 config: None,
             }),
             on_services: StdRwLock::new(None),
+            module_settings: StdRwLock::new(None),
             _shm: PhantomData,
         })
+    }
+
+    /// Leave out, from every later reading of the module directories, the modules `settings`
+    /// switches off.
+    pub fn use_module_settings(&self, settings: Arc<crate::modules::ModuleSettings>) {
+        *self
+            .module_settings
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(settings);
+    }
+
+    /// Every module the last reading found, used or switched off.
+    pub fn all_modules(&self) -> Vec<Arc<mythos_module::ModuleBinary>> {
+        self.registry
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .all_modules()
+    }
+
+    /// The modules the last reading found switched off.
+    pub fn disabled_modules(&self) -> Vec<Arc<mythos_module::ModuleBinary>> {
+        self.registry
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .disabled_modules()
+            .to_vec()
     }
 
     /// Tell `hook` the service modules found by every later rescan.
@@ -311,7 +340,15 @@ impl<S: PlatformShm + 'static> IoManager<S> {
                 applied: None,
             };
         };
-        let registry = DriverRegistry::discover(dirs).await;
+        let mut registry = DriverRegistry::discover(dirs).await;
+        let settings = self
+            .module_settings
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(settings) = settings {
+            registry.apply_disabled(&settings.disabled());
+        }
         for problem in registry.problems() {
             warn!(
                 "Module {} cannot be used: {}",

@@ -148,7 +148,7 @@ describe('signing in', () => {
 });
 
 describe('settings', () => {
-  it('a viewer sees their account and the versions, not the accounts, and cannot create a project', async () => {
+  it('a viewer sees their account, the versions and the modules, not the accounts, and cannot create a project', async () => {
     controller({ setup: false, user: who('viewer') });
     const view = render(<App />);
     await settle();
@@ -159,6 +159,7 @@ describe('settings', () => {
     expect(Array.from(nav?.querySelectorAll('button') ?? []).map((b) => b.textContent?.trim())).toEqual([
       'Account',
       'Updates',
+      'Modules',
     ]);
     expect(view.querySelector('[data-testid="my-role"]')?.textContent).toBe('viewer');
   });

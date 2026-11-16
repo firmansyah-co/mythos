@@ -44,7 +44,16 @@ pub async fn bootstrap<S: PlatformShm + 'static>(
     storage_root: &std::path::Path,
     shm_name: &str,
 ) -> Result<Server<S>, StorageError> {
-    let dirs = module_dirs_from_env();
+    // Packages installed in Settings → Modules live in the storage's system directory, which is
+    // always searched, so an update of MythOS (a new version directory) keeps them.
+    let mut dirs = module_dirs_from_env();
+    let install_dir = ControllerStorage::new(storage_root)?
+        .system_dir()
+        .join("modules");
+    std::fs::create_dir_all(&install_dir)?;
+    if !dirs.contains(&install_dir) {
+        dirs.push(install_dir);
+    }
     let registry = DriverRegistry::discover(&dirs).await;
     for driver in registry.drivers() {
         if let Some(module) = &driver.module {
@@ -109,10 +118,15 @@ pub async fn bootstrap_with<S: PlatformShm + 'static>(
 async fn assemble<S: PlatformShm + 'static>(
     storage_root: &std::path::Path,
     shm_name: &str,
-    registry: DriverRegistry,
+    mut registry: DriverRegistry,
     module_dirs: Option<Vec<std::path::PathBuf>>,
 ) -> Result<Server<S>, StorageError> {
     let storage = Arc::new(ControllerStorage::new(storage_root)?);
+    let module_settings = Arc::new(
+        crate::modules::ModuleSettings::open(&storage.system_dir())
+            .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?,
+    );
+    registry.apply_disabled(&module_settings.disabled());
     let tag_catalog = Arc::new(RwLock::new(TagCatalog::new()));
 
     let shm_reader = match ShmReaderHandle::<S>::new(shm_name, TAG_CAPACITY) {
@@ -143,6 +157,7 @@ async fn assemble<S: PlatformShm + 'static>(
             registry,
         ),
     };
+    io.use_module_settings(Arc::clone(&module_settings));
     io.reload().await;
 
     // Accounts are not optional for a server: every route is checked against its policy.
@@ -169,6 +184,7 @@ async fn assemble<S: PlatformShm + 'static>(
         }));
     }
     let state = state
+        .with_modules(module_settings)
         .with_services(Arc::clone(&services))
         .with_io_manager(Arc::clone(&io))
         .with_auth(Arc::new(accounts))

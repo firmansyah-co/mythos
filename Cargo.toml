@@ -82,3 +82,10 @@ opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
 
+
+# Packing a module package deflates whole executables; unoptimised that takes most of a test run.
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
