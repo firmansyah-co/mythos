@@ -69,6 +69,7 @@ export function NodeSettings() {
     role: NodeRole;
     field_io: Choice;
     announce: Choice;
+    http_on_network: boolean;
   } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -93,7 +94,8 @@ export function NodeSettings() {
       draft.site.trim() !== node.site ||
       draft.role !== node.role ||
       draft.field_io !== choiceOf(node.field_io) ||
-      draft.announce !== choiceOf(node.announce));
+      draft.announce !== choiceOf(node.announce) ||
+      draft.http_on_network !== node.http_on_network);
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
@@ -108,6 +110,7 @@ export function NodeSettings() {
         role: draft.role,
         field_io: changeOf(draft.field_io),
         announce: changeOf(draft.announce),
+        http_on_network: draft.http_on_network,
       });
       setNode(saved);
       setDraft(draftOf(saved));
@@ -146,7 +149,15 @@ export function NodeSettings() {
             <dd className="mono">
               {node.version} · module protocol {node.module_protocol}
             </dd>
-            <dt>Listens on</dt>
+            <dt>HTTPS (the network)</dt>
+            <dd className="mono" data-testid="node-https">
+              {node.https.listening ?? 'not reported'}
+            </dd>
+            <dt>Certificate</dt>
+            <dd className="mono" data-testid="node-fingerprint" title="SHA-256 of this node's certificate">
+              {node.https.fingerprint_spoken ?? 'not reported'}
+            </dd>
+            <dt>HTTP</dt>
             <dd className="mono" data-testid="node-listening">
               {node.listening ?? 'not reported'}
             </dd>
@@ -158,9 +169,10 @@ export function NodeSettings() {
           )}
           {node.restart_required && (
             <div className="notice notice--warn" role="status" data-testid="node-restart">
-              The {ROLE_WORDS[node.role].label.toLowerCase()} role listens on{' '}
-              <span className="mono">{node.listen_address}</span>. It applies when the server is next started; until
-              then it listens on <span className="mono">{node.listening}</span>.
+              Where this node answers changed: HTTPS on <span className="mono">{node.https.listen_address}</span>, HTTP on{' '}
+              <span className="mono">{node.listen_address}</span>. It applies when the server is next started; until then
+              it answers HTTPS on <span className="mono">{node.https.listening}</span> and HTTP on{' '}
+              <span className="mono">{node.listening}</span>.
             </div>
           )}
           <form className="form settings__block" onSubmit={save} aria-label="Node">
@@ -223,6 +235,26 @@ export function NodeSettings() {
               The discovery module announces this node (ADR-012 §2.2); with it disabled in Settings → Modules, nothing
               does. Other nodes heard are listed in the Portal, as candidates.
             </p>
+            <label className="form__row">
+              <span>Plain HTTP</span>
+              <span>
+                <label className="settings__check">
+                  <input
+                    type="checkbox"
+                    aria-label="Plain HTTP on the network"
+                    checked={draft.http_on_network}
+                    disabled={!mayChange}
+                    onChange={(e) => setDraft({ ...draft, http_on_network: e.target.checked })}
+                  />
+                  also on the network
+                </label>
+                <small className="muted" data-testid="node-http-warning">
+                  {' '}
+                  Unencrypted: anyone on the network can read what passes, sign-ins included. Off, the network uses
+                  HTTPS with this node’s certificate.
+                </small>
+              </span>
+            </label>
             {notice && <p className="notice">{notice}</p>}
             {mayChange ? (
               <div className="portal__actions">
@@ -247,5 +279,6 @@ function draftOf(node: NodeInfo) {
     role: node.role,
     field_io: choiceOf(node.field_io),
     announce: choiceOf(node.announce),
+    http_on_network: node.http_on_network,
   };
 }

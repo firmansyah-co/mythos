@@ -214,6 +214,15 @@ export interface NodeInfo {
   announce: NodeSetting;
   /** Why field I/O is off, when it is. */
   field_io_off: string | null;
+  /** Plain HTTP answered on the network too, not only on this computer. */
+  http_on_network: boolean;
+  /** Where HTTPS is answered, and this node's certificate (ADR-012 §2.3). */
+  https: {
+    listening: string | null;
+    listen_address: string | null;
+    fingerprint: string | null;
+    fingerprint_spoken: string | null;
+  };
 }
 
 export interface NodeSetting {
@@ -424,6 +433,7 @@ export const api = {
     change: Partial<Pick<NodeInfo, 'name' | 'site' | 'role'>> & {
       field_io?: NodeSettingChange;
       announce?: NodeSettingChange;
+      http_on_network?: boolean;
     }
   ) =>
     request<NodeInfo>('/api/v1/node', json('PUT', change)),

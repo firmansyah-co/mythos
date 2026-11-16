@@ -198,7 +198,8 @@ fn node_body() -> Value {
             "site": { "type": "string", "maxLength": 128 },
             "role": { "type": "string", "enum": ["workstation", "edge", "server"] },
             "field_io": { "type": ["boolean", "null"], "description": "Read field devices whatever the role says; null follows the role (a server reads none). Applies at once." },
-            "announce": { "type": ["boolean", "null"], "description": "Announce this node on the network whatever the role says; null follows the role (only an edge does)." }
+            "announce": { "type": ["boolean", "null"], "description": "Announce this node on the network whatever the role says; null follows the role (only an edge does)." },
+            "http_on_network": { "type": "boolean", "description": "Also answer plain HTTP on the network (off: HTTP on this computer only, HTTPS on the network). Applies when the server next starts." }
         }
     })
 }

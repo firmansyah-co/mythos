@@ -21,6 +21,7 @@ pub mod server;
 pub mod services;
 pub mod storage;
 pub mod tag;
+pub mod tls;
 pub mod updates;
 
 pub use api::{create_router, ApiState, HealthResponse, TelemetryBatch, DEFAULT_INDEX_HTML};

@@ -65,6 +65,10 @@ pub struct HeardNode {
     pub version: String,
     pub protocol: Option<u32>,
     pub port: u16,
+    /// Where it answers HTTPS, and the fingerprint of its certificate, as it announces them: what
+    /// an engineer compares before pairing (ADR-012 §2.3). Announced, so not yet trusted.
+    pub https_port: Option<u16>,
+    pub fingerprint: Option<String>,
     pub addresses: Vec<String>,
     /// The mDNS instance it was heard as.
     pub instance: String,
@@ -119,6 +123,8 @@ impl Heard {
             version: a.txt.get("version").cloned().unwrap_or_default(),
             protocol: a.txt.get("protocol").and_then(|p| p.parse().ok()),
             port: a.port,
+            https_port: a.txt.get("https").and_then(|p| p.parse().ok()),
+            fingerprint: a.txt.get("fp").filter(|f| !f.is_empty()).cloned(),
             addresses,
             instance: a.instance.clone(),
             last_heard_ms: now_ms(),
@@ -158,6 +164,11 @@ pub fn txt_of(node: &WireNode) -> Vec<(String, String)> {
         ("site".into(), node.site.clone()),
         ("version".into(), node.version.clone()),
         ("protocol".into(), node.protocol.to_string()),
+        (
+            "https".into(),
+            node.https_port.map(|p| p.to_string()).unwrap_or_default(),
+        ),
+        ("fp".into(), node.fingerprint.clone().unwrap_or_default()),
     ]
 }
 
@@ -411,11 +422,17 @@ mod tests {
             site: "Boiler house".into(),
             announce: true,
             port: Some(8080),
+            https_port: Some(8443),
+            fingerprint: Some("ab".repeat(32)),
             version: "0.1.0".into(),
             protocol: 1,
         };
         let keys: Vec<String> = txt_of(&node).into_iter().map(|(k, _)| k).collect();
-        assert_eq!(keys, ["id", "name", "role", "site", "version", "protocol"]);
+        assert_eq!(
+            keys,
+            ["id", "name", "role", "site", "version", "protocol", "https", "fp"],
+            "a certificate's fingerprint is public; no token or code is announced"
+        );
         assert_eq!(instance_of(&node), "Boiler edge 1 (7f3c2a10)");
     }
 

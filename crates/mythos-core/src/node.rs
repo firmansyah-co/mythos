@@ -75,6 +75,10 @@ pub struct NodeIdentity {
     /// Announcing on or off whatever the role says; absent follows the role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub announce: Option<bool>,
+    /// Answer plain HTTP on the network too, not only on this computer (ADR-012 §2.3: HTTPS is
+    /// what the network uses). Off unless someone turns it on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub http_on_network: bool,
 }
 
 impl NodeIdentity {
@@ -125,6 +129,8 @@ pub struct Node {
     path: PathBuf,
     identity: RwLock<NodeIdentity>,
     listening: RwLock<Option<SocketAddr>>,
+    listening_tls: RwLock<Option<SocketAddr>>,
+    fingerprint: RwLock<Option<String>>,
 }
 
 /// A random version-4 UUID, without a dependency for it.
@@ -191,6 +197,7 @@ pub struct NodeChange {
     pub field_io: Option<Option<bool>>,
     #[serde(default, deserialize_with = "present")]
     pub announce: Option<Option<bool>>,
+    pub http_on_network: Option<bool>,
 }
 
 /// A field that is present, even as `null`, is `Some`.
@@ -226,6 +233,7 @@ impl Node {
                     site: String::new(),
                     field_io: None,
                     announce: None,
+                    http_on_network: false,
                 };
                 write(&path, &identity)?;
                 identity
@@ -236,6 +244,8 @@ impl Node {
             path,
             identity: RwLock::new(identity),
             listening: RwLock::new(None),
+            listening_tls: RwLock::new(None),
+            fingerprint: RwLock::new(None),
         })
     }
 
@@ -267,6 +277,9 @@ impl Node {
         if let Some(announce) = change.announce {
             next.announce = announce;
         }
+        if let Some(http_on_network) = change.http_on_network {
+            next.http_on_network = http_on_network;
+        }
         let mut current = self.identity.write().unwrap();
         write(&self.path, &next)?;
         *current = next.clone();
@@ -284,13 +297,54 @@ impl Node {
         }
     }
 
-    /// Record where this run of the server listens, for `GET /api/v1/node`.
+    /// Where plain HTTP is answered: on this computer only, unless the node says
+    /// `http_on_network` (then where HTTPS is). The network uses HTTPS (ADR-012 §2.3).
+    pub fn http_ip(&self) -> Result<IpAddr, NodeError> {
+        let network = self.listen_ip()?;
+        Ok(
+            if self.identity().http_on_network || network.is_loopback() {
+                network
+            } else {
+                IpAddr::V4(Ipv4Addr::LOCALHOST)
+            },
+        )
+    }
+
+    /// Record where this run of the server answers plain HTTP, for `GET /api/v1/node`.
     pub fn set_listening(&self, address: SocketAddr) {
         *self.listening.write().unwrap() = Some(address);
     }
 
     pub fn listening(&self) -> Option<SocketAddr> {
         *self.listening.read().unwrap()
+    }
+
+    /// Record where this run answers HTTPS, and the certificate it presents.
+    pub fn set_listening_tls(&self, address: SocketAddr, fingerprint: String) {
+        *self.listening_tls.write().unwrap() = Some(address);
+        *self.fingerprint.write().unwrap() = Some(fingerprint);
+    }
+
+    pub fn listening_tls(&self) -> Option<SocketAddr> {
+        *self.listening_tls.read().unwrap()
+    }
+
+    pub fn fingerprint(&self) -> Option<String> {
+        self.fingerprint.read().unwrap().clone()
+    }
+
+    /// Whether this run listens elsewhere than the node now says to: true after the role or
+    /// `http_on_network` changed, until the server is started again.
+    pub fn restart_required(&self) -> bool {
+        let http = match (self.listening(), self.http_ip()) {
+            (Some(now), Ok(wanted)) => now.ip() != wanted,
+            _ => false,
+        };
+        let https = match (self.listening_tls(), self.listen_ip()) {
+            (Some(now), Ok(wanted)) => now.ip() != wanted,
+            _ => false,
+        };
+        http || https
     }
 
     /// The node as service modules are told it (`Call::Node`).
@@ -303,6 +357,8 @@ impl Node {
             role: identity.role.as_str().to_string(),
             site: identity.site,
             port: self.listening().map(|a| a.port()),
+            https_port: self.listening_tls().map(|a| a.port()),
+            fingerprint: self.fingerprint(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             protocol: mythos_module::PROTOCOL_VERSION,
         }

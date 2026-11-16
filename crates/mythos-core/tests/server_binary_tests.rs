@@ -16,6 +16,7 @@ fn a_new_server_tells_whoever_started_it_the_setup_code_and_logs_by_default() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_mythos-server"))
         .env_remove("RUST_LOG")
         .env_remove("MYTHOS_SETUP_CODE")
+        .env("MYTHOS_HTTPS_PORT", "0")
         .env("MYTHOS_STORAGE_ROOT", dir.path())
         .env("MYTHOS_HTTP_PORT", port.to_string())
         .env(
@@ -95,6 +96,8 @@ fn start_with_args(
     command
         .env_remove("MYTHOS_ROLE")
         .env_remove("MYTHOS_BIND")
+        // Any free port for HTTPS: tests run side by side.
+        .env("MYTHOS_HTTPS_PORT", "0")
         .env("MYTHOS_STORAGE_ROOT", dir.path())
         .env("MYTHOS_HTTP_PORT", port.to_string())
         .env(
@@ -144,10 +147,25 @@ fn role_in(dir: &std::path::Path) -> String {
     node["role"].as_str().unwrap().to_string()
 }
 
-/// ADR-012 §2.1: the role decides where the server listens; MYTHOS_BIND overrides it.
+/// Where the server answers HTTPS, as it says it.
+fn listening_tls(rx: &std::sync::mpsc::Receiver<String>) -> Option<String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) {
+            if let Some(rest) = line.split("listening on https://").nth(1) {
+                return rest.split_whitespace().next().map(str::to_string);
+            }
+        }
+    }
+    None
+}
+
+/// ADR-012 §2.1 and §2.3: plain HTTP is answered on this computer only; HTTPS on the role's
+/// address (an edge's or a server's every interface, a workstation's loopback); MYTHOS_BIND
+/// overrides the role's address.
 #[test]
 fn where_the_server_listens_follows_the_node_role() {
-    for (env, address, role) in [
+    for (env, https_ip, role) in [
         (vec![], "0.0.0.0", "edge"),
         (
             vec![("MYTHOS_ROLE", "workstation")],
@@ -158,16 +176,52 @@ fn where_the_server_listens_follows_the_node_role() {
         (vec![("MYTHOS_BIND", "127.0.0.1")], "127.0.0.1", "edge"),
     ] {
         let (mut child, port, dir, rx) = start(&env);
-        let heard = listening(&rx);
+        let http = listening(&rx);
+        let https = listening_tls(&rx);
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(
-            heard.as_deref(),
-            Some(format!("{address}:{port}").as_str()),
-            "{env:?}"
+            http.as_deref(),
+            Some(format!("127.0.0.1:{port}").as_str()),
+            "plain HTTP on this computer only: {env:?}"
+        );
+        let https = https.unwrap_or_else(|| panic!("no HTTPS listener: {env:?}"));
+        assert!(
+            https.starts_with(&format!("{https_ip}:")),
+            "{https} for {env:?}"
         );
         assert_eq!(role_in(dir.path()), role, "{env:?}");
     }
+}
+
+/// HTTPS answers with the node's own certificate: a client that pins its fingerprint, read
+/// from the certificate file, reaches it; one that pins another is refused.
+#[test]
+fn https_presents_the_node_certificate() {
+    let (mut child, _, dir, rx) = start(&[]);
+    let https = listening_tls(&rx);
+    let cert = std::fs::read(dir.path().join(".mythos-system/tls/node.crt"));
+    let https: std::net::SocketAddr = https
+        .expect("an HTTPS listener")
+        .replace("0.0.0.0", "127.0.0.1")
+        .parse()
+        .unwrap();
+    let fingerprint = mythos_core::tls::fingerprint(&cert.expect("the node's certificate"));
+    let reached =
+        mythos_core::tls::request_pinned(https, &fingerprint, "GET", "/api/v1/health", None, None);
+    let refused = mythos_core::tls::request_pinned(
+        https,
+        &"0".repeat(64),
+        "GET",
+        "/api/v1/health",
+        None,
+        None,
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+    let reached = reached.expect("the pinned client reaches the node");
+    assert_eq!(reached.status, 200, "{:?}", reached.body);
+    assert!(refused.unwrap_err().contains("not the one expected"));
 }
 
 #[test]
@@ -211,7 +265,7 @@ fn arguments_choose_the_storage_and_the_port_over_the_environment() {
     let _ = child.wait();
     assert_eq!(
         heard,
-        Some(format!("0.0.0.0:{port}")),
+        Some(format!("127.0.0.1:{port}")),
         "the environment said {env_port}"
     );
     assert!(storage
