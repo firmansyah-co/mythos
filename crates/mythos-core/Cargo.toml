@@ -15,6 +15,8 @@ mythos-pal.workspace = true
 mythos-shm.workspace = true
 mythos-plugin-sdk.workspace = true
 mythos-module.workspace = true
+mythos-update.workspace = true
+semver = "1.0.28"
 async-trait.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true

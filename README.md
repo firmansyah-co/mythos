@@ -183,8 +183,9 @@ its own CLI and starts its server before attaching it to the release. A bundle h
 serves from there when `MYTHOS_STATIC_DIR` is not set).
 
 ```bash
-mythos update                    # newest release on the configured channel
-mythos update --version 1.2.0    # a given version
+mythos update                    # the pinned version, else the newest on the channel
+mythos update --version 1.2.0    # a given version, once
+mythos pin 1.2.0                 # stay on 1.2.0 (mythos unpin to follow the channel again)
 mythos versions --remote         # what has been published, and whether this platform has a bundle
 mythos versions                  # what is installed
 mythos rollback                  # back to the previous version, which is still installed
@@ -199,6 +200,12 @@ or a junction on Windows) to `~/.mythos/versions/<version>`. Put `~/.mythos/curr
 `PATH`. No executable is ever overwritten, so updating while the server runs is safe; the
 running server keeps its version until it is restarted from `current`. The checksum guards
 against a damaged download, not against a compromised release: bundles are not signed yet.
+
+The same is in the workbench, Settings → Updates: the version the server runs and the
+installation it runs from (`<home>/versions/<version>/bin`, or `MYTHOS_HOME`), every published
+version with its channel, date and release notes, and — for an administrator — following a
+channel or staying on one version, installing, and rolling back. A server built from source runs
+from no installation; it lists the releases and says it has nowhere to install them.
 
 ## Connecting an AI agent
 

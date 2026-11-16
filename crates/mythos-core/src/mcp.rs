@@ -186,6 +186,29 @@ fn user_change_body() -> Value {
     })
 }
 
+fn follow_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["channel"],
+        "properties": {
+            "channel": { "type": "string", "enum": ["release", "rc", "dev"],
+                         "description": "release: releases only; rc: also release candidates; dev: everything" },
+            "pinned_version": { "type": ["string", "null"],
+                                "description": "Stay on this version instead of following the channel; null to follow it" }
+        }
+    })
+}
+
+fn install_body() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "version": { "type": "string",
+                         "description": "The version to install; absent installs the pinned version, or the newest on the channel" }
+        }
+    })
+}
+
 fn create_project_body() -> Value {
     json!({
         "type": "object",
@@ -416,6 +439,61 @@ pub const TOOLS: &[Tool] = &[
         body: None,
         read_only: false,
         destructive: true,
+    },
+    Tool {
+        name: "get_update_status",
+        title: "Version and installation",
+        description: "The version this server runs, the installation it can update (installed versions, the current and previous one, the channel followed or the pinned version), or why it has none.",
+        method: "GET",
+        path: "/api/v1/updates",
+        query: &[],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "list_releases",
+        title: "Published releases",
+        description: "Every release the release feed publishes: version, channel, title, release notes, when published, whether it has a bundle for this platform, whether it is installed or current, and which one the followed channel or pin would install. A feed that cannot be read is an error, never a list.",
+        method: "GET",
+        path: "/api/v1/updates/releases",
+        query: &[("refresh", "true to ask the feed again instead of using the last reading (kept 5 minutes)")],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "set_update_follow",
+        title: "Follow a channel or a version",
+        description: "Choose what the installation follows: a channel (release, rc, dev), or one pinned version. Administrators only.",
+        method: "PUT",
+        path: "/api/v1/updates/follow",
+        query: &[],
+        body: Some(follow_body),
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "install_update",
+        title: "Install a release",
+        description: "Download a release's bundle for this platform, check its SHA-256, check that it runs, and make it the current version. The running server keeps its version until restarted ('restart_required'). Administrators only.",
+        method: "POST",
+        path: "/api/v1/updates/install",
+        query: &[],
+        body: Some(install_body),
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "rollback_update",
+        title: "Roll back",
+        description: "Make the previously current version current again; it is still installed, so nothing is downloaded. Administrators only.",
+        method: "POST",
+        path: "/api/v1/updates/rollback",
+        query: &[],
+        body: None,
+        read_only: false,
+        destructive: false,
     },
     Tool {
         name: "list_users",

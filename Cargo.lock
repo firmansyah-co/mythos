@@ -2366,9 +2366,10 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
- "junction",
  "mythos-core",
+ "mythos-pal",
  "mythos-plugin-sdk",
+ "mythos-update",
  "semver",
  "serde",
  "serde_json",
@@ -2376,9 +2377,9 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tower 0.4.13",
  "tracing",
  "tracing-subscriber",
- "ureq",
  "zip",
 ]
 
@@ -2397,7 +2398,9 @@ dependencies = [
  "mythos-pal",
  "mythos-plugin-sdk",
  "mythos-shm",
+ "mythos-update",
  "rand",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -2498,6 +2501,21 @@ dependencies = [
  "mythos-pal",
  "tempfile",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "mythos-update"
+version = "0.1.0"
+dependencies = [
+ "junction",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "tracing",
+ "ureq",
+ "zip",
 ]
 
 [[package]]

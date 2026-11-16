@@ -161,6 +161,56 @@ export interface AccessToken {
   last_used_unix_s: number | null;
 }
 
+/** What an installation follows: releases only, release candidates too, or everything. */
+export type ReleaseChannel = 'release' | 'rc' | 'dev';
+export const CHANNELS: readonly ReleaseChannel[] = ['release', 'rc', 'dev'];
+
+export interface UpdateStatus {
+  running: { version: string; installed_version: string | null; target: string };
+  /** `null` when the server runs from no installation it can update. */
+  installation: {
+    home: string;
+    current_version: string | null;
+    previous_version: string | null;
+    installed: string[];
+    channel: ReleaseChannel;
+    pinned_version: string | null;
+    feed: string;
+  } | null;
+  /** Why there is no installation, when there is none. */
+  note: string | null;
+}
+
+export interface PublishedRelease {
+  version: string;
+  tag: string;
+  channel: ReleaseChannel;
+  name: string | null;
+  /** Release notes, as published (Markdown). */
+  notes: string | null;
+  published_at: string | null;
+  url: string | null;
+  /** Whether it publishes a bundle for the platform the server runs on. */
+  has_bundle: boolean;
+  installed: boolean;
+  current: boolean;
+}
+
+export interface ReleaseList {
+  feed: string;
+  fetched_unix_s: number;
+  /** What the followed channel, or the pin, would install. */
+  target_version: string | null;
+  releases: PublishedRelease[];
+}
+
+export interface Installed {
+  version: string;
+  reported: string | null;
+  restart_required: boolean;
+  status: UpdateStatus;
+}
+
 let onUnauthorized: (() => void) | null = null;
 
 /** Called whenever the server answers 401 to a request: the session has ended. */
@@ -290,6 +340,16 @@ export const api = {
     throw new ApiError(message, response.status);
   },
   listTags: () => request<TagMetadata[]>('/api/v1/tags'),
+
+  // Updates
+  getUpdates: () => request<UpdateStatus>('/api/v1/updates'),
+  listReleases: (refresh = false) =>
+    request<ReleaseList>(`/api/v1/updates/releases${refresh ? '?refresh=true' : ''}`),
+  setFollow: (channel: ReleaseChannel, pinnedVersion: string | null) =>
+    request<UpdateStatus>('/api/v1/updates/follow', json('PUT', { channel, pinned_version: pinnedVersion })),
+  installUpdate: (version?: string) =>
+    request<Installed>('/api/v1/updates/install', json('POST', version ? { version } : {})),
+  rollbackUpdate: () => request<Installed>('/api/v1/updates/rollback', { method: 'POST' }),
 
   // Accounts
   authStatus: () => request<AuthStatus>('/api/v1/auth/status'),

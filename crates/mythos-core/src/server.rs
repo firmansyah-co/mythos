@@ -137,7 +137,8 @@ async fn assemble<S: PlatformShm + 'static>(
 
     let state = ApiState::new(storage, tag_catalog, shm_reader)
         .with_io_manager(Arc::clone(&io))
-        .with_auth(Arc::new(accounts));
+        .with_auth(Arc::new(accounts))
+        .with_updates(Arc::new(crate::updates::Updates::detect()));
 
     Ok(Server { state, io })
 }

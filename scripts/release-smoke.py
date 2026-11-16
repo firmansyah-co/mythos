@@ -5,8 +5,10 @@
 2. `mythos update --version <v>` with the CLI from the bundle: download, checksum, unpack,
    run check, switch `current`.
 3. Start `current/bin/mythos-server` from the install, on a free port with its own storage.
-4. Require that it found the Modbus module beside itself (as a module process), and that it
-   serves the workbench from the bundle's web/.
+4. Create its first administrator with the setup code this script gave it, sign in, and
+   require that it found the Modbus module beside itself (as a module process), that it knows
+   the installation it runs from (Settings → Updates), and that it serves the workbench from
+   the bundle's web/.
 
 Exits non-zero, saying which step failed, otherwise.
 
@@ -16,6 +18,7 @@ Usage:
 
 import argparse
 import hashlib
+import http.cookiejar
 import http.server
 import json
 import os
@@ -114,44 +117,77 @@ def main() -> int:
 
     http_port = free_port()
     storage = os.path.join(work, "storage")
+    setup_code = f"smoke-{os.getpid()}-{digest[:12]}"
     server_env = dict(
         os.environ,
+        MYTHOS_SETUP_CODE=setup_code,
         MYTHOS_STORAGE_ROOT=storage,
         MYTHOS_HTTP_PORT=str(http_port),
         MYTHOS_SHM_NAME=f"mythos_smoke_{os.getpid()}",
     )
     server_env.pop("MYTHOS_STATIC_DIR", None)
     server_env.pop("MYTHOS_MODULE_PATH", None)
+    server_env.pop("MYTHOS_HOME", None)
     log_path = os.path.join(work, "server.log")
     log = open(log_path, "w")
     proc = subprocess.Popen([server_exe], env=server_env, stdout=log, stderr=subprocess.STDOUT)
     try:
         api = f"http://127.0.0.1:{http_port}"
-        modules = None
+        up = False
         deadline = time.time() + 60
         while time.time() < deadline:
             if proc.poll() is not None:
                 break
             try:
-                with urllib.request.urlopen(f"{api}/api/v1/modules", timeout=2) as r:
-                    modules = json.load(r)
+                with urllib.request.urlopen(f"{api}/api/v1/health", timeout=2):
+                    up = True
                 break
             except OSError:
                 time.sleep(0.25)
-        if modules is None:
+        if not up:
             log.flush()
             return fail("server start", open(log_path).read()[-4000:])
+
+        # Every route needs an account: create the first administrator, signed in by a cookie.
+        jar = http.cookiejar.CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        setup = urllib.request.Request(
+            f"{api}/api/v1/auth/setup",
+            data=json.dumps(
+                {"setup_code": setup_code, "username": "smoke", "password": "smoke password 1"}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            opener.open(setup, timeout=30).read()
+        except OSError as e:
+            return fail("first administrator", str(e))
+
+        def get(path):
+            with opener.open(f"{api}{path}", timeout=10) as r:
+                return json.load(r)
+
+        modules = get("/api/v1/modules")
 
         drivers = {d.get("name"): d.get("source") for d in modules.get("drivers", [])}
         if drivers.get("modbus") != "module":
             return fail("module discovery", json.dumps(modules)[:2000])
+
+        updates = get("/api/v1/updates")
+        installation = updates.get("installation") or {}
+        if installation.get("current_version") != version or updates["running"].get("installed_version") != version:
+            return fail("installation", json.dumps(updates)[:2000])
 
         with urllib.request.urlopen(f"{api}/", timeout=5) as r:
             page = r.read().decode("utf-8", "replace")
         if "<html" not in page.lower():
             return fail("workbench", page[:500])
 
-        print(f"release-smoke: OK — installed {version}, server found the Modbus module and serves the workbench")
+        print(
+            f"release-smoke: OK — installed {version}; the server found the Modbus module, knows it "
+            f"runs {version} from {installation.get('home')}, and serves the workbench"
+        )
         return 0
     finally:
         proc.terminate()

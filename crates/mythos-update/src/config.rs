@@ -60,6 +60,10 @@ pub struct CliConfig {
     pub remote_url: String,
     pub current_version: Option<String>,
     pub previous_version: Option<String>,
+    /// A version to stay on instead of following the channel. `mythos update` without a
+    /// version installs this one.
+    #[serde(default)]
+    pub pinned_version: Option<String>,
 }
 
 /// Where releases are published: this repository's GitHub Releases.
@@ -83,6 +87,7 @@ impl Default for CliConfig {
             remote_url: default_remote_url(),
             current_version: None,
             previous_version: None,
+            pinned_version: None,
         }
     }
 }

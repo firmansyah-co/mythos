@@ -43,13 +43,25 @@ pub struct UpdateResult {
 pub struct UpdateManager;
 
 impl UpdateManager {
-    /// Install `version`, or the newest release on the configured channel, and make it current.
+    /// Install `version`, or the pinned version, or the newest release on the configured
+    /// channel, and make it current.
     pub fn update(mythos_dir: &Path, version: Option<String>) -> Result<UpdateResult, UpdateError> {
+        let config = CliConfig::load_from(mythos_dir)?;
+        let releases = release::fetch(&config.feed_url())?;
+        Self::update_from(mythos_dir, &releases, version)
+    }
+
+    /// `update`, choosing among `releases` already read from the feed.
+    pub fn update_from(
+        mythos_dir: &Path,
+        releases: &[Release],
+        version: Option<String>,
+    ) -> Result<UpdateResult, UpdateError> {
         let start = Instant::now();
         let mut config = CliConfig::load_from(mythos_dir)?;
         let feed = config.feed_url();
-        let releases = release::fetch(&feed)?;
-        let chosen = choose(&releases, version.as_deref(), config.channel, &feed)?;
+        let wanted = version.or_else(|| config.pinned_version.clone());
+        let chosen = choose(releases, wanted.as_deref(), config.channel, &feed)?;
         let version = chosen.version.to_string();
 
         let reported = if install::is_installed(mythos_dir, &version) {

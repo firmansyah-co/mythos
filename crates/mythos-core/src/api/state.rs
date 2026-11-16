@@ -44,6 +44,8 @@ pub struct ApiState<S: PlatformShm + 'static = mythos_pal::DefaultShm> {
     /// says; without them (a state built for a test, or for embedding) nothing is checked. The
     /// server always has them: `crate::server` attaches them.
     pub auth: Option<Arc<crate::auth::Auth>>,
+    /// The server's own version and installation, and the published releases.
+    pub updates: Option<Arc<crate::updates::Updates>>,
 }
 
 impl<S: PlatformShm + 'static> Clone for ApiState<S> {
@@ -58,6 +60,7 @@ impl<S: PlatformShm + 'static> Clone for ApiState<S> {
             io_status: self.io_status.clone(),
             io_manager: self.io_manager.clone(),
             auth: self.auth.clone(),
+            updates: self.updates.clone(),
         }
     }
 }
@@ -85,6 +88,7 @@ impl<S: PlatformShm + 'static> ApiState<S> {
             ),
             io_manager: None,
             auth: None,
+            updates: None,
         }
     }
 
@@ -114,6 +118,11 @@ impl<S: PlatformShm + 'static> ApiState<S> {
     /// Require accounts: every route is checked against `crate::auth::policy`.
     pub fn with_auth(mut self, auth: Arc<crate::auth::Auth>) -> Self {
         self.auth = Some(auth);
+        self
+    }
+
+    pub fn with_updates(mut self, updates: Arc<crate::updates::Updates>) -> Self {
+        self.updates = Some(updates);
         self
     }
 

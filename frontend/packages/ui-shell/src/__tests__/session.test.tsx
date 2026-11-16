@@ -148,7 +148,7 @@ describe('signing in', () => {
 });
 
 describe('settings', () => {
-  it('a viewer sees only their account, and cannot create a project', async () => {
+  it('a viewer sees their account and the versions, not the accounts, and cannot create a project', async () => {
     controller({ setup: false, user: who('viewer') });
     const view = render(<App />);
     await settle();
@@ -158,6 +158,7 @@ describe('settings', () => {
     const nav = view.querySelector('nav[aria-label="Settings"]');
     expect(Array.from(nav?.querySelectorAll('button') ?? []).map((b) => b.textContent?.trim())).toEqual([
       'Account',
+      'Updates',
     ]);
     expect(view.querySelector('[data-testid="my-role"]')?.textContent).toBe('viewer');
   });
