@@ -117,14 +117,30 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let (lines_tx, mut lines_rx) = mpsc::unbounded_channel::<String>();
+    // Told when the input has ended: the writer then writes what is queued and stops. It cannot
+    // wait for every sender to be dropped instead, because a service may keep an `Events` on a
+    // thread of its own for as long as the process lives (discovery's listener does), and then a
+    // module whose server died or stopped it would never exit.
+    let (closing, mut closed) = oneshot::channel::<()>();
     let writer = tokio::spawn(async move {
         let mut output = output;
-        while let Some(mut line) = lines_rx.recv().await {
-            line.push('\n');
-            if output.write_all(line.as_bytes()).await.is_err() {
+        loop {
+            let line = tokio::select! {
+                biased;
+                line = lines_rx.recv() => line,
+                _ = &mut closed => {
+                    while let Ok(line) = lines_rx.try_recv() {
+                        if write_line(&mut output, line).await.is_err() {
+                            break;
+                        }
+                    }
+                    break;
+                }
+            };
+            let Some(line) = line else { break };
+            if write_line(&mut output, line).await.is_err() {
                 break;
             }
-            let _ = output.flush().await;
         }
     });
     let events = Events {
@@ -213,7 +229,17 @@ where
     }
     drop(events);
     drop(lines_tx);
+    let _ = closing.send(());
     let _ = writer.await;
+}
+
+async fn write_line<W: AsyncWrite + Unpin>(
+    output: &mut W,
+    mut line: String,
+) -> std::io::Result<()> {
+    line.push('\n');
+    output.write_all(line.as_bytes()).await?;
+    output.flush().await
 }
 
 // -----------------------------------------------------------------------------
@@ -460,5 +486,91 @@ impl ServiceSession {
         }
         self.reader.abort();
         self.stderr.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A service that keeps an `Events` on a thread of its own, as discovery's listener does.
+    struct Holding;
+
+    #[async_trait::async_trait]
+    impl Service for Holding {
+        async fn handle(&self, _call: HttpCall, _events: &Events) -> HttpReply {
+            unreachable!("no route in this test")
+        }
+
+        async fn node(&self, _node: crate::protocol::WireNode, events: &Events) {
+            let events = events.clone();
+            std::thread::spawn(move || loop {
+                events.send("tick", Value::Null);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            });
+        }
+    }
+
+    fn manifest() -> ModuleManifest {
+        serde_json::from_value(json!({
+            "protocol": 1, "id": "org.test.holding", "name": "Holding", "version": "0.1.0",
+            "kind": "service", "provides": "holding", "description": "keeps an Events forever"
+        }))
+        .unwrap()
+    }
+
+    const NODE: &str = r#"{"id":1,"call":{"method":"node","params":{"node":{"id":"n","name":"n","role":"edge","announce":false,"version":"0","protocol":1}}}}"#;
+
+    /// Serve until `input` ends or asks to stop; how long it took to return, and what it wrote.
+    async fn serve_with(
+        requests: &str,
+        keep_open: bool,
+    ) -> (Result<(), tokio::time::error::Elapsed>, Vec<String>) {
+        let (mut to_module, input) = tokio::io::duplex(1 << 16);
+        let (output, from_module) = tokio::io::duplex(1 << 20);
+        to_module.write_all(requests.as_bytes()).await.unwrap();
+        let _held = if keep_open {
+            Some(to_module)
+        } else {
+            drop(to_module);
+            None
+        };
+        let served = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            serve_service(manifest(), Arc::new(Holding), input, output),
+        )
+        .await;
+        let mut lines = Vec::new();
+        let mut reader = BufReader::new(from_module).lines();
+        while let Ok(Ok(Some(line))) =
+            tokio::time::timeout(std::time::Duration::from_millis(200), reader.next_line()).await
+        {
+            lines.push(line);
+        }
+        (served, lines)
+    }
+
+    #[tokio::test]
+    async fn a_module_whose_server_is_gone_stops_though_its_service_keeps_an_events() {
+        let (served, lines) = serve_with(&format!("{NODE}\n"), false).await;
+        assert!(served.is_ok(), "the input ended, so the module stops");
+        assert!(
+            lines.iter().any(|l| l.contains(r#""id":1"#)),
+            "the node call was answered: {lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_module_told_to_stop_answers_and_stops_though_its_service_keeps_an_events() {
+        let (served, lines) = serve_with(
+            &format!("{NODE}\n{{\"id\":2,\"call\":{{\"method\":\"stop\"}}}}\n"),
+            true,
+        )
+        .await;
+        assert!(served.is_ok(), "asked to stop, the module stops");
+        assert!(
+            lines.iter().any(|l| l.contains(r#""id":2"#)),
+            "and answered the stop first: {lines:?}"
+        );
     }
 }
