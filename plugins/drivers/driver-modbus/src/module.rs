@@ -125,6 +125,7 @@ pub fn manifest() -> ModuleManifest {
         description: "Reads holding and input registers from a Modbus TCP device.".to_string(),
         capabilities: vec![crate::CAPABILITY_NETWORK_CLIENT.to_string()],
         config_schema: config_schema(),
+        always_on: false,
         routes: Vec::new(),
     }
 }

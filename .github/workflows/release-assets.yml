@@ -72,8 +72,9 @@ jobs:
       # Each module's workbench UI, by module id, as the bundle carries them (ADR-011 §2.3).
       - name: Collect the module UIs
         run: |
-          mkdir -p ../modules-ui/org.mythos.hmi
+          mkdir -p ../modules-ui/org.mythos.hmi ../modules-ui/org.mythos.discovery
           cp packages/hmi-ui/dist/entry.js packages/hmi-ui/dist/hmi.css ../modules-ui/org.mythos.hmi/
+          cp ../plugins/discovery/ui/entry.js ../modules-ui/org.mythos.discovery/
       - uses: actions/upload-artifact@v4
         with:
           name: modules-ui
@@ -118,8 +119,9 @@ jobs:
         shell: bash
         run: >
           cargo build --release --locked --target ${{ matrix.target }}
-          -p mythos-cli -p mythos-core -p driver-modbus -p mythos-hmi
+          -p mythos-cli -p mythos-core -p driver-modbus -p mythos-hmi -p mythos-discovery
           --bin mythos --bin mythos-server --bin mythos-module-modbus --bin mythos-module-hmi
+          --bin mythos-module-discovery
       - name: Pack the bundle
         shell: bash
         run: >

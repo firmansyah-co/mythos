@@ -297,6 +297,20 @@ try {
   check('going offline removes the value from the screen', offline.length >= 1 && offline.every((v) => v === '—') && fieldOffline === 'offline', `${offline.join(',')} / ${fieldOffline}`);
   await shot('e2e_7_offline');
 
+  // 9b. The Portal's "MythOS on this network" (the discovery module, ADR-012 §2.2): this edge
+  // announces itself, listens, and lists no node it has not heard.
+  await evaluate(`__t.click('Project')`); await sleep(150);
+  await evaluate(`__t.click('Open or create a project')`); await sleep(500);
+  await evaluate(`__t.clickTestId('portal-module-network')`); await sleep(2500);
+  const network = (await evaluate(`__t.text('[data-testid="network-status"]')`))[0] ?? '';
+  check('the Portal lists MythOS on this network, as the discovery module hears it',
+    network.includes('This node announces itself.') && network.includes('Listening for others.'), network);
+  check('a node heard is offered as a candidate, never as a connection',
+    (await evaluate(`__t.text('[data-testid="network-node"] .settings__badge')`)).every((b) => b === 'candidate'));
+  await shot('e2e_9b_network');
+  await evaluate(`__t.click('Project view')`); await sleep(800);
+  check('and the project is one click away', await evaluate(`__t.has('[data-testid="project-view"]')`));
+
   // 10. Settings: the administrator's account and the controller's accounts.
   await evaluate(`__t.click('Project')`); await sleep(150);
   await evaluate(`__t.click('Settings…')`); await sleep(600);

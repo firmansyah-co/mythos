@@ -85,6 +85,7 @@ export async function loadModuleUis(importer: Importer = browserImport): Promise
           treeSection: (section) => remember(registered, register.treeSection(section)),
           editor: (editor) => remember(registered, register.editor(editor)),
           view: (view) => remember(registered, register.view(view)),
+          portalSection: (section) => remember(registered, register.portalSection(section)),
         };
         let undo: Dispose | void;
         try {

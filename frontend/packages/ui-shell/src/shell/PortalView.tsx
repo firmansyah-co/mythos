@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import { ArrowRight, FilePlus2, FolderOpen, Settings } from 'lucide-react';
+import { ArrowRight, FilePlus2, FolderOpen, Radar, Settings } from 'lucide-react';
 import { api, hasRole, type ProjectConfig } from '../api/client';
 import { useSession } from '../data/session';
 import { log } from '../data/log';
 import { APP_CHANNEL, APP_VERSION } from '../lib/appVersion';
 import { useWorkbench } from '../data/workbench';
+import { ModuleMount } from '../modules/ModuleMount';
+import { useModuleUi } from '../modules/registry';
 
-type Action = 'open' | 'create';
+/** The Portal's own pages, or a module's (`module:<id>`). */
+type Action = 'open' | 'create' | `module:${string}`;
 
 interface ProjectRow {
   id: string;
@@ -261,6 +264,10 @@ export function PortalView() {
   const user = useSession((state) => state.user);
   // Creating a project needs the engineer role; without accounts everything is open.
   const mayCreate = !user || hasRole(user.role, 'engineer');
+  const sections = useModuleUi((state) => state.portalSections);
+  const shown = action.startsWith('module:')
+    ? sections.find((section) => `module:${section.item.id}` === action)
+    : undefined;
 
   return (
     <div className="portal" data-testid="portal-view">
@@ -295,6 +302,21 @@ export function PortalView() {
               <FilePlus2 size={16} aria-hidden /> Create new project
             </button>
           )}
+          {sections.map((section) => {
+            const id = `module:${section.item.id}` as const;
+            return (
+              <button
+                key={id}
+                type="button"
+                className={`portal__nav-item${action === id ? ' is-active' : ''}`}
+                aria-current={action === id}
+                data-testid={`portal-module-${section.item.id}`}
+                onClick={() => setAction(id)}
+              >
+                <Radar size={16} aria-hidden /> {section.item.label}
+              </button>
+            );
+          })}
           <button type="button" className="portal__nav-item" onClick={() => showSettings()}>
             <Settings size={16} aria-hidden /> Settings
           </button>
@@ -314,7 +336,19 @@ export function PortalView() {
       </aside>
 
       <main className="portal__main">
-        {action === 'create' && mayCreate ? <CreateProject /> : <OpenProject />}
+        {shown ? (
+          <ModuleMount
+            mount={shown.item.mount}
+            context={{}}
+            deps={[shown.item.id]}
+            className="portal__panel"
+            testId={`portal-section-${shown.item.id}`}
+          />
+        ) : action === 'create' && mayCreate ? (
+          <CreateProject />
+        ) : (
+          <OpenProject />
+        )}
       </main>
     </div>
   );

@@ -4,7 +4,8 @@
     bin/mythos[.exe]                 the CLI (update, rollback, plugins)
     bin/mythos-server[.exe]          the controller
     bin/mythos-module-modbus[.exe]   modules, found beside the server: the Modbus driver
-    bin/mythos-module-hmi[.exe]      and the HMI service module (ADR-011)
+    bin/mythos-module-hmi[.exe]      the HMI service module (ADR-011)
+    bin/mythos-module-discovery[.exe] and the discovery service module (ADR-012)
     web/                             the workbench, served by the server from ../web
     modules-ui/<module id>/          each module's workbench UI, served at /modules/<id>/ui/
 
@@ -24,10 +25,16 @@ import os
 import sys
 import zipfile
 
-EXECUTABLES = ["mythos", "mythos-server", "mythos-module-modbus", "mythos-module-hmi"]
+EXECUTABLES = [
+    "mythos",
+    "mythos-server",
+    "mythos-module-modbus",
+    "mythos-module-hmi",
+    "mythos-module-discovery",
+]
 # Module UIs a bundle must carry: a module shipped without its UI would serve routes nobody can
 # use from the workbench.
-REQUIRED_UIS = ["org.mythos.hmi"]
+REQUIRED_UIS = ["org.mythos.hmi", "org.mythos.discovery"]
 
 
 def main() -> int:

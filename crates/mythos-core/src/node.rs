@@ -292,6 +292,21 @@ impl Node {
     pub fn listening(&self) -> Option<SocketAddr> {
         *self.listening.read().unwrap()
     }
+
+    /// The node as service modules are told it (`Call::Node`).
+    pub fn wire(&self) -> mythos_module::protocol::WireNode {
+        let identity = self.identity();
+        mythos_module::protocol::WireNode {
+            announce: identity.announce(),
+            id: identity.id,
+            name: identity.name,
+            role: identity.role.as_str().to_string(),
+            site: identity.site,
+            port: self.listening().map(|a| a.port()),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol: mythos_module::PROTOCOL_VERSION,
+        }
+    }
 }
 
 fn write(path: &Path, identity: &NodeIdentity) -> std::io::Result<()> {

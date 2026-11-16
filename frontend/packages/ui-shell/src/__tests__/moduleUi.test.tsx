@@ -13,6 +13,7 @@ import { useModuleUi } from '../modules/registry';
 import { Inspector } from '../shell/Inspector';
 import { ProjectTree } from '../shell/ProjectTree';
 import { ModuleTaskCards } from '../shell/TaskCards';
+import { PortalView } from '../shell/PortalView';
 import { WorkArea } from '../shell/WorkArea';
 import { MODULES, project, render, resetStores, sample, unmountAll } from './harness';
 
@@ -323,5 +324,43 @@ describe('what a module registered, in the workbench', () => {
     await expect(host.api('/api/v1/projects/plant/notes/empty')).resolves.toBeNull();
     await expect(host.api('/api/v1/projects/plant/notes/missing')).rejects.toThrow('404');
     expect(host.project()).toEqual({ id: 'plant', name: 'Plant A' });
+  });
+});
+
+describe('a module’s page in the Portal', () => {
+  it('is listed in the Portal’s navigation and drawn when chosen; the Portal’s own pages cannot be taken', async () => {
+    controller({ ...MODULES, modules: [row('org.example.net', '/net.js')] });
+    const refused: string[] = [];
+    await loadModuleUis(
+      importer({
+        '/net.js': {
+          id: 'org.example.net',
+          activate(host: WorkbenchHost) {
+            try {
+              host.register.portalSection({ id: 'open', label: 'Mine', mount: () => undefined });
+            } catch (cause) {
+              refused.push((cause as Error).message);
+            }
+            host.register.portalSection({
+              id: 'network',
+              label: 'MythOS on this network',
+              mount: (container) => {
+                container.textContent = 'two nodes heard';
+              },
+            });
+          },
+        },
+      })
+    );
+    expect(refused).toEqual(["module 'org.example.net' cannot register the Portal's own 'open'"]);
+    act(() => useWorkbench.getState().closeProject());
+    const portal = render(<PortalView />);
+    const entry = portal.querySelector<HTMLButtonElement>('[data-testid="portal-module-network"]');
+    expect(entry?.textContent?.trim()).toBe('MythOS on this network');
+    act(() => entry?.click());
+    expect(portal.querySelector('[data-testid="portal-section-network"]')?.textContent).toBe('two nodes heard');
+
+    act(() => unloadModuleUis());
+    expect(portal.querySelector('[data-testid="portal-module-network"]')).toBeNull();
   });
 });

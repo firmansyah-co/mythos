@@ -25,11 +25,18 @@ use tracing::{info, warn};
 /// The least time between two starts of a service that keeps dying.
 pub const RESTART_BACKOFF: Duration = Duration::from_secs(2);
 
+/// What tells a service which node it runs on (ADR-012): read each time it is told.
+pub type NodeSource = Arc<dyn Fn() -> Option<mythos_module::protocol::WireNode> + Send + Sync>;
+type SharedNode = Arc<RwLock<Option<NodeSource>>>;
+
 /// One service module and its process.
 pub struct RunningService {
     pub module: Arc<ModuleBinary>,
     session: Mutex<Slot>,
     events: mpsc::UnboundedSender<WireEvent>,
+    node: SharedNode,
+    /// Set when it is replaced or removed: an always-on service is not started again then.
+    stopped: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -55,7 +62,11 @@ pub struct ServiceStatus {
 }
 
 impl RunningService {
-    fn new(module: Arc<ModuleBinary>, hmi: broadcast::Sender<HmiEvent>) -> Arc<Self> {
+    fn new(
+        module: Arc<ModuleBinary>,
+        hmi: broadcast::Sender<HmiEvent>,
+        node: SharedNode,
+    ) -> Arc<Self> {
         let (events, mut rx) = mpsc::unbounded_channel::<WireEvent>();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -66,7 +77,51 @@ impl RunningService {
             module,
             session: Mutex::new(Slot::default()),
             events,
+            node,
+            stopped: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    fn current_node(&self) -> Option<mythos_module::protocol::WireNode> {
+        let source = self.node.read().unwrap_or_else(|e| e.into_inner()).clone();
+        source.and_then(|source| source())
+    }
+
+    /// Tell the running process which node it runs on, if it is running.
+    async fn tell_node(&self) {
+        let session = self.session.lock().await.session.clone();
+        if let (Some(session), Some(node)) = (session.filter(|s| s.alive()), self.current_node()) {
+            if let Err(e) = session.node(node).await {
+                warn!(
+                    "service module '{}' was not told the node: {e}",
+                    self.module.manifest.provides
+                );
+            }
+        }
+    }
+
+    /// Keep an always-on service running: start it now, and again whenever it has stopped,
+    /// until it is replaced or removed.
+    fn keep_running(self: &Arc<Self>) {
+        let service = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                let Some(service) = service.upgrade() else {
+                    break;
+                };
+                if service.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                if let Err(e) = service.session().await {
+                    warn!(
+                        "always-on service module '{}' cannot start: {e}",
+                        service.module.manifest.provides
+                    );
+                }
+                drop(service);
+                tokio::time::sleep(RESTART_BACKOFF).await;
+            }
+        });
     }
 
     /// The running process, started now if there is none or it has died.
@@ -94,6 +149,15 @@ impl RunningService {
                     session.pid()
                 );
                 let session = Arc::new(session);
+                // Every new process is told the node before it is asked anything.
+                if let Some(node) = self.current_node() {
+                    if let Err(e) = session.node(node).await {
+                        warn!(
+                            "service module '{}' was not told the node: {e}",
+                            self.module.manifest.provides
+                        );
+                    }
+                }
                 slot.session = Some(Arc::clone(&session));
                 slot.last_error = None;
                 Ok(session)
@@ -126,6 +190,8 @@ impl RunningService {
 
     /// Stop the process, letting it finish what it has.
     async fn stop(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let session = self.session.lock().await.session.take();
         if let Some(session) = session {
             // Requests still in flight hold it; the process is killed (kill_on_drop) when the
@@ -141,6 +207,7 @@ impl RunningService {
 pub struct ServiceHost {
     services: RwLock<BTreeMap<String, Arc<RunningService>>>,
     hmi: broadcast::Sender<HmiEvent>,
+    node: SharedNode,
 }
 
 impl ServiceHost {
@@ -148,7 +215,20 @@ impl ServiceHost {
         Arc::new(Self {
             services: RwLock::new(BTreeMap::new()),
             hmi,
+            node: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// Where the services learn which node they run on (ADR-012). Set before the first sync.
+    pub fn set_node(&self, source: NodeSource) {
+        *self.node.write().unwrap_or_else(|e| e.into_inner()) = Some(source);
+    }
+
+    /// The node changed (renamed, another role, now listening): tell every running service.
+    pub async fn node_changed(&self) {
+        for service in self.all() {
+            service.tell_node().await;
+        }
     }
 
     pub fn get(&self, provides: &str) -> Option<Arc<RunningService>> {
@@ -199,7 +279,8 @@ impl ServiceHost {
             if same {
                 continue;
             }
-            let next = RunningService::new(Arc::clone(module), self.hmi.clone());
+            let next =
+                RunningService::new(Arc::clone(module), self.hmi.clone(), Arc::clone(&self.node));
             if let Some(old) = current.get(name) {
                 // Start the new build first. If it cannot start, the old one keeps serving.
                 if let Err(e) = next.session().await {
@@ -217,12 +298,18 @@ impl ServiceHost {
                     module.manifest.version
                 );
                 old.stop().await;
+                if module.manifest.always_on {
+                    next.keep_running();
+                }
             } else {
                 self.services
                     .write()
                     .unwrap_or_else(|e| e.into_inner())
-                    .insert(name.clone(), next);
+                    .insert(name.clone(), Arc::clone(&next));
                 info!("service module '{name}' {} found", module.manifest.version);
+                if module.manifest.always_on {
+                    next.keep_running();
+                }
             }
         }
 

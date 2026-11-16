@@ -46,6 +46,7 @@ fn manifest() -> ModuleManifest {
         description: "Notes per project, for the tests".into(),
         capabilities: vec![],
         config_schema: Value::Null,
+        always_on: false,
         routes: vec![
             route(
                 "GET",

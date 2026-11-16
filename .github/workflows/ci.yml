@@ -317,7 +317,11 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # --no-fail-fast: a failure in one test binary must not hide what the others say.
+      # MYTHOS_TEST_MDNS: two discovery modules hear each other over multicast (ADR-012 §2.2),
+      # which these hosted runners have; a container may not, so elsewhere that test says SKIP.
       - name: Run All Workspace Tests
+        env:
+          MYTHOS_TEST_MDNS: "1"
         run: cargo test --workspace --no-fail-fast
 
       # ADR-012 step 2: `mythos service install` installs mythos-server as a real service of the

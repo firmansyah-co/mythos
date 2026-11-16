@@ -11,6 +11,7 @@ members = [
     "crates/mythos-update",
     "plugins/drivers/driver-modbus",
     "plugins/hmi",
+    "plugins/discovery",
     "src-tauri",
 ]
 

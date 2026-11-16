@@ -5,6 +5,7 @@ import type {
   Dispose,
   Editor,
   Identity,
+  PortalSection,
   Project,
   TelemetrySnapshot,
   TreeSection,
@@ -26,7 +27,7 @@ function asProject(project: ProjectConfig | null): Project | null {
 }
 
 /** Add `entry` to the list `key`, refusing a second claim on the same name. */
-function claim<K extends 'treeSections' | 'editors' | 'views'>(
+function claim<K extends 'treeSections' | 'editors' | 'views' | 'portalSections'>(
   key: K,
   entry: ModuleUiState[K][number],
   name: (item: ModuleUiState[K][number]['item']) => string
@@ -205,9 +206,18 @@ export function createHost(module: string): WorkbenchHost {
         }
         return claim('views', { module, item: view }, (item) => item.id);
       },
+      portalSection: (section: PortalSection) => {
+        if (RESERVED_PORTAL.includes(section.id)) {
+          throw new Error(`module '${module}' cannot register the Portal's own '${section.id}'`);
+        }
+        return claim('portalSections', { module, item: section }, (item) => item.id);
+      },
     },
   };
 }
 
 /** View ids that are words of the workbench's own address (`#/project/…`). */
 export const RESERVED_VIEWS: readonly string[] = ['project', 'settings', 'portal'];
+
+/** The Portal's own pages. */
+export const RESERVED_PORTAL: readonly string[] = ['open', 'create'];

@@ -68,6 +68,7 @@ pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::Joi
         };
         if let Ok(bound) = listener.local_addr() {
             node.set_listening(bound);
+            services.node_changed().await;
         }
 
         // Telemetry streams never end on their own, so stop serving on the signal rather than

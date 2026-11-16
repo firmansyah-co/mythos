@@ -36,6 +36,10 @@ use tracing::{info, warn};
 #[async_trait::async_trait]
 pub trait Service: Send + Sync + 'static {
     async fn handle(&self, call: HttpCall, events: &Events) -> HttpReply;
+
+    /// The node this service runs on, told after `hello` and whenever it changes
+    /// (ADR-012). Most services do not need it.
+    async fn node(&self, _node: crate::protocol::WireNode, _events: &Events) {}
 }
 
 /// Sends events to the server, which relays them to every open workbench.
@@ -161,6 +165,10 @@ where
                 Response::ok(id, serde_json::to_value(&manifest).unwrap_or(Value::Null)),
             ),
             Call::Health => answer(&lines_tx, Response::ok(id, json!({ "healthy": true }))),
+            Call::Node { node } => {
+                service.node(node, &events).await;
+                answer(&lines_tx, Response::ok(id, Value::Null));
+            }
             Call::Http(call) => {
                 let service = Arc::clone(&service);
                 let events = events.clone();
@@ -427,6 +435,13 @@ impl ServiceSession {
         let value = self.call(Call::Http(call), SERVICE_CALL_TIMEOUT).await?;
         serde_json::from_value(value)
             .map_err(|e| format!("the module's answer is not a reply: {e}"))
+    }
+
+    /// Tell the module which node it runs on.
+    pub async fn node(&self, node: crate::protocol::WireNode) -> Result<(), String> {
+        self.call(Call::Node { node }, SERVICE_CALL_TIMEOUT)
+            .await
+            .map(|_| ())
     }
 
     /// Ask the module to stop (it finishes the requests it has), then close it.

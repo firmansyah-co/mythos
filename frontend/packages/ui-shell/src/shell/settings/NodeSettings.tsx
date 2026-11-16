@@ -220,8 +220,8 @@ export function NodeSettings() {
               onChange={(announce) => setDraft({ ...draft, announce })}
             />
             <p className="muted" data-testid="node-announce-note">
-              Nothing announces this node yet: announcing is done by the discovery module (ADR-012 step 3), which
-              reads this setting.
+              The discovery module announces this node (ADR-012 §2.2); with it disabled in Settings → Modules, nothing
+              does. Other nodes heard are listed in the Portal, as candidates.
             </p>
             {notice && <p className="notice">{notice}</p>}
             {mayChange ? (
