@@ -88,13 +88,13 @@ impl DriverRegistry {
             DriverSource::InProcess(factory) => {
                 format!("in_process:{name}:{:p}", *factory as *const ())
             }
+            // The whole fingerprint, so a field added to it counts here without a change.
             DriverSource::Module(module) => format!(
-                "module:{}:{}:{}:{}:{}",
+                "module:{}:{}:{}:{:?}",
                 module.manifest.id,
                 module.manifest.version,
                 module.path.display(),
-                module.fingerprint.len,
-                module.fingerprint.modified_unix_ns
+                module.fingerprint
             ),
         })
     }

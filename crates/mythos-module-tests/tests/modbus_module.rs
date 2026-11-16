@@ -35,10 +35,24 @@ fn modbus_exe(dir: &Path) -> PathBuf {
     dir.join(exe_name("mythos-module-modbus"))
 }
 
+/// Copy a file the way macOS and Windows do, keeping its modification time. Linux's copy gives
+/// the copy a new one; doing it this way everywhere means every platform proves that a
+/// reinstalled build is told apart by which file it is, not by its time.
+fn copy_keeping_time(from: &Path, to: &Path) {
+    std::fs::copy(from, to).unwrap();
+    let modified = std::fs::metadata(from).unwrap().modified().unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(to)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+}
+
 /// A directory holding the module under its shipped name, as an installation would.
 fn module_dir() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::copy(UNDER_TEST, modbus_exe(dir.path())).unwrap();
+    copy_keeping_time(Path::new(UNDER_TEST), &modbus_exe(dir.path()));
     dir
 }
 
@@ -441,7 +455,7 @@ async fn install(dir: &Path, source: &Path) {
     tokio::time::sleep(Duration::from_millis(20)).await;
     let target = modbus_exe(dir);
     let staged = dir.join(".staged-module");
-    std::fs::copy(source, &staged).unwrap();
+    copy_keeping_time(source, &staged);
     let mut sidecar = source.as_os_str().to_owned();
     sidecar.push(".fixture.json");
     if Path::new(&sidecar).exists() {
@@ -467,6 +481,7 @@ const WATCH_EVERY: Duration = Duration::from_millis(100);
 /// Records every read of slot 0 that is not GOOD, until finished or dropped.
 struct SlotWatch {
     stop: Arc<std::sync::atomic::AtomicBool>,
+    reads: Arc<std::sync::atomic::AtomicU64>,
     handle: Option<tokio::task::JoinHandle<(u64, Vec<String>)>>,
 }
 
@@ -478,31 +493,48 @@ impl Drop for SlotWatch {
 }
 
 impl SlotWatch {
-    fn start(segment: &Segment) -> Self {
+    /// Start watching, and return once the first read is done: the watch covers everything
+    /// after this call.
+    async fn start(segment: &Segment) -> Self {
         let name = segment.0.clone();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = Arc::clone(&stop);
+        let reads = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (flag, count) = (Arc::clone(&stop), Arc::clone(&reads));
         let handle = tokio::task::spawn_blocking(move || {
             let mut reader = ShmReaderHandle::<DefaultShm>::new(&name, CAPACITY).unwrap();
-            let (mut reads, mut gaps) = (0u64, Vec::new());
+            let mut gaps = Vec::new();
             while !flag.load(Ordering::SeqCst) {
                 reader.update();
                 let quality = reader.read_tag(0).unwrap().quality;
-                reads += 1;
                 if quality != QualityCode::GOOD {
                     gaps.push(format!("{quality:?}"));
                 }
+                count.fetch_add(1, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(1));
             }
-            (reads, gaps)
+            (count.load(Ordering::SeqCst), gaps)
         });
-        Self {
+        let watch = Self {
             stop,
+            reads,
             handle: Some(handle),
+        };
+        watch.wait_for_reads(1).await;
+        watch
+    }
+
+    async fn wait_for_reads(&self, at_least: u64) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.reads.load(Ordering::SeqCst) < at_least {
+            assert!(Instant::now() < deadline, "the watch stopped reading");
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
 
+    /// Stop once the watch has read again after this call, so it covers everything before it.
     async fn finish(mut self) -> (u64, Vec<String>) {
+        self.wait_for_reads(self.reads.load(Ordering::SeqCst) + 1)
+            .await;
         self.stop.store(true, Ordering::SeqCst);
         self.handle.take().unwrap().await.unwrap()
     }
@@ -525,7 +557,7 @@ async fn installing_a_new_build_of_a_module_swaps_it_in_without_a_gap() {
     assert_eq!(before.len(), 1);
 
     let _watcher = rig.io.spawn_module_watcher(WATCH_EVERY).unwrap();
-    let watch = SlotWatch::start(&rig.segment);
+    let watch = SlotWatch::start(&rig.segment).await;
 
     install(dir.path(), Path::new(UNDER_TEST)).await;
 
@@ -536,10 +568,18 @@ async fn installing_a_new_build_of_a_module_swaps_it_in_without_a_gap() {
         if now.len() == 1 && now != before {
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "the module was never swapped; children {now:?}"
-        );
+        if Instant::now() >= deadline {
+            let status = rig.io.status().snapshot();
+            panic!(
+                "the module was never swapped; children {now:?}; connection {:?}: {:?}; \
+                 drivers {:?}; module problems {:?}; installed {:?}",
+                status.connections.first().map(|c| &c.state),
+                status.connections.first().and_then(|c| c.detail.clone()),
+                rig.io.drivers(),
+                rig.io.module_problems(),
+                mythos_module::snapshot(&[dir.path().to_path_buf()]),
+            );
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     sim.set_holding(0, 6).await;
@@ -551,7 +591,8 @@ async fn installing_a_new_build_of_a_module_swaps_it_in_without_a_gap() {
     .await;
 
     let (reads, gaps) = watch.finish().await;
-    assert!(reads > 100, "the watch hardly ran: {reads}");
+    // The watch read from before the install until after the swap (see SlotWatch).
+    assert!(reads >= 2, "the watch did not run: {reads}");
     assert!(
         gaps.is_empty(),
         "the tag stopped being GOOD during the swap: {gaps:?}"
@@ -588,7 +629,7 @@ async fn a_new_build_that_cannot_start_leaves_the_running_one_in_place() {
     let script = broken.path().join(exe_name("module"));
     fixture(&script, Some(&manifest.to_string()), 0, 1);
 
-    let watch = SlotWatch::start(&rig.segment);
+    let watch = SlotWatch::start(&rig.segment).await;
     install(dir.path(), &script).await;
     let report = rig.io.rescan().await;
     let (_, gaps) = watch.finish().await;
