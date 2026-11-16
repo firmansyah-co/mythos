@@ -15,6 +15,9 @@ const EDGE: NodeInfo = {
   listening: '0.0.0.0:8080',
   listen_address: '0.0.0.0',
   restart_required: false,
+  field_io: { on: true, from_role: true },
+  announce: { on: true, from_role: true },
+  field_io_off: null,
 };
 
 function controller(node: NodeInfo, refuse?: string) {
@@ -28,9 +31,20 @@ function controller(node: NodeInfo, refuse?: string) {
       if (String(input) !== '/api/v1/node') return new Response('{}', { status: 404 });
       if (method === 'PUT') {
         if (refuse) return new Response(JSON.stringify({ error: refuse }), { status: 422, statusText: 'Unprocessable Entity' });
-        const role = body?.role as NodeInfo['role'];
+        // As the controller answers: a setting sent as null follows the role again.
+        const { field_io, announce, ...rest } = (body ?? {}) as Record<string, unknown>;
+        const role = (rest.role as NodeInfo['role'] | undefined) ?? node.role;
         const listen_address = role === 'workstation' ? '127.0.0.1' : '0.0.0.0';
-        return Response.json({ ...node, ...body, listen_address, restart_required: listen_address !== '0.0.0.0' });
+        const setting = (sent: unknown, current: NodeInfo['field_io'], roleSays: boolean) =>
+          sent === undefined ? current : sent === null ? { on: roleSays, from_role: true } : { on: sent as boolean, from_role: false };
+        return Response.json({
+          ...node,
+          ...rest,
+          field_io: setting(field_io, node.field_io, role !== 'server'),
+          announce: setting(announce, node.announce, role === 'edge'),
+          listen_address,
+          restart_required: listen_address !== '0.0.0.0',
+        });
       }
       return Response.json(node);
     })
@@ -87,7 +101,7 @@ describe('Settings → Node', () => {
     await settle();
 
     expect(calls.filter((c) => c.method === 'PUT').map((c) => c.body)).toEqual([
-      { name: 'Boiler edge 1', site: '', role: 'workstation' },
+      { name: 'Boiler edge 1', site: '', role: 'workstation', field_io: null, announce: null },
     ]);
     const restart = view.querySelector('[data-testid="node-restart"]')?.textContent ?? '';
     expect(restart).toContain('127.0.0.1');
@@ -103,5 +117,28 @@ describe('Settings → Node', () => {
     act(() => (view.querySelector('button[type="submit"]') as HTMLButtonElement).click());
     await settle();
     expect(view.querySelector('[role="alert"]')?.textContent).toContain("'plc' is not a role");
+  });
+
+  it('sets a node to read the field whatever its role says, and back to the role', async () => {
+    const server: NodeInfo = {
+      ...EDGE,
+      role: 'server',
+      field_io: { on: false, from_role: true },
+      announce: { on: false, from_role: true },
+      field_io_off: 'field I/O is off on this node: its role is server, which reads no field devices',
+    };
+    const calls = controller(server);
+    signedIn('admin');
+    const view = render(<NodeSettings />);
+    await settle();
+    expect(view.querySelector('[data-testid="node-field-io-off"]')?.textContent).toContain('its role is server');
+    const select = view.querySelector('select[aria-label="Reads field devices"]') as HTMLSelectElement;
+    expect(select.value).toBe('role');
+    expect(select.options[0]?.textContent).toBe('As the role says (off)');
+
+    typeInto(select, 'on');
+    act(() => (view.querySelector('button[type="submit"]') as HTMLButtonElement).click());
+    await settle();
+    expect(calls.filter((c) => c.method === 'PUT').map((c) => (c.body as Record<string, unknown>).field_io)).toEqual([true]);
   });
 });

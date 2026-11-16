@@ -190,6 +190,8 @@ async fn assemble<S: PlatformShm + 'static>(
         ),
     };
     io.use_module_settings(Arc::clone(&module_settings));
+    // A node whose role (or own setting) reads no field devices starts none (ADR-012 §2.1).
+    io.set_field_io_off(identity.field_io_off_reason());
     io.reload().await;
 
     // Accounts are not optional for a server: every route is checked against its policy.

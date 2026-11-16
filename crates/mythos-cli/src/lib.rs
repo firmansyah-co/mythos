@@ -1,6 +1,7 @@
 //! MythOS CLI library definitions and commands.
 
 pub mod channel;
+pub mod service;
 
 // The updater lives in `mythos-update`, shared with the server; its modules keep their paths here.
 pub use mythos_update::{config, install, release, rollback, update, versions};
@@ -59,6 +60,60 @@ pub enum Commands {
         #[command(subcommand)]
         action: ModuleCommands,
     },
+    /// Run mythos-server as a service of this operating system, started at boot (ADR-012)
+    Service {
+        #[command(subcommand)]
+        action: ServiceCommands,
+    },
+}
+
+/// Where the service is and what it runs; shared by its subcommands.
+#[derive(clap::Args, Debug, Clone)]
+pub struct ServiceTarget {
+    /// The service's name, when several run on one machine
+    #[arg(long, default_value = "mythos")]
+    pub name: String,
+    /// Install for the signed-in user instead of the whole machine (Linux, macOS)
+    #[arg(long)]
+    pub user: bool,
+    /// The storage root of the server (default: the platform's, as mythos-server uses)
+    #[arg(long)]
+    pub storage: Option<PathBuf>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ServiceCommands {
+    /// Install and start it
+    Install {
+        #[command(flatten)]
+        target: ServiceTarget,
+        /// The node's role: workstation, edge or server (default: as the node already says,
+        /// or edge for a new one)
+        #[arg(long)]
+        role: Option<String>,
+        /// The HTTP port
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+        /// The mythos-server to run (default: the installation's current one)
+        #[arg(long)]
+        server: Option<PathBuf>,
+        /// Print what would be written and run, and do nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Stop and remove it; its storage is kept
+    Uninstall {
+        #[command(flatten)]
+        target: ServiceTarget,
+        /// Print what would be removed and run, and do nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Ask the operating system how it is
+    Status {
+        #[command(flatten)]
+        target: ServiceTarget,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -83,11 +138,133 @@ pub enum ChannelSubcommand {
     },
 }
 
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn this_uid() -> Option<u32> {
+    let out = std::process::Command::new("id").arg("-u").output().ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+fn service_spec(target: &ServiceTarget, server: PathBuf, port: u16) -> service::ServiceSpec {
+    service::ServiceSpec {
+        name: target.name.clone(),
+        server,
+        storage: target
+            .storage
+            .clone()
+            .unwrap_or_else(mythos_core::storage::default_projects_dir),
+        port,
+        user: target.user,
+        home: home_dir(),
+        uid: if target.user { this_uid() } else { None },
+    }
+}
+
+/// `mythos service …`
+pub fn execute_service(
+    action: ServiceCommands,
+    mythos_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let os = service::Os::this();
+    match action {
+        ServiceCommands::Install {
+            target,
+            role,
+            port,
+            server,
+            dry_run,
+        } => {
+            let role = role
+                .map(|r| {
+                    mythos_core::node::NodeRole::parse(&r).ok_or_else(|| {
+                        format!("'{r}' is not a role; use workstation, edge or server")
+                    })
+                })
+                .transpose()?;
+            let server = server
+                .or_else(|| service::default_server(mythos_dir))
+                .ok_or("no mythos-server found: install MythOS first (`mythos update`), or name one with --server")?;
+            let spec = service_spec(&target, server, port);
+            let plan = service::plan_install(os, &spec)?;
+            let node_file = spec.storage.join(".mythos-system").join("node.json");
+            if dry_run {
+                print!("{}", service::describe(&plan));
+                if let Some(role) = role {
+                    println!("set role {} in {}", role.as_str(), node_file.display());
+                }
+                return Ok(());
+            }
+            // The role is the node's, kept with its storage: set it before the server starts.
+            let storage = mythos_core::storage::ControllerStorage::new(&spec.storage)?;
+            let node = mythos_core::node::Node::open(
+                &storage.system_dir(),
+                role.unwrap_or(mythos_core::node::NodeRole::Edge),
+            )?;
+            if let Some(role) = role {
+                node.update(mythos_core::node::NodeChange {
+                    role: Some(role.as_str().to_string()),
+                    ..Default::default()
+                })?;
+            }
+            let identity = node.identity();
+            service::carry_out(&plan, true)?;
+            println!(
+                "Installed and started {}: node '{}' ({}), role {}.",
+                spec.name,
+                identity.name,
+                identity.id,
+                identity.role.as_str()
+            );
+            for note in &plan.notes {
+                println!("{note}");
+            }
+        }
+        ServiceCommands::Uninstall { target, dry_run } => {
+            let spec = service_spec(&target, PathBuf::new(), 0);
+            let plan = service::plan_uninstall(os, &spec)?;
+            if dry_run {
+                print!("{}", service::describe(&plan));
+                return Ok(());
+            }
+            let failures = service::carry_out(&plan, false)?;
+            for failure in &failures {
+                eprintln!("{failure}");
+            }
+            println!("Removed {}.", spec.name);
+            for note in &plan.notes {
+                println!("{note}");
+            }
+        }
+        ServiceCommands::Status { target } => {
+            let spec = service_spec(&target, PathBuf::new(), 0);
+            service::valid_name(&spec.name)?;
+            let command = service::status_command(os, &spec);
+            let status = std::process::Command::new(&command[0])
+                .args(&command[1..])
+                .status()?;
+            if !status.success() {
+                return Err(format!(
+                    "`{}` says the service is not running or not installed",
+                    command.join(" ")
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn execute_command(
     command: Commands,
     mythos_dir: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
+        Commands::Service { action } => execute_service(action, mythos_dir)?,
         Commands::Channel { action } => match action {
             None => {
                 let ch = channel::ChannelManager::get_channel(mythos_dir)?;

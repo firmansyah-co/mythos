@@ -196,7 +196,9 @@ fn node_body() -> Value {
         "properties": {
             "name": { "type": "string", "maxLength": 64 },
             "site": { "type": "string", "maxLength": 128 },
-            "role": { "type": "string", "enum": ["workstation", "edge", "server"] }
+            "role": { "type": "string", "enum": ["workstation", "edge", "server"] },
+            "field_io": { "type": ["boolean", "null"], "description": "Read field devices whatever the role says; null follows the role (a server reads none). Applies at once." },
+            "announce": { "type": ["boolean", "null"], "description": "Announce this node on the network whatever the role says; null follows the role (only an edge does)." }
         }
     })
 }
@@ -440,7 +442,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "update_node",
         title: "Rename this node or change its role",
-        description: "Change this node's name, site or role. A workstation listens on its own computer only, an edge or a server on every interface; a new listening address applies when the server next starts.",
+        description: "Change this node's name, site, role, or whether it reads field devices or announces itself. A workstation listens on its own computer only, an edge or a server on every interface; a new listening address applies when the server next starts. A server reads no field devices unless field_io is set.",
         method: "PUT",
         path: "/api/v1/node",
         query: &[],

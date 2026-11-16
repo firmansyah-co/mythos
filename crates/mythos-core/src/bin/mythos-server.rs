@@ -8,6 +8,46 @@ use mythos_core::storage::default_projects_dir;
 use mythos_pal::DefaultShm;
 use std::net::SocketAddr;
 
+/// `--storage-root <dir>` and `--port <n>`, which override `MYTHOS_STORAGE_ROOT` and
+/// `MYTHOS_HTTP_PORT`: a service of the operating system starts the server with them
+/// (`mythos service install`), so no wrapper process stands between it and the service manager.
+struct Args {
+    storage_root: Option<std::path::PathBuf>,
+    port: Option<u16>,
+}
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
+    let mut parsed = Args {
+        storage_root: None,
+        port: None,
+    };
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--storage-root" => {
+                parsed.storage_root = Some(
+                    args.next()
+                        .ok_or("--storage-root needs a directory")?
+                        .into(),
+                )
+            }
+            "--port" => {
+                let text = args.next().ok_or("--port needs a number")?;
+                parsed.port = Some(
+                    text.parse()
+                        .map_err(|_| format!("--port {text} is not a port number"))?,
+                );
+            }
+            other => {
+                return Err(format!(
+                    "unknown argument '{other}' (mythos-server takes --storage-root <dir> and --port <n>)"
+                ))
+            }
+        }
+    }
+    Ok(parsed)
+}
+
 /// Resolves when the process is asked to stop (Ctrl-C, or SIGTERM on Unix).
 async fn shutdown_signal() {
     let ctrl_c = async {
@@ -43,9 +83,12 @@ fn installed_workbench() -> Option<std::path::PathBuf> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     mythos_core::server::init_logging();
+    let args = parse_args(std::env::args().skip(1))?;
 
-    let storage_root = std::env::var_os("MYTHOS_STORAGE_ROOT")
-        .map(std::path::PathBuf::from)
+    let storage_root = args
+        .storage_root
+        .clone()
+        .or_else(|| std::env::var_os("MYTHOS_STORAGE_ROOT").map(std::path::PathBuf::from))
         .unwrap_or_else(default_projects_dir);
     let shm_name = shm_name_from_env();
 
@@ -63,9 +106,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let app = create_router(state);
 
-    let port: u16 = std::env::var("MYTHOS_HTTP_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
+    let port: u16 = args
+        .port
+        .or_else(|| {
+            std::env::var("MYTHOS_HTTP_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+        })
         .unwrap_or(8080);
 
     // Where to listen is the node's role (ADR-012 §2.1): an edge or a server on every interface,

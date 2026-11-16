@@ -320,6 +320,15 @@ jobs:
       - name: Run All Workspace Tests
         run: cargo test --workspace --no-fail-fast
 
+      # ADR-012 step 2: `mythos service install` installs mythos-server as a real service of the
+      # runner's operating system (Task Scheduler as SYSTEM on Windows; launchd as root through
+      # passwordless sudo on macOS), checks it answers, uninstalls it and checks it stopped. A
+      # developer's machine never runs this: the test is ignored without MYTHOS_TEST_SERVICE=1.
+      - name: Install mythos-server as a real service, then remove it
+        env:
+          MYTHOS_TEST_SERVICE: "1"
+        run: cargo test -p mythos-cli --test service_roundtrip -- --ignored --nocapture
+
   frontend-tests:
     name: Frontend Web Workbench Test Suite & Lints
     runs-on: arc-runner-org
