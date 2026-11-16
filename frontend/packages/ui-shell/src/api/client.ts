@@ -125,7 +125,51 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** Accounts are ordered: each role may do everything the one before it may. */
+export type Role = 'viewer' | 'operator' | 'engineer' | 'admin';
+export const ROLES: readonly Role[] = ['viewer', 'operator', 'engineer', 'admin'];
+
+/** The account a request acts as. */
+export interface Identity {
+  username: string;
+  display_name: string;
+  role: Role;
+  /** `session`, or `token:<name>`. */
+  via: string;
+}
+
+export interface AuthStatus {
+  /** Whether this server has accounts at all. */
+  auth: boolean;
+  /** Whether the first administrator is still to be created. */
+  setup_required: boolean;
+  user: Identity | null;
+}
+
+export interface UserAccount {
+  username: string;
+  display_name: string;
+  role: Role;
+  disabled: boolean;
+  created_unix_s: number;
+}
+
+export interface AccessToken {
+  id: string;
+  name: string;
+  created_unix_s: number;
+  last_used_unix_s: number | null;
+}
+
+let onUnauthorized: (() => void) | null = null;
+
+/** Called whenever the server answers 401 to a request: the session has ended. */
+export function whenUnauthorized(handler: (() => void) | null) {
+  onUnauthorized = handler;
+}
+
+/** `fetch`, reporting an unanswered request as an `ApiError` and a 401 to `whenUnauthorized`. */
+async function call(path: string, init?: RequestInit): Promise<Response> {
   let response: Response;
   try {
     response = await fetch(path, init);
@@ -135,7 +179,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       null
     );
   }
+  if (response.status === 401 && !path.startsWith('/api/v1/auth/')) onUnauthorized?.();
+  return response;
+}
 
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await call(path, init);
   if (!response.ok) {
     let detail = '';
     try {
@@ -156,15 +205,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 /** A request whose success carries no body. Throws exactly as `request` does. */
 async function send(path: string, init: RequestInit): Promise<void> {
-  let response: Response;
-  try {
-    response = await fetch(path, init);
-  } catch (cause) {
-    throw new ApiError(
-      `The controller did not answer (${cause instanceof Error ? cause.message : 'network error'})`,
-      null
-    );
-  }
+  const response = await call(path, init);
   if (response.ok) return;
   let detail = '';
   try {
@@ -236,15 +277,7 @@ export const api = {
    */
   saveIoConfig: async (projectId: string, config: IoConfig): Promise<{ applied: boolean }> => {
     const path = `/api/v1/projects/${encodeURIComponent(projectId)}/io`;
-    let response: Response;
-    try {
-      response = await fetch(path, json('PUT', config));
-    } catch (cause) {
-      throw new ApiError(
-        `The controller did not answer (${cause instanceof Error ? cause.message : 'network error'})`,
-        null
-      );
-    }
+    const response = await call(path, json('PUT', config));
     const body: unknown = await response.json().catch(() => null);
     const record = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
     if (response.ok) return { applied: record.applied === true };
@@ -257,7 +290,42 @@ export const api = {
     throw new ApiError(message, response.status);
   },
   listTags: () => request<TagMetadata[]>('/api/v1/tags'),
+
+  // Accounts
+  authStatus: () => request<AuthStatus>('/api/v1/auth/status'),
+  setUp: (setupCode: string, username: string, displayName: string, password: string) =>
+    request<Identity>(
+      '/api/v1/auth/setup',
+      json('POST', { setup_code: setupCode, username, display_name: displayName, password })
+    ),
+  signIn: (username: string, password: string) =>
+    request<Identity>('/api/v1/auth/login', json('POST', { username, password })),
+  signOut: () => send('/api/v1/auth/logout', { method: 'POST' }),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    send(
+      '/api/v1/auth/me/password',
+      json('PUT', { current_password: currentPassword, new_password: newPassword })
+    ),
+  listTokens: () => request<AccessToken[]>('/api/v1/auth/me/tokens'),
+  createToken: (name: string) =>
+    request<{ token: AccessToken; secret: string }>('/api/v1/auth/me/tokens', json('POST', { name })),
+  revokeToken: (id: string) =>
+    send(`/api/v1/auth/me/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  listUsers: () => request<{ users: UserAccount[]; roles: Role[] }>('/api/v1/users'),
+  createUser: (user: { username: string; display_name: string; role: Role; password: string }) =>
+    request<UserAccount>('/api/v1/users', json('POST', user)),
+  updateUser: (
+    username: string,
+    change: { display_name?: string; role?: Role; disabled?: boolean; password?: string }
+  ) => request<UserAccount>(`/api/v1/users/${encodeURIComponent(username)}`, json('PUT', change)),
+  deleteUser: (username: string) =>
+    send(`/api/v1/users/${encodeURIComponent(username)}`, { method: 'DELETE' }),
 };
+
+/** Whether `role` may do what `needed` may. */
+export function hasRole(role: Role | undefined, needed: Role): boolean {
+  return role !== undefined && ROLES.indexOf(role) >= ROLES.indexOf(needed);
+}
 
 /** The server-sent event stream of tag values. */
 export const TELEMETRY_STREAM_ENDPOINT = '/api/v1/telemetry/stream';

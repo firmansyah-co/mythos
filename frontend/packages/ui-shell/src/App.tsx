@@ -5,14 +5,42 @@ import { useIoConfig } from './data/ioConfig';
 import { formatLocation, parseLocation } from './data/location';
 import { log } from './data/log';
 import { useScreens } from './data/screens';
+import { useSession } from './data/session';
 import { goOffline, goOnline, useTelemetry } from './data/telemetry';
 import { useWorkbench } from './data/workbench';
 import { AboutDialog } from './shell/AboutDialog';
 import { PortalView } from './shell/PortalView';
 import { ProjectView } from './shell/ProjectView';
 import { RuntimeView } from './shell/RuntimeView';
+import { SettingsView } from './shell/SettingsView';
+import { SignIn } from './shell/SignIn';
 
+/**
+ * The workbench, once the controller knows who is using it. Until then only the sign-in page
+ * is shown, and nothing of the controller is asked for.
+ */
 export function App() {
+  const phase = useSession((state) => state.phase);
+
+  useEffect(() => {
+    void useSession.getState().refresh();
+  }, []);
+
+  // Signed out (by hand or because the session ended): nothing of the controller stays open.
+  useEffect(
+    () =>
+      useSession.subscribe((state, previous) => {
+        if (state.phase !== 'signed-out' || previous.phase !== 'signed-in') return;
+        goOffline();
+        useWorkbench.getState().closeProject();
+      }),
+    []
+  );
+
+  return phase === 'signed-in' || phase === 'open' ? <Workbench /> : <SignIn />;
+}
+
+function Workbench() {
   const view = useWorkbench((state) => state.view);
   const projectId = useWorkbench((state) => state.project?.id ?? null);
   const activeProjectId = useController((state) => state.activeProjectId);
@@ -147,6 +175,8 @@ export function App() {
         <PortalView />
       ) : view === 'runtime' ? (
         <RuntimeView />
+      ) : view === 'settings' ? (
+        <SettingsView />
       ) : (
         <ProjectView onAbout={() => setAbout(true)} />
       )}

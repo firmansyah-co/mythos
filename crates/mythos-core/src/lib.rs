@@ -5,6 +5,7 @@
 //! faceplate / data-type registries, the collaboration room, and the plugin package format.
 
 pub mod api;
+pub mod auth;
 pub mod catalog;
 pub mod collab;
 pub mod datatype;

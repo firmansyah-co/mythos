@@ -4,6 +4,7 @@
 //! and I/O configuration, and the SSE telemetry stream (`/api/v1/telemetry/stream`, one batch
 //! every 100 ms).
 
+pub mod auth;
 pub mod datatypes;
 pub mod faceplates;
 mod io;
@@ -51,10 +52,18 @@ pub struct CreateProjectRequest {
 /// Construct the complete Axum Router: the REST and SSE API, its MCP endpoint (`/mcp`), and the
 /// web workbench.
 pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
-    let api: Router = api_routes::<S>().with_state(state.clone());
+    let mut routes = api_routes::<S>();
+    if let Some(accounts) = state.auth.clone() {
+        // A route layer, so the matched route pattern is known when the policy is looked up.
+        routes = routes.route_layer(axum::middleware::from_fn_with_state(
+            accounts,
+            auth::enforce,
+        ));
+    }
+    let api: Router = routes.with_state(state.clone());
     Router::new()
         .merge(api.clone())
-        .merge(crate::mcp::router(api))
+        .merge(crate::mcp::router(api, state.auth.clone()))
         // Web HMI Static Asset Serving & SPA Routing
         .merge(web::web_router::<S>().with_state(state))
 }
@@ -64,6 +73,30 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
     Router::new()
         // Health
         .route("/api/v1/health", get(health_handler))
+        // Signing in, and one's own account
+        .route("/api/v1/auth/status", get(auth::status::<S>))
+        .route("/api/v1/auth/setup", post(auth::setup::<S>))
+        .route("/api/v1/auth/login", post(auth::login::<S>))
+        .route("/api/v1/auth/logout", post(auth::logout::<S>))
+        .route("/api/v1/auth/me", get(auth::me))
+        .route("/api/v1/auth/me/password", put(auth::change_password::<S>))
+        .route(
+            "/api/v1/auth/me/tokens",
+            get(auth::list_tokens::<S>).post(auth::create_token::<S>),
+        )
+        .route(
+            "/api/v1/auth/me/tokens/:token",
+            axum::routing::delete(auth::revoke_token::<S>),
+        )
+        // Accounts (administrators)
+        .route(
+            "/api/v1/users",
+            get(auth::list_users::<S>).post(auth::create_user::<S>),
+        )
+        .route(
+            "/api/v1/users/:username",
+            put(auth::update_user::<S>).delete(auth::delete_user::<S>),
+        )
         // Tags
         // Read-only. A tag exists because the field I/O runtime registered it and feeds it;
         // there is no route to create one, because nothing would feed it.

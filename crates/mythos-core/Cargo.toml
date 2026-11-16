@@ -33,6 +33,7 @@ tower = { workspace = true, features = ["util"] }
 ts-rs = { workspace = true, features = ["serde-json-impl", "no-serde-warnings"] }
 
 yrs = { workspace = true }
+argon2 = "0.5"
 
 [dev-dependencies]
 # The Modbus driver in-process and its device simulator, for the read path tests. The

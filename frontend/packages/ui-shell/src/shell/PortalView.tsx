@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import { ArrowRight, FilePlus2, FolderOpen } from 'lucide-react';
-import { api, type ProjectConfig } from '../api/client';
+import { ArrowRight, FilePlus2, FolderOpen, Settings } from 'lucide-react';
+import { api, hasRole, type ProjectConfig } from '../api/client';
+import { useSession } from '../data/session';
 import { log } from '../data/log';
 import { APP_CHANNEL, APP_VERSION } from '../lib/appVersion';
 import { useWorkbench } from '../data/workbench';
@@ -256,6 +257,10 @@ export function PortalView() {
   const [action, setAction] = useState<Action>('open');
   const project = useWorkbench((state) => state.project);
   const showProject = useWorkbench((state) => state.showProject);
+  const showSettings = useWorkbench((state) => state.showSettings);
+  const user = useSession((state) => state.user);
+  // Creating a project needs the engineer role; without accounts everything is open.
+  const mayCreate = !user || hasRole(user.role, 'engineer');
 
   return (
     <div className="portal" data-testid="portal-view">
@@ -280,15 +285,26 @@ export function PortalView() {
           >
             <FolderOpen size={16} aria-hidden /> Open existing project
           </button>
-          <button
-            type="button"
-            className={`portal__nav-item${action === 'create' ? ' is-active' : ''}`}
-            aria-current={action === 'create'}
-            onClick={() => setAction('create')}
-          >
-            <FilePlus2 size={16} aria-hidden /> Create new project
+          {mayCreate && (
+            <button
+              type="button"
+              className={`portal__nav-item${action === 'create' ? ' is-active' : ''}`}
+              aria-current={action === 'create'}
+              onClick={() => setAction('create')}
+            >
+              <FilePlus2 size={16} aria-hidden /> Create new project
+            </button>
+          )}
+          <button type="button" className="portal__nav-item" onClick={() => showSettings()}>
+            <Settings size={16} aria-hidden /> Settings
           </button>
         </nav>
+
+        {user && (
+          <div className="portal__user" data-testid="signed-in-as">
+            Signed in as <strong>{user.display_name}</strong> · {user.role}
+          </div>
+        )}
 
         {project && (
           <button type="button" className="portal__back" onClick={showProject}>
@@ -297,7 +313,9 @@ export function PortalView() {
         )}
       </aside>
 
-      <main className="portal__main">{action === 'open' ? <OpenProject /> : <CreateProject />}</main>
+      <main className="portal__main">
+        {action === 'create' && mayCreate ? <CreateProject /> : <OpenProject />}
+      </main>
     </div>
   );
 }

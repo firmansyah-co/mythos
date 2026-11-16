@@ -15,6 +15,15 @@ if (!outDir || !base || !simPort) {
   console.error('usage: node workbench.mjs <screenshot dir> <server base URL> <simulator port> [chromium]');
   process.exit(2);
 }
+// The account e2e.sh created: the browser signs in with it, and the checks made from here
+// directly against the API carry its access token.
+const { MYTHOS_E2E_USER: user, MYTHOS_E2E_PASSWORD: password, MYTHOS_E2E_TOKEN: token } = process.env;
+if (!user || !password || !token) {
+  console.error('workbench.mjs: MYTHOS_E2E_USER, MYTHOS_E2E_PASSWORD and MYTHOS_E2E_TOKEN are required');
+  process.exit(2);
+}
+const api = (url, init = {}) =>
+  fetch(url, { ...init, headers: { ...(init.headers ?? {}), Authorization: `Bearer ${token}` } });
 const port = 9400 + Math.floor(Math.random() * 400);
 const chrome = spawn(chromium, ['--headless=new', '--no-sandbox', '--disable-gpu', '--hide-scrollbars',
   `--remote-debugging-port=${port}`, `--user-data-dir=${mkdtempSync(join(tmpdir(), 'e2e-'))}`,
@@ -86,6 +95,29 @@ try {
       has(sel) { return document.querySelector(sel) !== null; },
     }; true`);
 
+  // Signing in. The address names a project, and nothing of it is shown until the controller
+  // knows who is asking.
+  check('the workbench asks to sign in before showing anything',
+    await evaluate(`__t.has('[data-testid="sign-in"]') && !__t.has('[data-testid="connection-editor"]')`));
+  await evaluate(`(() => {
+    const set = (sel, value) => {
+      const el = document.querySelector(sel);
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    set('input[autocomplete="username"]', ${JSON.stringify(user)});
+    set('input[type="password"]', 'not the password');
+    return true; })()`);
+  await evaluate(`__t.click('Sign in')`); await sleep(800);
+  check('a wrong password is refused', (await evaluate(`__t.text('[role="alert"]')`)).join(' ').includes('wrong password'));
+  await evaluate(`(() => {
+    const el = document.querySelector('input[type="password"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(password)});
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return true; })()`);
+  await evaluate(`__t.click('Sign in')`); await sleep(2500);
+  check('signing in opens the project the address names', !(await evaluate(`__t.has('[data-testid="sign-in"]')`)));
+
   check('the project opens on Devices & networks with nothing configured',
     await evaluate(`__t.has('[data-testid="no-connections"]')`));
 
@@ -117,7 +149,7 @@ try {
   await evaluate(`__t.click('Save configuration')`); await sleep(900);
   const refused = await evaluate(`__t.text('[data-testid="server-problems"]').join(' ')`);
   check('a tag mapped twice is refused by the controller and the reason is shown', /mapped more than once/.test(refused), refused.slice(0, 160));
-  check('nothing was saved on the controller', (await (await fetch(base + '/api/v1/projects/plant_a/io')).json()).config === null);
+  check('nothing was saved on the controller', (await (await api(base + '/api/v1/projects/plant_a/io')).json()).config === null);
   check('the reason is shown once, not twice', (await evaluate(`document.querySelectorAll('.notice--bad').length`)) === 1);
   await shot('e2e_3_refused_by_controller');
 
@@ -125,9 +157,9 @@ try {
   await evaluate(`__t.type('Tag', 'external.BoilerHouse.Unit1.feed_flow', 2)`);
   await evaluate(`__t.click('Save configuration')`); await sleep(2500);
   check('after a successful save the draft is no longer unsaved', !(await evaluate(`__t.has('[data-testid="unsaved"]')`)));
-  const stored = (await (await fetch(base + '/api/v1/projects/plant_a/io')).json()).config;
+  const stored = (await (await api(base + '/api/v1/projects/plant_a/io')).json()).config;
   check('the controller stored the connection with its three tags', stored?.connections?.[0]?.id === 'boiler-plc' && stored.connections[0].config.mappings.length === 3);
-  const status = await (await fetch(base + '/api/v1/io/status')).json();
+  const status = await (await api(base + '/api/v1/io/status')).json();
   check('the controller is running it, without a restart', status.connections?.[0]?.state === 'RUNNING' && status.connections[0].tags.length === 3, JSON.stringify(status.connections?.[0]?.state));
 
   // 5. The tree now has runtime nodes; open the live tag table from it.
@@ -192,17 +224,17 @@ try {
 
   await evaluate(`__t.click('Save screen')`); await sleep(900);
   check('after saving it is no longer unsaved', !(await evaluate(`__t.has('[data-testid="screen-unsaved"]')`)));
-  const drafts = await (await fetch(base + '/api/v1/projects/plant_a/hmi/screens?view=draft')).json();
+  const drafts = await (await api(base + '/api/v1/projects/plant_a/hmi/screens?view=draft')).json();
   const savedText = drafts[0]?.canvasData?.components?.find((c) => c.type === 'text');
   check('the controller stored the screen with both elements, at the dragged position',
     drafts[0]?.name === 'Boiler overview' && drafts[0].canvasData.components.length === 2 &&
     String(savedText?.x) === position[0] && String(savedText?.y) === position[1],
     JSON.stringify(savedText));
-  check('saving does not release', (await (await fetch(base + '/api/v1/projects/plant_a/hmi/screens?view=active')).json()).length === 0);
+  check('saving does not release', (await (await api(base + '/api/v1/projects/plant_a/hmi/screens?view=active')).json()).length === 0);
 
   await evaluate(`__t.click('Release screens')`); await sleep(900);
   check('after releasing, the screen is reported as released', (await evaluate(`__t.text('[data-testid="release-state"]')[0]`)) === 'RELEASED');
-  const active = await (await fetch(base + '/api/v1/projects/plant_a/hmi/screens?view=active')).json();
+  const active = await (await api(base + '/api/v1/projects/plant_a/hmi/screens?view=active')).json();
   check('the released version on the controller is the saved one', JSON.stringify(active[0]?.canvasData) === JSON.stringify(drafts[0]?.canvasData));
   await shot('e2e_5_hmi_screen');
 
@@ -220,11 +252,11 @@ try {
   // Another engineer releases a change. The runtime must follow without a reload.
   const revised = structuredClone(drafts[0].canvasData);
   revised.components.find((c) => c.type === 'text').text = 'Boiler 1 — revised';
-  await fetch(`${base}/api/v1/projects/plant_a/hmi/screens/${drafts[0].id}/draft`, {
+  await api(`${base}/api/v1/projects/plant_a/hmi/screens/${drafts[0].id}/draft`, {
     method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(revised) });
   await sleep(700);
   check('a saved but unreleased change does not reach the operator', (await evaluate(`__t.text('[data-testid="runtime-view"] .textfield')[0]`)) === 'Boiler 1');
-  await fetch(`${base}/api/v1/projects/plant_a/hmi/commit`, { method: 'POST' });
+  await api(`${base}/api/v1/projects/plant_a/hmi/commit`, { method: 'POST' });
   await sleep(1500);
   check('a release made elsewhere appears in the runtime without a reload',
     (await evaluate(`__t.text('[data-testid="runtime-view"] .textfield')[0]`)) === 'Boiler 1 — revised');
@@ -239,6 +271,18 @@ try {
   const fieldOffline = await evaluate(`document.querySelector('[data-testid="io-field"]').getAttribute('data-state')`);
   check('going offline removes the value from the screen', offline.length >= 1 && offline.every((v) => v === '—') && fieldOffline === 'offline', `${offline.join(',')} / ${fieldOffline}`);
   await shot('e2e_7_offline');
+
+  // 10. Settings: the administrator's account and the controller's accounts.
+  await evaluate(`__t.click('Project')`); await sleep(150);
+  await evaluate(`__t.click('Settings…')`); await sleep(600);
+  check('Settings opens on the signed-in account', await evaluate(`__t.has('[data-testid="settings-view"]')`)
+    && (await evaluate(`__t.text('[data-testid="my-role"]')`))[0] === 'admin');
+  await evaluate(`__t.click('Users')`); await sleep(800);
+  const accounts = await evaluate(`__t.text('[data-testid="user-row"] td:first-child')`);
+  check('an administrator sees the accounts of the controller', accounts.some((a) => a.startsWith(user)), accounts.join(', '));
+  await shot('e2e_8_settings_users');
+  await evaluate(`__t.click('Sign out')`); await sleep(600);
+  check('signing out returns to the sign-in page', await evaluate(`__t.has('[data-testid="sign-in"]')`));
   ws.close();
 } catch (e) {
   console.log('FAIL  the script itself failed —', e.message); failures++;

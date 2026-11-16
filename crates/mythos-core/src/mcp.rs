@@ -12,7 +12,8 @@
 //! serves, and a test reads the router's source to check it. A new route without a tool, or
 //! without a reason in [`NOT_TOOLS`], fails the build's tests.
 //!
-//! There is no authentication, as for the HTTP API. Requests carrying an `Origin` header from
+//! Authentication is the HTTP API's: an access token or a session, checked per tool by the
+//! route it calls (see `router`). Requests carrying an `Origin` header from
 //! anywhere but this host are refused, which stops a web page in a browser on the same machine
 //! from driving the server (DNS rebinding).
 
@@ -23,6 +24,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{json, Map, Value};
+use std::sync::Arc;
 use tower::ServiceExt;
 
 /// Protocol versions this endpoint speaks, newest first.
@@ -72,6 +74,25 @@ pub const NOT_TOOLS: &[NotATool] = &[
         reason: "answers 501: there is no logic engine, so there is nothing to deploy",
     },
     NotATool {
+        method: "POST",
+        path: "/api/v1/auth/setup",
+        reason:
+            "creates the first administrator with the setup code from the controller's console; \
+                 an MCP client already has an account, since it connects with that account's token",
+    },
+    NotATool {
+        method: "POST",
+        path: "/api/v1/auth/login",
+        reason:
+            "starts a browser session; an MCP client authenticates with an access token on its \
+                 connection instead",
+    },
+    NotATool {
+        method: "POST",
+        path: "/api/v1/auth/logout",
+        reason: "ends a browser session; an MCP connection has none (revoke_my_token ends a token)",
+    },
+    NotATool {
         method: "GET",
         path: "/",
         reason: "the workbench's web page",
@@ -91,6 +112,8 @@ const PARAMS: &[(&str, &str)] = &[
     ("type", "type_id"),
     ("instance", "instance_id"),
     ("uri", "uri"),
+    ("token", "token_id"),
+    ("username", "username"),
 ];
 
 fn argument_name(param: &str) -> &str {
@@ -114,6 +137,53 @@ const VIEW: (&str, &str) = (
 
 fn object(description: &str) -> Value {
     json!({ "type": "object", "description": description })
+}
+
+const ROLES: [&str; 4] = ["viewer", "operator", "engineer", "admin"];
+
+fn password_change_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["current_password", "new_password"],
+        "properties": {
+            "current_password": { "type": "string" },
+            "new_password": { "type": "string", "minLength": crate::auth::MIN_PASSWORD_LEN }
+        }
+    })
+}
+
+fn new_token_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["name"],
+        "properties": { "name": { "type": "string", "description": "What the token is for" } }
+    })
+}
+
+fn new_user_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["username", "role", "password"],
+        "properties": {
+            "username": { "type": "string", "description": "1 to 64 of a-z 0-9 . _ -" },
+            "display_name": { "type": "string" },
+            "role": { "type": "string", "enum": ROLES },
+            "password": { "type": "string", "minLength": crate::auth::MIN_PASSWORD_LEN }
+        }
+    })
+}
+
+fn user_change_body() -> Value {
+    json!({
+        "type": "object",
+        "description": "Only the fields given change",
+        "properties": {
+            "display_name": { "type": "string" },
+            "role": { "type": "string", "enum": ROLES },
+            "disabled": { "type": "boolean" },
+            "password": { "type": "string", "minLength": crate::auth::MIN_PASSWORD_LEN }
+        }
+    })
 }
 
 fn create_project_body() -> Value {
@@ -281,6 +351,116 @@ fn io_config_body() -> Value {
 
 /// Every tool, one per route.
 pub const TOOLS: &[Tool] = &[
+    Tool {
+        name: "get_auth_status",
+        title: "Sign-in status",
+        description: "Whether the controller still waits for its first administrator, and which account this connection acts as.",
+        method: "GET",
+        path: "/api/v1/auth/status",
+        query: &[],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "get_me",
+        title: "My account",
+        description: "The account this connection acts as: username, display name and role (viewer < operator < engineer < admin). A tool the role does not allow answers 403.",
+        method: "GET",
+        path: "/api/v1/auth/me",
+        query: &[],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "change_my_password",
+        title: "Change my password",
+        description: "Change this account's password. Every other browser session of the account ends.",
+        method: "PUT",
+        path: "/api/v1/auth/me/password",
+        query: &[],
+        body: Some(password_change_body),
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "list_my_tokens",
+        title: "List my access tokens",
+        description: "This account's access tokens: id, name, when made and when last used. The tokens themselves are never shown again.",
+        method: "GET",
+        path: "/api/v1/auth/me/tokens",
+        query: &[],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "create_my_token",
+        title: "Create an access token",
+        description: "Make an access token for this account. The answer's 'secret' is the token, shown this once.",
+        method: "POST",
+        path: "/api/v1/auth/me/tokens",
+        query: &[],
+        body: Some(new_token_body),
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "revoke_my_token",
+        title: "Revoke an access token",
+        description: "Revoke one of this account's access tokens by its id. A client using it is refused from then on.",
+        method: "DELETE",
+        path: "/api/v1/auth/me/tokens/:token",
+        query: &[],
+        body: None,
+        read_only: false,
+        destructive: true,
+    },
+    Tool {
+        name: "list_users",
+        title: "List accounts",
+        description: "Every account of the controller and its role. Administrators only.",
+        method: "GET",
+        path: "/api/v1/users",
+        query: &[],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "create_user",
+        title: "Create an account",
+        description: "Create an account with a role and an initial password. Administrators only.",
+        method: "POST",
+        path: "/api/v1/users",
+        query: &[],
+        body: Some(new_user_body),
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "update_user",
+        title: "Change an account",
+        description: "Change an account's display name, role, disabled flag or password. Disabling it or setting its password ends its sessions. The last enabled administrator cannot be demoted or disabled. Administrators only.",
+        method: "PUT",
+        path: "/api/v1/users/:username",
+        query: &[],
+        body: Some(user_change_body),
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "delete_user",
+        title: "Delete an account",
+        description: "Delete an account and its access tokens. The last enabled administrator cannot be deleted. Administrators only.",
+        method: "DELETE",
+        path: "/api/v1/users/:username",
+        query: &[],
+        body: None,
+        read_only: false,
+        destructive: true,
+    },
     Tool {
         name: "get_health",
         title: "Server health",
@@ -790,14 +970,20 @@ fn percent_encode(text: &str) -> String {
 #[derive(Clone)]
 struct McpState {
     api: Router,
+    auth: Option<Arc<crate::auth::Auth>>,
 }
 
-/// The `/mcp` route, dispatching tools to `api`.
-pub fn router(api: Router) -> Router {
+/// The `/mcp` route, dispatching tools to `api`. With `auth`, a client must send an access
+/// token (`Authorization: Bearer ...`) or a session cookie, and each tool runs with that
+/// account's role: the credentials are passed on to the route the tool calls.
+pub fn router(api: Router, auth: Option<Arc<crate::auth::Auth>>) -> Router {
     Router::new()
         .route("/mcp", post(handle).get(no_stream).delete(no_stream))
-        .with_state(McpState { api })
+        .with_state(McpState { api, auth })
 }
+
+/// The headers of the MCP request that carry who sent it.
+const CREDENTIAL_HEADERS: [header::HeaderName; 2] = [header::AUTHORIZATION, header::COOKIE];
 
 /// This endpoint offers no server-initiated stream and keeps no sessions.
 async fn no_stream() -> StatusCode {
@@ -846,6 +1032,24 @@ async fn handle(State(state): State<McpState>, headers: HeaderMap, body: String)
     if !origin_allowed(&headers) {
         return (StatusCode::FORBIDDEN, "Origin not allowed").into_response();
     }
+    if let Some(auth) = &state.auth {
+        if crate::api::auth::identify(auth, &headers).is_none() {
+            let mut response = (
+                StatusCode::UNAUTHORIZED,
+                "MythOS requires an access token: create one in Settings > Account and send it as \
+                 'Authorization: Bearer <token>'",
+            )
+                .into_response();
+            response
+                .headers_mut()
+                .insert(header::WWW_AUTHENTICATE, "Bearer".parse().unwrap());
+            return response;
+        }
+    }
+    let credentials: Vec<(header::HeaderName, header::HeaderValue)> = CREDENTIAL_HEADERS
+        .iter()
+        .filter_map(|name| headers.get(name).map(|v| (name.clone(), v.clone())))
+        .collect();
     let message: Value = match serde_json::from_str(&body) {
         Ok(message) => message,
         Err(e) => {
@@ -861,7 +1065,7 @@ async fn handle(State(state): State<McpState>, headers: HeaderMap, body: String)
         Value::Array(messages) => {
             let mut answers = Vec::new();
             for message in messages {
-                if let Some(answer) = answer(&state, message).await {
+                if let Some(answer) = answer(&state, &credentials, message).await {
                     answers.push(answer);
                 }
             }
@@ -871,7 +1075,7 @@ async fn handle(State(state): State<McpState>, headers: HeaderMap, body: String)
                 Json(Value::Array(answers)).into_response()
             }
         }
-        message => match answer(&state, message).await {
+        message => match answer(&state, &credentials, message).await {
             Some(answer) => Json(answer).into_response(),
             // A notification or a response: accepted, nothing to say.
             None => StatusCode::ACCEPTED.into_response(),
@@ -880,7 +1084,11 @@ async fn handle(State(state): State<McpState>, headers: HeaderMap, body: String)
 }
 
 /// The answer to one JSON-RPC message, or `None` for a notification or a response.
-async fn answer(state: &McpState, message: Value) -> Option<Value> {
+async fn answer(
+    state: &McpState,
+    credentials: &[(header::HeaderName, header::HeaderValue)],
+    message: Value,
+) -> Option<Value> {
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         // A response to something this server asked; it asks nothing.
         return None;
@@ -930,15 +1138,20 @@ async fn answer(state: &McpState, message: Value) -> Option<Value> {
                 Some(Value::Object(map)) => map.clone(),
                 Some(_) => return Some(rpc_error(id, -32602, "'arguments' must be an object")),
             };
-            rpc_result(id, call(state, tool, &arguments).await)
+            rpc_result(id, call(state, credentials, tool, &arguments).await)
         }
         other => rpc_error(id, -32601, format!("method '{other}' is not supported")),
     })
 }
 
 /// Run a tool: send its request through the API router and report what the route answered.
-async fn call(state: &McpState, tool: &Tool, arguments: &Map<String, Value>) -> Value {
-    let request = match tool.request(arguments) {
+async fn call(
+    state: &McpState,
+    credentials: &[(header::HeaderName, header::HeaderValue)],
+    tool: &Tool,
+    arguments: &Map<String, Value>,
+) -> Value {
+    let mut request = match tool.request(arguments) {
         Ok(request) => request,
         Err(message) => {
             return json!({
@@ -947,6 +1160,9 @@ async fn call(state: &McpState, tool: &Tool, arguments: &Map<String, Value>) -> 
             })
         }
     };
+    for (name, value) in credentials {
+        request.headers_mut().insert(name.clone(), value.clone());
+    }
     let response = match state.api.clone().oneshot(request).await {
         Ok(response) => response,
         Err(never) => match never {},

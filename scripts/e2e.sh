@@ -64,6 +64,12 @@ trap cleanup EXIT
 mkdir -p "$WORK/data" "$WORK/shots"
 API="http://127.0.0.1:${HTTP_PORT}"
 
+# The server starts with no account; this run creates the first administrator with a setup code
+# only it knows, so it can only ever claim the server it started.
+SETUP_CODE="e2e-$$-$RANDOM$RANDOM"
+E2E_USER="e2e-admin"
+E2E_PASSWORD="e2e password $RANDOM$RANDOM"
+MYTHOS_SETUP_CODE="$SETUP_CODE" \
 MYTHOS_STORAGE_ROOT="$WORK/data" MYTHOS_HTTP_PORT="$HTTP_PORT" MYTHOS_SHM_NAME="$SHM" \
 MYTHOS_STATIC_DIR="$ROOT/frontend/packages/ui-shell/dist" \
     "$ROOT/target/debug/mythos-server" >"$WORK/server.log" 2>&1 & SRV=$!
@@ -83,29 +89,46 @@ kill -0 "$SRV" 2>/dev/null \
     || cannot_run "the server exited at start; is port $HTTP_PORT in use? (see $WORK/server.log)"
 kill -0 "$SIM" 2>/dev/null || cannot_run "the simulator did not start on port $SIM_PORT (see $WORK/sim.log)"
 
+# Claim the server with this run's setup code. A server that is not ours refuses it (it has its
+# own code, or an administrator already).
+curl -fsS -m 10 -o /dev/null -c "$WORK/cookies" -X POST "$API/api/v1/auth/setup" \
+    -H 'content-type: application/json' \
+    -d "{\"setup_code\":\"$SETUP_CODE\",\"username\":\"$E2E_USER\",\"password\":\"$E2E_PASSWORD\"}" \
+    || cannot_run "the server on $API did not accept this run's setup code: it is not the one this run started"
+TOKEN="$(curl -fsS -m 10 -b "$WORK/cookies" -X POST "$API/api/v1/auth/me/tokens" \
+    -H 'content-type: application/json' -d '{"name":"e2e"}' \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).secret))')"
+[ -n "$TOKEN" ] || cannot_run "no access token could be made"
+AUTH=(-H "Authorization: Bearer $TOKEN")
+
+# Nothing is readable without signing in.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -m 3 "$API/api/v1/projects")" = "401" ] \
+    || cannot_run "the server answered an anonymous request: accounts are not enforced"
+
 # The server under test was started on an empty storage root. If the one answering has projects,
 # it is not ours, and nothing may be written to it.
-[ "$(curl -fsS -m 3 "$API/api/v1/projects")" = "[]" ] \
+[ "$(curl -fsS -m 3 "${AUTH[@]}" "$API/api/v1/projects")" = "[]" ] \
     || cannot_run "the server on $API is not the one this run started (its storage is not empty)"
 
 # Field I/O runs through driver modules. The server must have found the Modbus one beside it,
 # as a module process and not anything compiled in.
-curl -fsS -m 3 "$API/api/v1/modules" | node -e '
+curl -fsS -m 3 "${AUTH[@]}" "$API/api/v1/modules" | node -e '
     let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
         const m = JSON.parse(s).drivers.find(d => d.name === "modbus");
         process.exit(m && m.source === "module" && m.module.manifest.id === "org.mythos.driver.modbus" ? 0 : 1);
     });' || cannot_run "the server did not find the Modbus driver module (see $WORK/server.log)"
 
-curl -fsS -o /dev/null -X POST "$API/api/v1/projects" -H 'content-type: application/json' \
+curl -fsS -o /dev/null "${AUTH[@]}" -X POST "$API/api/v1/projects" -H 'content-type: application/json' \
     -d '{"id":"plant_a","name":"Boiler House","description":"Steam plant","author":"e2e"}' \
     || cannot_run "the test project could not be created"
 [ -d "$WORK/data/plant_a" ] \
     || cannot_run "the test project was not created in this run's storage ($WORK/data)"
-curl -fsS -o /dev/null -X POST "$API/api/v1/projects/plant_a/activate" \
+curl -fsS -o /dev/null "${AUTH[@]}" -X POST "$API/api/v1/projects/plant_a/activate" \
     || cannot_run "the test project could not be activated"
 
 echo "=== workbench, in $BROWSER ==="
-node "$ROOT/frontend/e2e/workbench.mjs" "$WORK/shots" "$API" "$SIM_PORT" "$BROWSER"
+MYTHOS_E2E_USER="$E2E_USER" MYTHOS_E2E_PASSWORD="$E2E_PASSWORD" MYTHOS_E2E_TOKEN="$TOKEN" \
+    node "$ROOT/frontend/e2e/workbench.mjs" "$WORK/shots" "$API" "$SIM_PORT" "$BROWSER"
 status=$?
 
 echo
