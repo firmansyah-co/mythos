@@ -39,6 +39,18 @@ impl NodeRole {
             .find(|r| r.as_str() == text.trim())
     }
 
+    /// Whether the role reads field devices: a server does not (it holds projects and the fleet);
+    /// a workstation does, for simulation; an edge does.
+    pub fn field_io(self) -> bool {
+        !matches!(self, NodeRole::Server)
+    }
+
+    /// Whether the role announces itself on the network (ADR-012 §2.2): only an edge, which an
+    /// engineer looks for on the plant network.
+    pub fn announce(self) -> bool {
+        matches!(self, NodeRole::Edge)
+    }
+
     /// The address the role listens on: a workstation on its own loopback only, every other
     /// role on every interface.
     pub fn listen_ip(self) -> IpAddr {
@@ -57,6 +69,39 @@ pub struct NodeIdentity {
     pub role: NodeRole,
     #[serde(default)]
     pub site: String,
+    /// Field I/O on or off whatever the role says; absent follows the role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_io: Option<bool>,
+    /// Announcing on or off whatever the role says; absent follows the role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub announce: Option<bool>,
+}
+
+impl NodeIdentity {
+    /// Whether this node reads field devices: its own setting, else its role's.
+    pub fn field_io(&self) -> bool {
+        self.field_io.unwrap_or(self.role.field_io())
+    }
+
+    /// Whether this node announces itself: its own setting, else its role's.
+    pub fn announce(&self) -> bool {
+        self.announce.unwrap_or(self.role.announce())
+    }
+
+    /// Why field I/O is off, when it is: what the I/O status says instead of connections.
+    pub fn field_io_off_reason(&self) -> Option<String> {
+        if self.field_io() {
+            return None;
+        }
+        Some(match self.field_io {
+            Some(false) => "field I/O is switched off on this node (Settings → Node)".to_string(),
+            _ => format!(
+                "field I/O is off on this node: its role is {}, which reads no field devices; \
+                 switch it on in Settings → Node",
+                self.role.as_str()
+            ),
+        })
+    }
 }
 
 /// Chooses the role of a node on its first start, when `node.json` does not exist yet.
@@ -135,12 +180,26 @@ fn valid_site(site: &str) -> Result<(), NodeError> {
     Ok(())
 }
 
-/// What may be changed: each field that is present.
+/// What may be changed: each field that is present. `field_io` and `announce` are three-way:
+/// absent leaves them, `null` makes them follow the role, a boolean sets them.
 #[derive(Debug, Default, Deserialize)]
 pub struct NodeChange {
     pub name: Option<String>,
     pub site: Option<String>,
     pub role: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    pub field_io: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "present")]
+    pub announce: Option<Option<bool>>,
+}
+
+/// A field that is present, even as `null`, is `Some`.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 impl Node {
@@ -165,6 +224,8 @@ impl Node {
                     id,
                     role,
                     site: String::new(),
+                    field_io: None,
+                    announce: None,
                 };
                 write(&path, &identity)?;
                 identity
@@ -199,6 +260,12 @@ impl Node {
                     "'{role}' is not a role; use workstation, edge or server"
                 ))
             })?;
+        }
+        if let Some(field_io) = change.field_io {
+            next.field_io = field_io;
+        }
+        if let Some(announce) = change.announce {
+            next.announce = announce;
         }
         let mut current = self.identity.write().unwrap();
         write(&self.path, &next)?;
@@ -258,6 +325,7 @@ mod tests {
                 name: Some(" Boiler edge 1 ".into()),
                 site: Some("Boiler house".into()),
                 role: Some("server".into()),
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(
@@ -309,5 +377,48 @@ mod tests {
         assert_eq!(NodeRole::Workstation.listen_ip().to_string(), "127.0.0.1");
         assert_eq!(NodeRole::Edge.listen_ip().to_string(), "0.0.0.0");
         assert_eq!(NodeRole::Server.listen_ip().to_string(), "0.0.0.0");
+    }
+
+    #[test]
+    fn a_role_sets_the_defaults_and_a_setting_of_its_own_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = Node::open(dir.path(), NodeRole::Edge).unwrap();
+        let edge = node.identity();
+        assert!(edge.field_io() && edge.announce());
+        assert_eq!(edge.field_io_off_reason(), None);
+
+        let server = node
+            .update(NodeChange {
+                role: Some("server".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(!server.field_io() && !server.announce());
+        assert!(server
+            .field_io_off_reason()
+            .unwrap()
+            .contains("its role is server"));
+
+        // Its own setting wins over the role, and `null` gives the choice back to the role.
+        let reading: NodeChange = serde_json::from_str(r#"{"field_io": true}"#).unwrap();
+        assert!(node.update(reading).unwrap().field_io());
+        let quiet: NodeChange =
+            serde_json::from_str(r#"{"role": "edge", "field_io": false}"#).unwrap();
+        let quiet = node.update(quiet).unwrap();
+        assert!(!quiet.field_io());
+        assert_eq!(
+            quiet.field_io_off_reason().as_deref(),
+            Some("field I/O is switched off on this node (Settings → Node)")
+        );
+        let follow: NodeChange = serde_json::from_str(r#"{"field_io": null}"#).unwrap();
+        let follow = node.update(follow).unwrap();
+        assert_eq!(follow.field_io, None);
+        assert!(follow.field_io(), "an edge reads the field");
+        // Absent leaves it as it is.
+        let rename: NodeChange = serde_json::from_str(r#"{"name": "x"}"#).unwrap();
+        assert_eq!(node.update(rename).unwrap().field_io, None);
+
+        let workstation = NodeRole::Workstation;
+        assert!(workstation.field_io() && !workstation.announce());
     }
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import { api, hasRole, NODE_ROLES, type NodeInfo, type NodeRole } from '../../api/client';
+import { api, hasRole, NODE_ROLES, type NodeInfo, type NodeRole, type NodeSettingChange } from '../../api/client';
 import { useSession } from '../../data/session';
 import { describeError } from './format';
 
@@ -19,6 +19,43 @@ const ROLE_WORDS: Record<NodeRole, { label: string; summary: string }> = {
   },
 };
 
+/** What a role does by default (ADR-012 §2.1); a node's own setting wins. */
+const ROLE_DEFAULTS: Record<NodeRole, { field_io: boolean; announce: boolean }> = {
+  workstation: { field_io: true, announce: false },
+  edge: { field_io: true, announce: true },
+  server: { field_io: false, announce: false },
+};
+
+type Choice = 'role' | 'on' | 'off';
+const choiceOf = (setting: { on: boolean; from_role: boolean }): Choice =>
+  setting.from_role ? 'role' : setting.on ? 'on' : 'off';
+const changeOf = (choice: Choice): NodeSettingChange => (choice === 'role' ? null : choice === 'on');
+
+function SettingChoice({
+  label,
+  value,
+  roleSays,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: Choice;
+  roleSays: boolean;
+  disabled: boolean;
+  onChange: (choice: Choice) => void;
+}) {
+  return (
+    <label className="form__row">
+      <span>{label}</span>
+      <select aria-label={label} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value as Choice)}>
+        <option value="role">As the role says ({roleSays ? 'on' : 'off'})</option>
+        <option value="on">On</option>
+        <option value="off">Off</option>
+      </select>
+    </label>
+  );
+}
+
 /** This installation as a node: its name, site and role (Settings → Node, ADR-012 §2.1). */
 export function NodeSettings() {
   const user = useSession((state) => state.user);
@@ -26,14 +63,20 @@ export function NodeSettings() {
   const [node, setNode] = useState<NodeInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [draft, setDraft] = useState<{ name: string; site: string; role: NodeRole } | null>(null);
+  const [draft, setDraft] = useState<{
+    name: string;
+    site: string;
+    role: NodeRole;
+    field_io: Choice;
+    announce: Choice;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const read = await api.getNode();
       setNode(read);
-      setDraft({ name: read.name, site: read.site, role: read.role });
+      setDraft(draftOf(read));
     } catch (cause) {
       setError(describeError(cause));
     }
@@ -46,7 +89,11 @@ export function NodeSettings() {
   const changed =
     node !== null &&
     draft !== null &&
-    (draft.name.trim() !== node.name || draft.site.trim() !== node.site || draft.role !== node.role);
+    (draft.name.trim() !== node.name ||
+      draft.site.trim() !== node.site ||
+      draft.role !== node.role ||
+      draft.field_io !== choiceOf(node.field_io) ||
+      draft.announce !== choiceOf(node.announce));
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
@@ -55,9 +102,15 @@ export function NodeSettings() {
     setError(null);
     setNotice(null);
     try {
-      const saved = await api.updateNode({ name: draft.name, site: draft.site, role: draft.role });
+      const saved = await api.updateNode({
+        name: draft.name,
+        site: draft.site,
+        role: draft.role,
+        field_io: changeOf(draft.field_io),
+        announce: changeOf(draft.announce),
+      });
       setNode(saved);
-      setDraft({ name: saved.name, site: saved.site, role: saved.role });
+      setDraft(draftOf(saved));
       setNotice('Saved.');
     } catch (cause) {
       setError(describeError(cause));
@@ -98,6 +151,11 @@ export function NodeSettings() {
               {node.listening ?? 'not reported'}
             </dd>
           </dl>
+          {node.field_io_off && (
+            <div className="notice" role="status" data-testid="node-field-io-off">
+              This node reads no field devices: {node.field_io_off}.
+            </div>
+          )}
           {node.restart_required && (
             <div className="notice notice--warn" role="status" data-testid="node-restart">
               The {ROLE_WORDS[node.role].label.toLowerCase()} role listens on{' '}
@@ -147,6 +205,24 @@ export function NodeSettings() {
                 ))}
               </div>
             </fieldset>
+            <SettingChoice
+              label="Reads field devices"
+              value={draft.field_io}
+              roleSays={ROLE_DEFAULTS[draft.role].field_io}
+              disabled={!mayChange}
+              onChange={(field_io) => setDraft({ ...draft, field_io })}
+            />
+            <SettingChoice
+              label="Announces itself on the network"
+              value={draft.announce}
+              roleSays={ROLE_DEFAULTS[draft.role].announce}
+              disabled={!mayChange}
+              onChange={(announce) => setDraft({ ...draft, announce })}
+            />
+            <p className="muted" data-testid="node-announce-note">
+              Nothing announces this node yet: announcing is done by the discovery module (ADR-012 step 3), which
+              reads this setting.
+            </p>
             {notice && <p className="notice">{notice}</p>}
             {mayChange ? (
               <div className="portal__actions">
@@ -162,4 +238,14 @@ export function NodeSettings() {
       )}
     </>
   );
+}
+
+function draftOf(node: NodeInfo) {
+  return {
+    name: node.name,
+    site: node.site,
+    role: node.role,
+    field_io: choiceOf(node.field_io),
+    announce: choiceOf(node.announce),
+  };
 }

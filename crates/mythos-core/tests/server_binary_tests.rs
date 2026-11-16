@@ -72,6 +72,19 @@ fn start(
     tempfile::TempDir,
     std::sync::mpsc::Receiver<String>,
 ) {
+    start_with_args(env, &[])
+}
+
+/// [`start`], with arguments.
+fn start_with_args(
+    env: &[(&str, &str)],
+    args: &[&str],
+) -> (
+    std::process::Child,
+    u16,
+    tempfile::TempDir,
+    std::sync::mpsc::Receiver<String>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -93,6 +106,7 @@ fn start(
     for (key, value) in env {
         command.env(key, value);
     }
+    command.args(args);
     let mut child = command.spawn().unwrap();
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     for stream in [
@@ -166,6 +180,57 @@ fn a_role_that_does_not_exist_stops_the_server_and_says_why() {
     assert!(
         said.iter()
             .any(|l| l.contains("MYTHOS_ROLE=plc names no role")),
+        "{said:?}"
+    );
+}
+
+/// A service starts the server with `--storage-root` and `--port` (`mythos service install`):
+/// they win over the environment.
+#[test]
+fn arguments_choose_the_storage_and_the_port_over_the_environment() {
+    let storage = tempfile::tempdir().unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let (mut child, env_port, env_dir, rx) = {
+        let (child, env_port, env_dir, rx) = start_with_args(
+            &[],
+            &[
+                "--storage-root",
+                storage.path().to_str().unwrap(),
+                "--port",
+                &port.to_string(),
+            ],
+        );
+        (child, env_port, env_dir, rx)
+    };
+    let heard = listening(&rx);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(
+        heard,
+        Some(format!("0.0.0.0:{port}")),
+        "the environment said {env_port}"
+    );
+    assert!(storage
+        .path()
+        .join(".mythos-system")
+        .join("node.json")
+        .is_file());
+    assert!(
+        !env_dir.path().join(".mythos-system").exists(),
+        "the environment's storage was not used"
+    );
+
+    let (mut child, _, _dir, rx) = start_with_args(&[], &["--port", "seventy"]);
+    let status = child.wait().unwrap();
+    let said: Vec<String> = rx.iter().collect();
+    assert!(!status.success());
+    assert!(
+        said.iter()
+            .any(|l| l.contains("--port seventy is not a port number")),
         "{said:?}"
     );
 }

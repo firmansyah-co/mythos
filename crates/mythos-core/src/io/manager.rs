@@ -62,6 +62,9 @@ pub struct IoManager<S: PlatformShm + 'static> {
     on_services: StdRwLock<Option<ServicesHook>>,
     /// Which modules are switched off (Settings → Modules); applied to every reading.
     module_settings: StdRwLock<Option<Arc<crate::modules::ModuleSettings>>>,
+    /// Why this node reads no field devices, when it reads none (ADR-012 §2.1: a server's
+    /// default). `None`: field I/O runs.
+    field_io_off: StdRwLock<Option<String>>,
     _shm: PhantomData<fn() -> S>,
 }
 
@@ -114,6 +117,7 @@ impl<S: PlatformShm + 'static> IoManager<S> {
             }),
             on_services: StdRwLock::new(None),
             module_settings: StdRwLock::new(None),
+            field_io_off: StdRwLock::new(None),
             _shm: PhantomData,
         })
     }
@@ -263,6 +267,11 @@ impl<S: PlatformShm + 'static> IoManager<S> {
     pub async fn reload(&self) -> Option<ApplyReport> {
         let mut running = self.running.lock().await;
 
+        let off = self.field_io_off.read().unwrap().clone();
+        if let Some(reason) = off {
+            return self.idle(&mut running, reason).await;
+        }
+
         let active = match self.storage.get_active_project() {
             Ok(Some(name)) => name,
             Ok(None) => {
@@ -325,6 +334,13 @@ impl<S: PlatformShm + 'static> IoManager<S> {
             report.failed
         );
         Some(report)
+    }
+
+    /// Switch field I/O off on this node, saying why (`Some`), or on again (`None`). Takes
+    /// effect at the next [`Self::reload`]: off stops every connection; on starts the active
+    /// project's.
+    pub fn set_field_io_off(&self, reason: Option<String>) {
+        *self.field_io_off.write().unwrap() = reason;
     }
 
     /// Look for modules again. Connections whose driver changed (a new build, a new version, a

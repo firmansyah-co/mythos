@@ -20,6 +20,10 @@ fn view(node: &Node) -> Value {
         "name": identity.name,
         "role": identity.role,
         "site": identity.site,
+        // What the node does, and whether that is the role's default or its own setting.
+        "field_io": { "on": identity.field_io(), "from_role": identity.field_io.is_none() },
+        "announce": { "on": identity.announce(), "from_role": identity.announce.is_none() },
+        "field_io_off": identity.field_io_off_reason(),
         "version": env!("CARGO_PKG_VERSION"),
         "module_protocol": mythos_module::PROTOCOL_VERSION,
         // Where this run listens, and where the role (or MYTHOS_BIND) says to: they differ after
@@ -61,8 +65,18 @@ pub async fn update<S: PlatformShm + 'static>(
     let Some(node) = node_of(&state) else {
         return no_node();
     };
+    let before = node.identity().field_io();
     match node.update(change) {
-        Ok(_) => Json(view(&node)).into_response(),
+        Ok(after) => {
+            // Field I/O follows at once: no restart is needed to stop or start reading devices.
+            if after.field_io() != before {
+                if let Some(io) = &state.io_manager {
+                    io.set_field_io_off(after.field_io_off_reason());
+                    io.reload().await;
+                }
+            }
+            Json(view(&node)).into_response()
+        }
         Err(NodeError::Invalid(message)) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({ "error": message })),

@@ -208,7 +208,21 @@ export interface NodeInfo {
   listen_address: string | null;
   /** The role's listening address differs from this run's: it applies after a restart. */
   restart_required: boolean;
+  /** Whether it reads field devices, and whether that is the role's default. */
+  field_io: NodeSetting;
+  /** Whether it announces itself on the network, and whether that is the role's default. */
+  announce: NodeSetting;
+  /** Why field I/O is off, when it is. */
+  field_io_off: string | null;
 }
+
+export interface NodeSetting {
+  on: boolean;
+  from_role: boolean;
+}
+
+/** A node setting to send: `null` gives it back to the role. */
+export type NodeSettingChange = boolean | null;
 
 export interface UpdateStatus {
   running: { version: string; installed_version: string | null; target: string };
@@ -406,7 +420,12 @@ export const api = {
 
   // Updates
   getNode: () => request<NodeInfo>('/api/v1/node'),
-  updateNode: (change: Partial<Pick<NodeInfo, 'name' | 'site' | 'role'>>) =>
+  updateNode: (
+    change: Partial<Pick<NodeInfo, 'name' | 'site' | 'role'>> & {
+      field_io?: NodeSettingChange;
+      announce?: NodeSettingChange;
+    }
+  ) =>
     request<NodeInfo>('/api/v1/node', json('PUT', change)),
   getUpdates: () => request<UpdateStatus>('/api/v1/updates'),
   listReleases: (refresh = false) =>
