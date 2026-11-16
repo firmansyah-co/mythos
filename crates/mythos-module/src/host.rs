@@ -90,19 +90,29 @@ fn is_executable(meta: &std::fs::Metadata) -> bool {
     meta.is_file()
 }
 
-/// Whether a file name is one a module executable may have.
+/// Whether a file name is one a module executable may have on this platform.
 fn is_module_file_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix(MODULE_FILE_PREFIX) else {
-        return false;
+    is_module_file_name_on(name, cfg!(windows))
+}
+
+/// Whether `name` is a module executable's name: `mythos-module-<name>`, plus `.exe` on
+/// Windows, and nothing else.
+///
+/// Build tools and installers leave other files beside an executable (`mythos-module-x.d`,
+/// `mythos-module-x.pdb`, a renamed old build): none of them is a module. On Windows only an
+/// `.exe` can be started at all, so a file without that extension is not one either.
+fn is_module_file_name_on(name: &str, windows: bool) -> bool {
+    let path = Path::new(name);
+    let ext = path.extension().and_then(|e| e.to_str());
+    let stem = match (windows, ext) {
+        (true, Some(ext)) if ext.eq_ignore_ascii_case("exe") => {
+            path.file_stem().and_then(|s| s.to_str()).unwrap_or("")
+        }
+        (false, None) => name,
+        _ => return false,
     };
-    if rest.is_empty() {
-        return false;
-    }
-    // Build tools leave files such as `mythos-module-x.d` beside the executable.
-    match Path::new(name).extension().and_then(|e| e.to_str()) {
-        None => true,
-        Some(ext) => cfg!(windows) && ext.eq_ignore_ascii_case("exe"),
-    }
+    stem.strip_prefix(MODULE_FILE_PREFIX)
+        .is_some_and(|rest| !rest.is_empty())
 }
 
 /// Linux refuses to execute a file that some process holds open for writing (`ETXTBSY`). That
@@ -757,10 +767,22 @@ mod tests {
 
     #[test]
     fn only_executables_named_like_modules_are_considered() {
-        assert!(is_module_file_name("mythos-module-modbus"));
-        assert!(!is_module_file_name("mythos-module-"));
-        assert!(!is_module_file_name("mythos-module-modbus.d"));
-        assert!(!is_module_file_name("mythos-server"));
-        assert!(!is_module_file_name("libmythos_module.rlib"));
+        for windows in [false, true] {
+            assert!(!is_module_file_name_on("mythos-module-", windows));
+            assert!(!is_module_file_name_on("mythos-module-.exe", windows));
+            assert!(!is_module_file_name_on("mythos-module-modbus.d", windows));
+            assert!(!is_module_file_name_on("mythos-module-modbus.pdb", windows));
+            assert!(!is_module_file_name_on("mythos-module-modbus.old", windows));
+            assert!(!is_module_file_name_on("mythos-server", windows));
+            assert!(!is_module_file_name_on("mythos-server.exe", windows));
+            assert!(!is_module_file_name_on("libmythos_module.rlib", windows));
+        }
+        // Unix: no extension at all.
+        assert!(is_module_file_name_on("mythos-module-modbus", false));
+        assert!(!is_module_file_name_on("mythos-module-modbus.exe", false));
+        // Windows: an .exe, and nothing without that extension can be started.
+        assert!(is_module_file_name_on("mythos-module-modbus.exe", true));
+        assert!(is_module_file_name_on("mythos-module-modbus.EXE", true));
+        assert!(!is_module_file_name_on("mythos-module-modbus", true));
     }
 }

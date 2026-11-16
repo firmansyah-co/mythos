@@ -54,8 +54,7 @@ async fn telemetry_serialises_bool_and_integer_tags_with_their_true_values() {
     let tag_catalog = Arc::new(RwLock::new(catalog));
 
     let shm_name = format!("mythos_telemetry_types_{}", std::process::id());
-    #[cfg(target_os = "linux")]
-    let _ = mythos_pal::PosixShm::unlink(&shm_name);
+    let _ = mythos_pal::DefaultShm::unlink(&shm_name);
     let mut writer = ShmWriterHandle::<mythos_pal::DefaultShm>::new(&shm_name, 64).unwrap();
     let reader = mythos_shm::ShmReaderHandle::<mythos_pal::DefaultShm>::new(&shm_name, 64).unwrap();
 
@@ -111,7 +110,7 @@ async fn telemetry_serialises_bool_and_integer_tags_with_their_true_values() {
         .unwrap();
     writer.publish();
 
-    // NOTE: DefaultShm (PosixShm) rather than MemoryShm, deliberately. MemoryShm::open_or_create
+    // NOTE: DefaultShm (the platform's real shared memory) rather than MemoryShm, deliberately. MemoryShm::open_or_create
     // allocates a fresh isolated buffer on every call, so a writer and reader "on the same name"
     // never share memory - a test built on it silently measures nothing. This test asserts real
     // values, so it needs a real segment.

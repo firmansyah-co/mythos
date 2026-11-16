@@ -69,7 +69,7 @@ impl PlatformShm for PosixShm {
         // Open or create POSIX SHM
         let oflags = libc::O_RDWR | libc::O_CREAT;
         let mode = 0o660; // rw-rw----
-        let fd = unsafe { libc::shm_open(c_name.as_ptr(), oflags, mode as libc::mode_t) };
+        let fd = unsafe { libc::shm_open(c_name.as_ptr(), oflags, mode as libc::c_uint) };
         if fd < 0 {
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() == Some(libc::EACCES) {

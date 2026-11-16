@@ -1,6 +1,4 @@
-//! Multi-project repository and atomic symlink manager for target controllers.
-
-//! Multi-project repository and atomic symlink manager for target controllers.
+//! Multi-project repository for target controllers.
 
 pub mod project;
 pub mod wal;
@@ -13,7 +11,29 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-pub const DEFAULT_PROJECTS_DIR: &str = "/var/lib/mythos/projects";
+/// Where a controller keeps its projects when `MYTHOS_STORAGE_ROOT` does not say: the place each
+/// operating system sets aside for a service's data.
+///
+/// * Linux and other Unix: `/var/lib/mythos/projects`
+/// * macOS: `/Library/Application Support/MythOS/projects`
+/// * Windows: `%ProgramData%\MythOS\projects` (normally `C:\ProgramData\MythOS\projects`)
+pub fn default_projects_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("ProgramData")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+        base.join("MythOS").join("projects")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from("/Library/Application Support/MythOS/projects")
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        PathBuf::from("/var/lib/mythos/projects")
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -45,7 +65,7 @@ pub enum StorageError {
 /// Longest accepted project id, in bytes.
 pub const MAX_PROJECT_ID_LEN: usize = 128;
 
-/// Name of the symlink that designates the active project. It lives beside the project
+/// Name of the marker that designates the active project. It lives beside the project
 /// directories, so no project may be called this.
 const ACTIVE_LINK_NAME: &str = "active";
 
@@ -69,16 +89,16 @@ pub struct ControllerStorage {
 }
 
 impl ControllerStorage {
-    /// Initialize controller storage manager targeting the given directory (e.g. `/var/lib/mythos/projects`).
+    /// Initialize controller storage manager targeting the given directory.
     pub fn new<P: AsRef<Path>>(root_dir: P) -> Result<Self, StorageError> {
         let path = root_dir.as_ref().to_path_buf();
         fs::create_dir_all(&path)?;
         Ok(Self { root_dir: path })
     }
 
-    /// Default production controller storage backed by `/var/lib/mythos/projects`.
+    /// Controller storage in this platform's default place (see [`default_projects_dir`]).
     pub fn default_production() -> Result<Self, StorageError> {
-        Self::new(DEFAULT_PROJECTS_DIR)
+        Self::new(default_projects_dir())
     }
 
     /// Root directory path.
@@ -86,8 +106,8 @@ impl ControllerStorage {
         &self.root_dir
     }
 
-    /// Path to the atomic 'active' symlink (`<root>/active`).
-    pub fn active_symlink_path(&self) -> PathBuf {
+    /// Path to the marker naming the active project (`<root>/active`).
+    pub fn active_marker_path(&self) -> PathBuf {
         self.root_dir.join(ACTIVE_LINK_NAME)
     }
 
@@ -142,7 +162,6 @@ impl ControllerStorage {
         Ok(list)
     }
 
-    /// Resolve the name of the currently active project via the `active` symlink.
     /// Retrieve project configuration descriptor (`project.active.json` or `project.draft.json`).
     pub fn get_project(&self, project_name: &str) -> Result<ProjectConfig, StorageError> {
         let pdir = self.project_dir(project_name)?;
@@ -171,45 +190,54 @@ impl ControllerStorage {
         self.switch_active_project(project_name)
     }
 
+    /// The active project, from the `active` marker.
+    ///
+    /// The marker is a file holding the project's id. Earlier versions made it a symlink to the
+    /// project's directory, which Windows refuses to create without administrator rights or
+    /// Developer Mode; a symlink left by one of them is still read, and the next activation
+    /// replaces it with a file.
     pub fn get_active_project(&self) -> Result<Option<String>, StorageError> {
-        let symlink = self.active_symlink_path();
-        if !symlink.exists() && fs::symlink_metadata(&symlink).is_err() {
-            return Ok(None);
-        }
+        let marker = self.active_marker_path();
+        let meta = match fs::symlink_metadata(&marker) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
 
-        let target = fs::read_link(&symlink)?;
-        let name = target
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string());
-        Ok(name)
+        let id = if meta.file_type().is_symlink() {
+            fs::read_link(&marker)?
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string)
+                .unwrap_or_default()
+        } else {
+            fs::read_to_string(&marker)?.trim().to_string()
+        };
+
+        // A marker that does not name a valid project is damaged. Saying "no active project"
+        // would hide that; so would guessing one.
+        if !is_valid_project_id(&id) {
+            return Err(StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "the active-project marker {} does not name a valid project: {:?}",
+                    marker.display(),
+                    id
+                ),
+            )));
+        }
+        Ok(Some(id))
     }
 
-    /// Atomically switch the active project using a temporary symlink and atomic rename.
+    /// Make `project_name` the active project, atomically: the marker is written beside itself
+    /// and renamed over the old one, so a reader sees the old project or the new one, never
+    /// neither.
     pub fn switch_active_project(&self, project_name: &str) -> Result<(), StorageError> {
         let target_dir = self.project_dir(project_name)?;
         if !target_dir.exists() {
             return Err(StorageError::ProjectNotFound(project_name.to_string()));
         }
-
-        let active_link = self.active_symlink_path();
-        let tmp_link = self
-            .root_dir
-            .join(format!(".active_tmp_{}", std::process::id()));
-
-        // Remove any stale temporary link
-        let _ = fs::remove_file(&tmp_link);
-
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&target_dir, &tmp_link)?;
-
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_dir(&target_dir, &tmp_link)?;
-
-        // Atomic rename replaces the active symlink in a single filesystem metadata swap
-        fs::rename(&tmp_link, &active_link)?;
-
-        Ok(())
+        self.atomic_write_file(&self.active_marker_path(), project_name.as_bytes())
     }
 
     /// Write file atomically using sibling temporary file and POSIX rename.

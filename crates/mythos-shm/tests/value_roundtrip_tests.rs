@@ -113,15 +113,14 @@ fn integer_bits_do_not_read_as_their_numeric_value_in_f64() {
 /// which is exactly why the trap is worth a test now rather than when retention is wired.
 #[test]
 fn restore_retained_tag_carries_the_declared_type() {
-    // DefaultShm (PosixShm), not MemoryShm: MemoryShm::open_or_create allocates a fresh isolated
+    // DefaultShm (the platform's real shared memory), not MemoryShm: MemoryShm::open_or_create allocates a fresh isolated
     // buffer per call, so a writer and a reader "on the same name" never share memory. This is the
     // third place in this sprint that trap has produced a silently meaningless test.
     use mythos_pal::DefaultShm;
     use mythos_shm::{ShmReaderHandle, ShmWriterHandle, TagFlags};
 
     let name = format!("mythos_retained_{}", std::process::id());
-    #[cfg(target_os = "linux")]
-    let _ = mythos_pal::PosixShm::unlink(&name);
+    let _ = mythos_pal::DefaultShm::unlink(&name);
     let mut writer = ShmWriterHandle::<DefaultShm>::new(&name, 16).unwrap();
     writer.restore_retained_tag(3, 5, TagValueRaw::from_f64(101.3));
     writer.publish();
@@ -140,6 +139,5 @@ fn restore_retained_tag_carries_the_declared_type() {
         0,
         "retention flag must survive the restore"
     );
-    #[cfg(target_os = "linux")]
-    let _ = mythos_pal::PosixShm::unlink(&name);
+    let _ = mythos_pal::DefaultShm::unlink(&name);
 }

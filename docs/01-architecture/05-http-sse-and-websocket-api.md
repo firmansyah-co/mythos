@@ -159,7 +159,7 @@ The base path for all REST interfaces is `/api/v1`.
 The target controller acts as the primary repository of all plant automation projects. Multiple project configurations exist on disk concurrently under `/var/lib/mythos/projects/<project_id>/`.
 
 ### 4.1 Project Status States
-- `ACTIVE`: The project currently executed by the Native STruC++ soft-logic engine and driver SPI. Exactly one project is `ACTIVE` at any time. Symlinked at `/var/lib/mythos/projects/active`.
+- `ACTIVE`: The project currently executed by the Native STruC++ soft-logic engine and driver SPI. Exactly one project is `ACTIVE` at any time. Named by the marker file `<storage root>/active`.
 - `LOADED_DRAFT`: A project opened in memory by one or more engineering clients for editing and validation. Runs collaborative CRDT rooms and syntax verification without affecting the `ACTIVE` control loop.
 - `IDLE_DRAFT`: A project stored on disk, not currently opened in memory.
 
@@ -219,7 +219,7 @@ Transitions a draft project to `ACTIVE`.
 3. Flushes current debounced autosave deltas to disk.
 4. Waits for the PLC cyclic dead-time window.
 5. Performs atomic pointer swap of the Native STruC++ `ConfigurationInstance` and rebinds `/dev/shm/mythos_tagbus`.
-6. Updates `/var/lib/mythos/projects/active` atomic symlink to point to the newly activated directory.
+6. Replaces the `<storage root>/active` marker file atomically with the newly activated project's id.
 7. Total dead-time jitter is measured and guaranteed to remain strictly below 50 ms.
 
 ```json

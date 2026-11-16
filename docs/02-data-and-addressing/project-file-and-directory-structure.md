@@ -20,7 +20,7 @@ In legacy SCADA systems, project files are either stored in proprietary opaque b
 
 MythOS establishes an **Open, Transparent, and Robust Storage Architecture**:
 - **Primary Source of Truth on Target Controller**: The industrial controller (such as an Industrial PC or Raspberry Pi Compute Module 4 mounted inside the control cabinet) hosts the primary project filesystem under `/var/lib/mythos/projects/`. The controller boots independently, executes soft-logic 24/7, and serves HMI/API clients without requiring a connected engineering laptop.
-- **Multi-Project Repository and Active Symlink**: The controller can store multiple independent projects simultaneously. Exactly one project is designated `ACTIVE` at runtime via an atomic filesystem symlink (`/var/lib/mythos/projects/active`). Draft projects can be loaded, modified, and validated concurrently in memory without disturbing the active control cycle.
+- **Multi-Project Repository and Active Symlink**: The controller can store multiple independent projects simultaneously. Exactly one project is designated `ACTIVE` at runtime by a marker file, `<storage root>/active`, holding the project's id and replaced atomically (written beside itself, then renamed over). It was a symlink before; Windows does not let an ordinary user create one, so it is a file now, and a symlink left by an earlier version is still read. Draft projects can be loaded, modified, and validated concurrently in memory without disturbing the active control cycle.
 - **Bumpless Hot-Swap (< 50ms Dead-Time)**: Switching the active project executes an atomic symlink swap and Native STruC++ dynamic library hot-swap during cyclic dead-time in less than 50 ms.
 - **Atomic Debounced Autosave with WAL Protection**: Client modifications commit immediately to an append-only Write-Ahead Log (`project.wal`), followed by debounced atomic file replacement using temporary files and POSIX `rename`. This guarantees zero data loss and prevents partial file corruption.
 - **Bidirectional Client Synchronization & 1-Click Export**: Engineering laptops can operate in offline mode and perform differential Git-style synchronizations (`push`/`pull`) or export/import self-contained, encrypted `.mythos-pkg` archives.
@@ -31,7 +31,7 @@ MythOS establishes an **Open, Transparent, and Robust Storage Architecture**:
 
 ### 2.1 Multi-Project Filesystem Layout
 
-On the target controller, the root data directory is `/var/lib/mythos/`:
+On the target controller, the root data directory is `/var/lib/mythos/` on Linux (`/Library/Application Support/MythOS/` on macOS, `%ProgramData%\MythOS\` on Windows; see `default_projects_dir`):
 
 ```
 /var/lib/mythos/
@@ -40,7 +40,7 @@ On the target controller, the root data directory is `/var/lib/mythos/`:
 │   ├── security.json                  -- IEC 62443 RBAC policies, TLS keys, & MCP token registry
 │   └── drivers.json                   -- Protocol driver initialization registry
 ├── projects/
-│   ├── active -> proj_line01_bottling -- POSIX Atomic Symlink pointing to currently executing project
+│   ├── active                     -- File holding the id of the currently executing project
 │   └── proj_line01_bottling/          -- Production Project Directory
 │       ├── project.active.json        -- Live master project descriptor, network topology, layout presets
 │       ├── project.draft.json         -- Staged master project descriptor under active edit
@@ -163,7 +163,7 @@ Filesystem mutations follow ACID transactional properties on Linux filesystems (
 |                        (/var/lib/mythos/projects/)                                |
 +───────────────────────────────────────────────────────────────────────────────────+
        ▲                                                             │
-       │ Symlink: /projects/active                                   │
+       │ Marker file: /projects/active                               │
        ▼                                                             ▼
 +──────────────────────────+                                  +─────────────────────+
 |   ACTIVE PRODUCTION      |                                  |   LOADED DRAFT      |
@@ -185,7 +185,7 @@ Filesystem mutations follow ACID transactional properties on Linux filesystems (
 
 ### 3.1 Controller Primary Source of Truth
 The controller is completely autonomous:
-1. On system boot, the `mythos-core` daemon inspects `/var/lib/mythos/projects/active`.
+1. On system boot, the `mythos-core` daemon reads the marker `<storage root>/active`.
 2. It resolves the canonical project path, loads `project.json`, initializes drivers, and attaches `/dev/shm/mythos_tagbus`.
 3. It loads `logic/build/libstrucpp_prog.so` and begins the cyclic real-time execution loop.
 4. If an engineer disconnects their laptop or loses network connectivity, the controller continues uninhibited plant control.

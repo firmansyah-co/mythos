@@ -27,8 +27,13 @@ impl MacOsShm {
             let mut hasher = crc32fast::Hasher::new();
             hasher.update(trimmed.as_bytes());
             let hash = hasher.finalize();
-            let prefix = &trimmed[..20];
-            format!("/{:8x}_{}", hash, prefix)
+            // Characters, not a byte slice: a byte index can fall inside a multi-byte character.
+            let prefix: String = trimmed
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .take(20)
+                .collect();
+            format!("/{:08x}_{}", hash, prefix)
         }
     }
 
@@ -76,7 +81,7 @@ impl PlatformShm for MacOsShm {
 
         let oflags = libc::O_RDWR | libc::O_CREAT;
         let mode = 0o660;
-        let fd = unsafe { libc::shm_open(c_name.as_ptr(), oflags, mode as libc::mode_t) };
+        let fd = unsafe { libc::shm_open(c_name.as_ptr(), oflags, mode as libc::c_uint) };
         if fd < 0 {
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() == Some(libc::EACCES) {

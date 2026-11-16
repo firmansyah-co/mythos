@@ -1,10 +1,8 @@
 //! The Modbus driver as a module: a separate process, found by discovery, driven by the I/O
 //! runtime, killed and replaced while the server keeps running.
 //!
-//! Everything here is real: the module executable, the Modbus TCP simulator on a socket, a
-//! POSIX shared-memory tag bus.
-
-#![cfg(target_os = "linux")]
+//! Everything here is real: the module executable, the Modbus TCP simulator on a socket, the
+//! platform's shared-memory tag bus. It runs on Linux, macOS and Windows alike.
 
 use driver_modbus::sim::ModbusSimServer;
 use mythos_core::io::{
@@ -12,7 +10,7 @@ use mythos_core::io::{
 };
 use mythos_core::tag::TagCatalog;
 use mythos_module::{discover, ModuleKind};
-use mythos_pal::PosixShm;
+use mythos_pal::DefaultShm;
 use mythos_shm::{QualityCode, ShmReaderHandle, ShmWriterHandle, TagDataType, TagSlot};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -22,15 +20,44 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 const UNDER_TEST: &str = env!("CARGO_BIN_EXE_modbus-module-under-test");
+const FIXTURE: &str = env!("CARGO_BIN_EXE_module-fixture");
 const CAPACITY: usize = 64;
 const TAG: &str = "external.Plant.PT101.pressure";
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
+/// The file name of the executable called `name` on this platform (`name.exe` on Windows).
+fn exe_name(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// The installed Modbus module in `dir`.
+fn modbus_exe(dir: &Path) -> PathBuf {
+    dir.join(exe_name("mythos-module-modbus"))
+}
+
 /// A directory holding the module under its shipped name, as an installation would.
 fn module_dir() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::copy(UNDER_TEST, dir.path().join("mythos-module-modbus")).unwrap();
+    std::fs::copy(UNDER_TEST, modbus_exe(dir.path())).unwrap();
     dir
+}
+
+/// Put a module that behaves as told at `path`: it prints `manifest` (if any) and exits with
+/// `manifest_exit` when asked for its manifest, and exits with `serve_exit` when started.
+fn fixture(path: &Path, manifest: Option<&str>, manifest_exit: u8, serve_exit: u8) {
+    std::fs::copy(FIXTURE, path).unwrap();
+    let mut sidecar = path.as_os_str().to_owned();
+    sidecar.push(".fixture.json");
+    std::fs::write(
+        sidecar,
+        serde_json::to_vec(&json!({
+            "manifest": manifest,
+            "manifest_exit": manifest_exit,
+            "serve_exit": serve_exit,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
 }
 
 struct Segment(String);
@@ -42,14 +69,14 @@ impl Segment {
             std::process::id(),
             SEQ.fetch_add(1, Ordering::SeqCst)
         );
-        let _ = PosixShm::unlink(&name);
+        let _ = DefaultShm::unlink(&name);
         Self(name)
     }
 }
 
 impl Drop for Segment {
     fn drop(&mut self) {
-        let _ = PosixShm::unlink(&self.0);
+        let _ = DefaultShm::unlink(&self.0);
     }
 }
 
@@ -78,7 +105,7 @@ async fn wait_for_slot(
     accept: impl Fn(&TagSlot) -> bool,
     what: &str,
 ) -> TagSlot {
-    let mut reader = ShmReaderHandle::<PosixShm>::new(&segment.0, CAPACITY).unwrap();
+    let mut reader = ShmReaderHandle::<DefaultShm>::new(&segment.0, CAPACITY).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         reader.update();
@@ -96,41 +123,46 @@ async fn wait_for_slot(
     }
 }
 
-/// Process ids of this process's children running `<exe> --serve`. Tests run in parallel in
-/// one process, so each test asks about the executable in its own directory.
+/// This process's children running `<exe> --serve`. Tests run in parallel in one process, so
+/// each test asks about the executable in its own directory.
 fn module_children(exe: &Path) -> Vec<u32> {
-    let exe = exe.to_string_lossy().into_owned();
-    let me = std::process::id();
-    let mut pids = Vec::new();
-    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
-        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            continue;
-        };
-        // Field 4, after the parenthesised command name, is the parent pid.
-        let Some(after) = stat.rsplit_once(')').map(|(_, rest)| rest) else {
-            continue;
-        };
-        let ppid: u32 = after
-            .split_whitespace()
-            .nth(1)
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(0);
-        if ppid != me {
-            continue;
-        }
-        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        let args: Vec<String> = cmdline
-            .split(|b| *b == 0)
-            .map(|a| String::from_utf8_lossy(a).into_owned())
-            .collect();
-        if args.first() == Some(&exe) && args.get(1).map(String::as_str) == Some("--serve") {
-            pids.push(pid);
-        }
-    }
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let me = sysinfo::Pid::from_u32(std::process::id());
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+    );
+    let mut pids: Vec<u32> = system
+        .processes()
+        .values()
+        .filter(|p| p.parent() == Some(me))
+        .filter(|p| {
+            // The command line as the host started it: the module's path, then `--serve`.
+            let cmd = p.cmd();
+            cmd.first().map(Path::new) == Some(exe)
+                && cmd.get(1).and_then(|a| a.to_str()) == Some("--serve")
+        })
+        .map(|p| p.pid().as_u32())
+        .collect();
+    pids.sort();
     pids
+}
+
+/// Kill a process outright: SIGKILL on Unix, TerminateProcess on Windows. It gets no chance to
+/// say anything.
+fn kill(pid: u32) {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let pid = sysinfo::Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    let process = system.process(pid).expect("the process to kill is running");
+    assert!(process.kill(), "could not kill process {pid}");
 }
 
 #[tokio::test]
@@ -143,7 +175,7 @@ async fn the_module_is_discovered_by_its_manifest() {
     assert_eq!(module.manifest.id, "org.mythos.driver.modbus");
     assert_eq!(module.manifest.provides, "modbus");
     assert_eq!(module.manifest.kind, ModuleKind::Driver);
-    assert_eq!(module.path, dir.path().join("mythos-module-modbus"));
+    assert_eq!(module.path, modbus_exe(dir.path()));
     assert_eq!(
         module.manifest.config_schema["properties"]["mappings"]["type"],
         "array"
@@ -156,22 +188,26 @@ async fn the_module_is_discovered_by_its_manifest() {
 
 #[tokio::test]
 async fn files_that_are_not_usable_modules_are_reported_or_ignored() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = module_dir();
-    let write = |name: &str, body: &str, mode: u32| {
-        let path: PathBuf = dir.path().join(name);
-        std::fs::write(&path, body).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
-    };
-    write(
-        "mythos-module-broken",
-        "#!/bin/sh\necho not-a-manifest\n",
-        0o755,
+    let path = |name: &str| dir.path().join(name);
+    fixture(
+        &path(&exe_name("mythos-module-broken")),
+        Some("not-a-manifest\n"),
+        0,
+        1,
     );
-    write("mythos-module-failing", "#!/bin/sh\nexit 3\n", 0o755);
-    write("mythos-module-not-executable", "#!/bin/sh\n", 0o644);
-    write("mythos-module-modbus.d", "dep-info\n", 0o755);
-    write("unrelated-tool", "#!/bin/sh\n", 0o755);
+    fixture(&path(&exe_name("mythos-module-failing")), None, 3, 1);
+    fixture(&path(&exe_name("unrelated-tool")), None, 0, 0);
+    std::fs::write(path("mythos-module-modbus.d"), "dep-info\n").unwrap();
+    // A file with a module's name that cannot be started: on Unix it lacks the execute bit; on
+    // Windows it is not an .exe.
+    let not_executable = path("mythos-module-not-executable");
+    std::fs::write(&not_executable, "not a program\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&not_executable, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
 
     let found = discover(&[dir.path().to_path_buf()]).await;
     assert_eq!(found.modules.len(), 1, "only the real module is usable");
@@ -184,12 +220,15 @@ async fn files_that_are_not_usable_modules_are_reported_or_ignored() {
     reported.sort();
     assert_eq!(
         reported,
-        vec!["mythos-module-broken", "mythos-module-failing"]
+        vec![
+            exe_name("mythos-module-broken"),
+            exe_name("mythos-module-failing")
+        ]
     );
     let broken = found
         .problems
         .iter()
-        .find(|p| p.path.ends_with("mythos-module-broken"))
+        .find(|p| p.path.ends_with(exe_name("mythos-module-broken")))
         .unwrap();
     assert!(
         broken.message.contains("manifest is not valid"),
@@ -204,10 +243,7 @@ async fn a_second_module_providing_the_same_driver_is_refused() {
     let second = module_dir();
     let found = discover(&[first.path().to_path_buf(), second.path().to_path_buf()]).await;
     assert_eq!(found.modules.len(), 1);
-    assert_eq!(
-        found.modules[0].path,
-        first.path().join("mythos-module-modbus")
-    );
+    assert_eq!(found.modules[0].path, modbus_exe(first.path()));
     assert_eq!(found.problems.len(), 1);
     assert!(found.problems[0].message.contains("already provided"));
 }
@@ -229,7 +265,7 @@ async fn the_runtime_reads_a_device_through_the_module_process() {
         None,
         &registry,
         Arc::clone(&catalog),
-        ShmWriterHandle::<PosixShm>::new(&segment.0, CAPACITY).unwrap(),
+        ShmWriterHandle::<DefaultShm>::new(&segment.0, CAPACITY).unwrap(),
         status.clone(),
     )
     .await;
@@ -241,10 +277,7 @@ async fn the_runtime_reads_a_device_through_the_module_process() {
         "{:?}",
         snapshot.connections[0].detail
     );
-    assert_eq!(
-        module_children(&dir.path().join("mythos-module-modbus")).len(),
-        1
-    );
+    assert_eq!(module_children(&modbus_exe(dir.path())).len(), 1);
 
     let slot = wait_for_slot(&segment, |s| s.quality == QualityCode::GOOD, "first read").await;
     assert_eq!(slot.type_code, TagDataType::Uint16.code());
@@ -258,7 +291,7 @@ async fn the_runtime_reads_a_device_through_the_module_process() {
     assert_eq!(slot.quality, QualityCode::BAD_NOT_CONNECTED);
     // The module process is gone with the runtime.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !module_children(&dir.path().join("mythos-module-modbus")).is_empty() {
+    while !module_children(&modbus_exe(dir.path())).is_empty() {
         assert!(
             Instant::now() < deadline,
             "the module process outlived its runtime"
@@ -283,21 +316,16 @@ async fn a_module_process_that_dies_is_replaced_and_its_tag_is_never_left_good()
         None,
         &registry,
         Arc::clone(&catalog),
-        ShmWriterHandle::<PosixShm>::new(&segment.0, CAPACITY).unwrap(),
+        ShmWriterHandle::<DefaultShm>::new(&segment.0, CAPACITY).unwrap(),
         IoStatusHandle::default(),
     )
     .await;
 
     wait_for_slot(&segment, |s| s.quality == QualityCode::GOOD, "first read").await;
-    let before = module_children(&dir.path().join("mythos-module-modbus"));
+    let before = module_children(&modbus_exe(dir.path()));
     assert_eq!(before.len(), 1);
 
-    // SIGKILL: the module gets no chance to say anything.
-    let status = std::process::Command::new("kill")
-        .args(["-9", &before[0].to_string()])
-        .status()
-        .unwrap();
-    assert!(status.success());
+    kill(before[0]);
 
     let bad = wait_for_slot(
         &segment,
@@ -317,7 +345,7 @@ async fn a_module_process_that_dies_is_replaced_and_its_tag_is_never_left_good()
     .await;
     assert_eq!(good.type_code, TagDataType::Uint16.code());
 
-    let after = module_children(&dir.path().join("mythos-module-modbus"));
+    let after = module_children(&modbus_exe(dir.path()));
     assert_eq!(after.len(), 1, "exactly one module process runs again");
     assert_ne!(after, before, "a new process, not the killed one");
 
@@ -332,7 +360,7 @@ async fn checking_a_configuration_asks_the_module() {
     let mut bad = connection(502);
     bad["config"]["slave_id"] = json!(0);
     let config: IoConfig = serde_json::from_value(json!({"connections": [bad]})).unwrap();
-    let problems = IoManager::<PosixShm>::check_with(&registry, &config).await;
+    let problems = IoManager::<DefaultShm>::check_with(&registry, &config).await;
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
         problems[0].message.contains("1..=247"),
@@ -341,13 +369,13 @@ async fn checking_a_configuration_asks_the_module() {
     );
 
     let good: IoConfig = serde_json::from_value(json!({"connections": [connection(502)]})).unwrap();
-    assert!(IoManager::<PosixShm>::check_with(&registry, &good)
+    assert!(IoManager::<DefaultShm>::check_with(&registry, &good)
         .await
         .is_empty());
 
     // Checking starts nothing that stays running.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !module_children(&dir.path().join("mythos-module-modbus")).is_empty() {
+    while !module_children(&modbus_exe(dir.path())).is_empty() {
         assert!(
             Instant::now() < deadline,
             "a check left a module process behind"
@@ -361,7 +389,7 @@ async fn checking_a_configuration_asks_the_module() {
 // -----------------------------------------------------------------------------
 
 struct ManagerRig {
-    io: Arc<IoManager<PosixShm>>,
+    io: Arc<IoManager<DefaultShm>>,
     segment: Segment,
     _storage: tempfile::TempDir,
 }
@@ -385,7 +413,7 @@ async fn manager_rig(dir: &Path, sim_port: u16) -> ManagerRig {
 
     let segment = Segment::new();
     let dirs = vec![dir.to_path_buf()];
-    let io = IoManager::<PosixShm>::with_module_dirs(
+    let io = IoManager::<DefaultShm>::with_module_dirs(
         storage,
         Arc::new(RwLock::new(TagCatalog::new())),
         segment.0.clone(),
@@ -401,14 +429,40 @@ async fn manager_rig(dir: &Path, sim_port: u16) -> ManagerRig {
     }
 }
 
-/// Put `source` in place of the module, the way an installer does: write beside it, then
-/// rename over it. The running process keeps the file it was started from.
-fn install(dir: &Path, source: &Path) {
-    std::thread::sleep(Duration::from_millis(20));
+/// Put `source` in place of the module, the way an installer does: write beside it, move the
+/// old build out of the way, then move the new one in. The running process keeps the file it was
+/// started from.
+///
+/// Moving the old build away first is what Windows requires (a running executable can be
+/// renamed but not replaced), and it leaves the module missing for a moment, which the watcher
+/// must ride out. It is done the same way everywhere, so every platform proves that.
+async fn install(dir: &Path, source: &Path) {
+    static OLD: AtomicU32 = AtomicU32::new(0);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let target = modbus_exe(dir);
     let staged = dir.join(".staged-module");
     std::fs::copy(source, &staged).unwrap();
-    std::fs::rename(&staged, dir.join("mythos-module-modbus")).unwrap();
+    let mut sidecar = source.as_os_str().to_owned();
+    sidecar.push(".fixture.json");
+    if Path::new(&sidecar).exists() {
+        let mut beside = target.as_os_str().to_owned();
+        beside.push(".fixture.json");
+        std::fs::copy(&sidecar, beside).unwrap();
+    }
+    let old = dir.join(format!(
+        "replaced-{}.old",
+        OLD.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::rename(&target, old).unwrap();
+    // A slow installer: the module stays missing for longer than the watcher needs to notice a
+    // change and let it settle, so the watcher certainly acts on its absence. The connection
+    // reading through the module must ride that out untouched.
+    tokio::time::sleep(WATCH_EVERY * 5).await;
+    std::fs::rename(&staged, &target).unwrap();
 }
+
+/// How often the watcher looks in the tests that run one.
+const WATCH_EVERY: Duration = Duration::from_millis(100);
 
 /// Records every read of slot 0 that is not GOOD, until finished or dropped.
 struct SlotWatch {
@@ -429,7 +483,7 @@ impl SlotWatch {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let handle = tokio::task::spawn_blocking(move || {
-            let mut reader = ShmReaderHandle::<PosixShm>::new(&name, CAPACITY).unwrap();
+            let mut reader = ShmReaderHandle::<DefaultShm>::new(&name, CAPACITY).unwrap();
             let (mut reads, mut gaps) = (0u64, Vec::new());
             while !flag.load(Ordering::SeqCst) {
                 reader.update();
@@ -457,7 +511,7 @@ impl SlotWatch {
 #[tokio::test]
 async fn installing_a_new_build_of_a_module_swaps_it_in_without_a_gap() {
     let dir = module_dir();
-    let exe = dir.path().join("mythos-module-modbus");
+    let exe = modbus_exe(dir.path());
     let sim = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
     sim.set_holding(0, 5).await;
     let rig = manager_rig(dir.path(), sim.port()).await;
@@ -470,13 +524,10 @@ async fn installing_a_new_build_of_a_module_swaps_it_in_without_a_gap() {
     let before = module_children(&exe);
     assert_eq!(before.len(), 1);
 
-    let _watcher = rig
-        .io
-        .spawn_module_watcher(Duration::from_millis(100))
-        .unwrap();
+    let _watcher = rig.io.spawn_module_watcher(WATCH_EVERY).unwrap();
     let watch = SlotWatch::start(&rig.segment);
 
-    install(dir.path(), Path::new(UNDER_TEST));
+    install(dir.path(), Path::new(UNDER_TEST)).await;
 
     // The watcher notices the new file and swaps the connection to a process started from it.
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -513,9 +564,8 @@ async fn installing_a_new_build_of_a_module_swaps_it_in_without_a_gap() {
 
 #[tokio::test]
 async fn a_new_build_that_cannot_start_leaves_the_running_one_in_place() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = module_dir();
-    let exe = dir.path().join("mythos-module-modbus");
+    let exe = modbus_exe(dir.path());
     let sim = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
     sim.set_holding(0, 9).await;
     let rig = manager_rig(dir.path(), sim.port()).await;
@@ -535,18 +585,11 @@ async fn a_new_build_that_cannot_start_leaves_the_running_one_in_place() {
     let mut manifest: Value = serde_json::from_slice(&output.stdout).unwrap();
     manifest["version"] = json!("9.9.9");
     let broken = tempfile::tempdir().unwrap();
-    let script = broken.path().join("module");
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\nif [ \"$1\" = --manifest ]; then\ncat <<'EOF'\n{manifest}\nEOF\nexit 0\nfi\nexit 1\n"
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = broken.path().join(exe_name("module"));
+    fixture(&script, Some(&manifest.to_string()), 0, 1);
 
     let watch = SlotWatch::start(&rig.segment);
-    install(dir.path(), &script);
+    install(dir.path(), &script).await;
     let report = rig.io.rescan().await;
     let (_, gaps) = watch.finish().await;
 

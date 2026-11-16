@@ -283,6 +283,42 @@ jobs:
         run: |
           /opt/hostedtoolcache/cargo/bin/sccache --show-stats || true
 
+  # MythOS must run on Windows and macOS as well as Linux. Until this job existed nothing had ever
+  # compiled it there, and it did not compile: the Windows shared memory called a windows-sys API
+  # that no longer existed, and every POSIX call was compiled on every platform. Lints and the
+  # whole test suite run here, on GitHub's hosted runners (the self-hosted runner is Linux only).
+  # The repository is public, so these runners cost nothing.
+  #
+  # The release latency gate and the p99 report stay on the Linux job: they describe that runner,
+  # and a shared hosted VM says nothing about it. `cargo test` here runs only the debug smoke check
+  # (a 250 ns best-batch backstop against a lock or syscall on the hot path).
+  cross-platform-tests:
+    name: Rust Workspace on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      # One platform failing must not hide what the other says.
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo Build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo Clippy Audit
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run All Workspace Tests
+        run: cargo test --workspace
+
   frontend-tests:
     name: Frontend Web Workbench Test Suite & Lints
     runs-on: arc-runner-org

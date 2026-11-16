@@ -29,7 +29,7 @@ async fn test_crdt_multi_client_integration_suite() {
     let tmp_dir = tempfile::tempdir().expect("Failed to create tempdir");
     let storage = Arc::new(ControllerStorage::new(tmp_dir.path()).expect("Storage init failed"));
     let catalog = Arc::new(RwLock::new(TagCatalog::new()));
-    let state = ApiState::<mythos_pal::PosixShm>::new(storage, catalog, None);
+    let state = ApiState::<mythos_pal::DefaultShm>::new(storage, catalog, None);
     let room_mgr = Arc::clone(&state.room_manager);
     let app = create_router(state);
 

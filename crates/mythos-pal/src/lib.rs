@@ -15,7 +15,11 @@ pub use library::DynamicLibrary;
 pub use scheduler::{
     DefaultScheduler, LinuxScheduler, MacOsScheduler, NoopScheduler, WindowsScheduler,
 };
-pub use shm::{DefaultShm, MacOsShm, MemoryShm, PosixShm, WindowsShm};
+#[cfg(windows)]
+pub use shm::WindowsShm;
+pub use shm::{DefaultShm, MemoryShm};
+#[cfg(unix)]
+pub use shm::{MacOsShm, PosixShm};
 pub use traits::{PlatformLibrary, PlatformScheduler, PlatformShm};
 
 #[cfg(test)]
@@ -65,6 +69,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn test_windows_shm_format_name() {
         assert_eq!(WindowsShm::format_name("tagbus"), "Local\\MythOS_tagbus");

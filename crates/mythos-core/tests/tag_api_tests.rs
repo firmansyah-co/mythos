@@ -1,7 +1,5 @@
 //! What the tag routes may say about a tag, and who may create one.
 
-#![cfg(target_os = "linux")]
-
 use axum::{
     body::Body,
     http::{header, Request, StatusCode},
@@ -13,7 +11,7 @@ use mythos_core::{
     storage::ControllerStorage,
     tag::{AccessMode, TagCatalog, TagMetadata},
 };
-use mythos_pal::PosixShm;
+use mythos_pal::DefaultShm;
 use mythos_shm::{QualityCode, ShmReaderHandle, ShmWriterHandle, TagDataType, TagValueRaw};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -29,14 +27,14 @@ struct Segment(String);
 impl Segment {
     fn new(label: &str) -> Self {
         let name = format!("mythos_tag_api_{}_{}", label, std::process::id());
-        let _ = PosixShm::unlink(&name);
+        let _ = DefaultShm::unlink(&name);
         Self(name)
     }
 }
 
 impl Drop for Segment {
     fn drop(&mut self) {
-        let _ = PosixShm::unlink(&self.0);
+        let _ = DefaultShm::unlink(&self.0);
     }
 }
 
@@ -150,7 +148,7 @@ async fn a_client_cannot_register_a_tag_over_a_slot_and_have_what_was_in_it_serv
 
     // Slot 7 holds a GOOD value from some earlier writer.
     {
-        let mut stale = ShmWriterHandle::<PosixShm>::new(&segment.0, CAPACITY).unwrap();
+        let mut stale = ShmWriterHandle::<DefaultShm>::new(&segment.0, CAPACITY).unwrap();
         for _ in 0..3 {
             stale
                 .write_tag(
@@ -169,8 +167,8 @@ async fn a_client_cannot_register_a_tag_over_a_slot_and_have_what_was_in_it_serv
     let dir = tempfile::tempdir().unwrap();
     let storage = Arc::new(ControllerStorage::new(dir.path()).unwrap());
     let catalog = Arc::new(RwLock::new(TagCatalog::new()));
-    let reader = ShmReaderHandle::<PosixShm>::new(&segment.0, CAPACITY).unwrap();
-    let state = ApiState::<PosixShm>::new(storage, Arc::clone(&catalog), Some(reader));
+    let reader = ShmReaderHandle::<DefaultShm>::new(&segment.0, CAPACITY).unwrap();
+    let state = ApiState::<DefaultShm>::new(storage, Arc::clone(&catalog), Some(reader));
     let router = create_router(state);
 
     // Nothing feeds a tag created this way: the tag bus has one writer, the field I/O runtime,

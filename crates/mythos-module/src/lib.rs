@@ -20,6 +20,7 @@
 pub mod host;
 pub mod protocol;
 pub mod serve;
+pub mod settle;
 
 pub use host::{
     discover, read_manifest, snapshot, Discovery, Fingerprint, ModuleBinary, ModuleProblem,
@@ -27,3 +28,4 @@ pub use host::{
 };
 pub use protocol::{ModuleKind, ModuleManifest, MODULE_FILE_PREFIX, PROTOCOL_VERSION};
 pub use serve::{run_driver_module, serve_driver};
+pub use settle::Settle;

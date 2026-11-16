@@ -5,8 +5,8 @@
 //!
 //! # Method and its known bias (read this before trusting any number below)
 //!
-//! One writer thread plus 15 reader threads on **one shared POSIX segment** (`DefaultShm`), each
-//! pinned to its own core on a best-effort basis. Every operation is timed individually, then
+//! One writer thread plus 15 reader threads on **one shared segment** of the platform's real
+//! shared memory (`DefaultShm`), each pinned to its own core on a best-effort basis. Every operation is timed individually, then
 //! sorted and indexed. Two reader populations are collected:
 //!
 //! - **Regime A, busy poll**: every `update()` + `read_tag()` pair. This is the literal reading of
@@ -461,10 +461,7 @@ fn report_tsk010_p99_read_write_under_16_concurrent_threads() {
     writes.report();
     println!("TSK-010 target {SPEC_P99_NS} ns p99, 1-min load average at measurement: {load}");
 
-    #[cfg(target_os = "linux")]
-    {
-        let _ = mythos_pal::PosixShm::unlink(&name);
-    }
+    let _ = mythos_pal::DefaultShm::unlink(&name);
 
     // TSK-010's verdict is REPORTED, not asserted. This test is not a gate on the spec number.
     //

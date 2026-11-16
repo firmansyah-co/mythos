@@ -1,6 +1,6 @@
 //! Reading, checking, saving and applying a project's field I/O configuration over the API.
 //!
-//! Run against the real pieces: a simulated Modbus TCP device on a socket, a POSIX
+//! Run against the real pieces: a simulated Modbus TCP device on a socket, a real
 //! shared-memory segment, the I/O manager, and the router. The properties that matter:
 //!
 //! - saving the active project's configuration changes what the controller reads, with no
@@ -8,8 +8,6 @@
 //! - a configuration with a problem is refused whole, nothing is written, and what was running
 //!   keeps running;
 //! - a project that is not active can be configured without touching the running I/O.
-
-#![cfg(target_os = "linux")]
 
 use axum::{
     body::Body,
@@ -24,7 +22,7 @@ use mythos_core::{
     storage::{ControllerStorage, ProjectConfig},
     tag::TagCatalog,
 };
-use mythos_pal::PosixShm;
+use mythos_pal::DefaultShm;
 use mythos_shm::ShmReaderHandle;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -44,14 +42,14 @@ struct Rig {
     router: Router,
     storage: Arc<ControllerStorage>,
     catalog: Arc<RwLock<TagCatalog>>,
-    io: Arc<IoManager<PosixShm>>,
+    io: Arc<IoManager<DefaultShm>>,
     segment: String,
     _dir: tempfile::TempDir,
 }
 
 impl Drop for Rig {
     fn drop(&mut self) {
-        let _ = PosixShm::unlink(&self.segment);
+        let _ = DefaultShm::unlink(&self.segment);
     }
 }
 
@@ -71,10 +69,10 @@ async fn rig() -> Rig {
         std::process::id(),
         SEGMENT_SEQ.fetch_add(1, Ordering::SeqCst)
     );
-    let _ = PosixShm::unlink(&segment);
+    let _ = DefaultShm::unlink(&segment);
 
     let catalog = Arc::new(RwLock::new(TagCatalog::new()));
-    let io = IoManager::<PosixShm>::new(
+    let io = IoManager::<DefaultShm>::new(
         Arc::clone(&storage),
         Arc::clone(&catalog),
         segment.clone(),
@@ -83,9 +81,10 @@ async fn rig() -> Rig {
     );
     io.reload().await;
 
-    let reader = ShmReaderHandle::<PosixShm>::new(&segment, CAPACITY).unwrap();
-    let state = ApiState::<PosixShm>::new(Arc::clone(&storage), Arc::clone(&catalog), Some(reader))
-        .with_io_manager(Arc::clone(&io));
+    let reader = ShmReaderHandle::<DefaultShm>::new(&segment, CAPACITY).unwrap();
+    let state =
+        ApiState::<DefaultShm>::new(Arc::clone(&storage), Arc::clone(&catalog), Some(reader))
+            .with_io_manager(Arc::clone(&io));
 
     Rig {
         router: create_router(state),
@@ -669,7 +668,7 @@ impl GapWatch {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let handle = tokio::task::spawn_blocking(move || {
-            let mut reader = ShmReaderHandle::<PosixShm>::new(&segment, CAPACITY).unwrap();
+            let mut reader = ShmReaderHandle::<DefaultShm>::new(&segment, CAPACITY).unwrap();
             let mut reads = 0u64;
             let mut gaps = Vec::new();
             while !flag.load(Ordering::SeqCst) {
