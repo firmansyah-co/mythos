@@ -3,7 +3,7 @@ import { LogOut } from 'lucide-react';
 import { formatClock } from '../data/quality';
 import { screenToShow, useRuntime } from '../data/runtime';
 import { useRuntimeScope } from '../data/scope';
-import { goOnline, onHmiEvent, useTelemetry } from '../data/telemetry';
+import { goOnline, onStreamEvent, useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
 import { ElementBody } from '../editors/ScreenElements';
 
@@ -50,7 +50,7 @@ export function RuntimeView() {
   // Take up a new release as soon as the controller announces it.
   useEffect(() => {
     if (projectId === null) return;
-    return onHmiEvent('SCREENS_RELEASED', (data) => {
+    return onStreamEvent('SCREENS_RELEASED', (data) => {
       const announced = (data as { project_id?: unknown } | null)?.project_id;
       if (announced === projectId) void load(projectId);
     });

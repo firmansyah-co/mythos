@@ -143,6 +143,11 @@ pub const NOT_TOOLS: &[NotATool] = &[
     },
     NotATool {
         method: "GET",
+        path: "/modules/:module/ui/*path",
+        reason: "the files of a module's workbench UI, loaded by the browser",
+    },
+    NotATool {
+        method: "GET",
         path: "/",
         reason: "the workbench's web page",
     },

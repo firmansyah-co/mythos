@@ -265,6 +265,31 @@ try {
   await evaluate(`__t.click('Exit runtime')`); await sleep(500);
   check('Exit runtime returns to the workbench', await evaluate(`__t.has('[data-testid="project-view"]')`));
 
+  // 8b. A module's workbench UI (ADR-011 §2.3): the notes service module brings a tree section
+  // and an editor of its own; the workbench has no code for either.
+  check('the notes module adds its section to the project tree', await evaluate(`__t.has('[data-testid="tree-notes"]')`));
+  check('and lists the note it holds', JSON.stringify(await evaluate(`__t.text('[data-testid="tree-note"]')`)) === '["shift-log"]',
+    JSON.stringify(await evaluate(`__t.text('[data-testid="tree-note"]')`)));
+  await evaluate(`__t.dblclick('tree-note')`); await sleep(800);
+  check('its editor opens in the work area with the note’s text',
+    (await evaluate(`document.querySelector('[data-testid="note-text"]')?.value`)) === 'Boiler 1 inspected');
+  check('under a header the module names', (await evaluate(`__t.text('.workarea__path')[0]`)) === 'Boiler HouseNotesshift-log',
+    await evaluate(`__t.text('.workarea__path')[0]`));
+  await evaluate(`(() => { const t = document.querySelector('[data-testid="note-text"]'); t.value = 'Boiler 1 inspected, valve 3 replaced'; true })()`);
+  await evaluate(`__t.click('Save note')`); await sleep(800);
+  const saved = await (await api(`${base}/api/v1/projects/plant_a/notes/notes/shift-log`)).json();
+  check('saving goes through the module to its own data', saved.text === 'Boiler 1 inspected, valve 3 replaced', JSON.stringify(saved));
+  // Another engineer writes a note: the module's event reaches the tree without a reload.
+  await api(`${base}/api/v1/projects/plant_a/notes/notes/handover`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'nights' }) });
+  await sleep(1500);
+  check('a note written elsewhere appears in the tree without a reload',
+    JSON.stringify(await evaluate(`__t.text('[data-testid="tree-note"]')`)) === '["handover","shift-log"]',
+    JSON.stringify(await evaluate(`__t.text('[data-testid="tree-note"]')`)));
+  await shot('e2e_6b_module_ui');
+  await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
+  check('closing the module’s editor returns to the screen', await evaluate(`__t.has('[data-testid="io-field"]')`));
+
   // 9. Go offline: values disappear, on the screen as everywhere else.
   await evaluate(`__t.click('Go offline')`); await sleep(500);
   const offline = await evaluate(`__t.text('[data-testid="tag-value"]')`);
@@ -290,6 +315,7 @@ try {
   await evaluate(`__t.click('Modules')`); await sleep(1200);
   const modules = await evaluate(`__t.text('[data-testid="module-row"]')`);
   check('Settings → Modules lists the Modbus driver module the server runs', modules.some((m) => m.includes('org.mythos.driver.modbus') && m.includes('built in')), modules.join(' | '));
+  check('and the notes service module', modules.some((m) => m.includes('org.mythos.test.notes')), modules.join(' | '));
   await shot('e2e_10_settings_modules');
   await evaluate(`__t.click('Sign out')`); await sleep(600);
   check('signing out returns to the sign-in page', await evaluate(`__t.has('[data-testid="sign-in"]')`));

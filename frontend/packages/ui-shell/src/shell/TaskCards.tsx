@@ -7,6 +7,8 @@ import { useScreens } from '../data/screens';
 import { useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
 import { ELEMENT_VIEWS } from '../editors/elementViews';
+import { ModuleMount } from '../modules/ModuleMount';
+import { useModuleUi } from '../modules/registry';
 
 const STREAM_WORDS = {
   IDLE: { label: 'OFFLINE', tone: 'neutral' },
@@ -120,5 +122,26 @@ export function Toolbox({ screenId }: { screenId: string }) {
         })}
       </div>
     </div>
+  );
+}
+
+/** The task cards modules set, in the order they were set. */
+export function ModuleTaskCards() {
+  const cards = useModuleUi((state) => state.taskCards);
+  const project = useWorkbench((state) => state.project);
+  if (!project) return null;
+  return (
+    <>
+      {Object.entries(cards).map(([owner, card]) => (
+        <div key={owner} className="card" data-testid="module-task-card">
+          <h3 className="card__title">{card.item.title}</h3>
+          <ModuleMount
+            mount={card.item.mount}
+            context={{ project: { id: project.id, name: project.name } }}
+            deps={[project.id, owner]}
+          />
+        </div>
+      ))}
+    </>
   );
 }

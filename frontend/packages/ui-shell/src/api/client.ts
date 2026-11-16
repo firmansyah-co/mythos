@@ -83,6 +83,8 @@ export interface ModuleRow {
   enabled: boolean;
   /** Installed from a package, so it can be removed; otherwise it belongs to the installation. */
   removable: boolean;
+  /** Where the workbench imports this module's UI from, when it is enabled and has one. */
+  ui?: string | null;
 }
 
 /** A running service module (ADR-011). */
@@ -282,6 +284,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+/**
+ * A request on behalf of a module's UI: `request`, except that an empty body (204, or a module
+ * that answers nothing) resolves to `null` rather than failing to parse.
+ */
+export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await call(path, init);
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const body: unknown = await response.json();
+      if (body && typeof body === 'object') {
+        const text = (body as Record<string, unknown>).error;
+        if (typeof text === 'string') detail = `: ${text}`;
+      }
+    } catch {
+      // The body was not JSON; the status line is all there is to report.
+    }
+    throw new ApiError(`${response.status} ${response.statusText}${detail}`, response.status);
+  }
+  const text = await response.text();
+  return (text === '' ? null : JSON.parse(text)) as T;
 }
 
 /** A request whose success carries no body. Throws exactly as `request` does. */

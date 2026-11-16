@@ -30,6 +30,10 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use thiserror::Error;
 
+/// The file a module's UI directory starts from: an ES module whose default export is the
+/// module's UI (see `@mythos/workbench-sdk`).
+pub const UI_ENTRY: &str = "entry.js";
+
 /// The platform this server was built for, which picks the executable out of a package.
 pub const TARGET: &str = mythos_update::release::TARGET;
 
@@ -91,6 +95,22 @@ impl ModuleSettings {
     /// Where the UI of the module `id` is kept.
     pub fn ui_dir(&self, id: &str) -> PathBuf {
         self.system_dir.join("modules-ui").join(id)
+    }
+
+    /// The directory holding the workbench UI of `module` (ADR-011 §2.3), when it has one: the
+    /// one installed with its package, else `modules-ui/<id>/` beside the directory of its
+    /// executable (where a MythOS release bundle puts the UI of the modules it ships).
+    pub fn ui_dir_of(&self, module: &mythos_module::ModuleBinary) -> Option<PathBuf> {
+        let id = &module.manifest.id;
+        let beside = module
+            .path
+            .parent()
+            .and_then(Path::parent)
+            .map(|d| d.join("modules-ui").join(id));
+        [Some(self.ui_dir(id)), beside]
+            .into_iter()
+            .flatten()
+            .find(|dir| dir.join(UI_ENTRY).is_file())
     }
 
     pub fn disabled(&self) -> BTreeSet<String> {

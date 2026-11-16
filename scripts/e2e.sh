@@ -46,6 +46,7 @@ port_in_use "$SIM_PORT" && cannot_run "port $SIM_PORT is already in use; set MYT
 echo "=== build ==="
 ( cd "$ROOT" && cargo build --bin mythos-server \
     && cargo build -p driver-modbus --bin mythos-module-modbus \
+    && cargo build -p mythos-module-tests --bin service-module-under-test \
     && cargo build -p driver-modbus --features sim --example modbus_sim ) \
     || cannot_run "the server or the simulator did not build"
 ( cd "$ROOT/frontend" && pnpm build ) >/dev/null || cannot_run "the workbench did not build"
@@ -62,6 +63,13 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$WORK/data" "$WORK/shots"
+# The modules this server runs, laid out as an installation lays them out: the executables in
+# one directory, each module's workbench UI in `modules-ui/<id>/` beside it (ADR-011 §2.3). The
+# notes test module is a service module with a UI of its own.
+mkdir -p "$WORK/install/bin" "$WORK/install/modules-ui/org.mythos.test.notes"
+cp "$ROOT/target/debug/mythos-module-modbus" "$WORK/install/bin/"
+cp "$ROOT/target/debug/service-module-under-test" "$WORK/install/bin/mythos-module-notes"
+cp "$ROOT/crates/mythos-module-tests/ui/entry.js" "$WORK/install/modules-ui/org.mythos.test.notes/"
 API="http://127.0.0.1:${HTTP_PORT}"
 
 # The server starts with no account; this run creates the first administrator with a setup code
@@ -73,6 +81,7 @@ E2E_PASSWORD="e2e password $RANDOM$RANDOM"
 # and the run never depends on the internet.
 MYTHOS_RELEASE_FEED="http://127.0.0.1:9/releases" \
 MYTHOS_SETUP_CODE="$SETUP_CODE" \
+MYTHOS_MODULE_PATH="$WORK/install/bin" \
 MYTHOS_STORAGE_ROOT="$WORK/data" MYTHOS_HTTP_PORT="$HTTP_PORT" MYTHOS_SHM_NAME="$SHM" \
 MYTHOS_STATIC_DIR="$ROOT/frontend/packages/ui-shell/dist" \
     "$ROOT/target/debug/mythos-server" >"$WORK/server.log" 2>&1 & SRV=$!
@@ -128,6 +137,9 @@ curl -fsS -o /dev/null "${AUTH[@]}" -X POST "$API/api/v1/projects" -H 'content-t
     || cannot_run "the test project was not created in this run's storage ($WORK/data)"
 curl -fsS -o /dev/null "${AUTH[@]}" -X POST "$API/api/v1/projects/plant_a/activate" \
     || cannot_run "the test project could not be activated"
+curl -fsS -o /dev/null "${AUTH[@]}" -X PUT "$API/api/v1/projects/plant_a/notes/notes/shift-log" \
+    -H 'content-type: application/json' -d '{"text":"Boiler 1 inspected"}' \
+    || cannot_run "the notes module did not take a note"
 
 echo "=== workbench, in $BROWSER ==="
 MYTHOS_E2E_USER="$E2E_USER" MYTHOS_E2E_PASSWORD="$E2E_PASSWORD" MYTHOS_E2E_TOKEN="$TOKEN" \

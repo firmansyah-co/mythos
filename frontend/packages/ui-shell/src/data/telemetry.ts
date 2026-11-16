@@ -84,18 +84,36 @@ export const useTelemetry = create<TelemetryState>((set) => ({
   clear: () => set({ tags: new Map(), lastBatchAtMs: null }),
 }));
 
-/** Named events the controller sends on the stream besides tag batches. */
-export const HMI_EVENTS = ['SCREENS_RELEASED'] as const;
-export type HmiEventName = (typeof HMI_EVENTS)[number];
-
-const hmiHandlers = new Map<HmiEventName, Set<(data: unknown) => void>>();
+// Named events the controller sends on the stream besides tag batches: the core's and every
+// service module's (ADR-011 §2.2), so the names are not known in advance. A listener is added to
+// the open stream the first time a name is asked for, and to every stream opened after that.
+const eventHandlers = new Map<string, Set<(data: unknown) => void>>();
 
 /** Be told when the controller announces `name`. Returns the function that stops it. */
-export function onHmiEvent(name: HmiEventName, handler: (data: unknown) => void): () => void {
-  const handlers = hmiHandlers.get(name) ?? new Set();
-  hmiHandlers.set(name, handlers);
+export function onStreamEvent(name: string, handler: (data: unknown) => void): () => void {
+  let handlers = eventHandlers.get(name);
+  if (!handlers) {
+    handlers = new Set();
+    eventHandlers.set(name, handlers);
+    if (source) listen(source, name);
+  }
   handlers.add(handler);
-  return () => handlers.delete(handler);
+  return () => {
+    handlers.delete(handler);
+  };
+}
+
+function listen(current: EventSource, name: string): void {
+  current.addEventListener(name, (event) => {
+    if (source !== current) return;
+    let data: unknown;
+    try {
+      data = JSON.parse((event as MessageEvent<string>).data);
+    } catch {
+      return;
+    }
+    for (const handler of eventHandlers.get(name) ?? []) handler(data);
+  });
 }
 
 // One connection for the whole application. Module state, because a second stream would write
@@ -131,18 +149,7 @@ function connect(): void {
     useTelemetry.getState().applyBatch(batch);
   });
 
-  for (const name of HMI_EVENTS) {
-    current.addEventListener(name, (event) => {
-      if (source !== current) return;
-      let data: unknown;
-      try {
-        data = JSON.parse((event as MessageEvent<string>).data);
-      } catch {
-        return;
-      }
-      for (const handler of hmiHandlers.get(name) ?? []) handler(data);
-    });
-  }
+  for (const name of eventHandlers.keys()) listen(current, name);
 
   current.onerror = () => {
     // Close it ourselves: the browser's own reconnect would keep the cache as it was while it

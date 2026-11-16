@@ -9,7 +9,8 @@ import { useWorkbench } from '../data/workbench';
 import { Inspector } from './Inspector';
 import { MenuBar, type Menu } from './MenuBar';
 import { ProjectTree } from './ProjectTree';
-import { OnlineTools, Toolbox } from './TaskCards';
+import { useModuleUi } from '../modules/registry';
+import { ModuleTaskCards, OnlineTools, Toolbox } from './TaskCards';
 import { useEditorNames } from './useEditorNames';
 import { useResizable } from './useResizable';
 import { WorkArea } from './WorkArea';
@@ -63,6 +64,7 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
   const screensDirty = useScreens(anyScreenDirty);
   const dirty = ioDirty || screensDirty;
   const names = useEditorNames();
+  const modules = useModuleUi();
   const activeEditor = editors.find((editor) => editor.id === activeEditorId);
 
   /** Close the project, unless there are unsaved changes the engineer wants to keep. */
@@ -211,6 +213,7 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
                 {activeEditor?.kind === 'screen' && activeEditor.target && (
                   <Toolbox screenId={activeEditor.target} />
                 )}
+                <ModuleTaskCards />
                 <OnlineTools />
               </div>
             </aside>
@@ -237,12 +240,12 @@ export function ProjectView({ onAbout }: { onAbout: () => void }) {
                 className="editorbar__tab-label"
                 onClick={() => focusEditor(editor.id)}
               >
-                {editorTitle(editor, names)}
+                {editorTitle(editor, names, modules)}
               </button>
               <button
                 type="button"
                 className="editorbar__tab-close"
-                aria-label={`Close ${editorTitle(editor, names)}`}
+                aria-label={`Close ${editorTitle(editor, names, modules)}`}
                 onClick={() => closeEditor(editor.id)}
               >
                 <X size={11} />

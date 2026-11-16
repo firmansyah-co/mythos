@@ -188,6 +188,44 @@ impl Rig {
         )
     }
 
+    /// A GET answered with something other than JSON: status, content type and body.
+    async fn get_raw(&self, session: Option<&str>, uri: &str) -> (StatusCode, String, Vec<u8>) {
+        let mut request = Request::builder().method("GET").uri(uri);
+        if let Some(session) = session {
+            request = request.header(header::COOKIE, format!("mythos_session={session}"));
+        }
+        let response = self
+            .app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let kind = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 24)
+            .await
+            .unwrap();
+        (status, kind, bytes.to_vec())
+    }
+
+    async fn ui_row(&self) -> Value {
+        let (_, list) = self
+            .send(&self.viewer, "GET", "/api/v1/modules", None, false)
+            .await;
+        list["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == "org.mythos.test.notes")
+            .map(|m| m["ui"].clone())
+            .unwrap_or(Value::Null)
+    }
+
     async fn install(&self, session: &str, package: Vec<u8>) -> (StatusCode, Value) {
         self.send(
             session,
@@ -496,4 +534,92 @@ async fn a_disabled_driver_stops_its_connections_and_says_why() {
         assert!(Instant::now() < deadline, "the connection never came back");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_workbench_loads_an_enabled_module_ui_and_nothing_else() {
+    let rig = rig(None).await;
+    let (status, body) = rig
+        .install(
+            &rig.admin,
+            notes_package(|dir| {
+                std::fs::create_dir_all(dir.join("ui").join("assets")).unwrap();
+                std::fs::write(dir.join("ui").join("assets").join("notes.css"), "p{}").unwrap();
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let entry = "/modules/org.mythos.test.notes/ui/entry.js";
+    assert_eq!(
+        rig.ui_row().await,
+        json!(entry),
+        "the list says where its UI is"
+    );
+
+    let (status, kind, bytes) = rig.get_raw(Some(&rig.viewer), entry).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        kind.contains("javascript"),
+        "an ES module needs a script type, not {kind}"
+    );
+    assert_eq!(bytes, b"export default {}");
+    let (status, kind, _) = rig
+        .get_raw(
+            Some(&rig.viewer),
+            "/modules/org.mythos.test.notes/ui/assets/notes.css",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(kind.starts_with("text/css"), "{kind}");
+
+    // Only someone signed in reads it, and only from inside the module's own UI directory.
+    assert_eq!(rig.get_raw(None, entry).await.0, StatusCode::UNAUTHORIZED);
+    for outside in [
+        "/modules/org.mythos.test.notes/ui/..%2F..%2Fmodules.json",
+        "/modules/org.mythos.test.notes/ui/../../modules.json",
+        "/modules/org.mythos.test.notes/ui/%2Fetc%2Fpasswd",
+    ] {
+        let (status, _, bytes) = rig.get_raw(Some(&rig.viewer), outside).await;
+        assert!(
+            status == StatusCode::BAD_REQUEST || status == StatusCode::NOT_FOUND,
+            "{outside} answered {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+    assert_eq!(
+        rig.get_raw(
+            Some(&rig.viewer),
+            "/modules/org.mythos.test.notes/ui/missing.js"
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    // A module without a UI has none to load.
+    assert_eq!(
+        rig.get_raw(
+            Some(&rig.viewer),
+            "/modules/org.mythos.driver.modbus/ui/entry.js"
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Disabled, its UI is neither offered nor served.
+    let off = Some(Body::from(json!({"enabled": false}).to_string()));
+    rig.send(
+        &rig.admin,
+        "PUT",
+        "/api/v1/modules/org.mythos.test.notes/enabled",
+        off,
+        true,
+    )
+    .await;
+    assert_eq!(rig.ui_row().await, Value::Null);
+    assert_eq!(
+        rig.get_raw(Some(&rig.viewer), entry).await.0,
+        StatusCode::NOT_FOUND
+    );
 }

@@ -1,6 +1,7 @@
 // Pure derivations over the controller's state, shared by the tree, the editors and the
 // inspector so that they cannot disagree about what a connection or a problem is.
 
+import { moduleEditor, type ModuleUiState } from '../modules/registry';
 import type { ConnectionStatus, IoStatus } from '../api/client';
 import type { EditorRef } from './workbench';
 
@@ -81,7 +82,11 @@ export interface EditorNames {
   screen: (id: string) => string | undefined;
 }
 
-export function editorTitle(editor: EditorRef, names: EditorNames): string {
+export function editorTitle(
+  editor: EditorRef,
+  names: EditorNames,
+  modules?: ModuleUiState
+): string {
   switch (editor.kind) {
     case 'overview':
       return 'Project overview';
@@ -95,11 +100,22 @@ export function editorTitle(editor: EditorRef, names: EditorNames): string {
       return `Online & diagnostics [${editor.target ?? ''}]`;
     case 'screen':
       return `Screen [${names.screen(editor.target ?? '') ?? 'removed'}]`;
+    default: {
+      const registered = modules && moduleEditor(modules, editor.kind);
+      if (!registered) return editor.kind;
+      const title = registered.item.title(editor.target);
+      return Array.isArray(title) ? title.join(' / ') : title;
+    }
   }
 }
 
 /** The path shown in an editor's header, outermost first. */
-export function editorPath(editor: EditorRef, projectName: string, names: EditorNames): string[] {
+export function editorPath(
+  editor: EditorRef,
+  projectName: string,
+  names: EditorNames,
+  modules?: ModuleUiState
+): string[] {
   switch (editor.kind) {
     case 'overview':
       return [projectName, 'Project overview'];
@@ -113,5 +129,12 @@ export function editorPath(editor: EditorRef, projectName: string, names: Editor
       return [projectName, editor.target ?? '', 'Online & diagnostics'];
     case 'screen':
       return [projectName, 'HMI screens', names.screen(editor.target ?? '') ?? 'removed'];
+    default: {
+      const registered = modules && moduleEditor(modules, editor.kind);
+      // Before the module has loaded, or with it disabled, the kind is all that is known.
+      if (!registered) return [projectName, editor.kind];
+      const title = registered.item.title(editor.target);
+      return [projectName, ...(Array.isArray(title) ? title : [title])];
+    }
   }
 }

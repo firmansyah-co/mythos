@@ -45,6 +45,8 @@ pub struct ModuleRow {
     /// Installed from a package (in the install directory), so it can be removed. A module
     /// beside the server belongs to the MythOS installation and can only be disabled.
     pub removable: bool,
+    /// Where the workbench loads this module's UI from, when it is enabled and has one.
+    pub ui: Option<String>,
 }
 
 /// Every module the server found, used or switched off.
@@ -66,6 +68,10 @@ pub fn rows<S: PlatformShm + 'static>(state: &ApiState<S>) -> Vec<ModuleRow> {
             path: m.path.display().to_string(),
             enabled: !settings.is_disabled(&m.manifest.id),
             removable: m.path.parent() == Some(install_dir.as_path()),
+            ui: (!settings.is_disabled(&m.manifest.id))
+                .then(|| settings.ui_dir_of(m))
+                .flatten()
+                .map(|_| format!("/modules/{}/ui/{}", m.manifest.id, crate::modules::UI_ENTRY)),
         })
         .collect();
     rows.sort_by(|a, b| a.id.cmp(&b.id));
@@ -90,6 +96,47 @@ fn find<S: PlatformShm + 'static>(state: &ApiState<S>, id: &str) -> Option<Arc<M
         .all_modules()
         .into_iter()
         .find(|m| m.manifest.id == id)
+}
+
+/// `GET /modules/:module/ui/*path`: a file of an enabled module's workbench UI.
+pub async fn ui_file<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    Path((id, path)): Path<(String, String)>,
+) -> Response {
+    let Some(settings) = state.modules.clone() else {
+        return error(StatusCode::NOT_FOUND, "this server has no module UI");
+    };
+    let Some(module) = find(&state, &id).filter(|_| !settings.is_disabled(&id)) else {
+        return error(StatusCode::NOT_FOUND, format!("no enabled module '{id}'"));
+    };
+    let Some(dir) = settings.ui_dir_of(&module) else {
+        return error(
+            StatusCode::NOT_FOUND,
+            format!("module '{id}' has no workbench UI"),
+        );
+    };
+    let Some(relative) = super::web::sanitize_relative_path(&path) else {
+        return error(StatusCode::BAD_REQUEST, "not a path inside the module's UI");
+    };
+    let file = dir.join(&relative);
+    match tokio::fs::read(&file).await {
+        Ok(bytes) => (
+            [
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    super::web::mime_type_for_path(&file),
+                ),
+                // A module is replaced in place; the workbench must never run a stale copy.
+                (axum::http::header::CACHE_CONTROL, "no-cache"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => error(
+            StatusCode::NOT_FOUND,
+            format!("module '{id}' has no {path}"),
+        ),
+    }
 }
 
 #[derive(Deserialize)]

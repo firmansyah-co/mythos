@@ -79,12 +79,29 @@ process speaking the ADR-010 protocol, with these additions:
 
 ### 2.3 Module UI
 
-A module may ship a `ui/` directory with an ES module entry. The core serves it at
-`/modules/<id>/ui/…`, and the workbench shell imports the entries of the enabled modules at
-sign-in. An entry is built against `@mythos/workbench-sdk`, which gives it the shell's React and
-the extension points: project-tree sections, editor kinds, toolbox items, inspector panels,
-Settings sections, and full-window views (the operator runtime). The shell knows no HMI or
-logic code of its own.
+A module may ship a `ui/` directory with an ES module entry, `entry.js`. The core serves it at
+`/modules/<id>/ui/…` to anyone signed in, only while the module is enabled, and lists it as the
+module's `ui` in `GET /api/v1/modules`. The workbench shell imports the entries of the enabled
+modules after sign-in and takes them down at sign-out.
+
+An entry's default export is a `WorkbenchModule` (`@mythos/workbench-sdk`): an id, which must
+be the module's, and `activate(host)`. Through the host it registers project-tree sections,
+editor kinds, and full-window views (the operator runtime), and sets inspector panels and task
+cards while an editor of its own wants them. The host gives it the open project, the signed-in
+user, requests to the controller as that user, the live tag values and the named events of the
+telemetry stream (its own included), and the session log.
+
+Every contribution is a **mount**: the shell gives it an element and gets back what takes it
+down. A module brings whatever it draws with (React, plain DOM, …); no code of the shell is
+shared with it at run time, so a module keeps working across rebuilds of the shell and need not
+use the shell's React version. The shell's CSS is shared: a module that uses its class names
+looks like the rest of the workbench. The shell knows no HMI or logic code of its own (once
+step 4 is done).
+
+A module cannot take a name the shell or another module has: the shell's own editor kinds, the
+address words `project`, `settings` and `portal`, or an editor kind, view or tree section another
+module registered. A module whose entry fails to load or to activate is reported in the session
+log and takes nothing else down with it.
 
 ### 2.4 Switching modules on and off; installing them
 
@@ -141,6 +158,6 @@ after step 4 unchanged.
 | :--- | :--- |
 | 2.1 Core boundary | Decided; HMI, data types and deploy are still in the core |
 | 2.2 Service modules | Yes: `mythos_module::service` (both sides), `crate::services` (host, forwarding, roles, data directories, events, swap), MCP tools from manifests; proven by `crates/mythos-module-tests/tests/service_module.rs` with a test module. No real service module yet |
-| 2.3 Module UI | No |
+| 2.3 Module UI | Yes: `api/modules.rs` (`ui_file`, `ModuleRow.ui`), `frontend/packages/workbench-sdk`, `ui-shell/src/modules` (loader, registries, mounts in the tree, work area, inspector, task cards and a full-window view; stream events by any name). Proven by `module_packages.rs` (serving), `moduleUi.test.tsx`, and the e2e scenario with the notes test module's UI (`crates/mythos-module-tests/ui/entry.js`). The HMI is still in the shell |
 | 2.4 Enable/disable, packages | Yes: `crate::modules`, `api/modules.rs`, Settings → Modules, `mythos module pack`; `.mythos-plugin` retired. Proven by `crates/mythos-module-tests/tests/module_packages.rs` |
 | 2.5 Library | No |

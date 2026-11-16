@@ -1,0 +1,11 @@
+{
+  "name": "@mythos/workbench-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "What a MythOS module's workbench UI may ask of the workbench (ADR-011 §2.3)",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts"
+}

@@ -15,6 +15,11 @@ export default defineConfig({
         target: process.env.MYTHOS_API ?? 'http://localhost:8080',
         changeOrigin: true,
       },
+      // The workbench UIs of modules (ADR-011 §2.3), served by the same server.
+      '/modules': {
+        target: process.env.MYTHOS_API ?? 'http://localhost:8080',
+        changeOrigin: true,
+      },
     },
   },
   build: {
