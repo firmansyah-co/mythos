@@ -114,7 +114,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             state = state.with_static_dir(web);
         }
     }
+    let pairings = state.pairings.clone();
     let app = create_router(state);
+    // ADR-012 §2.6: call home to every paired node this one is told to.
+    if let Some(pairings) = pairings {
+        mythos_core::callhome::spawn_callers(pairings, app.clone());
+    }
 
     let port: u16 = args
         .port

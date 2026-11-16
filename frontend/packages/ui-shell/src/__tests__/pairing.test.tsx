@@ -14,6 +14,7 @@ const B: PairedNode = {
   granted: 'viewer',
   paired_unix_s: 1_794_800_000,
   last_seen_unix_s: null,
+  call_home: false,
 };
 
 function controller(state: { peers: PairedNode[]; refuse?: string }) {
@@ -32,6 +33,10 @@ function controller(state: { peers: PairedNode[]; refuse?: string }) {
         if (state.refuse) return json({ error: state.refuse }, 502);
         state.peers = [B];
         return json({ peer: B, granted_there: 'engineer' }, 201);
+      }
+      if (method === 'PUT' && path.startsWith('/api/v1/pairings/')) {
+        state.peers = state.peers.map((p) => ({ ...p, call_home: Boolean(body?.call_home) }));
+        return json({ peer: state.peers[0] });
       }
       if (path.endsWith('/status')) return json({ reachable: true, node: { name: 'boiler-edge-1', role: 'edge', version: '0.1.0' } });
       if (method === 'DELETE') {
@@ -87,6 +92,7 @@ describe('Settings → Pairing', () => {
       fingerprint: 'af3d 9b6f 39b8 f865',
       code: 'k7qx-3mzp',
       grant: 'viewer',
+      call_home: false,
     });
     expect(view.querySelector('[data-testid="pair-result"]')?.textContent).toContain('this node there as engineer');
     expect(view.querySelectorAll('[data-testid="paired-node"]')).toHaveLength(1);
@@ -123,5 +129,32 @@ describe('Settings → Pairing', () => {
     expect(button(view, 'Unpair')).toBeUndefined();
     expect(button(view, 'Make a pairing code')).toBeUndefined();
     expect(view.textContent).toContain('Only an administrator pairs and unpairs nodes.');
+  });
+
+  it('an administrator calls a paired node home', async () => {
+    const calls = controller({ peers: [B] });
+    signedIn('admin');
+    const view = render(<PairingSettings />);
+    await settle();
+    const box = view.querySelector(`input[aria-label="Call ${B.name} home"]`) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    await click(box);
+    await settle();
+    expect(calls.find((c) => c.method === 'PUT')).toEqual({
+      method: 'PUT',
+      path: `/api/v1/pairings/${B.id}`,
+      body: { call_home: true },
+    });
+    expect((view.querySelector(`input[aria-label="Call ${B.name} home"]`) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('a viewer sees whether a node is called home and cannot change it', async () => {
+    controller({ peers: [{ ...B, call_home: true }] });
+    signedIn('viewer');
+    const view = render(<PairingSettings />);
+    await settle();
+    const box = view.querySelector(`input[aria-label="Call ${B.name} home"]`) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(box.disabled).toBe(true);
   });
 });

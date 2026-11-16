@@ -6,6 +6,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod callhome;
 pub mod catalog;
 pub mod collab;
 pub mod datatype;

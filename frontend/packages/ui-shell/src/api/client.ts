@@ -235,6 +235,21 @@ export interface PairedNode {
   granted: Role;
   paired_unix_s: number;
   last_seen_unix_s: number | null;
+  /** Whether this node calls it home: opens the connection and is reached over it. */
+  call_home: boolean;
+}
+
+/** A paired node as the fleet asks it now (ADR-012 §2.6). */
+export interface FleetMember {
+  paired: PairedNode;
+  /** How it is reached: directly, over its call-home connection, or not at all. */
+  via: 'direct' | 'call_home' | 'none';
+  /** Seconds since it last called home, when it ever did since this node started. */
+  last_poll_s: number | null;
+  reachable: boolean;
+  error?: string;
+  node?: { name: string; role: string; site: string | null; version: string };
+  running?: { project: string; hash: string | null } | null;
 }
 
 export type NodeRole = 'workstation' | 'edge' | 'server';
@@ -501,11 +516,14 @@ export const api = {
   makePairingCode: (role: Role) =>
     request<{ code: string; expires_unix_s: number; granted: Role }>('/api/v1/pairing/code', json('POST', { role })),
   listPairings: () => request<{ peers: PairedNode[] }>('/api/v1/pairings'),
-  pairWith: (address: string, fingerprint: string, code: string, grant: Role) =>
+  pairWith: (address: string, fingerprint: string, code: string, grant: Role, callHome = false) =>
     request<{ peer: PairedNode; granted_there: Role }>(
       '/api/v1/pairings',
-      json('POST', { address, fingerprint, code, grant })
+      json('POST', { address, fingerprint, code, grant, call_home: callHome })
     ),
+  setCallHome: (id: string, callHome: boolean) =>
+    request<{ peer: PairedNode }>(`/api/v1/pairings/${encodeURIComponent(id)}`, json('PUT', { call_home: callHome })),
+  getFleet: () => request<{ nodes: FleetMember[]; note?: string }>('/api/v1/fleet'),
   pairedNodeStatus: (id: string) =>
     request<{ reachable: boolean; node?: { name: string; role: string; version: string }; error?: string }>(
       `/api/v1/pairings/${encodeURIComponent(id)}/status`

@@ -82,6 +82,11 @@ fn http(
 }
 
 fn start(name: &str) -> Server {
+    start_as(name, None)
+}
+
+/// A server whose node takes `role` on its first start (an edge when `None`).
+fn start_as(name: &str, role: Option<&str>) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let http_port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -90,8 +95,12 @@ fn start(name: &str) -> Server {
         .port();
     let code = format!("pair-test-{name}-{}", std::process::id());
     let segment = Segment(format!("mythos_pair_test_{name}_{}", std::process::id()));
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mythos-server"))
-        .env_remove("MYTHOS_ROLE")
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mythos-server"));
+    command.env_remove("MYTHOS_ROLE");
+    if let Some(role) = role {
+        command.env("MYTHOS_ROLE", role);
+    }
+    let mut child = command
         .env_remove("MYTHOS_BIND")
         .env("MYTHOS_STORAGE_ROOT", dir.path())
         .env("MYTHOS_HTTP_PORT", http_port.to_string())
@@ -520,4 +529,104 @@ fn a_device_reads_another_devices_tags_and_never_shows_a_lost_value_as_current()
     let (_, links) = a.call("GET", "/api/v1/remote", None);
     assert_eq!(links["devices"][0]["state"], "lost", "{links}");
     assert!(links["devices"][0]["reason"].is_string(), "{links}");
+}
+
+/// ADR-012 §2.6: a node the server cannot reach (here a workstation, which answers on its own
+/// computer only, so it gives the server no address) calls home; the server's fleet reaches it
+/// over that connection, and downloads and compares a device on it; when it stops calling, the
+/// fleet says it cannot be reached, and compare never says the same.
+#[test]
+fn a_node_that_cannot_be_reached_calls_home_and_is_reached_over_it() {
+    let server = start_as("fleet-server", Some("server"));
+    let edge = start_as("fleet-edge", Some("workstation"));
+    let server_node = server.node();
+    let server_id = server_node["id"].as_str().unwrap().to_string();
+    let edge_id = edge.node()["id"].as_str().unwrap().to_string();
+    let (_, made) = server.call("POST", "/api/v1/pairing/code", Some(json!({})));
+    let (status, paired) = edge.call(
+        "POST",
+        "/api/v1/pairings",
+        Some(json!({
+            "address": format!("127.0.0.1:{}", server.https),
+            "fingerprint": server_node["https"]["fingerprint"],
+            "code": made["code"],
+            "grant": "engineer",
+            "call_home": true,
+        })),
+    );
+    assert_eq!(status, 201, "{paired}");
+    assert_eq!(paired["peer"]["call_home"], true, "{paired}");
+    let (_, peers) = server.call("GET", "/api/v1/pairings", None);
+    assert_eq!(
+        peers["peers"][0]["address"],
+        Value::Null,
+        "the server has no address for it: {peers}"
+    );
+
+    // Only a paired node calls home, as itself: an administrator's session is not one.
+    let (status, refused) = server.call("POST", "/api/v1/callhome", Some(json!({})));
+    assert_eq!(status, 403, "{refused}");
+
+    let fleet = |s: &Server| s.call("GET", "/api/v1/fleet", None).1["nodes"][0].clone();
+    let reached = until("the server reaches the edge over its call home", || {
+        Some(fleet(&server)).filter(|n| n["reachable"] == true)
+    });
+    assert_eq!(reached["via"], "call_home", "{reached}");
+    assert_eq!(reached["paired"]["id"], edge_id.as_str(), "{reached}");
+    assert_eq!(reached["node"]["role"], "workstation", "{reached}");
+
+    // A plant device on it: downloaded and compared over the call-home connection.
+    let (status, body) = server.call(
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"id": "plant_f", "name": "Remote site", "description": "", "author": "test"})),
+    );
+    assert!(status == 200 || status == 201, "{status} {body}");
+    let (status, device) = server.call(
+        "PUT",
+        "/api/v1/projects/plant_f/plant/devices/far",
+        Some(json!({"name": "Far edge", "node": edge_id})),
+    );
+    assert_eq!(status, 200, "{device}");
+    let (status, done) = server.call(
+        "POST",
+        "/api/v1/projects/plant_f/plant/devices/far/download",
+        Some(json!({"confirm": true})),
+    );
+    assert_eq!(status, 200, "{done}");
+    let (_, compared) = server.call(
+        "GET",
+        "/api/v1/projects/plant_f/plant/devices/far/compare",
+        None,
+    );
+    assert_eq!(compared["state"], "same", "{compared}");
+    let running = fleet(&server);
+    assert_eq!(running["running"]["project"], "plant_f--far", "{running}");
+    assert_eq!(
+        running["running"]["hash"], compared["node_hash"],
+        "{running}"
+    );
+
+    // It stops calling home: the fleet says it cannot be reached, and compare never says the same.
+    let (status, stopped) = edge.call(
+        "PUT",
+        &format!("/api/v1/pairings/{server_id}"),
+        Some(json!({"call_home": false})),
+    );
+    assert_eq!(status, 200, "{stopped}");
+    // Its last polls may still be answered; then it is not calling home, and not reachable.
+    let gone = until("the fleet says the edge is not calling home", || {
+        Some(fleet(&server)).filter(|n| n["via"] == "none")
+    });
+    assert_eq!(gone["reachable"], false, "{gone}");
+    assert!(
+        gone["error"].as_str().unwrap().contains("not calling home"),
+        "{gone}"
+    );
+    let (_, compared) = server.call(
+        "GET",
+        "/api/v1/projects/plant_f/plant/devices/far/compare",
+        None,
+    );
+    assert_eq!(compared["state"], "unreachable", "{compared}");
 }

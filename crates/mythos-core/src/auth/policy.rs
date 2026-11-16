@@ -71,6 +71,10 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     ("POST", "/api/v1/pairings", A),
     ("DELETE", "/api/v1/pairings/:node", A),
     ("GET", "/api/v1/pairings/:node/status", V),
+    ("PUT", "/api/v1/pairings/:node", A),
+    ("GET", "/api/v1/fleet", V),
+    // Only a paired node, as itself: the handler takes the node from its pairing identity.
+    ("POST", "/api/v1/callhome", Access::SignedIn),
     ("GET", "/api/v1/updates", V),
     ("GET", "/api/v1/updates/releases", V),
     ("PUT", "/api/v1/updates/follow", A),

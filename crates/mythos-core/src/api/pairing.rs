@@ -153,6 +153,9 @@ pub struct PairRequest {
     code: String,
     /// What it may do here; a viewer when absent.
     grant: Option<Role>,
+    /// Call it home: it is reached over a connection this node opens (ADR-012 §2.6).
+    #[serde(default)]
+    call_home: bool,
 }
 
 fn resolve(address: &str) -> Result<SocketAddr, String> {
@@ -263,6 +266,7 @@ pub async fn pair<S: PlatformShm + 'static>(
         token_from_it_sha256: crate::auth::sha256_hex(&token_for_it),
         paired_unix_s: crate::auth::now_unix_s(),
         last_seen_unix_s: Some(crate::auth::now_unix_s()),
+        call_home: body.call_home,
     };
     if let Err(e) = pairings.keep(peer.clone()) {
         return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
@@ -282,25 +286,13 @@ pub async fn pair<S: PlatformShm + 'static>(
         .into_response()
 }
 
-async fn ask(
+async fn ask<S: PlatformShm + 'static>(
+    state: &ApiState<S>,
     peer: &Peer,
     method: &'static str,
     path: String,
 ) -> Result<crate::tls::Answer, String> {
-    let Some(address) = peer.address.clone() else {
-        return Err(format!(
-            "node '{}' cannot be reached: it answers on its own computer only",
-            peer.name
-        ));
-    };
-    let target = resolve(&address)?;
-    let fingerprint = peer.fingerprint.clone();
-    let token = peer.token_to_it.clone();
-    tokio::task::spawn_blocking(move || {
-        crate::tls::request_pinned(target, &fingerprint, method, &path, Some(&token), None)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    crate::callhome::ask(state.call_home.as_deref(), peer, method, &path, None).await
 }
 
 /// `GET /api/v1/pairings/:node/status`: ask the paired node who it is, as this node.
@@ -315,7 +307,7 @@ pub async fn status<S: PlatformShm + 'static>(
     let Some(peer) = pairings.peer(&id) else {
         return error(StatusCode::NOT_FOUND, format!("no paired node '{id}'"));
     };
-    match ask(&peer, "GET", "/api/v1/node".into()).await {
+    match ask(&state, &peer, "GET", "/api/v1/node".into()).await {
         Ok(answer) if answer.status == 200 => {
             Json(json!({ "reachable": true, "node": answer.body })).into_response()
         }
@@ -343,7 +335,13 @@ pub async fn unpair<S: PlatformShm + 'static>(
         Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     let me = node.identity().id;
-    let told = ask(&peer, "DELETE", format!("/api/v1/pairing/peers/{me}")).await;
+    let told = ask(
+        &state,
+        &peer,
+        "DELETE",
+        format!("/api/v1/pairing/peers/{me}"),
+    )
+    .await;
     let (told, told_error) = match told {
         Ok(answer) if answer.status == 200 || answer.status == 404 => (true, None),
         Ok(answer) => (false, Some(format!("it answered {}", answer.status))),
@@ -356,6 +354,36 @@ pub async fn unpair<S: PlatformShm + 'static>(
         "told_error": told_error,
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct PeerChange {
+    call_home: bool,
+}
+
+/// `PUT /api/v1/pairings/:node`: call it home, or stop (ADR-012 §2.6).
+pub async fn change<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    Path(id): Path<String>,
+    Json(change): Json<PeerChange>,
+) -> Response {
+    let (pairings, _) = match parts(&state) {
+        Ok(p) => p,
+        Err(r) => return refuse(r),
+    };
+    match pairings.set_call_home(&id, change.call_home) {
+        Ok(Some(peer)) => {
+            tracing::info!(
+                "{} calling node '{}' ({}) home",
+                if peer.call_home { "Now" } else { "No longer" },
+                peer.name,
+                peer.id
+            );
+            Json(json!({ "peer": PeerView::from(&peer) })).into_response()
+        }
+        Ok(None) => error(StatusCode::NOT_FOUND, format!("no paired node '{id}'")),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 /// `DELETE /api/v1/pairing/peers/:node`: the paired node `node` unpaired; only it may say so.

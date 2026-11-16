@@ -58,6 +58,7 @@ function PairWith({ onPaired }: { onPaired: () => void }) {
   const [fingerprint, setFingerprint] = useState('');
   const [code, setCode] = useState('');
   const [grant, setGrant] = useState<Role>('viewer');
+  const [callHome, setCallHome] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   const submit = async (event: FormEvent) => {
@@ -65,7 +66,7 @@ function PairWith({ onPaired }: { onPaired: () => void }) {
     setBusy(true);
     setResult(null);
     try {
-      const paired = await api.pairWith(address.trim(), fingerprint, code, grant);
+      const paired = await api.pairWith(address.trim(), fingerprint, code, grant, callHome);
       setResult({
         ok: true,
         text: `Paired with ${paired.peer.name}. It may act here as ${paired.peer.granted}; this node there as ${paired.granted_there}.`,
@@ -106,6 +107,16 @@ function PairWith({ onPaired }: { onPaired: () => void }) {
             </option>
           ))}
         </select>
+      </label>
+      <label className="form__row">
+        <span>Call it home</span>
+        <span>
+          <label className="settings__check">
+            <input type="checkbox" aria-label="Call it home" checked={callHome} onChange={(e) => setCallHome(e.target.checked)} />
+            this node opens the connection
+          </label>
+          <small className="muted"> For when that node cannot reach this one (another subnet, behind NAT): it is reached over the connection this node keeps open.</small>
+        </span>
       </label>
       {result && (
         <p className={result.ok ? 'notice' : 'form__error'} role={result.ok ? 'status' : 'alert'} data-testid="pair-result">
@@ -155,6 +166,15 @@ export function PairingSettings() {
     }
   };
 
+  const toggleCallHome = async (peer: PairedNode) => {
+    try {
+      await api.setCallHome(peer.id, !peer.call_home);
+    } catch (cause) {
+      setError(describeError(cause));
+    }
+    await load();
+  };
+
   const unpair = async (peer: PairedNode) => {
     if (!window.confirm(`Unpair ${peer.name}? Its token stops working here at once.`)) return;
     try {
@@ -194,6 +214,7 @@ export function PairingSettings() {
               <th>Address</th>
               <th>Certificate</th>
               <th>May act here as</th>
+              <th>Called home</th>
               <th />
             </tr>
           </thead>
@@ -210,6 +231,15 @@ export function PairingSettings() {
                   {spoken(peer.fingerprint).slice(0, 19)}…
                 </td>
                 <td>{peer.granted}</td>
+                <td>
+                  <input
+                    type="checkbox"
+                    aria-label={`Call ${peer.name} home`}
+                    checked={peer.call_home}
+                    disabled={!mayChange}
+                    onChange={() => void toggleCallHome(peer)}
+                  />
+                </td>
                 <td className="settings__row-actions">
                   <button type="button" className="btn btn--flat" onClick={() => void check(peer)}>
                     Reach

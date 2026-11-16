@@ -48,6 +48,10 @@ pub struct Peer {
     pub paired_unix_s: u64,
     #[serde(default)]
     pub last_seen_unix_s: Option<u64>,
+    /// Whether this node calls it home: opens the connection to it and is reached over that,
+    /// for a node that cannot reach this one (ADR-012 §2.6, [`crate::callhome`]).
+    #[serde(default)]
+    pub call_home: bool,
 }
 
 /// A peer as it is shown: no token, not even its hash.
@@ -61,6 +65,7 @@ pub struct PeerView {
     pub granted: Role,
     pub paired_unix_s: u64,
     pub last_seen_unix_s: Option<u64>,
+    pub call_home: bool,
 }
 
 impl From<&Peer> for PeerView {
@@ -74,6 +79,7 @@ impl From<&Peer> for PeerView {
             granted: p.granted,
             paired_unix_s: p.paired_unix_s,
             last_seen_unix_s: p.last_seen_unix_s,
+            call_home: p.call_home,
         }
     }
 }
@@ -264,6 +270,7 @@ impl Pairings {
             token_from_it_sha256: sha256_hex(&token_for_it),
             paired_unix_s: now_unix_s(),
             last_seen_unix_s: Some(now_unix_s()),
+            call_home: false,
         })?;
         Ok((token_for_it, granted))
     }
@@ -284,6 +291,18 @@ impl Pairings {
             return Ok(None);
         };
         let peer = stored.peers.remove(at);
+        self.save(&stored)?;
+        Ok(Some(peer))
+    }
+
+    /// Call `id` home, or stop. `None` when no such node is paired.
+    pub fn set_call_home(&self, id: &str, on: bool) -> Result<Option<Peer>, PairingError> {
+        let mut stored = self.stored.lock().unwrap();
+        let Some(peer) = stored.peers.iter_mut().find(|p| p.id == id) else {
+            return Ok(None);
+        };
+        peer.call_home = on;
+        let peer = peer.clone();
         self.save(&stored)?;
         Ok(Some(peer))
     }

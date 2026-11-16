@@ -175,38 +175,14 @@ fn target_of<S: PlatformShm + 'static>(
         })
 }
 
-async fn ask(
+async fn ask<S: PlatformShm + 'static>(
+    state: &ApiState<S>,
     peer: &Peer,
     method: &'static str,
     path: String,
     body: Option<Value>,
 ) -> Result<crate::tls::Answer, String> {
-    use std::net::ToSocketAddrs;
-    let address = peer.address.clone().ok_or_else(|| {
-        format!(
-            "node '{}' cannot be reached: it answers on its own computer only",
-            peer.name
-        )
-    })?;
-    let target = address
-        .to_socket_addrs()
-        .map_err(|e| format!("{address}: {e}"))?
-        .next()
-        .ok_or_else(|| format!("'{address}' names no address"))?;
-    let fingerprint = peer.fingerprint.clone();
-    let token = peer.token_to_it.clone();
-    tokio::task::spawn_blocking(move || {
-        crate::tls::request_pinned(
-            target,
-            &fingerprint,
-            method,
-            &path,
-            Some(&token),
-            body.as_ref(),
-        )
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    crate::callhome::ask(state.call_home.as_deref(), peer, method, &path, body).await
 }
 
 /// What compare says of one device.
@@ -236,6 +212,7 @@ async fn compare_one<S: PlatformShm + 'static>(
             json!({ "device": device.id, "state": if runs { "same" } else { "not_running" }, "project_hash": local, "node_hash": local })
         }
         Target::Peer(peer) => match ask(
+            state,
             &peer,
             "GET",
             format!("/api/v1/slices/{}", device.project),
@@ -327,6 +304,7 @@ async fn download_one<S: PlatformShm + 'static>(
         Target::Peer(peer) => {
             let body = json!({ "slice": slice, "confirm": true });
             match ask(
+                state,
                 &peer,
                 "PUT",
                 format!("/api/v1/slices/{}", device.project),
