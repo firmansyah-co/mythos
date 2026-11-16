@@ -107,8 +107,10 @@ impl Heard {
         if Some(id.as_str()) == own_id {
             return false;
         }
+        // An address is heard once per interface it arrives on: list each once.
         let mut addresses = a.addresses.clone();
         addresses.sort();
+        addresses.dedup();
         let node = HeardNode {
             id: id.clone(),
             name: a.txt.get("name").cloned().unwrap_or_default(),
@@ -343,7 +345,13 @@ mod tests {
         Announcement {
             instance: instance.into(),
             port: 8080,
-            addresses: vec!["192.168.10.21".into(), "10.0.0.5".into()],
+            addresses: vec![
+                "192.168.10.21".into(),
+                "10.0.0.5".into(),
+                "fe80::1".into(),
+                "192.168.10.21".into(),
+                "fe80::1".into(),
+            ],
             txt: [
                 ("id", id),
                 ("name", "boiler-edge-1"),
@@ -368,7 +376,11 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "boiler-edge-1");
         assert_eq!(list[0].protocol, Some(1));
-        assert_eq!(list[0].addresses, vec!["10.0.0.5", "192.168.10.21"]);
+        assert_eq!(
+            list[0].addresses,
+            vec!["10.0.0.5", "192.168.10.21", "fe80::1"],
+            "each address once, however many interfaces it was heard on"
+        );
         assert!(list[0].candidate, "heard is never trusted");
 
         // Heard again unchanged: nothing to tell.
