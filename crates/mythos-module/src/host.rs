@@ -48,7 +48,16 @@ pub struct Fingerprint {
     /// Which file this is: device and inode on Unix, volume serial and file index on Windows.
     /// (Not the creation time on Windows: NTFS gives a file created under a name that was just
     /// renamed away the old file's creation time, which is exactly how a module is replaced.)
+    ///
+    /// Written to JSON as hexadecimal text: device and inode together do not fit the 64 bits
+    /// a JSON number can carry, and serialising it as a number failed every request that listed
+    /// the modules.
+    #[serde(serialize_with = "hex_text")]
     pub file_id: u128,
+}
+
+fn hex_text<S: serde::Serializer>(value: &u128, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&format!("{value:x}"))
 }
 
 impl Fingerprint {
@@ -830,6 +839,21 @@ mod tests {
             "the replaced file was not seen as a new build"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// GET /api/v1/modules (and its MCP tool) writes every module's fingerprint as JSON.
+    #[test]
+    fn a_fingerprint_of_any_file_can_be_written_as_json() {
+        let largest = Fingerprint {
+            len: u64::MAX,
+            modified_unix_ns: u64::MAX as u128,
+            file_id: u128::MAX,
+        };
+        let json = serde_json::to_value(largest).expect("a fingerprint serialises");
+        assert_eq!(json["file_id"], "ffffffffffffffffffffffffffffffff");
+
+        let real = Fingerprint::of(&std::env::current_exe().unwrap()).unwrap();
+        serde_json::to_value(real).expect("this test's own executable serialises");
     }
 
     #[test]
