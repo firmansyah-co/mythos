@@ -265,6 +265,15 @@ try {
   await evaluate(`__t.click('Exit runtime')`); await sleep(500);
   check('Exit runtime returns to the workbench', await evaluate(`__t.has('[data-testid="project-view"]')`));
 
+  // 8a. The plant (ADR-012 §2.4): this project is one device, this controller, on this node,
+  // which runs it: the comparison says so.
+  await evaluate(`__t.dblclick('tree-plant')`); await sleep(1500);
+  const plantRows = await evaluate(`__t.text('[data-testid="plant-device"] strong')`);
+  check('the plant is this controller until another device is added', JSON.stringify(plantRows) === '["This controller"]', JSON.stringify(plantRows));
+  check('and it runs what the project says', (await evaluate(`__t.text('[data-testid="plant-device-state"]')[0]`)) === 'SAME AS PROJECT',
+    await evaluate(`__t.text('[data-testid="plant-device-state"]')[0]`));
+  await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
+
   // 8b. A module's workbench UI (ADR-011 §2.3): the notes service module brings a tree section
   // and an editor of its own; the workbench has no code for either.
   check('the notes module adds its section to the project tree', await evaluate(`__t.has('[data-testid="tree-notes"]')`));

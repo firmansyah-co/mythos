@@ -88,6 +88,8 @@ export function editorTitle(
   switch (editor.kind) {
     case 'overview':
       return 'Project overview';
+    case 'plant':
+      return 'Plant';
     case 'devices':
       return 'Devices & networks';
     case 'connection':
@@ -115,6 +117,8 @@ export function editorPath(
   switch (editor.kind) {
     case 'overview':
       return [projectName, 'Project overview'];
+    case 'plant':
+      return [projectName, 'Plant'];
     case 'devices':
       return [projectName, 'Devices & networks'];
     case 'connection':

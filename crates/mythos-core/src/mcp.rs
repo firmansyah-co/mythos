@@ -62,6 +62,16 @@ const MODULE_ROUTES: &str =
 /// Routes that are not tools.
 pub const NOT_TOOLS: &[NotATool] = &[
     NotATool {
+        method: "PUT",
+        path: "/api/v1/slices/:project",
+        reason: "called by the engineering node downloading a device here; download_device is the tool",
+    },
+    NotATool {
+        method: "GET",
+        path: "/api/v1/slices/:project",
+        reason: "called by the engineering node comparing a device; compare_device is the tool",
+    },
+    NotATool {
         method: "POST",
         path: "/api/v1/pairing/accept",
         reason: "called by another node pairing with this one, with the code it was given; pair_with_node is the tool",
@@ -180,6 +190,7 @@ const PARAMS: &[(&str, &str)] = &[
     ("username", "username"),
     ("module", "module_id"),
     ("node", "node_id"),
+    ("device", "device_id"),
 ];
 
 fn argument_name(param: &str) -> &str {
@@ -200,6 +211,25 @@ const VIEW: (&str, &str) = (
     "view",
     "\"draft\" (default) for the version being edited, \"active\" for the released one",
 );
+
+fn plant_device_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+            "name": { "type": "string" },
+            "node": { "type": ["string", "null"], "description": "This node's id or a paired node's id; null for none yet" }
+        }
+    })
+}
+
+fn confirm_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["confirm"],
+        "properties": { "confirm": { "type": "boolean", "description": "true: this changes what a running controller does, and it is meant" } }
+    })
+}
 
 fn pairing_code_body() -> Value {
     json!({
@@ -483,6 +513,72 @@ pub const TOOLS: &[Tool] = &[
         body: Some(node_body),
         read_only: false,
         destructive: false,
+    },
+    Tool {
+        name: "get_plant",
+        title: "The devices of a plant",
+        description: "A plant project's devices: each one's name, the project holding its configuration, and the node it is assigned to. A project with no plant of its own is one device, this controller (implicit: true).",
+        method: "GET",
+        path: "/api/v1/projects/:id/plant",
+        query: &[],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "set_plant_device",
+        title: "Add or change a device",
+        description: "Add a device to a plant (it gets a project of its own, <plant>--<device>), or rename it, or assign it to a node: this node's id or a paired node's (list_pairings), or null.",
+        method: "PUT",
+        path: "/api/v1/projects/:id/plant/devices/:device",
+        query: &[],
+        body: Some(plant_device_body),
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "remove_plant_device",
+        title: "Remove a device",
+        description: "Take a device out of a plant. Its project is kept.",
+        method: "DELETE",
+        path: "/api/v1/projects/:id/plant/devices/:device",
+        query: &[],
+        body: None,
+        read_only: false,
+        destructive: true,
+    },
+    Tool {
+        name: "compare_device",
+        title: "Compare a device with its node",
+        description: "Whether the node a device is assigned to holds and runs exactly what the project says (same), something else (differs), holds it without running it (not_running), never got it (never_downloaded), or cannot be reached (unreachable, never reported as the same).",
+        method: "GET",
+        path: "/api/v1/projects/:id/plant/devices/:device/compare",
+        query: &[],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "download_device",
+        title: "Download a device to its node",
+        description: "Send a device's configuration to the node it is assigned to and make it what that node runs; on failure the node runs what it ran before. Changes what a running controller reads and shows: confirm must be true.",
+        method: "POST",
+        path: "/api/v1/projects/:id/plant/devices/:device/download",
+        query: &[],
+        body: Some(confirm_body),
+        read_only: false,
+        destructive: true,
+    },
+    Tool {
+        name: "download_plant",
+        title: "Download every device",
+        description: "Download every assigned device of a plant, each reported: done, refused (and why), unreachable, or skipped (assigned to no node). confirm must be true.",
+        method: "POST",
+        path: "/api/v1/projects/:id/plant/download",
+        query: &[],
+        body: Some(confirm_body),
+        read_only: false,
+        destructive: true,
     },
     Tool {
         name: "create_pairing_code",

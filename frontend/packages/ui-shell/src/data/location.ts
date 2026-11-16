@@ -22,7 +22,7 @@ export interface WorkbenchLocation {
 /** First words of an address that are the workbench's own, never a module view's. */
 const OWN_WORDS = ['project'];
 
-const EDITOR_KINDS: readonly AddressableKind[] = ['overview', 'devices', 'tags', 'diagnostics'];
+const EDITOR_KINDS: readonly AddressableKind[] = ['overview', 'plant', 'devices', 'tags', 'diagnostics'];
 
 export function parseLocation(hash: string): WorkbenchLocation | null {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);

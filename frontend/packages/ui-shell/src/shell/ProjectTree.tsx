@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   Cable,
+  Factory,
   FolderOpen,
   Network,
   Settings2,
@@ -133,6 +134,18 @@ export function ProjectTree() {
         onSelect={() => select({ kind: 'project' })}
         onOpen={open('overview')}
       />
+
+      {isOpen('project') && (
+        <TreeNode
+          depth={1}
+          icon={<Factory size={14} />}
+          label="Plant"
+          testId="tree-plant"
+          selected={editorIs('plant') && selection === null}
+          onSelect={() => select(null)}
+          onOpen={open('plant')}
+        />
+      )}
 
       {isOpen('project') && (
         <TreeNode

@@ -10,6 +10,7 @@ mod io;
 pub mod modules;
 mod node;
 mod pairing;
+mod plant;
 mod services;
 pub mod state;
 pub mod telemetry;
@@ -98,6 +99,31 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
         // Settings → Updates
         // This installation as a node (ADR-012)
         .route("/api/v1/node", get(node::get::<S>).put(node::update::<S>))
+        // Plant projects: devices, download, compare (ADR-012 §2.4, §2.5)
+        .route("/api/v1/projects/:id/plant", get(plant::get::<S>))
+        .route(
+            "/api/v1/projects/:id/plant/devices/:device",
+            put(plant::set_device::<S>).delete(plant::remove_device::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/plant/devices/:device/compare",
+            get(plant::compare::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/plant/devices/:device/download",
+            post(plant::download::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/plant/download",
+            post(plant::download_all::<S>),
+        )
+        .route(
+            "/api/v1/slices/:project",
+            get(plant::get_slice::<S>)
+                .put(plant::put_slice::<S>)
+                // A device's files, base64 in JSON: more than the default limit allows.
+                .layer(axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024)),
+        )
         // Pairing with other nodes (ADR-012 §2.3)
         .route("/api/v1/pairing/code", post(pairing::make_code::<S>))
         .route("/api/v1/pairing/accept", post(pairing::accept::<S>))

@@ -14,6 +14,17 @@ struct Server {
     https: u16,
     cookie: String,
     _dir: tempfile::TempDir,
+    // After `child` is killed (Drop above), its tag bus segment goes too: a killed server
+    // cannot remove its own, and each one left is memory until a reboot.
+    _segment: Segment,
+}
+
+struct Segment(String);
+
+impl Drop for Segment {
+    fn drop(&mut self) {
+        let _ = mythos_pal::DefaultShm::unlink(&self.0);
+    }
 }
 
 impl Drop for Server {
@@ -78,6 +89,7 @@ fn start(name: &str) -> Server {
         .unwrap()
         .port();
     let code = format!("pair-test-{name}-{}", std::process::id());
+    let segment = Segment(format!("mythos_pair_test_{name}_{}", std::process::id()));
     let mut child = Command::new(env!("CARGO_BIN_EXE_mythos-server"))
         .env_remove("MYTHOS_ROLE")
         .env_remove("MYTHOS_BIND")
@@ -85,10 +97,7 @@ fn start(name: &str) -> Server {
         .env("MYTHOS_HTTP_PORT", http_port.to_string())
         .env("MYTHOS_HTTPS_PORT", "0")
         .env("MYTHOS_SETUP_CODE", &code)
-        .env(
-            "MYTHOS_SHM_NAME",
-            format!("mythos_pair_test_{name}_{}", std::process::id()),
-        )
+        .env("MYTHOS_SHM_NAME", &segment.0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -149,6 +158,7 @@ fn start(name: &str) -> Server {
         https,
         cookie,
         _dir: dir,
+        _segment: segment,
     }
 }
 
@@ -272,4 +282,111 @@ fn a_pairing_code_is_made_by_an_administrator_only_and_a_peer_cannot_be_unpaired
     // Signed in, but not as the paired node: refused.
     let (status, body) = b.call("DELETE", "/api/v1/pairing/peers/someone", None);
     assert_eq!(status, 403, "{body}");
+}
+
+/// ADR-012 §2.4, §2.5: one plant project on node a, a device assigned to node b, downloaded
+/// to it, compared, changed, downloaded again with the rest, and never called the same when b
+/// cannot be reached.
+#[test]
+fn a_plant_downloads_a_device_to_its_paired_node_and_compares_it() {
+    let a = start("plant-a");
+    let mut b = start("plant-b");
+    let b_node = b.node();
+    let b_id = b_node["id"].as_str().unwrap().to_string();
+    let a_id = a.node()["id"].as_str().unwrap().to_string();
+    let (_, made) = b.call("POST", "/api/v1/pairing/code", Some(json!({})));
+    let (status, paired) = a.call(
+        "POST",
+        "/api/v1/pairings",
+        Some(json!({
+            "address": format!("127.0.0.1:{}", b.https),
+            "fingerprint": b_node["https"]["fingerprint"],
+            "code": made["code"],
+        })),
+    );
+    assert_eq!(status, 201, "{paired}");
+
+    let (status, body) = a.call(
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"id": "plant_a", "name": "Boiler House", "description": "", "author": "test"})),
+    );
+    assert!(status == 200 || status == 201, "{status} {body}");
+    let (_, plant) = a.call("GET", "/api/v1/projects/plant_a/plant", None);
+    assert_eq!(plant["implicit"], true, "{plant}");
+    assert_eq!(plant["devices"][0]["node"]["id"], a_id);
+
+    // A device is assigned to a paired node, never to one merely named.
+    let (status, refused) = a.call(
+        "PUT",
+        "/api/v1/projects/plant_a/plant/devices/stray",
+        Some(json!({"name": "Stray", "node": "someone-heard"})),
+    );
+    assert_eq!(status, 422, "{refused}");
+    let (status, device) = a.call(
+        "PUT",
+        "/api/v1/projects/plant_a/plant/devices/edge1",
+        Some(json!({"name": "Boiler edge 1", "node": b_id})),
+    );
+    assert_eq!(status, 200, "{device}");
+    assert_eq!(device["project"], "plant_a--edge1");
+    assert_eq!(device["node"]["paired"], true);
+
+    let compare = |s: &Server| {
+        s.call(
+            "GET",
+            "/api/v1/projects/plant_a/plant/devices/edge1/compare",
+            None,
+        )
+        .1
+    };
+    assert_eq!(compare(&a)["state"], "never_downloaded", "{}", compare(&a));
+
+    let (status, _) = a.call(
+        "POST",
+        "/api/v1/projects/plant_a/plant/devices/edge1/download",
+        Some(json!({})),
+    );
+    assert_eq!(status, 428, "a download is confirmed, or not done");
+    let (status, done) = a.call(
+        "POST",
+        "/api/v1/projects/plant_a/plant/devices/edge1/download",
+        Some(json!({"confirm": true})),
+    );
+    assert_eq!(status, 200, "{done}");
+    assert_eq!(done["state"], "done");
+    let (_, active) = b.call("GET", "/api/v1/projects/active", None);
+    assert_eq!(
+        active["project_id"], "plant_a--edge1",
+        "b runs the device it was given: {active}"
+    );
+    assert_eq!(compare(&a)["state"], "same", "{}", compare(&a));
+
+    // Changed in the project: no longer the same, until downloaded again.
+    let (status, body) = a.call(
+        "POST",
+        "/api/v1/projects/plant_a--edge1/datatypes",
+        Some(json!({"name": "Motor", "kind": "STRUCT", "members": [{"name": "running", "dataType": "BOOL"}]})),
+    );
+    assert!(status == 200 || status == 201, "{status} {body}");
+    assert_eq!(compare(&a)["state"], "differs", "{}", compare(&a));
+    let (status, all) = a.call(
+        "POST",
+        "/api/v1/projects/plant_a/plant/download",
+        Some(json!({"confirm": true})),
+    );
+    assert_eq!(status, 200, "{all}");
+    assert_eq!(all["complete"], true, "{all}");
+    assert_eq!(
+        all["devices"].as_array().unwrap().len(),
+        2,
+        "this controller and edge1: {all}"
+    );
+    assert_eq!(compare(&a)["state"], "same");
+
+    // b gone: unreachable, never the same.
+    let _ = b.child.kill();
+    let _ = b.child.wait();
+    let gone = compare(&a);
+    assert_eq!(gone["state"], "unreachable", "{gone}");
 }
