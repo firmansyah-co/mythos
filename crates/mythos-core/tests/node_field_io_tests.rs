@@ -21,6 +21,16 @@ use tower::ServiceExt;
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
+/// The tag bus segment a test makes, removed when the test ends however it ends: one left
+/// behind is memory until a reboot.
+struct Segment(String);
+
+impl Drop for Segment {
+    fn drop(&mut self) {
+        let _ = DefaultShm::unlink(&self.0);
+    }
+}
+
 async fn send(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
     let mut request = Request::builder().method(method).uri(uri);
     let request = match body {
@@ -73,11 +83,12 @@ async fn a_server_reads_no_field_devices_unless_told_to_and_says_why() {
         .create_project(&ProjectConfig::new("plant", "Plant"))
         .unwrap();
     storage.activate_project("plant").unwrap();
-    let segment = format!(
+    let guard = Segment(format!(
         "mythos_node_io_{}_{}",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::SeqCst)
-    );
+    ));
+    let segment = guard.0.clone();
     let _ = DefaultShm::unlink(&segment);
     let catalog = Arc::new(RwLock::new(TagCatalog::new()));
     let mut registry = DriverRegistry::empty();
@@ -139,5 +150,4 @@ async fn a_server_reads_no_field_devices_unless_told_to_and_says_why() {
     assert_eq!(connection_state(&app).await.0, None);
 
     io.shutdown().await;
-    let _ = DefaultShm::unlink(&segment);
 }
