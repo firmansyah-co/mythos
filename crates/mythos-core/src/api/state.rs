@@ -58,6 +58,9 @@ pub struct ApiState<S: PlatformShm + 'static = mythos_pal::DefaultShm> {
     pub node: Option<Arc<crate::node::Node>>,
     /// The nodes this one is paired with (ADR-012 §2.3).
     pub pairings: Option<Arc<crate::pairing::Pairings>>,
+    /// The links to the plant's other devices, whose tags are read over the pairing (ADR-012
+    /// §2.6). Made with the pairings.
+    pub remote: Option<Arc<crate::remote::RemoteTags>>,
 }
 
 impl<S: PlatformShm + 'static> Clone for ApiState<S> {
@@ -77,6 +80,7 @@ impl<S: PlatformShm + 'static> Clone for ApiState<S> {
             modules: self.modules.clone(),
             node: self.node.clone(),
             pairings: self.pairings.clone(),
+            remote: self.remote.clone(),
         }
     }
 }
@@ -109,6 +113,7 @@ impl<S: PlatformShm + 'static> ApiState<S> {
             modules: None,
             node: None,
             pairings: None,
+            remote: None,
         }
     }
 
@@ -152,6 +157,9 @@ impl<S: PlatformShm + 'static> ApiState<S> {
     }
 
     pub fn with_pairings(mut self, pairings: Arc<crate::pairing::Pairings>) -> Self {
+        self.remote = Some(Arc::new(crate::remote::RemoteTags::new(Arc::clone(
+            &pairings,
+        ))));
         self.pairings = Some(pairings);
         self
     }

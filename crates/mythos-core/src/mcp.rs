@@ -801,6 +801,17 @@ pub const TOOLS: &[Tool] = &[
         destructive: false,
     },
     Tool {
+        name: "list_remote_devices",
+        title: "List the plant's other devices",
+        description: "The other devices of the plant this node runs whose tags are read here over the pairing, each with its link: connected, connecting or lost (and why). Their tags appear in read_tag_values named with the device, as edge1:external.Boiler.U1.p; while a link is lost they are BAD_COMM_FAILURE with no value.",
+        method: "GET",
+        path: "/api/v1/remote",
+        query: &[],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
         name: "get_tag",
         title: "Get a tag",
         description: "One tag's metadata.",

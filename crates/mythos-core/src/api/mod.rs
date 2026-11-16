@@ -11,6 +11,7 @@ pub mod modules;
 mod node;
 mod pairing;
 mod plant;
+pub mod remote;
 mod services;
 pub mod state;
 pub mod telemetry;
@@ -158,6 +159,8 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
         // Read-only. A tag exists because the field I/O runtime registered it and feeds it;
         // there is no route to create one, because nothing would feed it.
         .route("/api/v1/tags", get(list_tags_handler::<S>))
+        // The plant's other devices whose tags are read here, and their links.
+        .route("/api/v1/remote", get(remote::links::<S>))
         .route(
             "/api/v1/tags/values",
             get(telemetry::tag_values_handler::<S>),

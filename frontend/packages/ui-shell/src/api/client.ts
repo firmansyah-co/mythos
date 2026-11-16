@@ -207,6 +207,17 @@ export interface DeviceComparison {
   error?: string;
 }
 
+/** A device of the plant this node runs whose tags are read here, and its link (ADR-012 §2.6). */
+export interface RemoteLink {
+  device: string;
+  name: string;
+  node: string;
+  state: 'connecting' | 'connected' | 'lost';
+  reason: string | null;
+  since_unix_s: number;
+  tags: number;
+}
+
 export interface DeviceDownload {
   device: string;
   state: 'done' | 'refused' | 'unreachable' | 'skipped';
@@ -472,6 +483,7 @@ export const api = {
       `/api/v1/projects/${encodeURIComponent(projectId)}/plant/devices/${encodeURIComponent(deviceId)}`,
       json('PUT', { name, node })
     ),
+  getRemoteLinks: () => request<{ devices: RemoteLink[]; note?: string }>('/api/v1/remote'),
   compareDevice: (projectId: string, deviceId: string) =>
     request<DeviceComparison>(
       `/api/v1/projects/${encodeURIComponent(projectId)}/plant/devices/${encodeURIComponent(deviceId)}/compare`

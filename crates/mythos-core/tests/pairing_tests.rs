@@ -390,3 +390,134 @@ fn a_plant_downloads_a_device_to_its_paired_node_and_compares_it() {
     let gone = compare(&a);
     assert_eq!(gone["state"], "unreachable", "{gone}");
 }
+
+/// Pair `a` with `b` (b makes the code); b's node id.
+fn pair(a: &Server, b: &Server) -> String {
+    let b_node = b.node();
+    let (_, made) = b.call("POST", "/api/v1/pairing/code", Some(json!({})));
+    let (status, paired) = a.call(
+        "POST",
+        "/api/v1/pairings",
+        Some(json!({
+            "address": format!("127.0.0.1:{}", b.https),
+            "fingerprint": b_node["https"]["fingerprint"],
+            "code": made["code"],
+        })),
+    );
+    assert_eq!(status, 201, "{paired}");
+    b_node["id"].as_str().unwrap().to_string()
+}
+
+/// The sample of `uri` in `server`'s tag values, when there is one.
+fn sample(server: &Server, uri: &str) -> Option<Value> {
+    let (_, values) = server.call("GET", "/api/v1/tags/values", None);
+    values["updates"]
+        .as_array()?
+        .iter()
+        .find(|u| u["uri"] == uri)
+        .cloned()
+}
+
+fn until(what: &str, mut check: impl FnMut() -> Option<Value>) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(found) = check() {
+            return found;
+        }
+        assert!(Instant::now() < deadline, "never: {what}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// ADR-012 §2.6: a node reads the tags of another device of its plant over the pairing, named
+/// with the device, live; when the link is down they are not current, never their last value.
+#[test]
+fn a_device_reads_another_devices_tags_and_never_shows_a_lost_value_as_current() {
+    // The other device reads a real Modbus device, through the module beside the server.
+    let module = std::path::Path::new(env!("CARGO_BIN_EXE_mythos-server")).with_file_name(format!(
+        "mythos-module-modbus{}",
+        std::env::consts::EXE_SUFFIX
+    ));
+    assert!(
+        module.is_file(),
+        "{} is not built: run the workspace's tests (cargo test --workspace), which build it",
+        module.display()
+    );
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let sim = runtime
+        .block_on(driver_modbus::sim::ModbusSimServer::start("127.0.0.1:0"))
+        .unwrap();
+    runtime.block_on(sim.set_holding(0, 1234));
+
+    let a = start("remote-a");
+    let mut b = start("remote-b");
+    let b_id = pair(&a, &b);
+    let (status, body) = a.call(
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"id": "plant_r", "name": "Boiler House", "description": "", "author": "test"})),
+    );
+    assert!(status == 200 || status == 201, "{status} {body}");
+    let (status, device) = a.call(
+        "PUT",
+        "/api/v1/projects/plant_r/plant/devices/edge1",
+        Some(json!({"name": "Boiler edge 1", "node": b_id})),
+    );
+    assert_eq!(status, 200, "{device}");
+    let (status, body) = a.call(
+        "PUT",
+        "/api/v1/projects/plant_r--edge1/io",
+        Some(json!({"connections": [{
+            "id": "plc1", "driver": "modbus", "poll_interval_ms": 50,
+            "config": {"transport": "tcp", "host": "127.0.0.1", "port": sim.port(), "slave_id": 1,
+                "timeout_ms": 300, "mappings": [{"uri": "external.Boiler.U1.p", "address": 0, "function_code": 3}]}
+        }]})),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (status, done) = a.call(
+        "POST",
+        "/api/v1/projects/plant_r/plant/devices/edge1/download",
+        Some(json!({"confirm": true})),
+    );
+    assert_eq!(status, 200, "{done}");
+    until("b reads the field", || {
+        sample(&b, "external.Boiler.U1.p").filter(|s| s["quality_name"] == "GOOD")
+    });
+
+    // a runs the plant: edge1's tag is read here, named with the device, as it is there.
+    let (status, body) = a.call("POST", "/api/v1/projects/plant_r/activate", None);
+    assert!(status == 200 || status == 204, "{status} {body}");
+    let remote = until("a reads edge1's tag", || {
+        sample(&a, "edge1:external.Boiler.U1.p").filter(|s| s["quality_name"] == "GOOD")
+    });
+    assert_eq!(remote["value"], 1234, "{remote}");
+    assert!(remote.get("slot_id").is_none(), "no slot here: {remote}");
+    let (_, links) = a.call("GET", "/api/v1/remote", None);
+    assert_eq!(
+        links["devices"].as_array().unwrap().len(),
+        1,
+        "the plant's own device, on a, is not followed from a: {links}"
+    );
+    assert_eq!(links["devices"][0]["device"], "edge1", "{links}");
+    assert_eq!(links["devices"][0]["node"], b_id.as_str(), "{links}");
+    assert_eq!(links["devices"][0]["state"], "connected", "{links}");
+
+    // Live: a change on the field reaches a through b.
+    runtime.block_on(sim.set_holding(0, 4321));
+    until("a sees the new value", || {
+        sample(&a, "edge1:external.Boiler.U1.p").filter(|s| s["value"] == 4321)
+    });
+
+    // b gone: the tag is still there, without a value, and bad.
+    let _ = b.child.kill();
+    let _ = b.child.wait();
+    let lost = until("a says the link is down", || {
+        sample(&a, "edge1:external.Boiler.U1.p").filter(|s| s["quality_name"] != "GOOD")
+    });
+    assert_eq!(lost["quality_name"], "BAD_COMM_FAILURE", "{lost}");
+    assert_eq!(lost["quality"], "BAD", "{lost}");
+    assert_eq!(lost["value"], Value::Null, "never the last value: {lost}");
+    let (_, links) = a.call("GET", "/api/v1/remote", None);
+    assert_eq!(links["devices"][0]["state"], "lost", "{links}");
+    assert!(links["devices"][0]["reason"].is_string(), "{links}");
+}

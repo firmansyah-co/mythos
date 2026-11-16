@@ -20,6 +20,9 @@ use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
 
 pub const PLANT_FILE: &str = "plant.json";
+/// The file a device's slice carries naming every device of its plant and the node each is on,
+/// so the node that runs it can read the others' tags (ADR-012 §2.6).
+pub const PLANT_DEVICES_FILE: &str = "plant-devices.json";
 /// Where a node keeps the slice it ran before the last download, per project.
 const PREVIOUS_DIR: &str = "deploy-previous";
 
@@ -38,6 +41,13 @@ pub struct Device {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plant {
+    pub devices: Vec<Device>,
+}
+
+/// The devices of a plant as a device carries them, in [`PLANT_DEVICES_FILE`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceTable {
+    pub plant: String,
     pub devices: Vec<Device>,
 }
 
@@ -238,10 +248,45 @@ pub fn hash_of(files: &[(String, Vec<u8>)]) -> String {
 
 /// The slice of a project on this node.
 pub fn pack(storage: &ControllerStorage, project: &str) -> Result<Slice, PlantError> {
+    pack_with(storage, project, None)
+}
+
+/// The slice of `device` of the plant `plant_id`: its project's files and, for a plant of more
+/// than the implicit one device, the plant's device table. A change of any device's assignment
+/// therefore changes every device's slice: what each was told of the others is part of what it
+/// runs.
+pub fn pack_device(
+    storage: &ControllerStorage,
+    plant_id: &str,
+    device: &Device,
+) -> Result<Slice, PlantError> {
+    let (plant, implicit) = read(storage, plant_id, "")?;
+    if implicit {
+        return pack(storage, &device.project);
+    }
+    let table = DeviceTable {
+        plant: plant_id.to_string(),
+        devices: plant.devices,
+    };
+    pack_with(storage, &device.project, Some(&table))
+}
+
+fn pack_with(
+    storage: &ControllerStorage,
+    project: &str,
+    table: Option<&DeviceTable>,
+) -> Result<Slice, PlantError> {
     storage.get_project(project)?;
     let dir = storage.project_dir(project)?;
     let mut files = Vec::new();
     collect(&dir, &dir, &mut files)?;
+    if let Some(table) = table {
+        let bytes =
+            serde_json::to_vec_pretty(table).map_err(|e| PlantError::Invalid(e.to_string()))?;
+        files.retain(|(path, _)| path != PLANT_DEVICES_FILE);
+        files.push((PLANT_DEVICES_FILE.to_string(), bytes));
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+    }
     let hash = hash_of(&files);
     let engine = base64::engine::general_purpose::STANDARD;
     Ok(Slice {
@@ -254,6 +299,45 @@ pub fn pack(storage: &ControllerStorage, project: &str) -> Result<Slice, PlantEr
             .collect(),
         hash,
     })
+}
+
+/// The plant a node running `project` belongs to, and its devices: the plant itself
+/// (`plant.json`), the table a download brought ([`PLANT_DEVICES_FILE`]), or the plant a
+/// `<plant>--<device>` project on this node is a device of. `None` for a project of no plant.
+pub fn plant_of_running(
+    storage: &ControllerStorage,
+    project: &str,
+) -> Result<Option<DeviceTable>, PlantError> {
+    let dir = storage.project_dir(project)?;
+    if dir.join(PLANT_FILE).is_file() {
+        let (plant, _) = read(storage, project, "")?;
+        return Ok(Some(DeviceTable {
+            plant: project.to_string(),
+            devices: plant.devices,
+        }));
+    }
+    match std::fs::read(dir.join(PLANT_DEVICES_FILE)) {
+        Ok(bytes) => {
+            return serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+                PlantError::Invalid(format!("{PLANT_DEVICES_FILE} is not readable: {e}"))
+            })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    if let Some((plant_id, _)) = project.split_once("--") {
+        if storage
+            .project_dir(plant_id)
+            .is_ok_and(|d| d.join(PLANT_FILE).is_file())
+        {
+            let (plant, _) = read(storage, plant_id, "")?;
+            return Ok(Some(DeviceTable {
+                plant: plant_id.to_string(),
+                devices: plant.devices,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 /// The hash of what this node holds for `project`, or `None` when it holds no such project.
@@ -493,6 +577,61 @@ mod tests {
             hash_here(&storage, "plant_a").unwrap().unwrap(),
             good.hash,
             "untouched"
+        );
+    }
+
+    #[test]
+    fn a_device_carries_its_plants_device_table_and_its_node_knows_its_plant_from_it() {
+        let (_dir, storage) = a_plant();
+        // A project of no plant carries no table, so its slice is what it always was.
+        let alone = pack(&storage, "plant_a").unwrap();
+        let device = this_controller("plant_a", "me");
+        assert_eq!(pack_device(&storage, "plant_a", &device).unwrap(), alone);
+        assert_eq!(plant_of_running(&storage, "plant_a").unwrap(), None);
+
+        let edge = set_device(
+            &storage,
+            "plant_a",
+            "me",
+            "edge1",
+            "Edge 1",
+            Some("n1".into()),
+        )
+        .unwrap();
+        let slice = pack_device(&storage, "plant_a", &edge).unwrap();
+        assert!(slice.files.iter().any(|f| f.path == PLANT_DEVICES_FILE));
+        let here = plant_of_running(&storage, "plant_a--edge1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(here.plant, "plant_a");
+        assert!(here.devices.iter().any(|d| d.id == "edge1"));
+
+        // On the node it is downloaded to, the table it brought says what the plant is.
+        let node_dir = tempfile::tempdir().unwrap();
+        let node = ControllerStorage::new(node_dir.path()).unwrap();
+        install(&node, "plant_a--edge1", &slice).unwrap();
+        assert_eq!(
+            plant_of_running(&node, "plant_a--edge1").unwrap(),
+            Some(here)
+        );
+        assert_eq!(
+            hash_here(&node, "plant_a--edge1").unwrap(),
+            Some(slice.hash.clone())
+        );
+
+        // Another device assigned elsewhere changes what edge1 was told, so its slice.
+        set_device(
+            &storage,
+            "plant_a",
+            "me",
+            "edge2",
+            "Edge 2",
+            Some("n2".into()),
+        )
+        .unwrap();
+        assert_ne!(
+            pack_device(&storage, "plant_a", &edge).unwrap().hash,
+            slice.hash
         );
     }
 }

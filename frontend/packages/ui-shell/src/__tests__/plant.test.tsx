@@ -9,7 +9,7 @@ import { project, render, resetStores, typeInto, unmountAll } from './harness';
 const THIS = 'aaaa1111-0000-4000-8000-000000000001';
 const EDGE = 'bbbb2222-0000-4000-8000-000000000002';
 
-function controller(states: Record<string, string>) {
+function controller(states: Record<string, string>, remote: unknown[] | 'fails' = []) {
   const calls: { method: string; path: string; body: unknown }[] = [];
   vi.stubGlobal(
     'fetch',
@@ -32,6 +32,7 @@ function controller(states: Record<string, string>) {
       if (compared) return json({ device: compared[1], state: states[compared[1]!], error: 'connection refused' });
       if (path === '/api/v1/pairings') return json({ peers: [{ id: EDGE, name: 'boiler-edge-1', role: 'edge', address: '10.0.0.5:8443', fingerprint: 'ab', granted: 'viewer', paired_unix_s: 1, last_seen_unix_s: null }] });
       if (path === '/api/v1/node') return json({ id: THIS, name: 'laptop' });
+      if (path === '/api/v1/remote') return remote === 'fails' ? json({ error: 'down' }, 500) : json({ devices: remote });
       if (path.endsWith('/download') && path.includes('/devices/')) return json({ device: 'edge1', state: 'done' });
       if (path.endsWith('/plant/download')) return json({ complete: false, devices: [{ device: 'this', state: 'done' }, { device: 'edge1', state: 'unreachable', error: 'no route' }] });
       if (method === 'PUT') return json({ id: 'edge1' });
@@ -109,5 +110,33 @@ describe('the plant', () => {
     await settle();
     expect(button(view, 'Download all')).toBeUndefined();
     expect(button(view, 'Download')).toBeUndefined();
+  });
+
+  it("says whether another device's tags are read here, and never a lost link as live", async () => {
+    const link = (state: string, reason: string | null, tags: number) => ({
+      device: 'edge1', name: 'Boiler edge 1', node: EDGE, state, reason, since_unix_s: 1, tags,
+    });
+    const cells = (view: HTMLElement) =>
+      [...view.querySelectorAll('[data-testid="plant-device"]')].map((row) => row.children[3]?.textContent);
+
+    controller({ this: 'same', edge1: 'same' }, [link('lost', 'nothing heard for 3 s', 4)]);
+    signedIn('viewer');
+    let view = render(<PlantEditor />);
+    await settle();
+    expect(cells(view)).toEqual(['not read here', 'CONNECTION LOST — NOT CURRENT']);
+    expect(view.querySelector('[data-testid="plant-device-link"]')?.getAttribute('title')).toBe('nothing heard for 3 s');
+    unmountAll();
+
+    controller({ this: 'same', edge1: 'same' }, [link('connected', null, 3)]);
+    view = render(<PlantEditor />);
+    await settle();
+    expect(cells(view)).toEqual(['not read here', 'LIVE · 3 tags']);
+    unmountAll();
+
+    // When the links cannot be read, nothing is said of them: not "not read here", not live.
+    controller({ this: 'same', edge1: 'same' }, 'fails');
+    view = render(<PlantEditor />);
+    await settle();
+    expect(cells(view)).toEqual(['unknown', 'unknown']);
   });
 });

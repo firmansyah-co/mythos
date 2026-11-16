@@ -272,6 +272,11 @@ try {
   check('the plant is this controller until another device is added', JSON.stringify(plantRows) === '["This controller"]', JSON.stringify(plantRows));
   check('and it runs what the project says', (await evaluate(`__t.text('[data-testid="plant-device-state"]')[0]`)) === 'SAME AS PROJECT',
     await evaluate(`__t.text('[data-testid="plant-device-state"]')[0]`));
+  // ADR-012 §2.6: this node is the only device, so it reads no other device's tags, and says so.
+  const linkCell = await evaluate(`document.querySelector('[data-testid="plant-device"]').children[3].textContent`);
+  check('no other device is read here, and that is what it says', linkCell === 'not read here', linkCell);
+  const remote = await (await api(base + '/api/v1/remote')).json();
+  check('the node follows no other device', Array.isArray(remote.devices) && remote.devices.length === 0, JSON.stringify(remote));
   await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
 
   // 8b. A module's workbench UI (ADR-011 §2.3): the notes service module brings a tree section

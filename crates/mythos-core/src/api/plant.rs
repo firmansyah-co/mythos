@@ -210,8 +210,12 @@ async fn ask(
 }
 
 /// What compare says of one device.
-async fn compare_one<S: PlatformShm + 'static>(state: &ApiState<S>, device: &Device) -> Value {
-    let local = match plant::pack(&state.storage, &device.project) {
+async fn compare_one<S: PlatformShm + 'static>(
+    state: &ApiState<S>,
+    plant_id: &str,
+    device: &Device,
+) -> Value {
+    let local = match plant::pack_device(&state.storage, plant_id, device) {
         Ok(slice) => slice.hash,
         Err(e) => {
             return json!({ "device": device.id, "state": "unreadable", "error": e.to_string() })
@@ -270,7 +274,7 @@ pub async fn compare<S: PlatformShm + 'static>(
     Path((project, device)): Path<(String, String)>,
 ) -> Response {
     match find_device(&state, &project, &device) {
-        Ok(device) => Json(compare_one(&state, &device).await).into_response(),
+        Ok(device) => Json(compare_one(&state, &project, &device).await).into_response(),
         Err(e) => failed(e),
     }
 }
@@ -300,12 +304,16 @@ async fn run_here<S: PlatformShm + 'static>(
 }
 
 /// Download one device: what it reports.
-async fn download_one<S: PlatformShm + 'static>(state: &ApiState<S>, device: &Device) -> Value {
+async fn download_one<S: PlatformShm + 'static>(
+    state: &ApiState<S>,
+    plant_id: &str,
+    device: &Device,
+) -> Value {
     let target = match target_of(state, device) {
         Ok(target) => target,
         Err(e) => return json!({ "device": device.id, "state": "refused", "error": e }),
     };
-    let slice = match plant::pack(&state.storage, &device.project) {
+    let slice = match plant::pack_device(&state.storage, plant_id, device) {
         Ok(slice) => slice,
         Err(e) => return json!({ "device": device.id, "state": "refused", "error": e.to_string() }),
     };
@@ -358,7 +366,7 @@ pub async fn download<S: PlatformShm + 'static>(
         Ok(device) => device,
         Err(e) => return failed(e),
     };
-    let result = download_one(&state, &device).await;
+    let result = download_one(&state, &project, &device).await;
     let status = if result["state"] == "done" {
         StatusCode::OK
     } else {
@@ -388,7 +396,7 @@ pub async fn download_all<S: PlatformShm + 'static>(
             );
             continue;
         }
-        results.push(download_one(&state, device).await);
+        results.push(download_one(&state, &project, device).await);
     }
     let all_done = results
         .iter()
