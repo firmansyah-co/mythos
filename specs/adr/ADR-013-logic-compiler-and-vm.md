@@ -1,6 +1,9 @@
 # ADR-013: Control Logic: Our Own IEC 61131-3 Compiler, a Portable VM, and the Logic Module
 
-- **Status**: PROPOSED (step 0 done: the spike below; for Adrian's review before step 1)
+- **Status**: ACCEPTED, 2026-11-17. Adrian reviewed it in two rounds (agreed the `runtime` module
+  kind and where runtime management lives; supplied the standard and decided "mengikuti IEC"),
+  then left the decision to merge to its author ("mana yang paling bagus menurutmu"). One
+  question stays with him: dropping IL (§2.1). Step 0 is done; step 1 is next.
 - **Date**: 2026-11-17
 - **Requested by**: Adrian ("bagaimana planning implementasi logika kontrol ini? harus ada runtime,
   editor, dan manager kan?"; "menurutmu mending pakai struc++ atau kita bangun compiler sendiri";
