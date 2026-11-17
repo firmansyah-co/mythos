@@ -18,7 +18,7 @@
 #[cfg(target_os = "none")]
 mod firmware {
     use core::panic::PanicInfo;
-    use mythos_logic_vm::{cold_start, crc32, scan, Program};
+    use mythos_logic_vm::{cold_start, crc32, scan, Frame, Program};
 
     /// The program, as it would sit in flash after a download.
     static PROGRAM: &[u8] = include_bytes!(env!("MYTHOS_LOGIC_PROGRAM"));
@@ -123,12 +123,17 @@ mod firmware {
     fn run() -> ! {
         let mut memory = [0u8; 4096];
         let mut stack = [0u64; 64];
+        let mut calls = [Frame::default(); 16];
         let Ok(program) = Program::load(PROGRAM) else {
             text("the program did not load\n");
             machine::exit(false)
         };
         let size = program.memory_size();
-        if size > memory.len() || cold_start(&program, &mut memory[..size]).is_err() {
+        if size > memory.len()
+            || program.stack_depth() > stack.len()
+            || program.call_depth() > calls.len()
+            || cold_start(&program, &mut memory[..size]).is_err()
+        {
             text("the program does not fit this firmware\n");
             machine::exit(false)
         }
@@ -137,6 +142,7 @@ mod firmware {
                 &program,
                 &mut memory[..size],
                 &mut stack,
+                &mut calls,
                 k as i64 * CYCLE_NS,
                 BUDGET,
             ) {

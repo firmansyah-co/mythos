@@ -1,13 +1,23 @@
-//! The logic VM backend (ADR-013 §2.1): lays an IR program's variables out in memory and emits
+//! The logic VM backend (ADR-013 §2.1): lays an IR unit's variables out in memory and emits
 //! bytecode for `mythos-logic-vm`.
 //!
 //! It depends on the IR and on the VM's format, and on no front-end: it compiles whatever
 //! language was lowered to the IR. Another target kind (C for small microcontrollers) is
 //! another crate like this one.
+//!
+//! **Everything has one fixed place.** A unit has no recursion, so nothing needs a frame that
+//! comes and goes: the program's variables, every function block instance inside them, and
+//! every function's parameters and locals are laid out once, here. A function's locals are put
+//! back to their initial values by code at each call.
+//!
+//! **A function block's body is emitted once per type**, addressing its variables relative to
+//! the instance it is called for. A function's body and the program's use absolute addresses.
+//! Bodies are emitted callees first, the program last, which is the order the VM's loader
+//! requires and what makes the stack and call depths known when a call is emitted.
 
 use mythos_logic_ir::*;
 use mythos_logic_vm::fb::FbKind;
-use mythos_logic_vm::format::{crc32, op, ElemType, MAGIC};
+use mythos_logic_vm::format::{crc32, op, ElemType, MAGIC, PLACE_INDEXED, PLACE_RELATIVE};
 
 pub use mythos_logic_vm::FORMAT_VERSION;
 
@@ -33,27 +43,66 @@ fn member_offset(fb: StdFb, m: usize) -> u32 {
         .offset
 }
 
-/// Where a variable (and each member of an instance) was put, for the host: binding a variable
-/// to a tag, monitoring and forcing all go by these.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+/// Where a variable (and each member of a structure or an instance) was put, for the host:
+/// binding a variable to a tag, monitoring and forcing all go by these.
+///
+/// An array is one symbol, however many elements it has: `array` gives its element type and
+/// size and its bounds, and element `[i, j]` is at `offset` plus the element's position
+/// (rightmost subscript varying fastest) times `element_size`. The members of an element that
+/// is a structure or a function block instance are in [`Output::types`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Symbol {
-    /// `name` or `instance.member`.
+    /// `name`, `instance.member`, `structure.member.member`.
     pub path: String,
     #[serde(rename = "type")]
-    pub ty: &'static str,
+    pub ty: String,
     pub section: Section,
     pub offset: u32,
     pub size: u32,
-    /// The host may set it (a program input, or an FB input it is not given here).
+    /// The host may set it (a program input, or part of one).
     pub writable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub array: Option<ArrayInfo>,
+}
+
+/// What an array symbol or member holds.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ArrayInfo {
+    pub element_type: String,
+    pub element_size: u32,
+    /// Each subscript's range, inclusive.
+    pub bounds: Vec<(i64, i64)>,
+}
+
+/// How a structure or a function block type is laid out, for reaching into an array's elements.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TypeLayout {
+    pub name: String,
+    pub size: u32,
+    pub members: Vec<MemberLayout>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MemberLayout {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// From the start of the structure or instance.
+    pub offset: u32,
+    pub size: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub array: Option<ArrayInfo>,
 }
 
 pub struct Output {
     pub bytes: Vec<u8>,
     pub symbols: Vec<Symbol>,
+    pub types: Vec<TypeLayout>,
     pub memory_size: u32,
     pub code_size: u32,
     pub stack_depth: u16,
+    /// How deep calls nest at most; the VM is given that many call frames.
+    pub call_depth: u16,
 }
 
 /// How a value of a type sits on the VM stack.
@@ -73,17 +122,9 @@ fn class(t: Ty) -> Class {
         Ty::Lint | Ty::Time => Class::I64,
         Ty::Real => Class::F32,
         Ty::Lreal => Class::F64,
-        Ty::Fb(_) => unreachable!("an instance is never a value"),
-    }
-}
-
-fn size(t: Ty) -> u32 {
-    match t {
-        Ty::Bool | Ty::Sint => 1,
-        Ty::Int => 2,
-        Ty::Dint | Ty::Real => 4,
-        Ty::Lint | Ty::Lreal | Ty::Time => 8,
-        Ty::Fb(k) => vm_fb(k).size(),
+        Ty::Fb(_) | Ty::Struct(_) | Ty::Array(_) | Ty::Instance(_) => {
+            unreachable!("only an elementary value is on the stack")
+        }
     }
 }
 
@@ -97,109 +138,578 @@ pub fn elem(t: Ty) -> ElemType {
         Ty::Real => ElemType::Real,
         Ty::Lreal => ElemType::Lreal,
         Ty::Time => ElemType::Time,
-        Ty::Fb(_) => unreachable!("an instance is not an element"),
+        Ty::Fb(_) | Ty::Struct(_) | Ty::Array(_) | Ty::Instance(_) => {
+            unreachable!("not an element")
+        }
     }
 }
 
-struct Emitter<'p> {
-    p: &'p Program,
-    offsets: Vec<u32>,
-    code: Vec<u8>,
-    depth: i32,
-    max_depth: i32,
-    /// For each loop being emitted, the jumps its EXITs must be patched to.
-    exits: Vec<Vec<usize>>,
-    /// Scratch variables (CASE selectors), allocated after the program's own.
-    memory_size: u32,
+/// The size of something and where each of its parts starts within it.
+#[derive(Debug, Clone, Default)]
+struct Layout {
+    size: u64,
+    offsets: Vec<u64>,
 }
 
-pub fn emit(p: &Program) -> Output {
-    let mut offsets = Vec::new();
-    let mut at = 0u32;
-    for v in &p.vars {
-        offsets.push(at);
-        at += size(v.ty);
-    }
-    let mut e = Emitter {
-        p,
-        offsets,
-        code: Vec::new(),
-        depth: 0,
-        max_depth: 0,
-        exits: Vec::new(),
-        memory_size: at,
-    };
-    e.stmts(&p.body);
-    e.op(op::END, 0);
+/// Sizes and layouts of every type of a unit. Sizes are kept in 64 bits and checked against
+/// the format's 32 once, in `emit`, so no sum here can wrap.
+struct Layouts<'u> {
+    u: &'u Unit,
+    structs: Vec<Layout>,
+    /// For a function block type, an instance; for a function, its parameters and locals
+    /// (inputs first); for the program, its variables.
+    pous: Vec<Layout>,
+    /// For a function: where in its layout the variables that are not inputs start. They are
+    /// what a call starts afresh.
+    locals: Vec<u64>,
+}
 
-    // Initial memory image.
-    let mut init = vec![0u8; e.memory_size as usize];
-    for (i, v) in p.vars.iter().enumerate() {
-        let Some(k) = v.init else { continue };
-        let o = e.offsets[i] as usize;
-        let bytes: Vec<u8> = match (v.ty, k) {
-            (Ty::Bool, Const::Bool(b)) => vec![b as u8],
-            (Ty::Sint, Const::Int(x)) => (x as i8).to_le_bytes().to_vec(),
-            (Ty::Int, Const::Int(x)) => (x as i16).to_le_bytes().to_vec(),
-            (Ty::Dint, Const::Int(x)) => (x as i32).to_le_bytes().to_vec(),
-            (Ty::Lint, Const::Int(x)) | (Ty::Time, Const::Time(x)) => x.to_le_bytes().to_vec(),
-            (Ty::Real, Const::Real(x)) => (x as f32).to_le_bytes().to_vec(),
-            (Ty::Real, Const::Int(x)) => (x as f32).to_le_bytes().to_vec(),
-            (Ty::Lreal, Const::Real(x)) => x.to_le_bytes().to_vec(),
-            (Ty::Lreal, Const::Int(x)) => (x as f64).to_le_bytes().to_vec(),
-            (ty, k) => unreachable!("the checker let {k:?} initialise a {}", ty.name()),
+impl<'u> Layouts<'u> {
+    /// `order` is the unit's POUs, each after those it uses.
+    fn new(u: &'u Unit, order: &[usize]) -> Layouts<'u> {
+        let mut l = Layouts {
+            u,
+            structs: vec![Layout::default(); u.structs.len()],
+            pous: vec![Layout::default(); u.pous.len()],
+            locals: vec![0; u.pous.len()],
         };
-        init[o..o + bytes.len()].copy_from_slice(&bytes);
-    }
-
-    let mut symbols = Vec::new();
-    for (i, v) in p.vars.iter().enumerate() {
-        let o = e.offsets[i];
-        match v.ty {
-            Ty::Fb(k) => {
-                for (i, m) in k.members().iter().enumerate() {
-                    symbols.push(Symbol {
-                        path: format!("{}.{}", v.name, m.name),
-                        ty: m.ty.name(),
-                        section: v.section,
-                        offset: o + member_offset(k, i),
-                        size: size(m.ty),
-                        writable: false,
-                    });
+        // A structure may hold one declared after it; `struct_cycle` was ruled out by the
+        // caller, so going round until nothing changes ends.
+        let mut done = vec![false; u.structs.len()];
+        while done.iter().any(|d| !d) {
+            for i in 0..u.structs.len() {
+                let ready = u.structs[i]
+                    .fields
+                    .iter()
+                    .all(|f| l.structs_in(f.ty).iter().all(|s| done[*s]));
+                if done[i] || !ready {
+                    continue;
+                }
+                let mut lay = Layout::default();
+                for f in &u.structs[i].fields {
+                    lay.offsets.push(lay.size);
+                    lay.size = lay.size.saturating_add(l.size(f.ty));
+                }
+                l.structs[i] = lay;
+                done[i] = true;
+            }
+        }
+        for &p in order {
+            let pou = &u.pous[p];
+            let mut lay = Layout {
+                size: 0,
+                offsets: vec![0; pou.vars.len()],
+            };
+            let is_function = matches!(pou.kind, PouKind::Function { .. });
+            // A function's inputs first, so the rest is one run of bytes to start afresh.
+            for inputs in [true, false] {
+                if !inputs {
+                    l.locals[p] = lay.size;
+                }
+                for (i, v) in pou.vars.iter().enumerate() {
+                    let first = is_function && v.section == Section::Input;
+                    if first == inputs {
+                        lay.offsets[i] = lay.size;
+                        lay.size = lay.size.saturating_add(l.size(v.ty));
+                    }
                 }
             }
-            ty => symbols.push(Symbol {
-                path: v.name.clone(),
-                ty: ty.name(),
-                section: v.section,
-                offset: o,
-                size: size(ty),
-                writable: v.section == Section::Input,
-            }),
+            l.pous[p] = lay;
+        }
+        l
+    }
+
+    /// The structures a value of `ty` holds directly (through arrays, not through structures).
+    fn structs_in(&self, ty: Ty) -> Vec<usize> {
+        match ty {
+            Ty::Struct(i) => vec![i],
+            Ty::Array(a) => self.structs_in(self.u.arrays[a].elem),
+            _ => Vec::new(),
         }
     }
 
-    let mut bytes = Vec::with_capacity(16 + init.len() + e.code.len() + 4);
+    fn size(&self, t: Ty) -> u64 {
+        match t {
+            Ty::Bool | Ty::Sint => 1,
+            Ty::Int => 2,
+            Ty::Dint | Ty::Real => 4,
+            Ty::Lint | Ty::Lreal | Ty::Time => 8,
+            Ty::Fb(k) => vm_fb(k).size() as u64,
+            Ty::Struct(i) => self.structs[i].size,
+            Ty::Instance(p) => self.pous[p].size,
+            Ty::Array(a) => {
+                let a = &self.u.arrays[a];
+                a.len().saturating_mul(self.size(a.elem))
+            }
+        }
+    }
+
+    /// Where member `m` of a value of type `of` starts within it.
+    fn member(&self, of: Ty, m: usize) -> u64 {
+        match of {
+            Ty::Struct(i) => self.structs[i].offsets[m],
+            Ty::Instance(p) => self.pous[p].offsets[m],
+            Ty::Fb(k) => member_offset(k, m) as u64,
+            _ => unreachable!("a member of what has none"),
+        }
+    }
+
+    fn array_info(&self, ty: Ty) -> Option<ArrayInfo> {
+        let Ty::Array(a) = ty else { return None };
+        let a = &self.u.arrays[a];
+        Some(ArrayInfo {
+            element_type: self.u.ty_name(a.elem),
+            element_size: self.size(a.elem) as u32,
+            bounds: a.dims.clone(),
+        })
+    }
+}
+
+/// Where code reaches a value: an address, absolute or from the base, and, when an offset
+/// computed at run time is added (it is on the stack), the end of the region it must stay in.
+#[derive(Clone, Copy)]
+struct Loc {
+    rel: bool,
+    addr: u32,
+    indexed: Option<u32>,
+}
+
+impl Loc {
+    fn absolute(addr: u32) -> Loc {
+        Loc {
+            rel: false,
+            addr,
+            indexed: None,
+        }
+    }
+}
+
+/// A function block instance being called. Its inputs, the call and its outputs each reach
+/// it again, so an offset computed at run time is kept in a scratch variable (`saved`).
+#[derive(Clone, Copy)]
+struct Inst {
+    rel: bool,
+    addr: u32,
+    /// (the end of the region, where the offset was saved)
+    indexed: Option<(u32, u32)>,
+}
+
+struct Emitter<'u> {
+    u: &'u Unit,
+    lay: Layouts<'u>,
+    code: Vec<u8>,
+    /// The next free byte of memory: scratch variables are taken from here.
+    memory: u64,
+    /// For each POU of the unit: its index in the bytecode's table of bodies.
+    body: Vec<u16>,
+    /// For each function of the unit: where its parameters and locals are.
+    frame: Vec<u64>,
+    /// For each POU already emitted: the stack slots and the call frames its body needs.
+    need_stack: Vec<i32>,
+    need_calls: Vec<u32>,
+    /// The POU being emitted.
+    cur: usize,
+    depth: i32,
+    max_depth: i32,
+    calls: u32,
+    /// For each loop being emitted, the jumps its EXITs must be patched to.
+    exits: Vec<Vec<usize>>,
+}
+
+fn too_big(what: impl std::fmt::Display) -> Diagnostic {
+    Diagnostic::whole(format!("{what} is more than the bytecode format can hold"))
+}
+
+/// Where everything of a unit goes, before any code is emitted.
+struct Plan<'u> {
+    /// The POUs, each after those it uses, the program last.
+    order: Vec<usize>,
+    lay: Layouts<'u>,
+    /// For each function of the unit: where its parameters and locals are.
+    frame: Vec<u64>,
+    /// Bytes of memory the variables take: the program's, then each function's.
+    memory: u64,
+}
+
+/// `Err` when the unit was made for another IR version, is recursive (a front-end refuses
+/// that with the place; this is the backstop for a unit that came from elsewhere), or is
+/// larger than the format can describe.
+fn plan(u: &Unit) -> Result<Plan<'_>, Diagnostic> {
+    if u.ir_version != IR_VERSION {
+        return Err(Diagnostic::whole(format!(
+            "the unit is IR version {}; this backend reads version {IR_VERSION}",
+            u.ir_version
+        )));
+    }
+    if u.struct_cycle().is_some() {
+        return Err(Diagnostic::whole("a structure contains itself"));
+    }
+    let mut order = u.order().map_err(|cycle| {
+        let names: Vec<&str> = cycle.iter().map(|p| u.pous[*p].name.as_str()).collect();
+        Diagnostic::whole(format!(
+            "recursion is not allowed: {} reach themselves",
+            names.join(", ")
+        ))
+    })?;
+    // The program is last: a scan starts at the last body.
+    order.retain(|p| *p != u.entry);
+    order.push(u.entry);
+    if order.len() > u16::MAX as usize {
+        return Err(too_big(format!("{} POUs", order.len())));
+    }
+
+    let lay = Layouts::new(u, &order);
+    // Memory: the program's variables from 0 (so their addresses do not move when a function
+    // is added), then each function's parameters and locals, then scratch.
+    let mut memory = lay.pous[u.entry].size;
+    let mut frame = vec![0u64; u.pous.len()];
+    for &p in &order {
+        if matches!(u.pous[p].kind, PouKind::Function { .. }) {
+            frame[p] = memory;
+            memory = memory.saturating_add(lay.pous[p].size);
+        }
+    }
+    let largest = lay
+        .pous
+        .iter()
+        .chain(lay.structs.iter())
+        .map(|l| l.size)
+        .max()
+        .unwrap_or(0)
+        .max(memory);
+    // Scratch is a few bytes per CASE and per call of an instance in an array; leaving room
+    // for it here means no address computed below can pass 32 bits.
+    if largest > (u32::MAX / 2) as u64 {
+        return Err(too_big(format!("{largest} bytes of variables")));
+    }
+    Ok(Plan {
+        order,
+        lay,
+        frame,
+        memory,
+    })
+}
+
+/// Bytes of memory the unit's variables need, without emitting anything: for refusing a unit
+/// too large for its target before its memory image is built. The scratch `emit` adds (a few
+/// bytes per CASE) is not in it; `Output::memory_size` is the whole.
+pub fn variable_memory(u: &Unit) -> Result<u64, Diagnostic> {
+    plan(u).map(|p| p.memory)
+}
+
+/// Lay `u` out and emit its bytecode. `Err` as [`variable_memory`].
+pub fn emit(u: &Unit) -> Result<Output, Diagnostic> {
+    let Plan {
+        order,
+        lay,
+        frame,
+        memory,
+    } = plan(u)?;
+
+    let mut body = vec![0u16; u.pous.len()];
+    for (k, &p) in order.iter().enumerate() {
+        body[p] = k as u16;
+    }
+    let mut e = Emitter {
+        u,
+        lay,
+        code: Vec::new(),
+        memory,
+        body,
+        frame,
+        need_stack: vec![0; u.pous.len()],
+        need_calls: vec![0; u.pous.len()],
+        cur: u.entry,
+        depth: 0,
+        max_depth: 0,
+        calls: 0,
+        exits: Vec::new(),
+    };
+    let mut starts = Vec::new();
+    for &p in &order {
+        starts.push(e.code.len() as u64);
+        e.pou(p);
+    }
+    let stack_depth = e.need_stack[u.entry].max(1);
+    let call_depth = e.need_calls[u.entry];
+    if e.memory > u32::MAX as u64 || e.code.len() as u64 > u32::MAX as u64 {
+        return Err(too_big("the program"));
+    }
+    if stack_depth > u16::MAX as i32 || call_depth > u16::MAX as u32 {
+        return Err(too_big("the depth of its expressions or calls"));
+    }
+    let memory_size = e.memory as u32;
+
+    // Initial memory image: the program's variables, with every instance inside them, and
+    // each function's variables, which `INIT` copies back at a call.
+    let mut init = vec![0u8; memory_size as usize];
+    for &p in &order {
+        let at = match u.pous[p].kind {
+            PouKind::Program => 0,
+            PouKind::Function { .. } => e.frame[p],
+            PouKind::FunctionBlock => continue,
+        };
+        for (i, v) in u.pous[p].vars.iter().enumerate() {
+            e.lay.init(
+                &mut init,
+                at + e.lay.pous[p].offsets[i],
+                v.ty,
+                v.init.as_ref(),
+            );
+        }
+    }
+
+    let mut symbols = Vec::new();
+    let program = u.program();
+    for (i, v) in program.vars.iter().enumerate() {
+        e.lay.symbols(
+            &mut symbols,
+            &v.name,
+            v.ty,
+            v.section,
+            e.lay.pous[u.entry].offsets[i],
+            v.section == Section::Input,
+        );
+    }
+    let types = e.lay.types();
+
+    let mut bytes = Vec::with_capacity(20 + 8 * order.len() + init.len() + e.code.len() + 4);
     bytes.extend_from_slice(&MAGIC);
     bytes.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
-    let stack_depth = e.max_depth.max(1) as u16;
-    bytes.extend_from_slice(&stack_depth.to_le_bytes());
-    bytes.extend_from_slice(&e.memory_size.to_le_bytes());
+    bytes.extend_from_slice(&(stack_depth as u16).to_le_bytes());
+    bytes.extend_from_slice(&memory_size.to_le_bytes());
     bytes.extend_from_slice(&(e.code.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&(call_depth as u16).to_le_bytes());
+    bytes.extend_from_slice(&(order.len() as u16).to_le_bytes());
+    for (k, &p) in order.iter().enumerate() {
+        let instance = match u.pous[p].kind {
+            PouKind::FunctionBlock => e.lay.pous[p].size as u32,
+            PouKind::Program | PouKind::Function { .. } => 0,
+        };
+        bytes.extend_from_slice(&(starts[k] as u32).to_le_bytes());
+        bytes.extend_from_slice(&instance.to_le_bytes());
+    }
     bytes.extend_from_slice(&init);
     bytes.extend_from_slice(&e.code);
     let crc = crc32(&bytes);
     bytes.extend_from_slice(&crc.to_le_bytes());
-    Output {
-        memory_size: e.memory_size,
+    Ok(Output {
+        memory_size,
         code_size: e.code.len() as u32,
-        stack_depth,
+        stack_depth: stack_depth as u16,
+        call_depth: call_depth as u16,
         bytes,
         symbols,
+        types,
+    })
+}
+
+fn const_bytes(ty: Ty, k: Const) -> Vec<u8> {
+    match (ty, k) {
+        (Ty::Bool, Const::Bool(b)) => vec![b as u8],
+        (Ty::Sint, Const::Int(x)) => (x as i8).to_le_bytes().to_vec(),
+        (Ty::Int, Const::Int(x)) => (x as i16).to_le_bytes().to_vec(),
+        (Ty::Dint, Const::Int(x)) => (x as i32).to_le_bytes().to_vec(),
+        (Ty::Lint, Const::Int(x)) | (Ty::Time, Const::Time(x)) => x.to_le_bytes().to_vec(),
+        (Ty::Real, Const::Real(x)) => (x as f32).to_le_bytes().to_vec(),
+        (Ty::Real, Const::Int(x)) => (x as f32).to_le_bytes().to_vec(),
+        (Ty::Lreal, Const::Real(x)) => x.to_le_bytes().to_vec(),
+        (Ty::Lreal, Const::Int(x)) => (x as f64).to_le_bytes().to_vec(),
+        (ty, k) => unreachable!("the front-end let {k:?} initialise a {ty:?}"),
+    }
+}
+
+impl Layouts<'_> {
+    /// Write what a value of `ty` at `at` starts with: `init` if the declaration gave one,
+    /// otherwise what its type says (a structure's members and a function block's variables
+    /// have their own), otherwise zero.
+    fn init(&self, image: &mut [u8], at: u64, ty: Ty, init: Option<&Init>) {
+        fn put(image: &mut [u8], at: u64, bytes: &[u8]) {
+            let at = at as usize;
+            image[at..at + bytes.len()].copy_from_slice(bytes);
+        }
+        match (ty, init) {
+            (Ty::Struct(i), _) => {
+                for (k, f) in self.u.structs[i].fields.iter().enumerate() {
+                    self.init(
+                        image,
+                        at + self.structs[i].offsets[k],
+                        f.ty,
+                        f.init.as_ref(),
+                    );
+                }
+            }
+            (Ty::Instance(p), _) => {
+                for (k, v) in self.u.pous[p].vars.iter().enumerate() {
+                    self.init(image, at + self.pous[p].offsets[k], v.ty, v.init.as_ref());
+                }
+            }
+            (Ty::Array(a), init) => {
+                let array = &self.u.arrays[a];
+                let size = self.size(array.elem);
+                let given: &[Const] = match init {
+                    Some(Init::Elements(values)) => values,
+                    _ => &[],
+                };
+                // An element past the list starts at its type's default: zero for an
+                // elementary type, which the image already is.
+                let filled = if array.elem.is_elementary() {
+                    (given.len() as u64).min(array.len())
+                } else {
+                    array.len()
+                };
+                for k in 0..filled {
+                    match given.get(k as usize) {
+                        Some(c) => put(image, at + k * size, &const_bytes(array.elem, *c)),
+                        None => self.init(image, at + k * size, array.elem, None),
+                    }
+                }
+            }
+            (Ty::Fb(_), _) => {}
+            (ty, Some(Init::Value(c))) => put(image, at, &const_bytes(ty, *c)),
+            (_, _) => {}
+        }
+    }
+
+    /// The symbols of a variable of the program at `offset`: itself, or each of its parts.
+    fn symbols(
+        &self,
+        out: &mut Vec<Symbol>,
+        path: &str,
+        ty: Ty,
+        section: Section,
+        offset: u64,
+        writable: bool,
+    ) {
+        match ty {
+            Ty::Struct(i) => {
+                for (k, f) in self.u.structs[i].fields.iter().enumerate() {
+                    let at = offset + self.structs[i].offsets[k];
+                    self.symbols(
+                        out,
+                        &format!("{path}.{}", f.name),
+                        f.ty,
+                        section,
+                        at,
+                        writable,
+                    );
+                }
+            }
+            // The members of an instance are the block's to set: the host sets none of them.
+            Ty::Instance(p) => {
+                for (k, v) in self.u.pous[p].vars.iter().enumerate() {
+                    let at = offset + self.pous[p].offsets[k];
+                    self.symbols(out, &format!("{path}.{}", v.name), v.ty, section, at, false);
+                }
+            }
+            Ty::Fb(k) => {
+                for (i, m) in k.members().iter().enumerate() {
+                    let at = offset + member_offset(k, i) as u64;
+                    self.symbols(out, &format!("{path}.{}", m.name), m.ty, section, at, false);
+                }
+            }
+            ty => out.push(Symbol {
+                path: path.to_string(),
+                ty: self.u.ty_name(ty),
+                section,
+                offset: offset as u32,
+                size: self.size(ty) as u32,
+                writable,
+                array: self.array_info(ty),
+            }),
+        }
+    }
+
+    /// The layout of every structure and function block type.
+    fn types(&self) -> Vec<TypeLayout> {
+        let member = |name: &str, ty: Ty, offset: u64| MemberLayout {
+            name: name.to_string(),
+            ty: self.u.ty_name(ty),
+            offset: offset as u32,
+            size: self.size(ty) as u32,
+            array: self.array_info(ty),
+        };
+        let mut out = Vec::new();
+        for (i, s) in self.u.structs.iter().enumerate() {
+            out.push(TypeLayout {
+                name: s.name.clone(),
+                size: self.structs[i].size as u32,
+                members: s
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(k, f)| member(&f.name, f.ty, self.structs[i].offsets[k]))
+                    .collect(),
+            });
+        }
+        for (p, pou) in self.u.pous.iter().enumerate() {
+            if pou.kind != PouKind::FunctionBlock {
+                continue;
+            }
+            out.push(TypeLayout {
+                name: pou.name.clone(),
+                size: self.pous[p].size as u32,
+                members: pou
+                    .vars
+                    .iter()
+                    .enumerate()
+                    .map(|(k, v)| member(&v.name, v.ty, self.pous[p].offsets[k]))
+                    .collect(),
+            });
+        }
+        let used = self.u.types_used();
+        for k in StdFb::ALL {
+            if used.contains(&Ty::Fb(k)) {
+                out.push(TypeLayout {
+                    name: k.name().to_string(),
+                    size: vm_fb(k).size(),
+                    members: k
+                        .members()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, m)| member(m.name, m.ty, member_offset(k, i) as u64))
+                        .collect(),
+                });
+            }
+        }
+        out
     }
 }
 
 impl Emitter<'_> {
+    /// Emit the body of POU `p`, and record what running it needs.
+    fn pou(&mut self, p: usize) {
+        self.cur = p;
+        self.depth = 0;
+        self.max_depth = 0;
+        self.calls = 0;
+        let u = self.u;
+        let pou = &u.pous[p];
+        if let PouKind::Function { .. } = pou.kind {
+            // IEC 61131-3 ed. 3 §6.6.2.1: a function does not store its result or its
+            // internal variables from one call to the next. Its inputs are the caller's to
+            // set; everything else starts afresh here.
+            let start = self.lay.locals[p];
+            let len = self.lay.pous[p].size - start;
+            if len > 0 {
+                self.init((self.frame[p] + start) as u32, len as u32);
+            }
+        }
+        self.stmts(&pou.body);
+        self.leave();
+        self.need_stack[p] = self.max_depth;
+        self.need_calls[p] = self.calls;
+    }
+
+    /// Leave the body being emitted: the scan ends in the program, a call returns elsewhere.
+    fn leave(&mut self) {
+        let code = match self.u.pous[self.cur].kind {
+            PouKind::Program => op::END,
+            PouKind::FunctionBlock | PouKind::Function { .. } => op::RET,
+        };
+        self.op(code, 0);
+    }
+
     fn op(&mut self, code: u8, delta: i32) {
         self.code.push(code);
         self.depth += delta;
@@ -221,38 +731,190 @@ impl Emitter<'_> {
         self.code[at..at + 4].copy_from_slice(&(target as u32).to_le_bytes());
     }
 
-    fn addr(&self, p: Place) -> u32 {
-        let base = self.offsets[p.var];
-        match (self.p.vars[p.var].ty, p.member) {
-            (Ty::Fb(k), Some(m)) => base + member_offset(k, m),
-            _ => base,
+    /// Bytes of scratch memory, for this place in the code alone. Fixed, like everything
+    /// else: no body runs twice at once.
+    fn scratch(&mut self, size: u64) -> Loc {
+        let at = self.memory;
+        self.memory += size;
+        Loc::absolute(at as u32)
+    }
+
+    fn size(&self, ty: Ty) -> u32 {
+        self.lay.size(ty) as u32
+    }
+
+    /// Where variable `var` of the POU being emitted is.
+    fn var(&self, var: usize) -> Loc {
+        let offset = self.lay.pous[self.cur].offsets[var];
+        match self.u.pous[self.cur].kind {
+            PouKind::Program => Loc::absolute(offset as u32),
+            PouKind::Function { .. } => Loc::absolute((self.frame[self.cur] + offset) as u32),
+            PouKind::FunctionBlock => Loc {
+                rel: true,
+                addr: offset as u32,
+                indexed: None,
+            },
         }
     }
 
-    fn load(&mut self, ty: Ty, addr: u32) {
-        let code = match ty {
-            Ty::Bool => op::LD_BOOL,
-            Ty::Sint => op::LD_I8,
-            Ty::Int => op::LD_I16,
-            Ty::Dint => op::LD_I32,
-            Ty::Lint | Ty::Time => op::LD_I64,
-            Ty::Real => op::LD_F32,
-            Ty::Lreal => op::LD_F64,
-            Ty::Fb(_) => unreachable!(),
-        };
-        self.op_u32(code, addr, 1);
+    /// Emit what reaching `p` needs and say where it is. A subscript that is not a constant
+    /// is checked by `IDX` at run time and leaves an offset on the stack; `indexed` then
+    /// holds the end of the array it was first applied to, the region the offset stays in.
+    fn place(&mut self, p: &Place) -> Loc {
+        let u = self.u;
+        let mut loc = self.var(p.var);
+        let mut ty = u.pous[self.cur].vars[p.var].ty;
+        for sel in &p.path {
+            match sel {
+                Sel::Member(m) => {
+                    loc.addr += self.lay.member(ty, *m) as u32;
+                    ty = u.member_ty(ty, *m).expect("the front-end resolved it");
+                }
+                Sel::Index(subscripts) => {
+                    let Ty::Array(a) = ty else {
+                        unreachable!("a subscript on what is not an array")
+                    };
+                    let array = &u.arrays[a];
+                    let whole = self.size(ty);
+                    let mut stride = whole as u64;
+                    for (e, (lo, hi)) in subscripts.iter().zip(&array.dims) {
+                        let count = (hi - lo + 1) as u64;
+                        stride /= count;
+                        // A constant subscript inside its range needs no code: it is part
+                        // of the address. Anything else is checked when it is known.
+                        if let ExprKind::Const(Const::Int(v)) = e.kind {
+                            if v >= *lo && v <= *hi {
+                                loc.addr += ((v - lo) as u64 * stride) as u32;
+                                continue;
+                            }
+                        }
+                        self.expr(e);
+                        let code = match class(e.ty) {
+                            Class::I32 => op::IDX,
+                            Class::I64 => op::IDX64,
+                            _ => unreachable!("a subscript is an integer"),
+                        };
+                        self.op(code, 0);
+                        self.code.extend_from_slice(&(*lo as i32).to_le_bytes());
+                        self.code.extend_from_slice(&(count as u32).to_le_bytes());
+                        self.code.extend_from_slice(&(stride as u32).to_le_bytes());
+                        match loc.indexed {
+                            // A second offset is added to the first.
+                            Some(_) => self.op(op::ADD_I32, -1),
+                            None => loc.indexed = Some(loc.addr + whole),
+                        }
+                    }
+                    ty = array.elem;
+                }
+            }
+        }
+        loc
     }
-    fn store(&mut self, ty: Ty, addr: u32) {
-        let code = match ty {
-            Ty::Bool => op::ST_BOOL,
-            Ty::Sint => op::ST_8,
-            Ty::Int => op::ST_16,
-            Ty::Dint | Ty::Real => op::ST_32,
-            Ty::Lint | Ty::Lreal | Ty::Time => op::ST_64,
-            Ty::Fb(_) => unreachable!(),
+
+    /// A place operand: `mode addr span`, for `len` bytes at `loc`.
+    fn place_operand(&mut self, loc: Loc, len: u32) {
+        let mut mode = 0;
+        if loc.rel {
+            mode |= PLACE_RELATIVE;
+        }
+        let span = match loc.indexed {
+            Some(end) => {
+                mode |= PLACE_INDEXED;
+                end - loc.addr
+            }
+            None => len,
         };
-        self.op_u32(code, addr, -1);
+        self.code.push(mode);
+        self.code.extend_from_slice(&loc.addr.to_le_bytes());
+        self.code.extend_from_slice(&span.to_le_bytes());
     }
+
+    fn load(&mut self, ty: Ty, loc: Loc) {
+        // (absolute, relative, through a place)
+        let (abs, rel, place) = match ty {
+            Ty::Bool => (op::LD_BOOL, op::LDR_BOOL, op::LDP_BOOL),
+            Ty::Sint => (op::LD_I8, op::LDR_I8, op::LDP_I8),
+            Ty::Int => (op::LD_I16, op::LDR_I16, op::LDP_I16),
+            Ty::Dint => (op::LD_I32, op::LDR_32, op::LDP_32),
+            Ty::Real => (op::LD_F32, op::LDR_32, op::LDP_32),
+            Ty::Lint | Ty::Time => (op::LD_I64, op::LDR_64, op::LDP_64),
+            Ty::Lreal => (op::LD_F64, op::LDR_64, op::LDP_64),
+            _ => unreachable!("only an elementary value is loaded"),
+        };
+        match (loc.indexed, loc.rel) {
+            (Some(_), _) => {
+                // The offset is popped and the value pushed.
+                self.op(place, 0);
+                self.place_operand(loc, self.size(ty));
+            }
+            (None, true) => self.op_u32(rel, loc.addr, 1),
+            (None, false) => self.op_u32(abs, loc.addr, 1),
+        }
+    }
+    fn store(&mut self, ty: Ty, loc: Loc) {
+        let (abs, rel, place) = match ty {
+            Ty::Bool => (op::ST_BOOL, op::STR_BOOL, op::STP_BOOL),
+            Ty::Sint => (op::ST_8, op::STR_8, op::STP_8),
+            Ty::Int => (op::ST_16, op::STR_16, op::STP_16),
+            Ty::Dint | Ty::Real => (op::ST_32, op::STR_32, op::STP_32),
+            Ty::Lint | Ty::Lreal | Ty::Time => (op::ST_64, op::STR_64, op::STP_64),
+            _ => unreachable!("only an elementary value is stored"),
+        };
+        match (loc.indexed, loc.rel) {
+            (Some(_), _) => {
+                // The value is popped, then the offset under it.
+                self.op(place, -2);
+                self.place_operand(loc, self.size(ty));
+            }
+            (None, true) => self.op_u32(rel, loc.addr, -1),
+            (None, false) => self.op_u32(abs, loc.addr, -1),
+        }
+    }
+    /// Copy `len` bytes from `src` to `dst`. When both take an offset, `dst`'s was pushed
+    /// first.
+    fn copy(&mut self, len: u32, dst: Loc, src: Loc) {
+        let popped = dst.indexed.is_some() as i32 + src.indexed.is_some() as i32;
+        self.op_u32(op::MOVE, len, -popped);
+        self.place_operand(dst, len);
+        self.place_operand(src, len);
+    }
+    fn init(&mut self, addr: u32, len: u32) {
+        self.op_u32(op::INIT, addr, 0);
+        self.code.extend_from_slice(&len.to_le_bytes());
+    }
+
+    /// Note that the body being emitted calls POU `q`, with the stack as deep as it is now.
+    fn calling(&mut self, q: usize) {
+        self.calls = self.calls.max(1 + self.need_calls[q]);
+        self.max_depth = self.max_depth.max(self.depth + self.need_stack[q]);
+    }
+
+    /// The instance at `loc`, ready to be reached several times.
+    fn instance(&mut self, loc: Loc) -> Inst {
+        let indexed = loc.indexed.map(|end| {
+            let saved = self.scratch(4);
+            self.store(Ty::Dint, saved);
+            (end, saved.addr)
+        });
+        Inst {
+            rel: loc.rel,
+            addr: loc.addr,
+            indexed,
+        }
+    }
+    /// What is `offset` bytes into `inst`; its saved offset, if it has one, is pushed.
+    fn within(&mut self, inst: Inst, offset: u32) -> Loc {
+        let indexed = inst.indexed.map(|(end, saved)| {
+            self.load(Ty::Dint, Loc::absolute(saved));
+            end
+        });
+        Loc {
+            rel: inst.rel,
+            addr: inst.addr + offset,
+            indexed,
+        }
+    }
+
     fn push_const(&mut self, ty: Ty, k: Const) {
         match (class(ty), k) {
             (Class::Bool, Const::Bool(b)) => self.op_u32(op::PUSH32, b as u32, 1),
@@ -272,7 +934,7 @@ impl Emitter<'_> {
                 self.code
                     .extend_from_slice(&(v as f64).to_bits().to_le_bytes());
             }
-            (_, k) => unreachable!("constant {k:?} typed {}", ty.name()),
+            (_, k) => unreachable!("constant {k:?} typed {ty:?}"),
         }
     }
     /// Bring an i32 result back into the range of SINT or INT.
@@ -288,9 +950,10 @@ impl Emitter<'_> {
         match &e.kind {
             ExprKind::Const(k) => self.push_const(e.ty, *k),
             ExprKind::Load(p) => {
-                let a = self.addr(*p);
+                let a = self.place(p);
                 self.load(e.ty, a);
             }
+            ExprKind::Call { pou, args } => self.call(*pou, args),
             ExprKind::Not(a) => {
                 self.expr(a);
                 self.op(op::NOT, 0);
@@ -363,6 +1026,51 @@ impl Emitter<'_> {
         }
     }
 
+    /// A call of function `f`. Every argument is worked out before any is put in its place:
+    /// an argument may itself call `f`, whose parameters are the same bytes.
+    fn call(&mut self, f: usize, args: &[(usize, Expr)]) {
+        let u = self.u;
+        let frame = self.frame[f];
+        let at =
+            |e: &Emitter, var: usize| Loc::absolute((frame + e.lay.pous[f].offsets[var]) as u32);
+        // A value goes on the stack; a structure or an array stays where it is, and only an
+        // offset computed for it goes on the stack.
+        let mut waiting: Vec<(usize, Ty, Option<Loc>)> = Vec::new();
+        for (var, a) in args {
+            if a.ty.is_aggregate() {
+                let ExprKind::Load(src) = &a.kind else {
+                    unreachable!("a structure or an array is always loaded from a place")
+                };
+                let src = self.place(src);
+                waiting.push((*var, a.ty, Some(src)));
+            } else {
+                self.expr(a);
+                waiting.push((*var, a.ty, None));
+            }
+        }
+        for (var, ty, src) in waiting.into_iter().rev() {
+            let dst = at(self, var);
+            match src {
+                Some(src) => self.copy(self.size(ty), dst, src),
+                None => self.store(ty, dst),
+            }
+        }
+        // IEC 61131-3 ed. 3 §6.6.1.4.2: an input given no value has its initial value.
+        for (var, v) in u.pous[f].vars.iter().enumerate() {
+            let given = args.iter().any(|(a, _)| *a == var);
+            if v.section == Section::Input && !given && self.size(v.ty) > 0 {
+                self.init(at(self, var).addr, self.size(v.ty));
+            }
+        }
+        self.calling(f);
+        self.op(op::CALL, 0);
+        self.code.extend_from_slice(&self.body[f].to_le_bytes());
+        let PouKind::Function { result } = u.pous[f].kind else {
+            unreachable!("only a function is called in an expression")
+        };
+        self.load(u.pous[f].vars[result].ty, at(self, result));
+    }
+
     fn convert(&mut self, from: Ty, to: Ty) {
         use Class::*;
         let codes: &[u8] = match (class(from), class(to)) {
@@ -404,33 +1112,80 @@ impl Emitter<'_> {
     fn stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Assign(p, v) => {
-                self.expr(v);
-                let (ty, a) = (self.p.place_ty(*p), self.addr(*p));
-                self.store(ty, a);
+                let dst = self.place(p);
+                if v.ty.is_aggregate() {
+                    let ExprKind::Load(src) = &v.kind else {
+                        unreachable!("a structure or an array is always loaded from a place")
+                    };
+                    let src = self.place(src);
+                    self.copy(self.size(v.ty), dst, src);
+                } else {
+                    self.expr(v);
+                    self.store(v.ty, dst);
+                }
             }
             Stmt::Call {
-                var,
+                instance,
                 inputs,
                 outputs,
             } => {
-                let Ty::Fb(k) = self.p.vars[*var].ty else {
-                    unreachable!()
+                let u = self.u;
+                let block = u.place_ty(self.cur, instance);
+                let member = |e: &Emitter, m: usize| {
+                    (
+                        u.member_ty(block, m).expect("the front-end resolved it"),
+                        e.lay.member(block, m) as u32,
+                    )
                 };
-                let base = self.offsets[*var];
+                let loc = self.place(instance);
+                let inst = self.instance(loc);
                 for (m, v) in inputs {
-                    self.expr(v);
-                    self.store(k.members()[*m].ty, base + member_offset(k, *m));
+                    let (mty, offset) = member(self, *m);
+                    let dst = self.within(inst, offset);
+                    if mty.is_aggregate() {
+                        let ExprKind::Load(src) = &v.kind else {
+                            unreachable!("a structure or an array is always loaded from a place")
+                        };
+                        let src = self.place(src);
+                        self.copy(self.size(mty), dst, src);
+                    } else {
+                        self.expr(v);
+                        self.store(mty, dst);
+                    }
                 }
-                self.op(op::FB, 0);
-                self.code.push(vm_fb(k).code());
-                self.code.extend_from_slice(&base.to_le_bytes());
+                let at = self.within(inst, 0);
+                let popped = -(at.indexed.is_some() as i32);
+                match block {
+                    Ty::Fb(k) if !at.rel && at.indexed.is_none() => {
+                        self.op(op::FB, 0);
+                        self.code.push(vm_fb(k).code());
+                        self.code.extend_from_slice(&at.addr.to_le_bytes());
+                    }
+                    Ty::Fb(k) => {
+                        self.op(op::FBP, popped);
+                        self.code.push(vm_fb(k).code());
+                        self.place_operand(at, vm_fb(k).size());
+                    }
+                    Ty::Instance(q) => {
+                        self.op(op::CALLFB, popped);
+                        self.code.extend_from_slice(&self.body[q].to_le_bytes());
+                        self.place_operand(at, self.size(block));
+                        self.calling(q);
+                    }
+                    _ => unreachable!("only a function block instance is called"),
+                }
                 for (m, target) in outputs {
-                    let mty = k.members()[*m].ty;
-                    self.load(mty, base + member_offset(k, *m));
-                    let tty = self.p.place_ty(*target);
-                    self.convert(mty, tty);
-                    let a = self.addr(*target);
-                    self.store(tty, a);
+                    let (mty, offset) = member(self, *m);
+                    let tty = u.place_ty(self.cur, target);
+                    let dst = self.place(target);
+                    let src = self.within(inst, offset);
+                    if mty.is_aggregate() {
+                        self.copy(self.size(mty), dst, src);
+                    } else {
+                        self.load(mty, src);
+                        self.convert(mty, tty);
+                        self.store(tty, dst);
+                    }
                 }
             }
             Stmt::If(branches, otherwise) => {
@@ -450,8 +1205,7 @@ impl Emitter<'_> {
                 }
             }
             Stmt::Case(sel, arms, otherwise) => {
-                let tmp = self.memory_size;
-                self.memory_size += size(sel.ty);
+                let tmp = self.scratch(self.size(sel.ty) as u64);
                 self.expr(sel);
                 self.store(sel.ty, tmp);
                 let mut ends = Vec::new();
@@ -501,8 +1255,12 @@ impl Emitter<'_> {
                 by,
                 body,
             } => {
-                let ty = self.p.place_ty(*var);
-                let a = self.addr(*var);
+                let ty = self.u.place_ty(self.cur, var);
+                let a = self.place(var);
+                assert!(
+                    a.indexed.is_none(),
+                    "a FOR variable is not an array element"
+                );
                 self.expr(from);
                 self.store(ty, a);
                 let top = self.here();
@@ -566,7 +1324,7 @@ impl Emitter<'_> {
                     l.push(j);
                 }
             }
-            Stmt::Return => self.op(op::END, 0),
+            Stmt::Return => self.leave(),
         }
     }
 }
@@ -600,5 +1358,49 @@ mod tests {
                 assert_eq!(member_offset(fb, i), v.offset);
             }
         }
+    }
+
+    #[test]
+    fn a_unit_of_another_ir_version_or_with_recursion_is_refused_not_compiled() {
+        let function = |name: &str, calls: usize| Pou {
+            name: name.into(),
+            kind: PouKind::Function { result: 0 },
+            vars: vec![Var {
+                name: name.into(),
+                ty: Ty::Int,
+                section: Section::Var,
+                init: None,
+            }],
+            body: vec![Stmt::Assign(
+                Place::var(0),
+                Expr {
+                    ty: Ty::Int,
+                    kind: ExprKind::Call {
+                        pou: calls,
+                        args: Vec::new(),
+                    },
+                },
+            )],
+        };
+        let program = Pou {
+            name: "main".into(),
+            kind: PouKind::Program,
+            vars: Vec::new(),
+            body: Vec::new(),
+        };
+        let mut u = Unit::new();
+        u.pous = vec![program.clone(), function("a", 2), function("b", 1)];
+        let message = emit(&u).err().expect("recursion is refused").message;
+        assert!(
+            message.contains("recursion is not allowed") && message.contains("a, b"),
+            "{message}"
+        );
+
+        let mut u = Unit::new();
+        u.pous = vec![program];
+        assert!(emit(&u).is_ok());
+        u.ir_version = IR_VERSION + 1;
+        let message = emit(&u).err().expect("another version is refused").message;
+        assert!(message.contains("IR version"), "{message}");
     }
 }

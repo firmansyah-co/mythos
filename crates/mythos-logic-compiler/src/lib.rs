@@ -9,7 +9,7 @@
 
 pub mod profile;
 
-pub use mythos_logic_backend_vm::Symbol;
+pub use mythos_logic_backend_vm::{ArrayInfo, MemberLayout, Symbol, TypeLayout};
 pub use mythos_logic_ir::{Diagnostic, Span};
 pub use profile::TargetProfile;
 
@@ -28,9 +28,14 @@ pub struct Compiled {
     pub bytecode: Vec<u8>,
     /// Where each variable is, for binding, monitoring and forcing.
     pub symbols: Vec<Symbol>,
+    /// How each structure and function block type is laid out, for reaching into the
+    /// elements of an array of them.
+    pub types: Vec<TypeLayout>,
     pub memory_size: u32,
     pub code_size: u32,
     pub stack_depth: u16,
+    /// How deep the program's calls nest; the VM is given that many call frames.
+    pub call_depth: u16,
 }
 
 impl Compiled {
@@ -42,10 +47,7 @@ impl Compiled {
 }
 
 /// Parse and check `source`, written in `language`, into the IR.
-pub fn lower(
-    source: &str,
-    language: Language,
-) -> Result<mythos_logic_ir::Program, Vec<Diagnostic>> {
+pub fn lower(source: &str, language: Language) -> Result<mythos_logic_ir::Unit, Vec<Diagnostic>> {
     match language {
         Language::St => mythos_logic_st::lower(source),
     }
@@ -62,7 +64,7 @@ pub fn compile_in(
     language: Language,
     target: &TargetProfile,
 ) -> Result<Compiled, Vec<Diagnostic>> {
-    let program = lower(source, language)?;
+    let unit = lower(source, language)?;
     let mut diags = Vec::new();
     if target.format_version != mythos_logic_backend_vm::FORMAT_VERSION {
         diags.push(Diagnostic::whole(format!(
@@ -72,21 +74,43 @@ pub fn compile_in(
             mythos_logic_backend_vm::FORMAT_VERSION
         )));
     }
-    for t in program.types_used() {
+    for t in unit.types_used() {
         if target.refuses.contains(&t) {
             diags.push(Diagnostic::whole(format!(
                 "{} is not supported on the target {}",
-                t.name(),
+                unit.ty_name(t),
                 target.name
             )));
         }
     }
-    let out = mythos_logic_backend_vm::emit(&program);
+    let too_much = |needed: u64| {
+        Diagnostic::whole(format!(
+            "the program needs {needed} bytes of variable memory; the target {} allows {}",
+            target.name, target.max_memory
+        ))
+    };
+    // Before anything is emitted: an array of a million elements is one line of source, and
+    // its memory image should not be built only to be refused.
+    match mythos_logic_backend_vm::variable_memory(&unit) {
+        Ok(needed) if needed > target.max_memory as u64 => {
+            diags.push(too_much(needed));
+            return Err(diags);
+        }
+        Ok(_) => {}
+        Err(d) => {
+            diags.push(d);
+            return Err(diags);
+        }
+    }
+    let out = match mythos_logic_backend_vm::emit(&unit) {
+        Ok(out) => out,
+        Err(d) => {
+            diags.push(d);
+            return Err(diags);
+        }
+    };
     if out.memory_size > target.max_memory {
-        diags.push(Diagnostic::whole(format!(
-            "the program needs {} bytes of variable memory; the target {} allows {}",
-            out.memory_size, target.name, target.max_memory
-        )));
+        diags.push(too_much(out.memory_size as u64));
     }
     if out.code_size > target.max_code {
         diags.push(Diagnostic::whole(format!(
@@ -98,11 +122,13 @@ pub fn compile_in(
         return Err(diags);
     }
     Ok(Compiled {
-        name: program.name,
+        name: unit.program().name.clone(),
         bytecode: out.bytes,
         symbols: out.symbols,
+        types: out.types,
         memory_size: out.memory_size,
         code_size: out.code_size,
         stack_depth: out.stack_depth,
+        call_depth: out.call_depth,
     })
 }

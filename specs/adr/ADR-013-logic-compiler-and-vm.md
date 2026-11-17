@@ -55,7 +55,7 @@ and a GPL-3.0 compiler to ship beside MythOS. Compiling ST to Rust source instea
 
 | Crate | May depend on | Why |
 | :--- | :--- | :--- |
-| `mythos-logic-ir` | nothing of the workspace | The seam. Resolved names, types and statements; no addresses, word sizes or instructions. `serde` data with a version (`IR_VERSION`), so a front-end and a backend need not share a process |
+| `mythos-logic-ir` | nothing of the workspace | The seam. A *unit*: structures, array types and POUs (functions, function block types, one program), every name resolved to an index; no addresses, word sizes or instructions. `serde` data with a version (`IR_VERSION`), so a front-end and a backend need not share a process |
 | `mythos-logic-vm` | nothing at all | Builds for a microcontroller with `core` alone |
 | `mythos-logic-st` (and each later language) | the IR | A language is added without touching a target |
 | `mythos-logic-backend-vm` (and each later backend) | the IR, its own target | A target kind is added without touching a language |
@@ -70,8 +70,9 @@ the guard each kind of break.
 - **LD and FBD are lowered from their graphs**, not printed as ST text.
 - **Standard function blocks.** The IR holds their catalog (names, members, types, directions);
   the VM holds how an instance is stored and run; a test in the backend holds the two equal.
-  This is a stopgap: once user function blocks exist, the standard blocks become a library
-  written in the IEC languages, and adding a block no longer means new firmware.
+  This is a stopgap: the standard blocks are to become a library written in the IEC
+  languages, so that adding a block no longer means new firmware. User function blocks exist
+  since format 1; the standard blocks are still native in the VM.
 - **IL is not built** (Adrian, 2026-11-17: "iya, IL tidak dibuat"). Ed. 3 §7.2.1: "This
   language is outdated as an assembler like language. Therefore it is deprecated and will not
   be contained in the next edition of this standard." The languages are ST, LD, FBD and SFC.
@@ -99,10 +100,34 @@ program, not the chips' sizes.
   that would go outside them stops with a fault.
 - **A bounded scan.** An instruction budget stops an endless loop with `BudgetExceeded`.
   Division by zero is a fault, not a value.
-- **Format 0 is not stable.** It has absolute addresses only. User function blocks, arrays with a
-  computed index, structs and function calls need instance-relative addressing and a call
-  mechanism; that is step 1 of §3, and it will change the format. Nothing may depend on format 0
-  surviving.
+- **Format 1** (functions, user function blocks, arrays, structures). Format 0 is refused by
+  its version.
+  - *Header*: magic, version, stack depth, memory size, code length, call depth, number of
+    bodies, then a table of bodies (code offset, instance size), the initial memory image, the
+    code, CRC-32.
+  - *Bodies.* The code is one body after another: each function, each function block type, the
+    program last (a scan starts there). A body may call only bodies before it in the table, so
+    nothing a loaded program does is recursive.
+  - *No data frames.* A unit has no recursion (refused at compile time, naming the cycle), so
+    the program's variables, every instance inside them, and every function's parameters and
+    locals have one fixed place, decided by the backend. A function's locals and result are put
+    back to their initial values at each call. A call frame is a return address and a saved
+    base; the host supplies as many as the program declares.
+  - *Addressing.* Absolute for the program's variables and a function's; relative to the *base*
+    for the members of the instance a function block's body was called for; and through a
+    *place* for an array element: a region, and an offset popped from the stack, which may not
+    take the access outside the region.
+  - *Subscripts.* Each subscript is checked against its own declared range at run time; outside
+    it the scan stops with `IndexOutOfRange`. A literal subscript out of range is refused at
+    compile time; inside its range it is part of the address and costs nothing at run time.
+  - *Checked twice, as before.* The loader checks every instruction's operands: addresses,
+    regions, instance sizes, call targets (an earlier body only), jumps inside their own body,
+    and that no body can run into the next. At run time every access is checked again, every
+    sum is checked, and calls nested deeper than the declared depth stop the scan with
+    `CallDepthExceeded`. A jump into the middle of an instruction is not refused at load; the
+    run-time checks still hold. `damaged_programs_never_panic.rs` damages every compiled
+    program of the corpus at random, thousands of times, and requires each to be refused or to
+    fault, never to panic.
 
 ### 2.4 A third module kind: `runtime`
 
@@ -243,8 +268,9 @@ No SIL claim is made.
 STruC++ is not used to build or run anything. A differential test (by hand; it needs Node, g++
 and STruC++) runs each program in `crates/mythos-logic-compiler/tests/differential/` on STruC++
 and on our VM for 60 cycles and compares every variable after every cycle. STruC++ is GPL-3.0;
-it is run as a separate program and none of its code is copied. Its limits: three programs so
-far, reals compared at the precision its REPL prints, and STruC++ can itself be wrong.
+it is run as a separate program and none of its code is copied. Its limits: six programs so
+far, reals compared at the precision its REPL prints, only scalar variables of the program
+compared, and STruC++ can itself be wrong.
 
 ### 2.13 Semantics settled against the standard
 
@@ -262,6 +288,17 @@ Adrian, 2026-11-17: where an implementation and the standard differ, follow the 
 | `=` `<>` and `<` `>` `<=` `>=` | Table 71: one precedence (4), left to right | `a < b = c` is `(a < b) = c` | not compared |
 | Implicit conversions | Figure 11, entries "i": SINT→INT→DINT→LINT; SINT, INT→REAL; SINT, INT, DINT→LREAL; REAL→LREAL | exactly those | agrees |
 | Timers | Figure 15 (timing diagrams) | TON, TOF, TP as drawn, ET included | agrees (it found our TP bug) |
+| Function: input left out of a formal call | §6.6.1.4.2, Table 20 feature 1b: it has its initial value | its declared initial value, at every call | agrees |
+| Function: internal variables and result | §6.6.2.1, Table 19 feature 2e: not stored | start afresh at every call | agrees |
+| Function block: input not given | §6.6.3.4.1 rule 3c: keeps its initial value or that of the latest call | keeps it; `inst.in := x;` apart from the call takes effect at the next call | agrees |
+| Subscript out of range | §6.4.4.5.1: an error | a diagnostic for a literal; an `IndexOutOfRange` fault at run time | not compared |
+| Array initial values | §6.4.4.5.2: rightmost subscript varies fastest; `n(…)` repeats; missing entries take the default | as the section; more values than elements is refused (the standard ignores them with a warning; there is no warning channel) | not compared |
+| Assignment of structures and arrays | §6.4.4.6.1, §7.3.3.2.1: only between the same data type | refused otherwise | agrees on what compiles here |
+| Recursion | §6.6.1.1: implementer specific | refused at compile time, naming the cycle | not compared |
+| A result must be assigned | §7.3.3.2.3 | a function that never assigns its name is refused | not compared |
+| Writing an input inside its POU | Figure 7 ("not modifiable within the entity"), Figure 13 rule 2a | refused in a FUNCTION, a FUNCTION_BLOCK and a PROGRAM | not compared |
+| Reading an instance's input from outside | Figure 13 rule 1b: not allowed | refused | not compared |
+| Writing an output, or anything inside an instance, from outside | Figure 13 rule 4b; §6.6.3.2 rule 11 (VAR is private) | refused; an internal variable cannot be read from outside either, except to look into an instance held there (`a.b.q`) | not compared |
 
 Three places where the standard leaves a choice or we go beyond it:
 
@@ -272,8 +309,14 @@ Three places where the standard leaves a choice or we go beyond it:
   may support additional conversions"). We have them: non-zero is TRUE; FALSE and TRUE are 0.0
   and 1.0.
 
+Known gaps, to close in L2: a reserved word is still accepted as a name (`at : INT`
+compiles); the evaluation stack uses whatever the host gives instead of stopping at the depth
+the program declares, as the call frames do; a target profile does not yet carry a stack depth
+or a call depth, so a program too deep for a firmware is refused at its start and not at
+compile time.
+
 The differential test lists the first three rows as deliberate differences from STruC++
-(167 of 3,840 values); a rounding difference must be exactly one apart to count as one.
+(167 of 6,120 values); a rounding difference must be exactly one apart to count as one.
 
 ## 3. Order of work
 
@@ -300,8 +343,9 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
 
 **Track L, the language, beside it:**
 
-- L1. **The VM's real model**: functions, user function blocks, arrays and structures; static
-  allocation, no recursion, instance-relative addressing, a bounded call stack; format 1.
+- L1. **The VM's real model** (done): functions, user function blocks, arrays and structures;
+  static allocation, no recursion, instance-relative addressing, a bounded call stack;
+  format 1.
 - L2. A parser that recovers from errors and gives ranges (for the editor); more of the
   standard library; strings.
 - L3. **LD, FBD, SFC** (not IL, §2.1), each a front-end crate and an editor kind.
@@ -330,20 +374,23 @@ Each step leaves `dev` working.
 | Part | Built |
 | :--- | :--- |
 | 2.1 Crates and layers | `mythos-logic-ir`, `-st`, `-vm`, `-backend-vm`, `-compiler`; `layers.rs` guards them |
-| 2.1 ST front-end | Spike: one PROGRAM; VAR, VAR_INPUT, VAR_OUTPUT; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between those types; implicit widening per Figure 11; diagnostics with line and column for everything else |
+| 2.1 ST front-end | Several POUs in any order: TYPE (STRUCT, named ARRAY), FUNCTION (VAR_INPUT, VAR; positional and formal calls), FUNCTION_BLOCK (VAR_INPUT, VAR_OUTPUT, VAR; nesting; arrays of instances), one PROGRAM; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME; arrays of any dimensions with initial value lists; whole-structure and whole-array assignment; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between the elementary types; implicit widening per Figure 11; recursion refused naming the cycle; diagnostics with line and column for everything else (enumerations, subranges, strings, VAR_IN_OUT, methods, and more: each refused by name) |
 | 2.2 Profiles | `serde` data with a format version; `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format) proven with profiles read from JSON |
-| 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; loader checks, run-time checks, budget, faults |
+| 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 1: bodies, call frames, instance-relative and region-confined addressing; loader checks, run-time checks, budget; faults, with `IndexOutOfRange` and `CallDepthExceeded` |
 | 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
 | 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. Not built: reading or forcing variables, state carried across a replacement, a watchdog on the scan thread, RETAIN |
 | 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:id/run` and `/stop`, `GET`/`PUT /api/v1/projects/:id/runtimes`, each an MCP tool; engineer for all but reading. Not built: the Runtimes page; data types shared in the core |
 | 2.6, 2.8, 2.10 | Not built |
-| 2.9 Emulators | Built: four programs, 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else |
-| 2.12 Oracle | `differential_strucpp.rs`: 4 programs, 60 cycles, 3,840 values, all agree except the three deliberate rows of §2.13 (167 values). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
+| 2.9 Emulators | Built: six programs, 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else |
+| 2.12 Oracle | `differential_strucpp.rs`: 6 programs, 60 cycles, 6,120 values, all agree except the three deliberate rows of §2.13 (167 values). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
 
 Evidence of the spike (2026-11-17):
 
-- **Tests**: `st_runs_on_the_vm.rs` (17), `load_refuses_bad_programs.rs` (8), `layers.rs` (2),
-  and unit tests (15). Mutation-checked: removing INT wrapping, the TP reset, the loader's address check, the
+- **Tests**: 107 in the five logic crates (42 before format 1). Format 1 was mutation-checked
+  with 29 mutations (index range, call depth, recursion at three layers, locals re-initialised,
+  region confinement, the loader's check of each new instruction), each turning named tests
+  red; and a damaged-bytecode test goes red when one run-time range check is removed. Earlier
+  mutation checks: removing INT wrapping, the TP reset, the loader's address check, the
   division-by-zero fault, or counting CTU only to PV each turns a named test red (run before the crates were split;
   the code moved, it did not change). So does undoing each rule taken from the standard:
   rounding a half away from zero, faulting on MOD by zero, the earlier F_TRIG, and giving `=`
@@ -357,6 +404,6 @@ Evidence of the spike (2026-11-17):
   optimised. Windows and macOS: not measured.
 - **Microcontrollers** (`scripts/logic-vm-footprint.sh`, CI job `logic-vm-bare-metal`): the VM
   with its loader and scan loop, `opt-level=s`, LTO, linked with `core` alone: **RP2040**
-  (thumbv6m-none-eabi) 15,884 bytes of code; **ESP32-C3** (riscv32imc-unknown-none-elf)
-  19,146 bytes. Run on a real board: not yet (none attached). The original ESP32 and the S3 are
+  (thumbv6m-none-eabi) 19,200 bytes of code (15,884 before format 1); **ESP32-C3**
+  (riscv32imc-unknown-none-elf) 22,908 bytes (19,146 before). Run on a real board: not yet (none attached). The original ESP32 and the S3 are
   Xtensa, which needs Espressif's Rust toolchain: not built.

@@ -14,7 +14,7 @@
 
 use mythos_logic_compiler::{compile, TargetProfile};
 use mythos_logic_st::lexer::{lex, Tok};
-use mythos_logic_vm::{cold_start, read, scan, ElemType, Program, Value};
+use mythos_logic_vm::{cold_start, read, scan, ElemType, Frame, Program, Value};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -197,13 +197,26 @@ fn every_variable_agrees_with_strucpp_after_every_cycle() {
         let p = Program::load(&c.bytecode).unwrap();
         let mut mem = vec![0u8; p.memory_size()];
         let mut stack = vec![0u64; p.stack_depth()];
+        let mut calls = vec![Frame::default(); p.call_depth()];
         cold_start(&p, &mut mem).unwrap();
         for (k, expected) in reference.iter().enumerate() {
-            scan(&p, &mut mem, &mut stack, k as i64 * CYCLE_NS, 1_000_000).unwrap();
+            scan(
+                &p,
+                &mut mem,
+                &mut stack,
+                &mut calls,
+                k as i64 * CYCLE_NS,
+                1_000_000,
+            )
+            .unwrap();
             for (name, (ty, text)) in expected {
                 // Function block instances are listed by STruC++ as a whole; compare scalars.
                 let Some(sym) = c.symbol(name) else { continue };
-                let mine = ours(read(&mem, sym.offset, elem(sym.ty)).unwrap());
+                // A structure or an array of MAIN is one line in STruC++; compare scalars.
+                if sym.array.is_some() {
+                    continue;
+                }
+                let mine = ours(read(&mem, sym.offset, elem(&sym.ty)).unwrap());
                 let want = theirs(ty, text);
                 compared += 1;
                 if !agree(&mine, &want) {

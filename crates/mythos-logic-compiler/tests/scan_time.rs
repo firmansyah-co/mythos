@@ -6,7 +6,7 @@
 //!   cargo test --release -p mythos-logic-compiler --test scan_time -- --ignored --nocapture
 
 use mythos_logic_compiler::{compile, TargetProfile};
-use mythos_logic_vm::{cold_start, scan, write, Program, Value};
+use mythos_logic_vm::{cold_start, scan, write, Frame, Program, Value};
 use std::time::Instant;
 
 /// Also one of the programs compared with STruC++ and run on the emulated microcontrollers.
@@ -19,6 +19,7 @@ fn scan_time_of_a_small_plant_program() {
     let p = Program::load(&c.bytecode).unwrap();
     let mut mem = vec![0u8; p.memory_size()];
     let mut stack = vec![0u64; p.stack_depth()];
+    let mut calls = vec![Frame::default(); p.call_depth()];
     cold_start(&p, &mut mem).unwrap();
     let start = c.symbol("start_pb").unwrap().offset;
     let pv = c.symbol("pv").unwrap().offset;
@@ -31,7 +32,7 @@ fn scan_time_of_a_small_plant_program() {
         write(&mut mem, pv, Value::Real((k % 100) as f32));
         let now = (k as i64) * 1_000_000; // 1 ms per scan
         let t = Instant::now();
-        let r = scan(&p, &mut mem, &mut stack, now, 1_000_000).unwrap();
+        let r = scan(&p, &mut mem, &mut stack, &mut calls, now, 1_000_000).unwrap();
         times.push(t.elapsed().as_nanos() as u64);
         instructions = r.instructions;
     }
