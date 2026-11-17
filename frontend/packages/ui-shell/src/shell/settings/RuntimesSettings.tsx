@@ -41,7 +41,7 @@ const sent = (value: unknown) => value !== null && value !== undefined;
 
 function Missing({ word = UNKNOWN, testId }: { word?: string; testId?: string }) {
   return (
-    <span className="muted" data-missing="true" data-testid={testId}>
+    <span className="muted settings__whole" data-missing="true" data-testid={testId}>
       {word}
     </span>
   );
@@ -108,8 +108,8 @@ function Scan({ runtime }: { runtime: RuntimeStatus }) {
   const scanned = answered && isNumber(scans) && scans > 0;
   const micros = (value: unknown, testId: string) =>
     scanned && isNumber(value) ? (
-      <span className="mono" data-testid={testId}>
-        {value} µs
+      <span className="settings__whole" data-testid={testId}>
+        <span className="mono">{value}</span> µs
       </span>
     ) : (
       <Missing word={NOT_MEASURED} testId={testId} />
@@ -119,8 +119,8 @@ function Scan({ runtime }: { runtime: RuntimeStatus }) {
       <div>
         every{' '}
         {isNumber(runtime.interval_ms) ? (
-          <span className="mono" data-testid="runtime-interval">
-            {runtime.interval_ms} ms
+          <span className="settings__whole" data-testid="runtime-interval">
+            <span className="mono">{runtime.interval_ms}</span> ms
           </span>
         ) : (
           <Missing testId="runtime-interval" />
@@ -135,8 +135,6 @@ function Scan({ runtime }: { runtime: RuntimeStatus }) {
         ) : (
           <Missing word={NOT_MEASURED} testId="runtime-scans" />
         )}
-        {' · '}last {micros(runtime.last_scan_us, 'runtime-last-scan')}
-        {' · '}max {micros(runtime.max_scan_us, 'runtime-max-scan')}
         {' · '}overruns{' '}
         {scanned && isNumber(runtime.overruns) ? (
           <span className="mono" data-testid="runtime-overruns">
@@ -145,6 +143,10 @@ function Scan({ runtime }: { runtime: RuntimeStatus }) {
         ) : (
           <Missing word={NOT_MEASURED} testId="runtime-overruns" />
         )}
+      </div>
+      <div className="muted">
+        last {micros(runtime.last_scan_us, 'runtime-last-scan')}
+        {' · '}max {micros(runtime.max_scan_us, 'runtime-max-scan')}
       </div>
     </>
   );
@@ -156,7 +158,7 @@ function OutputsSafe({ runtime, stale }: { runtime: RuntimeStatus; stale: boolea
   if (typeof safe !== 'boolean') return <Missing testId="runtime-outputs-safe" />;
   if (safe) {
     return (
-      <span className="badge badge--neutral" data-testid="runtime-outputs-safe" data-safe="true">
+      <span className="badge badge--neutral settings__whole" data-testid="runtime-outputs-safe" data-safe="true">
         AT SAFE VALUES
       </span>
     );
@@ -516,7 +518,9 @@ export function RuntimesSettings() {
                         )}
                         <div className="muted">
                           in <Name value={runtime.module} testId="runtime-module-of" mono />
-                          {' · '}process{' '}
+                        </div>
+                        <div className="muted">
+                          process{' '}
                           {isNumber(runtime.pid) ? (
                             <span className="mono" data-testid="runtime-pid">
                               {runtime.pid}
@@ -555,7 +559,7 @@ export function RuntimesSettings() {
                       <td>
                         {/* A runtime the controller did not name cannot be commanded by name. Stop is
                             never held back by a command still unanswered: it is the safe direction. */}
-                        <div className="settings__row-actions">
+                        <div className="settings__row-actions settings__whole">
                           <button
                             type="button"
                             className="btn"

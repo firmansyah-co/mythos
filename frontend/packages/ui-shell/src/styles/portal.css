@@ -238,11 +238,21 @@
   overflow-wrap: anywhere;
 }
 
-/* A grid whose cells hold more than one line: each cell starts at the top of its row. */
+/* A grid whose cells hold more than one line: each cell starts at the top of its row, and wraps
+   so that the table stays as wide as the panel and no column (its commands least of all) is
+   pushed off the screen. */
 .settings__tall td {
   padding-top: 4px;
   padding-bottom: 4px;
   vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: none;
+}
+
+/* What must stay in one piece inside such a cell: a figure with its unit, a pair of buttons. */
+.settings__whole {
+  white-space: nowrap;
 }
 
 .settings__row-actions {
