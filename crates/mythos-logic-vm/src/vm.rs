@@ -1,13 +1,16 @@
 //! Running a scan.
 
 use crate::fb::{self, FbKind};
-use crate::format::{op, u32_at, ElemType, Program};
+use crate::format::{
+    access, op, place_at, u32_at, Cell, ElemType, Place, Program, Reach, PLACE_INDEXED, PLACE_LEN,
+    PLACE_RELATIVE,
+};
 
 /// Why a scan stopped before its end. The host then treats the program as stopped: its outputs
 /// go to their safe values (ADR-013).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
-    /// The memory or stack given is smaller than the program declares.
+    /// The memory, the stack or the call frames given are smaller than the program declares.
     WrongSizes,
     /// More instructions than the budget: most likely a loop that never ends.
     BudgetExceeded,
@@ -15,8 +18,23 @@ pub enum Fault {
     DivideByZero(u32),
     StackOverflow(u32),
     StackUnderflow(u32),
-    /// Execution reached a byte that is not an instruction, or ran off the end of the code.
+    /// Execution reached a byte that is not an instruction, or ran off the end of the code, or
+    /// an instruction reached outside the memory or the region it names: the program was not
+    /// made by a correct compiler.
     BadCode(u32),
+    /// An array subscript outside the bounds the array was declared with, at this code offset
+    /// (IEC 61131-3 ed. 3 §6.4.4.5.1: an error, found at run time for a computed subscript).
+    IndexOutOfRange(u32),
+    /// Calls nested deeper than the program declares, at this code offset.
+    CallDepthExceeded(u32),
+}
+
+/// One call in progress: where to go back to, and the base to give back. The host supplies
+/// as many as the program declares ([`Program::call_depth`]); what is in them does not matter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Frame {
+    ret: u32,
+    base: u32,
 }
 
 /// What a scan did.
@@ -173,25 +191,118 @@ fn cmp<T: PartialOrd>(which: u8, a: T, b: T) -> u64 {
     }) as u64
 }
 
+/// `len` bytes at `start`, as a range of a memory of `size` bytes; `None` when they do not all
+/// lie inside it. Every sum is checked, so nothing wraps, on a 32-bit target either.
+fn range(start: u32, len: usize, size: usize) -> Option<core::ops::Range<usize>> {
+    let start = start as usize;
+    let end = start.checked_add(len)?;
+    if end > size {
+        return None;
+    }
+    Some(start..end)
+}
+
+/// Where a place of `len` bytes starts: its address, from the base if it says so, plus an
+/// offset popped from the stack if it takes one. The offset may not take the access outside
+/// the place's region. The loader checked the region; `range` checks the result again.
+fn resolve(p: Place, len: usize, base: u32, s: &mut Stack) -> Result<u32, Fault> {
+    let bad = Fault::BadCode(s.pc);
+    if p.mode > (PLACE_RELATIVE | PLACE_INDEXED) {
+        return Err(bad);
+    }
+    let mut start = p.addr;
+    if p.mode & PLACE_RELATIVE != 0 {
+        start = start.checked_add(base).ok_or(bad)?;
+    }
+    let mut offset = 0u32;
+    if p.mode & PLACE_INDEXED != 0 {
+        offset = s.pop()? as u32;
+    }
+    let end = u32::try_from(len)
+        .ok()
+        .and_then(|len| offset.checked_add(len))
+        .ok_or(bad)?;
+    if end > p.span {
+        return Err(bad);
+    }
+    start.checked_add(offset).ok_or(bad)
+}
+
+/// Copy the bytes at `src` to `dst`, two ranges of one length inside `memory`, which may
+/// overlap. `None`, copying nothing, when they are not. (`copy_within` would do it, at the
+/// price of `memmove` in a microcontroller's flash: 1.3 KB on a Cortex-M0.)
+fn copy(
+    memory: &mut [u8],
+    src: core::ops::Range<usize>,
+    dst: core::ops::Range<usize>,
+) -> Option<()> {
+    if src.end <= dst.start {
+        let (low, high) = memory.split_at_mut_checked(dst.start)?;
+        high.get_mut(..src.len())?.copy_from_slice(low.get(src)?);
+    } else if dst.end <= src.start {
+        let (low, high) = memory.split_at_mut_checked(src.start)?;
+        low.get_mut(dst.clone())?
+            .copy_from_slice(high.get(..dst.len())?);
+    } else if dst.start <= src.start {
+        // Overlapping, the destination first: from the front, so nothing is read after it
+        // was written.
+        for k in 0..src.len() {
+            let byte = *memory.get(src.start + k)?;
+            *memory.get_mut(dst.start + k)? = byte;
+        }
+    } else {
+        for k in (0..src.len()).rev() {
+            let byte = *memory.get(src.start + k)?;
+            *memory.get_mut(dst.start + k)? = byte;
+        }
+    }
+    Some(())
+}
+
+/// The value a load pushes for the bytes of a cell: `b` is exactly the cell's bytes.
+fn fetch(cell: Cell, b: &[u8]) -> u64 {
+    let mut x = [0u8; 8];
+    if let Some(low) = x.get_mut(..b.len()) {
+        low.copy_from_slice(b);
+    }
+    let raw = u64::from_le_bytes(x);
+    match cell {
+        Cell::Bool => (raw != 0) as u64,
+        Cell::I8 => of_i32(raw as u8 as i8 as i32),
+        Cell::I16 => of_i32(raw as u16 as i16 as i32),
+        Cell::W32 | Cell::W64 => raw,
+    }
+}
+
 /// Run one scan of `program` over `memory` at time `now` (nanoseconds of a monotonic clock),
-/// executing at most `budget` instructions.
+/// executing at most `budget` instructions. `stack` and `calls` are working space the host
+/// owns: at least [`Program::stack_depth`] slots and [`Program::call_depth`] frames.
 pub fn scan(
     program: &Program,
     memory: &mut [u8],
     stack: &mut [u64],
+    calls: &mut [Frame],
     now: i64,
     budget: u32,
 ) -> Result<ScanReport, Fault> {
     if memory.len() != program.memory_size() || stack.len() < program.stack_depth() {
         return Err(Fault::WrongSizes);
     }
+    // Calls may nest as deep as the program declares and no deeper, whatever the host gave:
+    // a program behaves the same on every host.
+    let calls = calls
+        .get_mut(..program.call_depth())
+        .ok_or(Fault::WrongSizes)?;
     let code = program.code;
     let mut s = Stack {
         slots: stack,
         sp: 0,
         pc: 0,
     };
-    let mut pc = 0usize;
+    let mut pc = program.entry() as usize;
+    // The instance a function block's body runs on, and how many calls are in progress.
+    let mut base = 0u32;
+    let mut depth = 0usize;
     let mut count = 0u32;
     loop {
         if count >= budget {
@@ -224,6 +335,75 @@ pub fn scan(
                 if s.pop()? == 0 {
                     next = operand() as usize;
                 }
+            }
+            op::CALL | op::CALLFB => {
+                let (target, instance) = program
+                    .body(u16::from_le_bytes([code[pc + 1], code[pc + 2]]))
+                    .ok_or(Fault::BadCode(at))?;
+                // The instance of a function block is where its place says, whole: an offset
+                // may not put its end outside the place's region, nor outside the memory.
+                let callee_base = if opcode == op::CALLFB {
+                    let n = instance as usize;
+                    let start = resolve(place_at(code, pc + 3), n, base, &mut s)?;
+                    range(start, n, memory.len()).ok_or(Fault::BadCode(at))?;
+                    start
+                } else {
+                    base
+                };
+                let frame = calls.get_mut(depth).ok_or(Fault::CallDepthExceeded(at))?;
+                *frame = Frame {
+                    ret: next as u32,
+                    base,
+                };
+                depth += 1;
+                base = callee_base;
+                next = target as usize;
+            }
+            op::RET => {
+                // The loader lets no RET into the program's body; a return with no call in
+                // progress is still not followed.
+                depth = depth.checked_sub(1).ok_or(Fault::BadCode(at))?;
+                let frame = calls.get(depth).ok_or(Fault::BadCode(at))?;
+                base = frame.base;
+                next = frame.ret as usize;
+            }
+            op::INIT => {
+                let r = range(operand(), u32_at(code, pc + 5) as usize, memory.len())
+                    .ok_or(Fault::BadCode(at))?;
+                let from = program.init.get(r.clone()).ok_or(Fault::BadCode(at))?;
+                memory
+                    .get_mut(r)
+                    .ok_or(Fault::BadCode(at))?
+                    .copy_from_slice(from);
+            }
+            op::MOVE => {
+                let n = operand() as usize;
+                let src = resolve(place_at(code, pc + 5 + PLACE_LEN), n, base, &mut s)?;
+                let dst = resolve(place_at(code, pc + 5), n, base, &mut s)?;
+                let src = range(src, n, memory.len()).ok_or(Fault::BadCode(at))?;
+                let dst = range(dst, n, memory.len()).ok_or(Fault::BadCode(at))?;
+                copy(memory, src, dst).ok_or(Fault::BadCode(at))?;
+            }
+            op::IDX | op::IDX64 => {
+                let v = s.pop()?;
+                let lo = operand() as i32;
+                let count = u32_at(code, pc + 5);
+                let stride = u32_at(code, pc + 9);
+                // How far the subscript is above the lower bound; negative when it is below.
+                let above = if opcode == op::IDX {
+                    (i32_of(v) as i64) - (lo as i64)
+                } else {
+                    (v as i64).checked_sub(lo as i64).unwrap_or(-1)
+                };
+                // IEC 61131-3 ed. 3 §6.4.4.5.1: a subscript outside the declared range is an
+                // error. Here it stops the scan; it never reaches another variable.
+                let k = u32::try_from(above)
+                    .ok()
+                    .filter(|k| *k < count)
+                    .ok_or(Fault::IndexOutOfRange(at))?;
+                // The loader checked that `count * stride` fits in the memory, so this does
+                // not wrap.
+                s.push(k.wrapping_mul(stride) as u64)?;
             }
             op::LD_BOOL => {
                 let v = mem(operand(), 1)?[0] != 0;
@@ -446,14 +626,46 @@ pub fn scan(
                 let a = s.pop()?;
                 s.push((a != 0) as u64)?;
             }
-            op::FB => {
+            op::FB | op::FBP => {
                 let kind = FbKind::from_code(code[pc + 1]).ok_or(Fault::BadCode(at))?;
-                let base = u32_at(code, pc + 2) as usize;
                 let n = kind.size() as usize;
-                let x = memory.get_mut(base..base + n).ok_or(Fault::BadCode(at))?;
+                let start = if opcode == op::FB {
+                    u32_at(code, pc + 2)
+                } else {
+                    resolve(place_at(code, pc + 2), n, base, &mut s)?
+                };
+                let r = range(start, n, memory.len()).ok_or(Fault::BadCode(at))?;
+                let x = memory.get_mut(r).ok_or(Fault::BadCode(at))?;
                 fb::run(kind, x, now);
             }
-            _ => return Err(Fault::BadCode(at)),
+            // Loads and stores relative to the base, or through a place.
+            _ => {
+                let Some((store, cell, reach)) = access(opcode) else {
+                    return Err(Fault::BadCode(at));
+                };
+                let n = cell.size();
+                let value = if store { s.pop()? } else { 0 };
+                let start = match reach {
+                    Reach::Relative => base.checked_add(operand()).ok_or(Fault::BadCode(at))?,
+                    Reach::Place => resolve(place_at(code, pc + 1), n, base, &mut s)?,
+                    Reach::Absolute => return Err(Fault::BadCode(at)),
+                };
+                let r = range(start, n, memory.len()).ok_or(Fault::BadCode(at))?;
+                if store {
+                    let value = if cell == Cell::Bool {
+                        (value != 0) as u64
+                    } else {
+                        value
+                    };
+                    memory
+                        .get_mut(r)
+                        .ok_or(Fault::BadCode(at))?
+                        .copy_from_slice(&value.to_le_bytes()[..n]);
+                } else {
+                    let bytes = memory.get(r).ok_or(Fault::BadCode(at))?;
+                    s.push(fetch(cell, bytes))?;
+                }
+            }
         }
         pc = next;
     }

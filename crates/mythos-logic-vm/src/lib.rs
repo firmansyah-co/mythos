@@ -5,7 +5,9 @@
 //!
 //! - `no_std`: only `core`. Clock, I/O and communication belong to the host that embeds it.
 //! - It allocates nothing. The host gives it the program's bytes, a memory of the size the
-//!   program declares, and a stack of the depth it declares.
+//!   program declares, a stack of the depth it declares, and call frames for as deep as its
+//!   calls nest. A program has no recursion, so every variable, parameter and function block
+//!   instance has one fixed place in that memory.
 //! - No `unsafe`. Every memory and stack access is checked; a program that would go outside
 //!   them stops with a [`Fault`] instead.
 //!
@@ -20,4 +22,4 @@ pub mod format;
 mod vm;
 
 pub use format::{crc32, ElemType, LoadError, Program, FORMAT_VERSION, MAGIC};
-pub use vm::{cold_start, read, scan, write, Fault, ScanReport, Value};
+pub use vm::{cold_start, read, scan, write, Fault, Frame, ScanReport, Value};

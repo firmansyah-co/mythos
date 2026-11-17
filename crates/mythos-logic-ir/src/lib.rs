@@ -18,7 +18,10 @@ pub use fb::{Direction, FbMember, StdFb};
 pub use ir::*;
 
 /// The version of the IR's shape. A backend given another version refuses it.
-pub const IR_VERSION: u32 = 0;
+///
+/// 1: a unit of several program organization units (functions, function block types, one
+/// program), structures and arrays; places with a path. 0 was one program of scalar variables.
+pub const IR_VERSION: u32 = 1;
 
 /// A place in a source text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]

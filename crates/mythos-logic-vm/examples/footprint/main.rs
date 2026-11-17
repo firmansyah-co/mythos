@@ -11,7 +11,7 @@
 mod bare {
     use core::hint::black_box;
     use core::panic::PanicInfo;
-    use mythos_logic_vm::{cold_start, scan, Program};
+    use mythos_logic_vm::{cold_start, scan, Frame, Program};
 
     /// Where a downloaded program would sit in flash.
     #[no_mangle]
@@ -22,12 +22,20 @@ mod bare {
         let bytes: &[u8] = black_box(&PROGRAM[..]);
         let mut memory = [0u8; 2048];
         let mut stack = [0u64; 64];
+        let mut calls = [Frame::default(); 16];
         if let Ok(p) = Program::load(bytes) {
             let n = p.memory_size().min(memory.len());
             if cold_start(&p, &mut memory[..n]).is_ok() {
                 let mut now = 0i64;
                 loop {
-                    let _ = black_box(scan(&p, &mut memory[..n], &mut stack, now, 100_000));
+                    let _ = black_box(scan(
+                        &p,
+                        &mut memory[..n],
+                        &mut stack,
+                        &mut calls,
+                        now,
+                        100_000,
+                    ));
                     now = black_box(now + 1_000_000);
                 }
             }

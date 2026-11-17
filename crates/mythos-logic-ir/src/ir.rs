@@ -1,14 +1,20 @@
-//! The intermediate representation: a checked program, every name resolved and every
-//! expression typed, and nothing yet decided about how a target stores or runs it.
+//! The intermediate representation: a checked unit, every name resolved and every expression
+//! typed, and nothing yet decided about how a target stores or runs it.
 //!
 //! This is the seam of ADR-013. Every language (ST now; LD, FBD and SFC later) is lowered
 //! to it, and every backend (VM bytecode now; C later) starts from it. So it holds no memory
-//! addresses, no instruction choices and no word sizes: variables are indices, and a backend
-//! decides where they live.
+//! addresses, no instruction choices and no word sizes: variables, members, types and program
+//! organization units are indices, and a backend decides where they live.
+//!
+//! A [`Unit`] is everything one source declares: its structures, its array types, and its
+//! program organization units (POUs): functions, function block types and one program, the
+//! entry. Nothing in a unit is recursive (a function does not call itself, a type does not
+//! contain itself), which [`Unit::order`] checks; that is what lets a backend give every
+//! variable one fixed place.
 
-use crate::{Section, StdFb};
+use crate::{Section, StdFb, IR_VERSION};
 
-/// The types the IR knows.
+/// The types the IR knows. The user-defined ones are indices into the [`Unit`] that holds them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Ty {
     Bool,
@@ -19,10 +25,19 @@ pub enum Ty {
     Real,
     Lreal,
     Time,
+    /// An instance of a standard function block.
     Fb(StdFb),
+    /// A structure: an index into [`Unit::structs`].
+    Struct(usize),
+    /// An array: an index into [`Unit::arrays`]. Two arrays with the same bounds and element
+    /// type have the same index, so they are one type.
+    Array(usize),
+    /// An instance of a user function block: the index of its type in [`Unit::pous`].
+    Instance(usize),
 }
 
 impl Ty {
+    /// An elementary type or a standard function block, by its name in upper case.
     pub fn from_name(upper: &str) -> Option<Ty> {
         Some(match upper {
             "BOOL" => Ty::Bool,
@@ -42,8 +57,10 @@ impl Ty {
         })
     }
 
-    pub fn name(self) -> &'static str {
-        match self {
+    /// The name of an elementary type or a standard function block; `None` for a user-defined
+    /// type, whose name its [`Unit`] knows ([`Unit::ty_name`]).
+    pub fn builtin_name(self) -> Option<&'static str> {
+        Some(match self {
             Ty::Bool => "BOOL",
             Ty::Sint => "SINT",
             Ty::Int => "INT",
@@ -53,7 +70,8 @@ impl Ty {
             Ty::Lreal => "LREAL",
             Ty::Time => "TIME",
             Ty::Fb(k) => k.name(),
-        }
+            Ty::Struct(_) | Ty::Array(_) | Ty::Instance(_) => return None,
+        })
     }
 
     pub fn is_int(self) -> bool {
@@ -61,6 +79,17 @@ impl Ty {
     }
     pub fn is_real(self) -> bool {
         matches!(self, Ty::Real | Ty::Lreal)
+    }
+    /// One value: what an expression yields and a load or store moves.
+    pub fn is_elementary(self) -> bool {
+        matches!(
+            self,
+            Ty::Bool | Ty::Sint | Ty::Int | Ty::Dint | Ty::Lint | Ty::Real | Ty::Lreal | Ty::Time
+        )
+    }
+    /// A structure or an array: assigned and passed whole, as a copy.
+    pub fn is_aggregate(self) -> bool {
+        matches!(self, Ty::Struct(_) | Ty::Array(_))
     }
 
     /// The range of an integer type.
@@ -75,7 +104,8 @@ impl Ty {
     }
 
     /// Whether a value of `self` may be used where `to` is wanted without a conversion
-    /// function: the conversions marked "i" in IEC 61131-3 ed. 3 Figure 11.
+    /// function: the conversions marked "i" in IEC 61131-3 ed. 3 Figure 11. A structure or an
+    /// array goes only where its own type is wanted (§6.4.4.6.1, §7.3.3.2.1).
     pub fn widens_to(self, to: Ty) -> bool {
         use Ty::*;
         self == to
@@ -98,20 +128,86 @@ pub enum Const {
     Time(i64),
 }
 
+/// The value a variable or a structure's member starts with.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Init {
+    /// Of an elementary variable.
+    Value(Const),
+    /// Of an array of elementary elements: its elements in order, the rightmost subscript
+    /// varying fastest (IEC 61131-3 ed. 3 §6.4.4.5.2). Elements past the end of the list start
+    /// at their type's default.
+    Elements(Vec<Const>),
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Var {
     pub name: String,
     pub ty: Ty,
     pub section: Section,
-    pub init: Option<Const>,
+    pub init: Option<Init>,
 }
 
-/// Where a value is read or written: a variable, or a member of a function block instance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// A structure type.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StructTy {
+    pub name: String,
+    pub fields: Vec<Field>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Field {
+    pub name: String,
+    pub ty: Ty,
+    /// What the member starts with in every variable of the structure.
+    pub init: Option<Init>,
+}
+
+/// An array type: its subscript ranges, each inclusive, and what it holds. With several
+/// ranges the rightmost subscript varies fastest.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ArrayTy {
+    pub dims: Vec<(i64, i64)>,
+    pub elem: Ty,
+}
+
+impl ArrayTy {
+    /// How many elements it holds.
+    pub fn len(&self) -> u64 {
+        self.dims
+            .iter()
+            .map(|(lo, hi)| (hi - lo + 1) as u64)
+            .product()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// One step from a variable to a part of it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum Sel {
+    /// A member: an index into the structure's fields, the standard function block's
+    /// `members()`, or the user function block's `vars`.
+    Member(usize),
+    /// An element: one subscript per range of the array, each an expression of an integer type.
+    Index(Vec<Expr>),
+}
+
+/// Where a value is read or written: a variable of the POU the place is in, or a part of it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Place {
+    /// An index into the `vars` of the POU.
     pub var: usize,
-    /// Index into the instance's `StdFb::members()`.
-    pub member: Option<usize>,
+    pub path: Vec<Sel>,
+}
+
+impl Place {
+    pub fn var(var: usize) -> Place {
+        Place {
+            var,
+            path: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -149,6 +245,8 @@ pub struct Expr {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ExprKind {
     Const(Const),
+    /// The value at a place. An expression whose type is a structure or an array is always
+    /// this: a whole variable or part, copied where it is assigned or passed.
     Load(Place),
     Neg(Box<Expr>),
     Not(Box<Expr>),
@@ -159,6 +257,14 @@ pub enum ExprKind {
     Logic(Logic, Box<Expr>, Box<Expr>),
     /// The operand's value as the expression's type.
     Convert(Box<Expr>),
+    /// A call of the function `pou`, giving its result. Each argument names the input it sets
+    /// (an index into the function's `vars`); an input not named starts at its initial value
+    /// (IEC 61131-3 ed. 3 §6.6.1.4.2). The function's other variables start at theirs at
+    /// every call: a function keeps nothing between calls (§6.6.2.1).
+    Call {
+        pou: usize,
+        args: Vec<(usize, Expr)>,
+    },
 }
 
 /// The labels of one CASE arm, as inclusive ranges of the selector's (integer) type, and its
@@ -167,10 +273,14 @@ pub type CaseArm = (Vec<(i64, i64)>, Vec<Stmt>);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Stmt {
+    /// The value has the place's type. For a structure or an array it is a `Load`, and every
+    /// element is copied.
     Assign(Place, Expr),
-    /// Set the inputs, run the block, copy the outputs out.
+    /// Set the inputs given, run the function block instance at `instance`, copy the outputs
+    /// asked for. The indices are into the block's members (as [`Sel::Member`]). An input not
+    /// given keeps what it had (§6.6.3.4.1).
     Call {
-        var: usize,
+        instance: Place,
         inputs: Vec<(usize, Expr)>,
         outputs: Vec<(usize, Place)>,
     },
@@ -178,6 +288,7 @@ pub enum Stmt {
     /// Arms, then the ELSE statements.
     Case(Expr, Vec<CaseArm>, Vec<Stmt>),
     For {
+        /// A variable or a member, never an array element.
         var: Place,
         from: Expr,
         to: Expr,
@@ -187,84 +298,471 @@ pub enum Stmt {
     While(Expr, Vec<Stmt>),
     Repeat(Vec<Stmt>, Expr),
     Exit,
+    /// Leave the POU: in the program, the scan ends.
     Return,
 }
 
+/// What kind of program organization unit a [`Pou`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PouKind {
+    /// The entry: its body is one scan.
+    Program,
+    /// A type; every variable declared with it is an instance, with its own copy of `vars`,
+    /// kept from one call to the next.
+    FunctionBlock,
+    /// Called in expressions. `result` is the variable (an index into `vars`, named as the
+    /// function) whose value the call gives. Its `vars` are not kept between calls.
+    Function { result: usize },
+}
+
+/// A program organization unit: a program, a function block type or a function.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Program {
+pub struct Pou {
     pub name: String,
+    pub kind: PouKind,
     pub vars: Vec<Var>,
     pub body: Vec<Stmt>,
 }
 
-impl Program {
-    /// The type of what `place` names.
-    pub fn place_ty(&self, place: Place) -> Ty {
-        let var = &self.vars[place.var];
-        match (var.ty, place.member) {
-            (Ty::Fb(k), Some(m)) => k.members()[m].ty,
-            (ty, _) => ty,
+/// Everything one source declares.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Unit {
+    /// The [`IR_VERSION`] this was made for.
+    pub ir_version: u32,
+    pub structs: Vec<StructTy>,
+    pub arrays: Vec<ArrayTy>,
+    pub pous: Vec<Pou>,
+    /// The program: an index into `pous`.
+    pub entry: usize,
+}
+
+impl Unit {
+    pub fn new() -> Unit {
+        Unit {
+            ir_version: IR_VERSION,
+            structs: Vec::new(),
+            arrays: Vec::new(),
+            pous: Vec::new(),
+            entry: 0,
         }
     }
 
-    /// Every type the program uses, for checking it against a target's profile.
+    /// The program.
+    pub fn program(&self) -> &Pou {
+        &self.pous[self.entry]
+    }
+
+    /// The array type with these bounds and elements: the one already there, or a new one.
+    pub fn array(&mut self, dims: Vec<(i64, i64)>, elem: Ty) -> Ty {
+        let wanted = ArrayTy { dims, elem };
+        let at = self
+            .arrays
+            .iter()
+            .position(|a| *a == wanted)
+            .unwrap_or_else(|| {
+                self.arrays.push(wanted);
+                self.arrays.len() - 1
+            });
+        Ty::Array(at)
+    }
+
+    /// A type's name as a program writes it.
+    pub fn ty_name(&self, ty: Ty) -> String {
+        match ty {
+            Ty::Struct(i) => self.structs[i].name.clone(),
+            Ty::Instance(p) => self.pous[p].name.clone(),
+            Ty::Array(a) => {
+                let a = &self.arrays[a];
+                let dims: Vec<String> = a
+                    .dims
+                    .iter()
+                    .map(|(lo, hi)| format!("{lo}..{hi}"))
+                    .collect();
+                format!("ARRAY [{}] OF {}", dims.join(", "), self.ty_name(a.elem))
+            }
+            other => other.builtin_name().unwrap_or("?").to_string(),
+        }
+    }
+
+    /// The type of member `member` of a value of type `of`: a structure's field, or a member
+    /// of a function block instance. `None` when `of` has no members or not that one.
+    pub fn member_ty(&self, of: Ty, member: usize) -> Option<Ty> {
+        match of {
+            Ty::Struct(i) => self.structs.get(i)?.fields.get(member).map(|f| f.ty),
+            Ty::Fb(k) => k.members().get(member).map(|m| m.ty),
+            Ty::Instance(p) => self.pous.get(p)?.vars.get(member).map(|v| v.ty),
+            _ => None,
+        }
+    }
+
+    /// The type of what `place` names, in the POU `pou`.
+    pub fn place_ty(&self, pou: usize, place: &Place) -> Ty {
+        let mut ty = self.pous[pou].vars[place.var].ty;
+        for sel in &place.path {
+            ty = match (sel, ty) {
+                (Sel::Member(m), of) => self
+                    .member_ty(of, *m)
+                    .expect("a place names a member its type has"),
+                (Sel::Index(_), Ty::Array(a)) => self.arrays[a].elem,
+                (Sel::Index(_), _) => panic!("a place subscripts what is not an array"),
+            };
+        }
+        ty
+    }
+
+    /// Whether a value of `ty` holds a function block instance, at any depth.
+    pub fn holds_instance(&self, ty: Ty) -> bool {
+        match ty {
+            Ty::Fb(_) | Ty::Instance(_) => true,
+            Ty::Array(a) => self.holds_instance(self.arrays[a].elem),
+            Ty::Struct(i) => self.structs[i]
+                .fields
+                .iter()
+                .any(|f| self.holds_instance(f.ty)),
+            _ => false,
+        }
+    }
+
+    /// The POUs `pou` cannot exist or run without: the functions its body calls, and the
+    /// function block types it holds an instance of (in its variables, at any depth).
+    pub fn uses(&self, pou: usize) -> Vec<usize> {
+        let mut out: Vec<usize> = Vec::new();
+        let mut add = |p: usize| {
+            if !out.contains(&p) {
+                out.push(p)
+            }
+        };
+        fn in_ty(u: &Unit, ty: Ty, add: &mut dyn FnMut(usize)) {
+            match ty {
+                Ty::Instance(p) => add(p),
+                Ty::Array(a) => in_ty(u, u.arrays[a].elem, add),
+                Ty::Struct(i) => u.structs[i].fields.iter().for_each(|f| in_ty(u, f.ty, add)),
+                _ => {}
+            }
+        }
+        for v in &self.pous[pou].vars {
+            in_ty(self, v.ty, &mut add);
+        }
+        walk_exprs(&self.pous[pou].body, &mut |e| {
+            if let ExprKind::Call { pou, .. } = &e.kind {
+                add(*pou)
+            }
+        });
+        out
+    }
+
+    /// Every POU, each after all those it [`uses`](Unit::uses), the program included. `Err`
+    /// is a cycle: POUs each using the next, and the last the first. Structures that contain
+    /// themselves are a cycle too, reported by [`Unit::struct_cycle`].
+    pub fn order(&self) -> Result<Vec<usize>, Vec<usize>> {
+        // 0 not seen, 1 being visited, 2 done.
+        fn visit(
+            u: &Unit,
+            p: usize,
+            state: &mut [u8],
+            trail: &mut Vec<usize>,
+            out: &mut Vec<usize>,
+        ) -> Result<(), Vec<usize>> {
+            match state[p] {
+                2 => return Ok(()),
+                1 => {
+                    let from = trail.iter().position(|x| *x == p).unwrap_or(0);
+                    return Err(trail[from..].to_vec());
+                }
+                _ => {}
+            }
+            state[p] = 1;
+            trail.push(p);
+            for q in u.uses(p) {
+                visit(u, q, state, trail, out)?;
+            }
+            trail.pop();
+            state[p] = 2;
+            out.push(p);
+            Ok(())
+        }
+        let mut state = vec![0u8; self.pous.len()];
+        let mut out = Vec::new();
+        for p in 0..self.pous.len() {
+            visit(self, p, &mut state, &mut Vec::new(), &mut out)?;
+        }
+        Ok(out)
+    }
+
+    /// A structure that contains itself, directly or through others: the structures on the
+    /// way round. Such a type has no size.
+    pub fn struct_cycle(&self) -> Option<Vec<usize>> {
+        fn inner(u: &Unit, ty: Ty, out: &mut Vec<usize>) {
+            match ty {
+                Ty::Struct(i) => out.push(i),
+                Ty::Array(a) => inner(u, u.arrays[a].elem, out),
+                _ => {}
+            }
+        }
+        fn visit(
+            u: &Unit,
+            s: usize,
+            state: &mut [u8],
+            trail: &mut Vec<usize>,
+        ) -> Option<Vec<usize>> {
+            match state[s] {
+                2 => return None,
+                1 => {
+                    let from = trail.iter().position(|x| *x == s).unwrap_or(0);
+                    return Some(trail[from..].to_vec());
+                }
+                _ => {}
+            }
+            state[s] = 1;
+            trail.push(s);
+            let mut next = Vec::new();
+            for f in &u.structs[s].fields {
+                inner(u, f.ty, &mut next);
+            }
+            for n in next {
+                if let Some(c) = visit(u, n, state, trail) {
+                    return Some(c);
+                }
+            }
+            trail.pop();
+            state[s] = 2;
+            None
+        }
+        let mut state = vec![0u8; self.structs.len()];
+        (0..self.structs.len()).find_map(|s| visit(self, s, &mut state, &mut Vec::new()))
+    }
+
+    /// Every elementary type and standard function block the unit uses, for checking it
+    /// against a target's profile.
     pub fn types_used(&self) -> Vec<Ty> {
         let mut out: Vec<Ty> = Vec::new();
         let mut add = |t: Ty| {
-            if !out.contains(&t) {
+            if t.builtin_name().is_some() && !out.contains(&t) {
                 out.push(t)
             }
         };
-        for v in &self.vars {
-            add(v.ty);
-            if let Ty::Fb(k) = v.ty {
-                for m in k.members() {
-                    add(m.ty);
+        fn in_ty(u: &Unit, ty: Ty, add: &mut dyn FnMut(Ty)) {
+            match ty {
+                Ty::Fb(k) => {
+                    add(ty);
+                    k.members().iter().for_each(|m| add(m.ty));
                 }
+                Ty::Array(a) => in_ty(u, u.arrays[a].elem, add),
+                Ty::Struct(_) | Ty::Instance(_) => {}
+                t => add(t),
             }
         }
-        fn walk_e(e: &Expr, add: &mut dyn FnMut(Ty)) {
-            add(e.ty);
-            match &e.kind {
-                ExprKind::Neg(a) | ExprKind::Not(a) | ExprKind::Convert(a) => walk_e(a, add),
-                ExprKind::Arith(_, a, b) | ExprKind::Cmp(_, a, b) | ExprKind::Logic(_, a, b) => {
-                    walk_e(a, add);
-                    walk_e(b, add);
-                }
-                ExprKind::Const(_) | ExprKind::Load(_) => {}
+        for s in &self.structs {
+            for f in &s.fields {
+                in_ty(self, f.ty, &mut add);
             }
         }
-        fn walk_s(s: &[Stmt], add: &mut dyn FnMut(Ty)) {
-            for st in s {
-                match st {
-                    Stmt::Assign(_, e) => walk_e(e, add),
-                    Stmt::Call { inputs, .. } => inputs.iter().for_each(|(_, e)| walk_e(e, add)),
-                    Stmt::If(br, el) => {
-                        for (c, b) in br {
-                            walk_e(c, add);
-                            walk_s(b, add);
-                        }
-                        walk_s(el, add);
-                    }
-                    Stmt::Case(sel, arms, el) => {
-                        walk_e(sel, add);
-                        arms.iter().for_each(|(_, b)| walk_s(b, add));
-                        walk_s(el, add);
-                    }
-                    Stmt::For { from, to, body, .. } => {
-                        walk_e(from, add);
-                        walk_e(to, add);
-                        walk_s(body, add);
-                    }
-                    Stmt::While(c, b) | Stmt::Repeat(b, c) => {
-                        walk_e(c, add);
-                        walk_s(b, add);
-                    }
-                    Stmt::Exit | Stmt::Return => {}
-                }
+        for p in &self.pous {
+            for v in &p.vars {
+                in_ty(self, v.ty, &mut add);
             }
+            walk_exprs(&p.body, &mut |e| in_ty(self, e.ty, &mut add));
         }
-        walk_s(&self.body, &mut add);
         out
+    }
+}
+
+impl Default for Unit {
+    fn default() -> Self {
+        Unit::new()
+    }
+}
+
+/// Call `f` on every expression in `stmts`, the ones inside others and inside places included.
+pub fn walk_exprs(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
+    fn in_place(p: &Place, f: &mut dyn FnMut(&Expr)) {
+        for sel in &p.path {
+            if let Sel::Index(subscripts) = sel {
+                subscripts.iter().for_each(|e| in_expr(e, f));
+            }
+        }
+    }
+    fn in_expr(e: &Expr, f: &mut dyn FnMut(&Expr)) {
+        f(e);
+        match &e.kind {
+            ExprKind::Neg(a) | ExprKind::Not(a) | ExprKind::Convert(a) => in_expr(a, f),
+            ExprKind::Arith(_, a, b) | ExprKind::Cmp(_, a, b) | ExprKind::Logic(_, a, b) => {
+                in_expr(a, f);
+                in_expr(b, f);
+            }
+            ExprKind::Load(p) => in_place(p, f),
+            ExprKind::Call { args, .. } => args.iter().for_each(|(_, a)| in_expr(a, f)),
+            ExprKind::Const(_) => {}
+        }
+    }
+    for st in stmts {
+        match st {
+            Stmt::Assign(p, e) => {
+                in_place(p, f);
+                in_expr(e, f);
+            }
+            Stmt::Call {
+                instance,
+                inputs,
+                outputs,
+            } => {
+                in_place(instance, f);
+                inputs.iter().for_each(|(_, e)| in_expr(e, f));
+                outputs.iter().for_each(|(_, p)| in_place(p, f));
+            }
+            Stmt::If(branches, otherwise) => {
+                for (c, b) in branches {
+                    in_expr(c, f);
+                    walk_exprs(b, f);
+                }
+                walk_exprs(otherwise, f);
+            }
+            Stmt::Case(sel, arms, otherwise) => {
+                in_expr(sel, f);
+                arms.iter().for_each(|(_, b)| walk_exprs(b, f));
+                walk_exprs(otherwise, f);
+            }
+            Stmt::For {
+                var,
+                from,
+                to,
+                body,
+                ..
+            } => {
+                in_place(var, f);
+                in_expr(from, f);
+                in_expr(to, f);
+                walk_exprs(body, f);
+            }
+            Stmt::While(c, b) | Stmt::Repeat(b, c) => {
+                in_expr(c, f);
+                walk_exprs(b, f);
+            }
+            Stmt::Exit | Stmt::Return => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pou(name: &str, kind: PouKind, vars: Vec<Var>, body: Vec<Stmt>) -> Pou {
+        Pou {
+            name: name.into(),
+            kind,
+            vars,
+            body,
+        }
+    }
+    fn var(name: &str, ty: Ty) -> Var {
+        Var {
+            name: name.into(),
+            ty,
+            section: Section::Var,
+            init: None,
+        }
+    }
+    fn call(pou: usize) -> Stmt {
+        Stmt::Assign(
+            Place::var(0),
+            Expr {
+                ty: Ty::Int,
+                kind: ExprKind::Call {
+                    pou,
+                    args: Vec::new(),
+                },
+            },
+        )
+    }
+    fn function(name: &str, calls: &[usize]) -> Pou {
+        pou(
+            name,
+            PouKind::Function { result: 0 },
+            vec![var(name, Ty::Int)],
+            calls.iter().map(|c| call(*c)).collect(),
+        )
+    }
+
+    #[test]
+    fn the_order_puts_every_pou_after_those_it_uses() {
+        let mut u = Unit::new();
+        // main(0) calls f(1), which calls g(2); main also holds an instance of block(3).
+        u.pous.push(pou(
+            "main",
+            PouKind::Program,
+            vec![var("x", Ty::Int), var("b", Ty::Instance(3))],
+            vec![call(1)],
+        ));
+        u.pous.push(function("f", &[2]));
+        u.pous.push(function("g", &[]));
+        u.pous
+            .push(pou("block", PouKind::FunctionBlock, vec![], vec![]));
+        let order = u.order().unwrap();
+        let at = |p: usize| order.iter().position(|x| *x == p).unwrap();
+        assert!(at(2) < at(1) && at(1) < at(0) && at(3) < at(0), "{order:?}");
+        assert_eq!(order.len(), 4);
+    }
+
+    #[test]
+    fn a_function_that_reaches_itself_is_a_cycle_naming_every_pou_on_the_way() {
+        let mut u = Unit::new();
+        u.pous.push(function("a", &[1]));
+        u.pous.push(function("b", &[2]));
+        u.pous.push(function("c", &[0]));
+        assert_eq!(u.order(), Err(vec![0, 1, 2]));
+
+        let mut u = Unit::new();
+        u.pous.push(function("alone", &[0]));
+        assert_eq!(u.order(), Err(vec![0]));
+    }
+
+    #[test]
+    fn a_block_holding_an_instance_of_itself_through_an_array_is_a_cycle() {
+        let mut u = Unit::new();
+        let inner = u.array(vec![(1, 2)], Ty::Instance(0));
+        u.pous.push(pou(
+            "block",
+            PouKind::FunctionBlock,
+            vec![var("more", inner)],
+            vec![],
+        ));
+        assert_eq!(u.order(), Err(vec![0]));
+    }
+
+    #[test]
+    fn a_structure_containing_itself_is_found() {
+        let mut u = Unit::new();
+        let field = |name: &str, ty: Ty| Field {
+            name: name.into(),
+            ty,
+            init: None,
+        };
+        u.structs.push(StructTy {
+            name: "A".into(),
+            fields: vec![field("b", Ty::Struct(1))],
+        });
+        let again = u.array(vec![(0, 1)], Ty::Struct(0));
+        u.structs.push(StructTy {
+            name: "B".into(),
+            fields: vec![field("n", Ty::Int), field("a", again)],
+        });
+        assert_eq!(u.struct_cycle(), Some(vec![0, 1]));
+        u.structs[1].fields.pop();
+        assert_eq!(u.struct_cycle(), None);
+    }
+
+    #[test]
+    fn two_arrays_with_the_same_bounds_and_elements_are_one_type() {
+        let mut u = Unit::new();
+        let a = u.array(vec![(1, 3)], Ty::Int);
+        let b = u.array(vec![(1, 3)], Ty::Int);
+        let c = u.array(vec![(0, 2)], Ty::Int);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(u.ty_name(c), "ARRAY [0..2] OF INT");
+        let m = u.array(vec![(1, 2), (-1, 1)], Ty::Real);
+        assert_eq!(u.ty_name(m), "ARRAY [1..2, -1..1] OF REAL");
     }
 }

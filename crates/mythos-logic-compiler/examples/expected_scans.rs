@@ -7,7 +7,7 @@
 //! apart, `scan <n> <crc32 of the whole memory> <instructions>`, then `done`.
 
 use mythos_logic_compiler::{compile, TargetProfile};
-use mythos_logic_vm::{cold_start, crc32, scan, Program};
+use mythos_logic_vm::{cold_start, crc32, scan, Frame, Program};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -43,12 +43,14 @@ fn main() -> ExitCode {
     let program = Program::load(&compiled.bytecode).expect("the VM loads what the compiler made");
     let mut memory = vec![0u8; program.memory_size()];
     let mut stack = vec![0u64; program.stack_depth()];
+    let mut calls = vec![Frame::default(); program.call_depth()];
     cold_start(&program, &mut memory).expect("sizes agree");
     for k in 0..60u32 {
         match scan(
             &program,
             &mut memory,
             &mut stack,
+            &mut calls,
             k as i64 * 20_000_000,
             1_000_000,
         ) {

@@ -1,7 +1,7 @@
 //! Structured Text compiled and run on the VM, scan by scan, the way a runner does it.
 
 use mythos_logic_compiler::{compile, Compiled, TargetProfile};
-use mythos_logic_vm::{cold_start, read, scan, write, Fault, Program, Value};
+use mythos_logic_vm::{cold_start, read, scan, write, Fault, Frame, Program, Value};
 
 const MS: i64 = 1_000_000;
 const BUDGET: u32 = 1_000_000;
@@ -10,6 +10,7 @@ struct Run {
     c: Compiled,
     memory: Vec<u8>,
     stack: Vec<u64>,
+    calls: Vec<Frame>,
     now: i64,
 }
 
@@ -20,16 +21,26 @@ impl Run {
         let mut memory = vec![0; p.memory_size()];
         cold_start(&p, &mut memory).unwrap();
         let stack = vec![0; p.stack_depth()];
+        let calls = vec![Frame::default(); p.call_depth()];
         Run {
             c,
             memory,
             stack,
+            calls,
             now: 0,
         }
     }
     fn scan(&mut self) -> Result<(), Fault> {
         let p = Program::load(&self.c.bytecode).unwrap();
-        scan(&p, &mut self.memory, &mut self.stack, self.now, BUDGET).map(|_| ())
+        scan(
+            &p,
+            &mut self.memory,
+            &mut self.stack,
+            &mut self.calls,
+            self.now,
+            BUDGET,
+        )
+        .map(|_| ())
     }
     fn scan_at(&mut self, now_ms: i64) {
         self.now = now_ms * MS;
@@ -40,7 +51,7 @@ impl Run {
             .c
             .symbol(path)
             .unwrap_or_else(|| panic!("no symbol {path}"));
-        read(&self.memory, s.offset, elem(s.ty)).unwrap()
+        read(&self.memory, s.offset, elem(&s.ty)).unwrap()
     }
     fn set(&mut self, path: &str, v: Value) {
         let s = self.c.symbol(path).unwrap();
@@ -331,14 +342,6 @@ fn mistakes_are_named_with_their_line_and_column() {
 fn what_is_not_supported_yet_is_refused_by_name_never_compiled_as_something_else() {
     for (src, said) in [
         (
-            "FUNCTION_BLOCK F END_FUNCTION_BLOCK",
-            "FUNCTION_BLOCK is not supported yet",
-        ),
-        (
-            "PROGRAM P VAR a : ARRAY[1..2] OF INT; END_VAR END_PROGRAM",
-            "'ARRAY' is not supported yet",
-        ),
-        (
             "PROGRAM P VAR a : STRING; END_VAR END_PROGRAM",
             "'STRING' is not supported yet",
         ),
@@ -379,7 +382,7 @@ fn profile(json: &str) -> TargetProfile {
 #[test]
 fn a_target_that_cannot_run_a_type_refuses_the_program_at_compile_time() {
     let no_lreal = profile(
-        r#"{"name":"no-lreal","format_version":0,"max_memory":65536,"max_code":65536,"refuses":["Lreal"]}"#,
+        r#"{"name":"no-lreal","format_version":1,"max_memory":65536,"max_code":65536,"refuses":["Lreal"]}"#,
     );
     let err = compile("PROGRAM P VAR x : LREAL; END_VAR END_PROGRAM", &no_lreal)
         .err()
@@ -393,7 +396,7 @@ fn a_target_that_cannot_run_a_type_refuses_the_program_at_compile_time() {
         "and what it can run compiles"
     );
 
-    let tiny = profile(r#"{"name":"tiny","format_version":0,"max_memory":8,"max_code":65536}"#);
+    let tiny = profile(r#"{"name":"tiny","format_version":1,"max_memory":8,"max_code":65536}"#);
     let err = compile("PROGRAM P VAR t : TON; END_VAR END_PROGRAM", &tiny)
         .err()
         .unwrap();
@@ -413,7 +416,7 @@ fn a_target_whose_vm_reads_another_bytecode_format_is_refused_at_compile_time() 
         .unwrap();
     assert_eq!(
         err[0].message,
-        "the target board-x runs bytecode format 7; this compiler makes format 0"
+        "the target board-x runs bytecode format 7; this compiler makes format 1"
     );
 }
 
@@ -439,7 +442,7 @@ fn the_symbol_table_says_where_every_variable_and_member_is_and_which_the_host_m
     let paths: Vec<(&str, &str, u32, bool)> = c
         .symbols
         .iter()
-        .map(|s| (s.path.as_str(), s.ty, s.offset, s.writable))
+        .map(|s| (s.path.as_str(), s.ty.as_str(), s.offset, s.writable))
         .collect();
     assert_eq!(
         paths,
