@@ -90,6 +90,9 @@ pub struct IoStatusHandle {
     status: Arc<StdRwLock<IoStatus>>,
     /// Every tag a running connection provides, and how to reach that connection's task.
     writes: Arc<StdRwLock<HashMap<String, WriteTarget>>>,
+    /// The tags a runtime owns as its outputs (ADR-013 §2.4): who, and under which claim.
+    owners: Arc<StdRwLock<HashMap<String, (String, u64)>>>,
+    next_claim: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Where a write to one tag goes.
@@ -125,6 +128,9 @@ pub enum WriteError {
     Refused(String),
     /// A request was or may have been sent and no confirmation came back.
     NotConfirmed(String),
+    /// The tag is an output of the named runtime: only that runtime writes it. An operator
+    /// changes what it does through a setpoint the program publishes.
+    Owned(String),
 }
 
 impl std::fmt::Display for WriteError {
@@ -139,6 +145,10 @@ impl std::fmt::Display for WriteError {
                 "the connection that provides this tag is not running; nothing was written"
             ),
             WriteError::Refused(why) => write!(f, "nothing was written: {why}"),
+            WriteError::Owned(by) => write!(
+                f,
+                "nothing was written: the tag is an output of {by}, which alone writes it; change a setpoint of its program instead"
+            ),
             WriteError::NotConfirmed(why) => write!(
                 f,
                 "the device did not confirm the write, so it is not known whether it took the value: {why}"
@@ -181,6 +191,28 @@ impl IoStatusHandle {
     /// is not touched: it changes when the next poll reads the device, so what is shown is
     /// always what was read, never what was asked for.
     pub async fn write_tag(&self, uri: &str, value: serde_json::Value) -> Result<(), WriteError> {
+        self.write_tag_as(uri, value, None).await
+    }
+
+    /// As [`Self::write_tag`], by `owner`: a runtime writing one of its outputs. A tag that
+    /// has an owner is written by that owner only, and by nobody else.
+    pub async fn write_tag_as(
+        &self,
+        uri: &str,
+        value: serde_json::Value,
+        owner: Option<&str>,
+    ) -> Result<(), WriteError> {
+        let owned_by = self
+            .owners
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(uri)
+            .map(|(who, _)| who.clone());
+        if let Some(who) = owned_by {
+            if owner != Some(who.as_str()) {
+                return Err(WriteError::Owned(who));
+            }
+        }
         let target = self
             .writes
             .read()
@@ -209,6 +241,54 @@ impl IoStatusHandle {
                 "the connection stopped before answering".to_string(),
             ))
         })
+    }
+
+    /// Make `owner` the only writer of `tags`. Refused, changing nothing, when another owner
+    /// has one of them. An owner claiming again (its replacement, started before it stops)
+    /// takes its tags over under a new claim. Returns the claim, for [`Self::release`].
+    pub fn claim(&self, owner: &str, tags: &[String]) -> Result<u64, String> {
+        let mut owners = self.owners.write().unwrap_or_else(|e| e.into_inner());
+        for tag in tags {
+            if let Some((who, _)) = owners.get(tag) {
+                if who != owner {
+                    return Err(format!("{tag} is already an output of {who}"));
+                }
+            }
+        }
+        let claim = self
+            .next_claim
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        for tag in tags {
+            owners.insert(tag.clone(), (owner.to_string(), claim));
+        }
+        Ok(claim)
+    }
+
+    /// Whether `tag` is still held under `claim`: false once a later claim took it over.
+    pub fn holds(&self, tag: &str, claim: u64) -> bool {
+        self.owners
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(tag)
+            .is_some_and(|(_, c)| *c == claim)
+    }
+
+    /// Give up what is still held under `claim`. Tags a later claim took over are not touched.
+    pub fn release(&self, claim: u64) {
+        self.owners
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, (_, c)| *c != claim);
+    }
+
+    /// Who owns `tag` as an output, if a runtime does.
+    pub fn owner_of(&self, tag: &str) -> Option<String> {
+        self.owners
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(tag)
+            .map(|(who, _)| who.clone())
     }
 
     fn set_write_targets(&self, tags: &[(String, bool)], connection: &mpsc::Sender<WriteRequest>) {
@@ -563,7 +643,9 @@ impl IoRuntime {
             .filter(|id| !wanted.contains(id.as_str()))
             .cloned()
             .collect();
-        gone.sort();
+        // Runtimes before field connections: a runtime that stops writes its outputs' safe
+        // values, and needs the connection behind them to still be there.
+        gone.sort_by_key(|id| (!crate::runtimes::is_runtime_connection(id), id.clone()));
         for id in gone {
             self.remove(&id).await;
             report.stopped.push(id);
@@ -879,7 +961,10 @@ impl IoRuntime {
     /// tasks to end.
     pub async fn shutdown(mut self) {
         let mut tags: Vec<String> = Vec::new();
-        for (id, running) in self.connections.drain() {
+        // Runtimes first, for their safe values (see `apply`).
+        let mut all: Vec<(String, Running)> = self.connections.drain().collect();
+        all.sort_by_key(|(id, _)| (!crate::runtimes::is_runtime_connection(id), id.clone()));
+        for (id, running) in all {
             self.status
                 .drop_write_targets(running.tags.iter().map(|(uri, _)| uri));
             let _ = running.shutdown.send(true);

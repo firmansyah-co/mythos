@@ -47,6 +47,7 @@ fn manifest() -> ModuleManifest {
         capabilities: vec![],
         config_schema: Value::Null,
         always_on: false,
+        profile: serde_json::Value::Null,
         routes: vec![
             route(
                 "GET",

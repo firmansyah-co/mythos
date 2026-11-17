@@ -41,8 +41,20 @@ path = "src/bin/hmi-module-under-test.rs"
 name = "discovery-module-under-test"
 path = "src/bin/discovery-module-under-test.rs"
 
+# The logic runtime module (ADR-013 §2.4).
+[[bin]]
+name = "runtime-vm-module-under-test"
+path = "src/bin/runtime-vm-module-under-test.rs"
+
+# A runtime module that ignores STOP, for the tests of what the core does not leave to one.
+[[bin]]
+name = "stubborn-runtime-under-test"
+path = "src/bin/stubborn-runtime-under-test.rs"
+
 [dependencies]
+mythos-plugin-sdk.workspace = true
 driver-modbus.workspace = true
+mythos-runtime-vm = { path = "../../plugins/runtime-vm" }
 mythos-discovery = { path = "../../plugins/discovery" }
 mythos-hmi = { path = "../../plugins/hmi" }
 mythos-module.workspace = true
@@ -55,6 +67,8 @@ axum.workspace = true
 tower = { workspace = true, features = ["util"] }
 driver-modbus = { workspace = true, features = ["sim"] }
 mythos-core.workspace = true
+mythos-logic-compiler.workspace = true
+hex.workspace = true
 mythos-module.workspace = true
 mythos-pal.workspace = true
 mythos-plugin-sdk.workspace = true

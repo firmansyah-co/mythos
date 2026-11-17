@@ -48,6 +48,7 @@ echo "=== build ==="
     && cargo build -p driver-modbus --bin mythos-module-modbus \
     && cargo build -p mythos-hmi --bin mythos-module-hmi \
     && cargo build -p mythos-discovery --bin mythos-module-discovery \
+    && cargo build -p mythos-runtime-vm --bin mythos-module-runtime-vm \
     && cargo build -p mythos-module-tests --bin service-module-under-test \
     && cargo build -p driver-modbus --features sim --example modbus_sim ) \
     || cannot_run "the server or the simulator did not build"
@@ -84,6 +85,8 @@ cp "$ROOT/frontend/packages/hmi-ui/dist/entry.js" "$ROOT/frontend/packages/hmi-u
 # Discovery (ADR-012 §2.2): always on, it announces this edge and lists others in the Portal.
 cp "$ROOT/target/debug/mythos-module-discovery" "$WORK/install/bin/"
 cp "$ROOT/plugins/discovery/ui/entry.js" "$WORK/install/modules-ui/org.mythos.discovery/"
+# The logic runtime (ADR-013 §2.4): a runtime module, with no UI of its own.
+cp "$ROOT/target/debug/mythos-module-runtime-vm" "$WORK/install/bin/"
 cp "$ROOT/target/debug/service-module-under-test" "$WORK/install/bin/mythos-module-notes"
 cp "$ROOT/crates/mythos-module-tests/ui/entry.js" "$WORK/install/modules-ui/org.mythos.test.notes/"
 API="http://127.0.0.1:${HTTP_PORT}"

@@ -76,7 +76,7 @@ export interface ModuleRow {
   id: string;
   name: string;
   version: string;
-  kind: 'driver' | 'service';
+  kind: 'driver' | 'service' | 'runtime';
   provides: string;
   description: string;
   path: string;

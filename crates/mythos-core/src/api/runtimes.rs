@@ -1,0 +1,178 @@
+//! Runtimes (ADR-013 §2.5): what this node executes, a project's runtimes configuration, and
+//! the commands to run and stop a program.
+
+use crate::api::state::ApiState;
+use crate::io::ConfigProblem;
+use crate::runtimes::{RuntimesConfig, RUNTIMES_FILE};
+use crate::storage::StorageError;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::Json;
+use mythos_pal::PlatformShm;
+use serde_json::{json, Value};
+use std::path::PathBuf;
+
+type ApiError = (StatusCode, Json<Value>);
+
+fn failure(status: StatusCode, message: impl ToString) -> ApiError {
+    (status, Json(json!({ "error": message.to_string() })))
+}
+
+/// The path of an existing project's `runtimes.json`.
+fn config_path<S: PlatformShm>(state: &ApiState<S>, project: &str) -> Result<PathBuf, ApiError> {
+    let dir = state
+        .storage
+        .project_dir(project)
+        .map_err(|e| failure(StatusCode::BAD_REQUEST, e))?;
+    state.storage.get_project(project).map_err(|e| match e {
+        StorageError::InvalidProjectId(_) => failure(StatusCode::BAD_REQUEST, e),
+        _ => failure(
+            StatusCode::NOT_FOUND,
+            format!("Project '{project}' not found"),
+        ),
+    })?;
+    Ok(dir.join(RUNTIMES_FILE))
+}
+
+/// `GET /api/v1/runtimes` — every runtime of this node and what it is doing, the runtime
+/// modules that could run one (each with its target profile), and why the active project's
+/// runtimes are not as configured, when they are not.
+pub async fn list<S: PlatformShm + 'static>(State(state): State<ApiState<S>>) -> Json<Value> {
+    let Some(io) = &state.io_manager else {
+        return Json(json!({
+            "runtimes": [],
+            "modules": [],
+            "problem": "this server has no field I/O manager, so it runs no program",
+        }));
+    };
+    let modules: Vec<Value> = io
+        .runtime_modules()
+        .iter()
+        .map(|m| {
+            json!({
+                "id": m.manifest.id,
+                "provides": m.manifest.provides,
+                "name": m.manifest.name,
+                "version": m.manifest.version,
+                "profile": m.manifest.profile,
+            })
+        })
+        .collect();
+    let runtimes = io.runtimes();
+    Json(json!({
+        "runtimes": runtimes.snapshot(),
+        "modules": modules,
+        "problem": runtimes.problem(),
+    }))
+}
+
+async fn command<S: PlatformShm + 'static>(
+    state: &ApiState<S>,
+    id: &str,
+    run: bool,
+) -> Result<Json<Value>, ApiError> {
+    let known = state
+        .io_manager
+        .as_ref()
+        .is_some_and(|io| io.runtimes().command(id, run));
+    if !known {
+        return Err(failure(
+            StatusCode::NOT_FOUND,
+            format!("no runtime '{id}' is loaded on this node"),
+        ));
+    }
+    Ok(Json(json!({
+        "id": id,
+        "asked": if run { "run" } else { "stop" },
+        "note": "it takes effect at the runtime's next exchange; read GET /api/v1/runtimes for what it is doing",
+    })))
+}
+
+/// `POST /api/v1/runtimes/:id/run` — put a loaded program in RUN. From STOP or FAULT that is
+/// a cold start: its variables take their initial values.
+pub async fn run<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    command(&state, &id, true).await
+}
+
+/// `POST /api/v1/runtimes/:id/stop` — put a program in STOP. Its outputs are written their
+/// safe values and its published tags stop being current.
+pub async fn stop<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    command(&state, &id, false).await
+}
+
+/// `GET /api/v1/projects/:id/runtimes` — the project's runtimes, or `null` when it has none.
+pub async fn get_config<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    Path(project): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let path = config_path(&state, &project)?;
+    let config =
+        RuntimesConfig::load(&path).map_err(|e| failure(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(json!({ "config": config })))
+}
+
+/// `PUT /api/v1/projects/:id/runtimes` — check, save and, for the active project, apply.
+///
+/// Each instance is checked by the runtime module it names, which loads the program without
+/// running it: a program that does not load, or a binding to a variable it does not have, is
+/// refused here and nothing is written. For the active project the runtimes are then made to
+/// match: an instance whose published tags stay the same is replaced in place.
+pub async fn put_config<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    Path(project): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let path = config_path(&state, &project)?;
+    let config: RuntimesConfig = serde_json::from_value(body).map_err(|e| {
+        failure(
+            StatusCode::BAD_REQUEST,
+            format!("not a runtimes configuration: {e}"),
+        )
+    })?;
+    config
+        .validate()
+        .map_err(|e| failure(StatusCode::BAD_REQUEST, e))?;
+
+    let Some(io) = &state.io_manager else {
+        return Err(failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this server has no field I/O manager, so it can check and run no program",
+        ));
+    };
+    let problems: Vec<ConfigProblem> = io.check_runtimes(&config).await;
+    if !problems.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "the runtimes configuration has problems and was not saved",
+                "problems": problems,
+            })),
+        ));
+    }
+
+    let bytes = serde_json::to_vec_pretty(&config)
+        .map_err(|e| failure(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    state
+        .storage
+        .atomic_write_file(&path, &bytes)
+        .map_err(|e| failure(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let is_active = matches!(
+        state.storage.get_active_project(),
+        Ok(Some(active)) if active == project
+    );
+    let (applied, changes) = if is_active {
+        (true, io.reload().await)
+    } else {
+        (false, None)
+    };
+    Ok(Json(
+        json!({ "config": config, "applied": applied, "changes": changes }),
+    ))
+}

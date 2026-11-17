@@ -30,6 +30,8 @@ pub use host::{
     ProcessDriver,
 };
 pub use protocol::{ModuleKind, ModuleManifest, MODULE_FILE_PREFIX, PROTOCOL_VERSION};
-pub use serve::{run_driver_module, serve_driver};
+pub use serve::{
+    run_driver_module, run_runtime_module, serve_driver, serve_runtime, RuntimeEngine,
+};
 pub use service::{run_service_module, serve_service, Events, Service, ServiceSession};
 pub use settle::Settle;

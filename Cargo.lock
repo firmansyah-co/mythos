@@ -2656,12 +2656,15 @@ dependencies = [
  "axum",
  "driver-modbus",
  "futures-util",
+ "hex",
  "mythos-core",
  "mythos-discovery",
  "mythos-hmi",
+ "mythos-logic-compiler",
  "mythos-module",
  "mythos-pal",
  "mythos-plugin-sdk",
+ "mythos-runtime-vm",
  "mythos-shm",
  "serde_json",
  "sysinfo",
@@ -2692,6 +2695,20 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "mythos-runtime-vm"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "mythos-logic-vm",
+ "mythos-module",
+ "mythos-plugin-sdk",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 

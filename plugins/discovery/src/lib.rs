@@ -52,6 +52,7 @@ pub fn manifest() -> ModuleManifest {
             needs: vec![],
         }],
         always_on: true,
+        profile: serde_json::Value::Null,
     }
 }
 

@@ -13,6 +13,7 @@ mod node;
 mod pairing;
 mod plant;
 pub mod remote;
+mod runtimes;
 mod services;
 pub mod state;
 pub mod telemetry;
@@ -241,6 +242,14 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
             "/api/v1/projects/:id/io",
             get(io::get_config::<S>).put(io::put_config::<S>),
         )
+        // Runtimes (ADR-013): what this node executes, and a project's programs for it
+        .route("/api/v1/runtimes", get(runtimes::list::<S>))
+        .route("/api/v1/runtimes/:id/run", post(runtimes::run::<S>))
+        .route("/api/v1/runtimes/:id/stop", post(runtimes::stop::<S>))
+        .route(
+            "/api/v1/projects/:id/runtimes",
+            get(runtimes::get_config::<S>).put(runtimes::put_config::<S>),
+        )
         // Control logic deployment: answers 501, nothing is compiled (see the handler)
         .route("/api/v1/control/deploy", post(control_deploy_handler::<S>))
         // Every route of a service module (ADR-011), forwarded to its process
@@ -283,7 +292,13 @@ async fn health_handler() -> impl IntoResponse {
 async fn io_status_handler<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
 ) -> impl IntoResponse {
-    Json(state.io_status.snapshot())
+    // A runtime is hosted as a connection, but it is not field I/O: what it does is at
+    // `GET /api/v1/runtimes`, and a field I/O view listing it would offer to edit it as one.
+    let mut status = state.io_status.snapshot();
+    status
+        .connections
+        .retain(|c| !crate::runtimes::is_runtime_connection(&c.id));
+    Json(status)
 }
 
 async fn list_tags_handler<S: PlatformShm + 'static>(
@@ -357,7 +372,7 @@ async fn write_tag_handler<S: PlatformShm + 'static>(
         Err(e) => {
             let (status, written) = match &e {
                 WriteError::UnknownTag => (StatusCode::NOT_FOUND, json!(false)),
-                WriteError::ReadOnly => (StatusCode::CONFLICT, json!(false)),
+                WriteError::ReadOnly | WriteError::Owned(_) => (StatusCode::CONFLICT, json!(false)),
                 WriteError::Stopped => (StatusCode::SERVICE_UNAVAILABLE, json!(false)),
                 WriteError::Refused(_) => (StatusCode::UNPROCESSABLE_ENTITY, json!(false)),
                 WriteError::NotConfirmed(_) => (StatusCode::BAD_GATEWAY, json!("unknown")),
