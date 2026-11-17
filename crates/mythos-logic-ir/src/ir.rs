@@ -411,6 +411,15 @@ impl Unit {
         ty
     }
 
+    /// The type within any arrays: `ty` itself when it is not an array.
+    pub fn innermost(&self, ty: Ty) -> Ty {
+        let mut ty = ty;
+        while let Ty::Array(a) = ty {
+            ty = self.arrays[a].elem;
+        }
+        ty
+    }
+
     /// Whether a value of `ty` holds a function block instance, at any depth.
     pub fn holds_instance(&self, ty: Ty) -> bool {
         match ty {
@@ -456,81 +465,25 @@ impl Unit {
     /// is a cycle: POUs each using the next, and the last the first. Structures that contain
     /// themselves are a cycle too, reported by [`Unit::struct_cycle`].
     pub fn order(&self) -> Result<Vec<usize>, Vec<usize>> {
-        // 0 not seen, 1 being visited, 2 done.
-        fn visit(
-            u: &Unit,
-            p: usize,
-            state: &mut [u8],
-            trail: &mut Vec<usize>,
-            out: &mut Vec<usize>,
-        ) -> Result<(), Vec<usize>> {
-            match state[p] {
-                2 => return Ok(()),
-                1 => {
-                    let from = trail.iter().position(|x| *x == p).unwrap_or(0);
-                    return Err(trail[from..].to_vec());
-                }
-                _ => {}
-            }
-            state[p] = 1;
-            trail.push(p);
-            for q in u.uses(p) {
-                visit(u, q, state, trail, out)?;
-            }
-            trail.pop();
-            state[p] = 2;
-            out.push(p);
-            Ok(())
-        }
-        let mut state = vec![0u8; self.pous.len()];
         let mut out = Vec::new();
-        for p in 0..self.pous.len() {
-            visit(self, p, &mut state, &mut Vec::new(), &mut out)?;
-        }
+        depth_first(self.pous.len(), |p| self.uses(p), |p| out.push(p))?;
         Ok(out)
     }
 
     /// A structure that contains itself, directly or through others: the structures on the
     /// way round. Such a type has no size.
     pub fn struct_cycle(&self) -> Option<Vec<usize>> {
-        fn inner(u: &Unit, ty: Ty, out: &mut Vec<usize>) {
-            match ty {
-                Ty::Struct(i) => out.push(i),
-                Ty::Array(a) => inner(u, u.arrays[a].elem, out),
-                _ => {}
-            }
-        }
-        fn visit(
-            u: &Unit,
-            s: usize,
-            state: &mut [u8],
-            trail: &mut Vec<usize>,
-        ) -> Option<Vec<usize>> {
-            match state[s] {
-                2 => return None,
-                1 => {
-                    let from = trail.iter().position(|x| *x == s).unwrap_or(0);
-                    return Some(trail[from..].to_vec());
-                }
-                _ => {}
-            }
-            state[s] = 1;
-            trail.push(s);
+        let held = |s: usize| {
             let mut next = Vec::new();
-            for f in &u.structs[s].fields {
-                inner(u, f.ty, &mut next);
-            }
-            for n in next {
-                if let Some(c) = visit(u, n, state, trail) {
-                    return Some(c);
+            for f in &self.structs[s].fields {
+                // Through arrays, not through structures.
+                if let Ty::Struct(i) = self.innermost(f.ty) {
+                    next.push(i);
                 }
             }
-            trail.pop();
-            state[s] = 2;
-            None
-        }
-        let mut state = vec![0u8; self.structs.len()];
-        (0..self.structs.len()).find_map(|s| visit(self, s, &mut state, &mut Vec::new()))
+            next
+        };
+        depth_first(self.structs.len(), held, |_| {}).err()
     }
 
     /// Every elementary type and standard function block the unit uses, for checking it
@@ -572,6 +525,49 @@ impl Default for Unit {
     fn default() -> Self {
         Unit::new()
     }
+}
+
+/// Visit the nodes `0..n` of a graph depth first, each after those `next` leads to from it,
+/// calling `done` on each once all those are done. `Err` is a cycle: the nodes on the way
+/// round, from the first reached twice. Iterative, so that a long chain of nodes (types each
+/// holding the next, functions each calling the next) cannot exhaust the stack.
+fn depth_first(
+    n: usize,
+    next: impl Fn(usize) -> Vec<usize>,
+    mut done: impl FnMut(usize),
+) -> Result<(), Vec<usize>> {
+    // 0 not seen, 1 being visited, 2 done.
+    let mut state = vec![0u8; n];
+    for root in 0..n {
+        if state[root] == 2 {
+            continue;
+        }
+        state[root] = 1;
+        // The way from `root`: each node, what it leads to, and how many of those are taken.
+        let mut trail = vec![(root, next(root), 0usize)];
+        while let Some(top) = trail.last_mut() {
+            let Some(&q) = top.1.get(top.2) else {
+                let p = top.0;
+                trail.pop();
+                state[p] = 2;
+                done(p);
+                continue;
+            };
+            top.2 += 1;
+            match state[q] {
+                2 => {}
+                1 => {
+                    let from = trail.iter().position(|t| t.0 == q).unwrap_or(0);
+                    return Err(trail[from..].iter().map(|t| t.0).collect());
+                }
+                _ => {
+                    state[q] = 1;
+                    trail.push((q, next(q), 0));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Call `f` on every expression in `stmts`, the ones inside others and inside places included.

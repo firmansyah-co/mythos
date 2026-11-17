@@ -8,7 +8,7 @@ VAR_OUTPUT
   cv : REAL;
 END_VAR
 VAR
-  step : INT;
+  stage : INT;
   t_fill, t_drain, t_alarm, t1, t2, t3, t4, t5 : TON;
   batches : CTU;
   edge : R_TRIG;
@@ -19,20 +19,20 @@ VAR
   i : INT;
   total : DINT;
 END_VAR
-  CASE step OF
-    0: IF start_pb AND NOT stop_pb THEN step := 1; END_IF;
+  CASE stage OF
+    0: IF start_pb AND NOT stop_pb THEN stage := 1; END_IF;
     1: pump := TRUE; valve := FALSE;
        t_fill(IN := TRUE, PT := T#30s);
-       IF level_hi OR t_fill.Q THEN step := 2; t_fill(IN := FALSE); END_IF;
+       IF level_hi OR t_fill.Q THEN stage := 2; t_fill(IN := FALSE); END_IF;
     2: pump := FALSE; valve := TRUE;
        t_drain(IN := TRUE, PT := T#20s);
-       IF level_lo OR t_drain.Q THEN step := 0; valve := FALSE; t_drain(IN := FALSE); END_IF;
+       IF level_lo OR t_drain.Q THEN stage := 0; valve := FALSE; t_drain(IN := FALSE); END_IF;
   ELSE
-    step := 0;
+    stage := 0;
   END_CASE;
-  IF stop_pb THEN step := 0; pump := FALSE; valve := FALSE; END_IF;
+  IF stop_pb THEN stage := 0; pump := FALSE; valve := FALSE; END_IF;
 
-  edge(CLK := step = 2);
+  edge(CLK := stage = 2);
   batches(CU := edge.Q, R := FALSE, PV := 1000);
 
   err := sp - pv;

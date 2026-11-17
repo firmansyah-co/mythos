@@ -229,8 +229,9 @@ As built (C3):
   its bindings (inputs, outputs with their safe values, published variables). One program is
   one cyclic task; a task that runs several programs is not built.
 - `check` compiles the saved source, or a text sent with the request and not saved, and answers
-  with the diagnostics (line, column, message), or with the variables and every binding that
-  names a variable the program does not have or one that cannot be bound (an array, a TIME).
+  with the diagnostics (each with the range it is about, §2.8), or with the variables and every
+  binding that names a variable the program does not have or one that cannot be bound (an
+  array, a TIME).
 - `build` compiles the saved source and answers with the runtime instance of §2.4, its version
   a hash of the code, the interval and the bindings. **A module cannot call the core**
   (ADR-011 §2.6), so the module does not load what it builds: the workbench, or an agent, saves
@@ -242,8 +243,8 @@ As built (C3):
 Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (ADR-011 §2.3):
 
 - Programs in the project tree, and an editor per program: the Structured Text (a text area
-  over the same text painted in colour; no editor library), the last check's diagnostics
-  marked at their line and column, the task settings, and the variables of the last text that
+  over the same text painted in colour; no editor library), the last check's diagnostics,
+  each underlined over the whole range it is about (§2.8) and listed with where it starts, the task settings, and the variables of the last text that
   compiled, each with its bindings to tags and each bound tag's live value.
 - The editor keeps three things apart: the text in the editor, the text that is saved, and the
   program that runs. **Load** saves, checks, builds, reads the project's runtimes, replaces the
@@ -260,8 +261,8 @@ Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (A
   read twice a second by name with `watch` (§2.5). A variable the running version does not
   have says so; a value read from a program that is not in RUN is marked as what it stopped
   with; when the values cannot be read the cell says UNKNOWN and shows none read before.
-- Not built: forcing a variable (C5); watching an element of an array from the table; underlining a
-  diagnostic's whole range (the compiler gives a point until L2); an editor for LD, FBD, SFC.
+- Not built: forcing a variable (C5); watching an element of an array from the table; an
+  editor for LD, FBD, SFC.
 
 ### 2.7 The HMI is not a runtime
 
@@ -281,9 +282,50 @@ making it a `runtime` would add a process that does nothing.
 
 The logic module's workbench UI (ADR-011 §2.3): a POU tree, the ST editor with diagnostics, the
 variable table, task settings, check and test, and live values beside the code. Each later
-language brings its editor as an editor kind. The spike's parser stops at the first error and
-records only where a construct starts; an editor needs several errors at once and ranges, so the
-ST front-end's parser is rewritten for that before the editor is built.
+language brings its editor as an editor kind.
+
+**What the front-end gives an editor** (L2a; the editor of §2.6 shows it). The spike's parser
+stopped at the first error and recorded only where a construct starts. The ST front-end now:
+
+- **Tells every independent mistake of a source in one pass.** A rule that cannot go on says why
+  and gives up; whoever holds the list reads on from where the next item can start: a statement
+  is left at its `;` or before the keyword that ends its list; a declaration at its `;` or
+  before what ends its section; a POU with a head that cannot be read at its `END_`. A statement
+  with an `END_` of its own whose head cannot be read is still read from THEN, OF or DO, so the
+  statements under it are checked for syntax; without that keyword it is left at its own `END_`,
+  the statements nested in it included.
+- **Tells a mistake once.** The parser never complains twice about one token, and says nothing
+  about text the lexer could not read. The checker says nothing about what follows from a gap:
+  the statements of a POU that was not read whole are not checked (its declarations are, and
+  every other POU is checked in full); a variable whose declaration was refused is not
+  "not declared" where it is used; a member not found in a type with an unread or refused
+  declaration is not called missing; a source whose PROGRAM has no readable name is not said
+  to have none. What stays untold until the first mistake is mended: mistakes of meaning in a
+  POU that has a mistake of syntax.
+- **Says where a diagnostic ends.** `Diagnostic` is `line`, `col`, `end_line`, `end_col`,
+  `message`: all 1-based, the end exclusive, a column a character (not a byte). The range is
+  the token or construct the message is about: a name, an operator for an operation, a call to
+  its `)`, a place with its members and subscripts. It is empty at the end of the source, and
+  all four are 0 for a message about the whole program. `line` and `col` are what they were.
+  There are no warnings, so there is no severity.
+- **Refuses a keyword of the standard as a name** (§2.13).
+- **Refuses what is nested too deeply, and cannot be made to crash by it.** Every pass over a
+  program is recursive, and the compiler runs on a thread of the logic module's process, whose
+  stack is 2 MiB. A body nested more than `MAX_NESTING` (100) deep is refused where the limit is
+  reached: statements within statements, and operations, calls, subscripts, parentheses and
+  array types within one another; a chain of operators counts once per operator (`a + b + c` is
+  two deep), because the tree it makes is that deep. A type nested more than
+  `MAX_TYPE_NESTING` (100) deep (structures, arrays and function block instances within one
+  another) is refused at its declaration; one that holds a type refused for that is refused
+  silently. A structure that contains itself is told and loses its members before anything
+  follows them round. The order POUs and structures are taken in is found without recursion,
+  so a chain of thousands of functions compiles. *Why 100*: C11 §5.2.4.1 asks a compiler for at
+  least 63 levels of parentheses and 127 of blocks; a program written by hand nests a few levels.
+  *Why it fits*: in a debug build (where frames are largest; `cargo test` is one) the deepest
+  source of each kind allowed needs at most 544 KiB of stack on Linux (nested CASE), measured by
+  running it on threads of falling stack size; `deep_sources_are_refused.rs` compiles each on a
+  1 MiB thread, on every system CI runs. A chain of 100 operators is the realistic edge: a
+  longer one is split with a variable.
 
 ### 2.9 Microcontrollers, and simulators before boards
 
@@ -352,6 +394,7 @@ Adrian, 2026-11-17: where an implementation and the standard differ, follow the 
 | Writing an input inside its POU | Figure 7 ("not modifiable within the entity"), Figure 13 rule 2a | refused in a FUNCTION, a FUNCTION_BLOCK and a PROGRAM | not compared |
 | Reading an instance's input from outside | Figure 13 rule 1b: not allowed | refused | not compared |
 | Writing an output, or anything inside an instance, from outside | Figure 13 rule 4b; §6.6.3.2 rule 11 (VAR is private) | refused; an internal variable cannot be read from outside either, except to look into an instance held there (`a.b.q`) | not compared |
+| A keyword as a name | §6.1.3: keywords "shall not be used for any other purpose, for example, variable names" | refused where it is declared (a variable, a member, a type, a POU), naming the word: 127 keywords | not compared |
 
 Three places where the standard leaves a choice or we go beyond it:
 
@@ -362,11 +405,35 @@ Three places where the standard leaves a choice or we go beyond it:
   may support additional conversions"). We have them: non-zero is TRUE; FALSE and TRUE are 0.0
   and 1.0.
 
-Known gaps, to close in L2: a reserved word is still accepted as a name (`at : INT`
-compiles); the evaluation stack uses whatever the host gives instead of stopping at the depth
-the program declares, as the call frames do; a target profile does not yet carry a stack depth
-or a call depth, so a program too deep for a firmware is refused at its start and not at
-compile time.
+**Which words are keywords.** Ed. 3 has no table of them: §6.1.3 gives the rule and nothing
+else. The 127 are the terminal symbols of Annex A (normative) that are words standing as a
+syntactic element of their own, in the productions of the common elements, Structured Text, the
+textual form of SFC, configurations and namespaces, with the keyword column of Table 10 for
+the data types (`mythos_logic_ir::KEYWORDS`; the reasoning is at the top of
+`crates/mythos-logic-ir/src/keywords.rs`). Words Annex A writes in quotes that are *not*
+keywords here, because the standard itself uses them as names:
+
+- **The operators of IL** (Table 68: LD, ST, S, R, JMP, CAL, RET, …). §7.2.4.3 calls CAL a
+  keyword "in the operator field", and that is where they are one. Outside IL the standard
+  names variables with them: `LD` and `R` are inputs of its counters, read in their ST bodies
+  (Table 45); `S` and `R` are inputs of its bistables (Table 43); Table 39 declares
+  `VAR R: REAL; END_VAR`. So IL not being built (§2.1) leaves no word reserved for it; AND, OR,
+  XOR, NOT and MOD are keywords as operators of ST.
+- **The action qualifiers of SFC** (Table 59: N, R, S, L, D, P, SD, DS, SL), the inputs of a
+  TASK (Table 63: SINGLE, INTERVAL, PRIORITY), and EN and ENO (§6.6.1.5 declares them as
+  variables).
+- **The names of standard functions and function blocks.** Annex A marks both lists "incomplete
+  list": they are names of a library. `ton : TON` is accepted.
+
+A program that names a variable `step`, `on`, `to` or `from` is therefore refused (the
+differential corpus and two tests did, and were renamed). This list is a reading of ed. 3, not
+a table copied from it; ed. 4, which drops IL, has not been read.
+
+Known gaps, to close in L2b: the evaluation stack uses whatever the host gives instead of
+stopping at the depth the program declares, as the call frames do; a target profile does not
+yet carry a stack depth or a call depth, so a program too deep for a firmware is refused at
+its start and not at compile time. Found while reading §6.1.2 and not built: an identifier
+with two underscores together, or one at its end, is accepted (the standard forbids both).
 
 The differential test lists the first three rows as deliberate differences from STruC++
 (167 of 6,120 values); a rounding difference must be exactly one apart to count as one.
@@ -403,8 +470,10 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
 - L1. **The VM's real model** (done): functions, user function blocks, arrays and structures;
   static allocation, no recursion, instance-relative addressing, a bounded call stack;
   format 1.
-- L2. A parser that recovers from errors and gives ranges (for the editor); more of the
-  standard library; strings.
+- L2. In three parts. **L2a** (done): a parser that recovers from errors and gives ranges, for
+  the editor (§2.8); a keyword is refused as a name (§2.13). **L2b**: the limits the VM and
+  the profiles enforce (the known gaps of §2.13). **L2c**: more of the standard library;
+  strings.
 - L3. **LD, FBD, SFC** (not IL, §2.1), each a front-end crate and an editor kind.
 
 **Later:** ESP32 and RP2040 firmware as runtime modules on real boards; a C backend; a Linux
@@ -431,14 +500,14 @@ Each step leaves `dev` working.
 | Part | Built |
 | :--- | :--- |
 | 2.1 Crates and layers | `mythos-logic-ir`, `-st`, `-vm`, `-backend-vm`, `-compiler`; `layers.rs` guards them |
-| 2.1 ST front-end | Several POUs in any order: TYPE (STRUCT, named ARRAY), FUNCTION (VAR_INPUT, VAR; positional and formal calls), FUNCTION_BLOCK (VAR_INPUT, VAR_OUTPUT, VAR; nesting; arrays of instances), one PROGRAM; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME; arrays of any dimensions with initial value lists; whole-structure and whole-array assignment; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between the elementary types; implicit widening per Figure 11; recursion refused naming the cycle; diagnostics with line and column for everything else (enumerations, subranges, strings, VAR_IN_OUT, methods, and more: each refused by name) |
+| 2.1 ST front-end | Several POUs in any order: TYPE (STRUCT, named ARRAY), FUNCTION (VAR_INPUT, VAR; positional and formal calls), FUNCTION_BLOCK (VAR_INPUT, VAR_OUTPUT, VAR; nesting; arrays of instances), one PROGRAM; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME; arrays of any dimensions with initial value lists; whole-structure and whole-array assignment; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between the elementary types; implicit widening per Figure 11; recursion refused naming the cycle; a keyword of the standard refused as a name; diagnostics for everything else (enumerations, subranges, strings, VAR_IN_OUT, methods, and more: each refused by name); every independent mistake of a source in one pass, each once, with the range it is about (§2.8); a body or a type nested more than 100 deep refused, a structure that contains itself told before anything follows it (§2.8) |
 | 2.2 Profiles | `serde` data with a format version; `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format) proven with profiles read from JSON |
 | 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 1: bodies, call frames, instance-relative and region-confined addressing; loader checks, run-time checks, budget; faults, with `IndexOutOfRange` and `CallDepthExceeded` |
 | 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
 | 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Not built: forcing variables, state carried across a replacement, a watchdog on the scan thread, RETAIN |
 | 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run`, `/stop` and `/watch`, `GET`/`PUT /api/v1/projects/:id/runtimes`, each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
 | 2.6 The logic module | Built: `plugins/logic` (programs, bindings, check, build; eight MCP tools), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes; its workbench UI `frontend/packages/logic-ui` (tree section, program editor, load, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus. Not built: unit tests in ST, programs in a device's slice |
-| 2.8, 2.10 | Not built |
+| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); editors for LD, FBD, SFC are not built. 2.10: not built |
 | 2.9 Emulators | Built: six programs, 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else |
 | 2.12 Oracle | `differential_strucpp.rs`: 6 programs, 60 cycles, 6,120 values, all agree except the three deliberate rows of §2.13 (167 values). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
 
@@ -453,6 +522,39 @@ Evidence of the spike (2026-11-17):
   the code moved, it did not change). So does undoing each rule taken from the standard:
   rounding a half away from zero, faulting on MOD by zero, the earlier F_TRIG, and giving `=`
   a lower precedence than `<`.
+- **L2a** (the parser the editor needs): 136 tests in the five logic crates. `recovery.rs`
+  (21 tests) gives the exact list of diagnostics, with ranges, for sources with several
+  mistakes: one for each way of reading on, one for each thing the checker stays silent
+  about, and every one of the 127 keywords as a variable's name in upper and lower case.
+  `damaged_sources_never_panic.rs` damages the six programs of the corpus the way a buffer is
+  damaged while someone types (14,680 damaged sources: 14,218 refused, 8,666 of them with
+  more than one diagnostic, and 462 that still compile) and requires each to compile or to be refused with diagnostics in
+  the order of the source, with ranges inside it, none twice, and no two from the lexer and
+  parser about one place. It found three double reports while it was written, each fixed. The
+  differential test is unchanged by the rename of `step` (6,120 values, 167 deliberate
+  differences). Mutation-checked with 37 mutations, each in a copy of the tree: every way of
+  reading on, every silence about what follows from a gap, the ranges, the order, and the
+  refusal of a keyword (where it is declared, where it is used, and one word dropped from the
+  list) removed in turn; each turned named tests red, none survived. One did at first (a call
+  of a function whose result type is unknown): the test that should have caught it could not
+  tell, and was made to.
+- **Depth** (L2a, after a stack overflow on Windows CI). The overflow was a damaged source in
+  which a structure held itself (`range : Limits` inside `Limits`): `holds_instance` followed it
+  round without end before the containment check ran, on `dev` too, so any `check` sent to the
+  logic module with such a type killed the module's process. Windows met it first only because
+  its checkout gives the corpus CRLF line ends, so the fixed seed damaged other text there
+  (`.gitattributes` now keeps `*.st` LF everywhere, and the damage test damages CRLF forms on
+  purpose). Nesting thousands deep overflowed as well, in each of the 14 kinds and for chains
+  of 3,000 structures, named array types and function blocks. Measured before the bound, in a
+  debug build: a level of parentheses took 14.8 KiB of stack, a nested IF 11.7 KiB. The parser now
+  reads operators by precedence in one loop rather than a function per precedence, and the
+  recursive functions of the parser and the checker keep what they say off the path a nested
+  construct takes: the deepest allowed takes 320 KiB in parentheses, 536 KiB in IFs and 544 KiB
+  in CASEs, all of it included.
+  `deep_sources_are_refused.rs` (6 tests) refuses each kind nested 5,000 deep with one
+  diagnostic where the limit is reached, compiles the deepest allowed of each on a 1 MiB
+  thread, and refuses structures that contain themselves; `logic_module.rs` sends such sources
+  to the real module's `check` and `build`, and the same process answers the next request.
 - **Scan time on a PC** (`scan_time.rs`, release, i9-11980HK, Linux, not real-time, desktop
   load): a program shaped like a small plant (CASE sequence, 8 TON, CTU, R_TRIG, a PI loop in
   REAL, a 50-turn FOR) is 884 bytes of code and 280 of memory, 970 instructions per scan:

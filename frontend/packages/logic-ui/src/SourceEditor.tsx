@@ -4,7 +4,7 @@
 import { forwardRef, useImperativeHandle, useMemo, useRef } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { Diagnostic } from './bridge';
-import { offsetOf, tokenize } from './st';
+import { offsetOf, rangeOf, tokenize } from './st';
 
 export interface SourceEditorHandle {
   /** Put the caret at a 1-based line and column, and the editor in focus. */
@@ -30,14 +30,20 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(function Sourc
   const tokens = useMemo(() => tokenize(source), [source]);
   const columns = useMemo(() => lines.reduce((widest, line) => Math.max(widest, line.length), 0), [lines]);
 
-  // Where each diagnostic points, as an offset: the token there is underlined.
+  // What the diagnostics are about, as stretches of the text in order, overlapping ones
+  // joined: each is underlined whole, over as many words and lines as it takes.
   const marked = useMemo(() => {
-    const offsets = new Set<number>();
-    for (const diagnostic of diagnostics) {
-      const offset = offsetOf(source, diagnostic.line, diagnostic.col);
-      if (offset !== null) offsets.add(offset);
+    const ranges = diagnostics
+      .map((diagnostic) => rangeOf(source, diagnostic))
+      .filter((range): range is { from: number; to: number } => range !== null)
+      .sort((a, b) => a.from - b.from);
+    const joined: { from: number; to: number }[] = [];
+    for (const range of ranges) {
+      const last = joined[joined.length - 1];
+      if (last && range.from <= last.to) last.to = Math.max(last.to, range.to);
+      else joined.push({ ...range });
     }
-    return offsets;
+    return joined;
   }, [diagnostics, source]);
   const byLine = useMemo(() => {
     const map = new Map<number, string[]>();
@@ -71,27 +77,38 @@ export const SourceEditor = forwardRef<SourceEditorHandle, Props>(function Sourc
   const painted = [];
   let key = 0;
   for (const token of tokens) {
-    const at = [...marked].find((offset) => offset >= token.offset && offset < token.offset + token.text.length);
-    if (at === undefined) {
+    const end = token.offset + token.text.length;
+    const className = token.kind === 'text' ? undefined : `logic-tok logic-tok--${token.kind}`;
+    const inside = marked.filter((range) => range.from < end && range.to > token.offset);
+    if (inside.length === 0) {
       painted.push(
-        token.kind === 'text' ? token.text : (
-          <span key={key} className={`logic-tok logic-tok--${token.kind}`}>
+        className === undefined ? (
+          token.text
+        ) : (
+          <span key={key} className={className}>
             {token.text}
           </span>
         )
       );
     } else {
-      // Underline from where the diagnostic points to the end of the word there.
-      const from = at - token.offset;
-      const rest = token.text.slice(from);
-      const word = /^[A-Za-z0-9_]+|^[^\s]/.exec(rest)?.[0] ?? rest.slice(0, 1);
-      painted.push(
-        <span key={key} className={token.kind === 'text' ? undefined : `logic-tok logic-tok--${token.kind}`}>
-          {token.text.slice(0, from)}
-          <span className="logic-tok--error" data-testid="source-error-mark">
-            {word}
+      // The parts of the token a diagnostic is about are underlined; the rest as it is.
+      const parts = [];
+      let at = token.offset;
+      for (const range of inside) {
+        const from = Math.max(range.from, token.offset);
+        const to = Math.min(range.to, end);
+        if (from > at) parts.push(source.slice(at, from));
+        parts.push(
+          <span key={from} className="logic-tok--error" data-testid="source-error-mark">
+            {source.slice(from, to)}
           </span>
-          {rest.slice(word.length)}
+        );
+        at = to;
+      }
+      if (at < end) parts.push(source.slice(at, end));
+      painted.push(
+        <span key={key} className={className}>
+          {parts}
         </span>
       );
     }
