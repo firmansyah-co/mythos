@@ -142,6 +142,7 @@ pub fn manifest() -> ModuleManifest {
         capabilities: vec![],
         config_schema: Value::Null,
         always_on: false,
+        profile: serde_json::Value::Null,
         routes: vec![
             route("GET", "/screens", "viewer", "list_screens",
                 "A project's HMI screens with their canvases.", None, &[VIEW]),

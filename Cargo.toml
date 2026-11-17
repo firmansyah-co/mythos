@@ -17,6 +17,7 @@ members = [
     "plugins/drivers/driver-modbus",
     "plugins/hmi",
     "plugins/discovery",
+    "plugins/runtime-vm",
     "src-tauri",
 ]
 

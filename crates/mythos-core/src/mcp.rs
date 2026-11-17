@@ -429,6 +429,48 @@ fn datatype_body() -> Value {
     udt_schema()
 }
 
+fn runtimes_config_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["instances"],
+        "description": "The whole runtimes configuration; it replaces the saved one.",
+        "properties": {
+            "instances": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "module", "run", "program"],
+                    "properties": {
+                        "id": { "type": "string", "description": "Letters, digits, - and _" },
+                        "module": { "type": "string", "description": "A runtime module's 'provides', for example vm" },
+                        "run": { "type": "boolean", "description": "Whether it is put in RUN when loaded" },
+                        "program": {
+                            "type": "object",
+                            "required": ["name", "version", "interval_ms", "code"],
+                            "properties": {
+                                "name": { "type": "string" },
+                                "version": { "type": "string" },
+                                "interval_ms": { "type": "integer", "minimum": 1 },
+                                "code": { "type": "string", "description": "The compiled program, hex" },
+                                "symbols": { "description": "The compiler's symbol table" },
+                                "inputs": { "type": "array", "items": { "type": "object", "required": ["variable", "tag"], "properties": {
+                                    "variable": { "type": "string" }, "tag": { "type": "string" },
+                                    "of": { "type": "string", "enum": ["value", "good"], "description": "value (default), or good: a BOOL that says whether the tag is current" } } } },
+                                "outputs": { "type": "array", "items": { "type": "object", "required": ["variable", "tag", "safe"], "properties": {
+                                    "variable": { "type": "string" }, "tag": { "type": "string" },
+                                    "safe": { "type": ["number", "boolean"], "description": "What the tag is written whenever the program is not running" } } } },
+                                "published": { "type": "array", "items": { "type": "object", "required": ["variable", "tag"], "properties": {
+                                    "variable": { "type": "string" }, "tag": { "type": "string", "description": "Starts with internal." },
+                                    "writable": { "type": "boolean" } } } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
 fn io_config_body() -> Value {
     json!({
         "type": "object",
@@ -1068,6 +1110,61 @@ pub const TOOLS: &[Tool] = &[
         path: "/api/v1/projects/:id/io",
         query: &[],
         body: Some(io_config_body),
+        read_only: false,
+        destructive: true,
+    },
+    Tool {
+        name: "list_runtimes",
+        title: "List the runtimes of this node",
+        description: "Every program this node executes: its mode (run, stop, fault, or unreachable when its module does not answer) and why, scan count and times, and each output with what the device last confirmed and whether it is at its safe value. Also the runtime modules found, each with the target profile a program is compiled for.",
+        method: "GET",
+        path: "/api/v1/runtimes",
+        query: &[],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "run_runtime",
+        title: "Put a program in RUN",
+        description: "Put a loaded program in RUN. From stop or fault this is a cold start: its variables take their initial values. It takes effect at the runtime's next exchange; read list_runtimes to see.",
+        method: "POST",
+        path: "/api/v1/runtimes/:id/run",
+        query: &[],
+        body: None,
+        read_only: false,
+        destructive: true,
+    },
+    Tool {
+        name: "stop_runtime",
+        title: "Put a program in STOP",
+        description: "Stop a program. Its outputs are written their safe values and its published tags stop being current.",
+        method: "POST",
+        path: "/api/v1/runtimes/:id/stop",
+        query: &[],
+        body: None,
+        read_only: false,
+        destructive: true,
+    },
+    Tool {
+        name: "get_runtimes_config",
+        title: "Get a project's runtimes",
+        description: "The programs a project is configured to run, with their bindings to tags, or null.",
+        method: "GET",
+        path: "/api/v1/projects/:id/runtimes",
+        query: &[],
+        body: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "save_runtimes_config",
+        title: "Save a project's runtimes",
+        description: "Check and save the programs a project runs. Each instance names a runtime module (list_runtimes shows them), whether to run at once, and a program: its code and symbols as the logic compiler made them, the tags read into variables (inputs), the variables written to field tags with the safe value each tag takes whenever the program is not running (outputs), and the variables published as tags starting with internal. (published; writable makes one a setpoint an operator may write). The module loads each program to check it; anything that does not load is refused and nothing is saved. For the active project the runtimes are then made to match.",
+        method: "PUT",
+        path: "/api/v1/projects/:id/runtimes",
+        query: &[],
+        body: Some(runtimes_config_body),
         read_only: false,
         destructive: true,
     },

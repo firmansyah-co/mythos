@@ -65,6 +65,9 @@ pub struct IoManager<S: PlatformShm + 'static> {
     /// Why this node reads no field devices, when it reads none (ADR-012 §2.1: a server's
     /// default). `None`: field I/O runs.
     field_io_off: StdRwLock<Option<String>>,
+    /// What the runtime drivers of every registry are given (ADR-013 §2.4): this server's tag
+    /// bus to read, its field I/O to write through, and where they report.
+    runtime_env: crate::runtimes::RuntimeEnv,
     _shm: PhantomData<fn() -> S>,
 }
 
@@ -100,17 +103,30 @@ impl<S: PlatformShm + 'static> IoManager<S> {
         catalog: Arc<RwLock<TagCatalog>>,
         shm_name: impl Into<String>,
         capacity: usize,
-        registry: DriverRegistry,
+        mut registry: DriverRegistry,
         module_dirs: Option<Vec<PathBuf>>,
     ) -> Arc<Self> {
+        let shm_name = shm_name.into();
+        let status = IoStatusHandle::not_running("field I/O has not been started");
+        let runtime_env = crate::runtimes::RuntimeEnv {
+            tags: Arc::new(crate::runtimes::BusTags::<S>::new(
+                Arc::clone(&catalog),
+                &shm_name,
+                capacity,
+            )),
+            io: status.clone(),
+            states: crate::runtimes::RuntimeStates::default(),
+        };
+        registry.set_runtime_env(runtime_env.clone());
         Arc::new(Self {
             storage,
             catalog,
-            shm_name: shm_name.into(),
+            shm_name,
             capacity,
             registry: StdRwLock::new(registry),
             module_dirs,
-            status: IoStatusHandle::not_running("field I/O has not been started"),
+            status,
+            runtime_env,
             running: Mutex::new(Running {
                 runtime: None,
                 config: None,
@@ -163,6 +179,19 @@ impl<S: PlatformShm + 'static> IoManager<S> {
     }
 
     /// The status of whatever is running. The same handle for the life of the manager.
+    /// The runtimes of this server: what each is doing, and the way to command them.
+    pub fn runtimes(&self) -> crate::runtimes::RuntimeStates {
+        self.runtime_env.states.clone()
+    }
+
+    /// The runtime modules found, each with what it can run.
+    pub fn runtime_modules(&self) -> Vec<Arc<mythos_module::ModuleBinary>> {
+        self.registry
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .runtimes()
+    }
+
     pub fn status(&self) -> IoStatusHandle {
         self.status.clone()
     }
@@ -196,6 +225,56 @@ impl<S: PlatformShm + 'static> IoManager<S> {
     /// its connection, and that no tag is provided twice or has a name the catalog would refuse.
     pub async fn check(&self, config: &IoConfig) -> Vec<ConfigProblem> {
         Self::check_with(&self.registry(), config).await
+    }
+
+    /// What is wrong with a project's runtimes, asked of the runtime module each names: the
+    /// module loads the program without running it. An empty answer means every instance
+    /// would start.
+    pub async fn check_runtimes(
+        &self,
+        config: &crate::runtimes::RuntimesConfig,
+    ) -> Vec<ConfigProblem> {
+        let registry = self.registry();
+        let mut problems = Vec::new();
+        for connection in config.connections() {
+            let problem = |message: String| ConfigProblem {
+                connection_id: Some(connection.id.clone()),
+                message,
+            };
+            let Some(driver) = registry.create(&connection.driver) else {
+                let available: Vec<String> = registry
+                    .runtimes()
+                    .iter()
+                    .map(|m| m.manifest.provides.clone())
+                    .collect();
+                problems.push(problem(format!(
+                    "no runtime module provides '{}' (available: {})",
+                    connection
+                        .driver
+                        .trim_start_matches(crate::runtimes::CONNECTION_PREFIX),
+                    if available.is_empty() {
+                        "none".to_string()
+                    } else {
+                        available.join(", ")
+                    }
+                )));
+                continue;
+            };
+            match driver.describe_config(&connection.config).await {
+                Ok(declarations) => {
+                    for declaration in declarations {
+                        if let Err(e) = TagMetadata::new(declaration.uri.clone(), 0) {
+                            problems.push(problem(format!(
+                                "tag '{}' is not valid: {}",
+                                declaration.uri, e
+                            )));
+                        }
+                    }
+                }
+                Err(e) => problems.push(problem(e.to_string())),
+            }
+        }
+        problems
     }
 
     /// [`Self::check`] against a given set of drivers, for a server with no running manager.
@@ -292,7 +371,26 @@ impl<S: PlatformShm + 'static> IoManager<S> {
             }
         };
 
-        let path = match self.storage.project_dir(&active) {
+        let project_dir = self.storage.project_dir(&active);
+        // The project's runtimes (ADR-013): each becomes a connection beside the field ones.
+        // A file that cannot be used starts none of them and says why; field I/O still runs.
+        let runtimes = match &project_dir {
+            Ok(dir) => match crate::runtimes::RuntimesConfig::load(
+                &dir.join(crate::runtimes::RUNTIMES_FILE),
+            ) {
+                Ok(config) => {
+                    self.runtime_env.states.set_problem(None);
+                    config.unwrap_or_default()
+                }
+                Err(e) => {
+                    error!("Runtimes configuration rejected: {}", e);
+                    self.runtime_env.states.set_problem(Some(e));
+                    Default::default()
+                }
+            },
+            Err(_) => Default::default(),
+        };
+        let path = match project_dir {
             Ok(dir) => dir.join(IO_CONFIG_FILE),
             Err(e) => {
                 return self
@@ -305,7 +403,14 @@ impl<S: PlatformShm + 'static> IoManager<S> {
         };
 
         let config = match IoConfig::load(&path) {
-            Ok(Some(config)) => config,
+            Ok(Some(mut config)) => {
+                config.connections.extend(runtimes.connections());
+                config
+            }
+            // A project may run programs and read no field device.
+            Ok(None) if !runtimes.instances.is_empty() => IoConfig {
+                connections: runtimes.connections(),
+            },
             Ok(None) => {
                 return self
                     .idle(
@@ -357,6 +462,7 @@ impl<S: PlatformShm + 'static> IoManager<S> {
             };
         };
         let mut registry = DriverRegistry::discover(dirs).await;
+        registry.set_runtime_env(self.runtime_env.clone());
         let settings = self
             .module_settings
             .read()

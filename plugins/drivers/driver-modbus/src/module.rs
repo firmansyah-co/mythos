@@ -126,6 +126,7 @@ pub fn manifest() -> ModuleManifest {
         capabilities: vec![crate::CAPABILITY_NETWORK_CLIENT.to_string()],
         config_schema: config_schema(),
         always_on: false,
+        profile: serde_json::Value::Null,
         routes: Vec::new(),
     }
 }
