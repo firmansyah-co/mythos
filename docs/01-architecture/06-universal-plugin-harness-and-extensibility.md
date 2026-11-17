@@ -16,7 +16,7 @@ MythOS eliminates monolithic software decay in industrial control and SCADA syst
 In MythOS, the Core Microkernel contains **zero application-domain logic**. The microkernel does not know what a PLC is, does not understand Modbus registers, does not hardcode alarm thresholds, and does not contain user interface screens.
 
 The **MythOS Core Microkernel** provides only four foundational primitives:
-1. **Lock-Free TagBus Engine**: Ultra-fast, triple-buffered shared memory (`/dev/shm/mythos_tagbus`) capable of $> 100,000$ tag updates/sec with $< 50\,\text{ns}$ atomic pointer swaps.
+1. **Lock-Free TagBus Engine**: Ultra-fast, triple-buffered shared memory (`/dev/shm/mythos_tagbus`) capable of $> 100,000$ tag updates/sec with atomic pointer swaps bounded at $< 300\,\text{ns}$ (TSK-002; 50 ns until the owner raised it on 2026-11-17).
 2. **Plugin Host & Supervisor**: An asynchronous Tokio/WASI actor supervisor that loads, initializes, isolates, schedules, monitors, and hot-reloads plugin extensions.
 3. **Capability-Based Security Barrier**: A zero-trust capability validator enforcing memory quotas, CPU execution timeouts, and strict TagBus write fencing.
 4. **Unified MCP Aggregator**: A Model Context Protocol registry that dynamically exposes tools, prompts, and resources from all registered plugins to autonomous AI agents.
