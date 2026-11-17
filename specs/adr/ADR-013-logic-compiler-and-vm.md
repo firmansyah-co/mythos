@@ -128,15 +128,16 @@ test holds equal.
     loads it and runs it scan for scan as before: the program does not stop and is not built
     again. Only a new major stops the programs of the line before until they are built again;
     such a format says so where it is introduced. The compiler makes the newest format only.
-  - *Today.* This VM reads formats 1 and 2 (`OLDEST_FORMAT_VERSION`, `FORMAT_VERSION`). Format
-    2 added the thirteen instructions on strings (`0xD0`–`0xDC`, opcodes no format-1
-    instruction had) and changed nothing of format 1: the six programs of the corpus compiled
-    by the format-1 and the format-2 compiler differ only in the version field and the
-    checksum. Format 0, the spike's, had a 16-byte header with no call depth and no table of
-    bodies; format 1 did not extend it, so it is refused. `older_formats_run_alike.rs` runs
-    the corpus as the format-1 compiler made it (committed bytes, never regenerated) against
-    the same sources compiled now, 200 scans each with the same inputs, memory equal after
-    every scan.
+  - *Today.* This VM reads formats 1, 2 and 3 (`OLDEST_FORMAT_VERSION`, `FORMAT_VERSION`).
+    Format 2 added the thirteen instructions on strings (`0xD0`–`0xDC`), format 3 the
+    thirteen numeric ones (`0xE0`–`0xEC`), each on opcodes no earlier instruction had, and
+    neither changed anything of the formats before: the programs of the corpus compiled by
+    the format-1 and the format-2 compiler, and by the format-2 and the format-3 compiler,
+    differ only in the version field and the checksum. Format 0, the spike's, had a 16-byte
+    header with no call depth and no table of bodies; format 1 did not extend it, so it is
+    refused. `older_formats_run_alike.rs` runs the corpus as the format-1 and the format-2
+    compiler made it (committed bytes, never regenerated) against the same sources compiled
+    now, 200 scans each with the same inputs, memory equal after every scan.
 - **Format 3** (format 1 with strings, L2c-1, and the numeric functions, L2c-2).
   - *Header*: magic, version, stack depth, memory size, code length, call depth, number of
     bodies, then a table of bodies (code offset, instance size), the initial memory image, the
@@ -681,9 +682,10 @@ Evidence of the spike (2026-11-17):
   optimised. Windows and macOS: not measured.
 - **Microcontrollers** (`scripts/logic-vm-footprint.sh`, CI job `logic-vm-bare-metal`): the VM
   with its loader and scan loop, `opt-level=s`, LTO, linked with `core` alone: **RP2040**
-  (thumbv6m-none-eabi) 32,180 bytes of code with the real functions (L2c-2; 23,216 with strings
-  alone, 19,304 before them, 19,200 before L2b, 15,884 before format 1);
-  **ESP32-C3** (riscv32imc-unknown-none-elf) 39,206 bytes (L2c-2; 27,204 with strings alone,
+  (thumbv6m-none-eabi) 32,288 bytes of code with the real functions and formats 1 and 2 read
+  (32,180 with the real functions before that, L2c-2; 23,216 with strings alone, 19,304 before them, 19,200 before L2b, 15,884 before format 1);
+  **ESP32-C3** (riscv32imc-unknown-none-elf) 39,274 bytes (39,206 before the older formats were
+  read, L2c-2; 27,204 with strings alone,
   22,812 before them, 22,908 before L2b, 19,146 before format 1). The real functions are most
   of L2c-2's: LREAL arithmetic in software on both. The L2b figures and the ones before it were both measured with rustc 1.99.1; the
   RISC-V build came out smaller with more in it, which is the compiler's doing and was not
@@ -737,7 +739,8 @@ Evidence of the spike (2026-11-17):
   module's test red; skipping the check of each instruction against the program's version
   turns `an_instruction_newer_than_the_programs_format_is_refused_at_load` red. The oracle
   and the emulators are unchanged (7,500 values, 287 deliberate; all 14 runs equal).
-- **L2c-2** (the library): 13 tests added to the five logic crates (192, from 179):
+- **L2c-2** (the library): 13 tests added to the five logic crates (197, from 184 with the
+  reading of format 1; 192 from 179 before it):
   `math_against_the_host.rs` (the accuracy of §2.13, measured; NaN and infinity where IEC 60559
   gives them; exact where it can be), `library_runs_on_the_vm.rs` (8: every function against
   the VM's own values, the tables' examples, MUX's error, only the chosen input worked out,

@@ -416,7 +416,11 @@ pub(crate) fn access(opcode: u8) -> Option<(bool, Cell, Reach)> {
 /// older format that holds it is refused: whatever wrote it did not write that format.
 pub fn introduced_in(opcode: u8) -> Option<u16> {
     instruction_len(opcode)?;
-    Some(if string_shape(opcode).is_some() { 2 } else { 1 })
+    Some(match opcode {
+        op::RFN..=op::CHKSEL => 3,
+        x if string_shape(x).is_some() => 2,
+        _ => 1,
+    })
 }
 
 /// Bytes an instruction takes, opcode included, or `None` for an unknown opcode.

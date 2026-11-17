@@ -4,8 +4,10 @@
 //! compiled now.
 //!
 //! `tests/fixtures/format1/` holds the six programs of `tests/differential/` as the format-1
-//! compiler made them (`origin/dev` at f4637cd); its README says how. They are committed bytes,
-//! never regenerated: regenerated, they would be what this compiler makes, and prove nothing.
+//! compiler made them (`origin/dev` at f4637cd), `tests/fixtures/format2/` the seven there were
+//! as the format-2 compiler made them (L2c-1's head, 78c84a7); each README says how. They are
+//! committed bytes, never regenerated: regenerated, they would be what this compiler makes,
+//! and prove nothing.
 
 use mythos_logic_compiler::{compile, Compiled, TargetProfile};
 use mythos_logic_vm::{cold_start, scan, write, Frame, Program, Value, FORMAT_VERSION};
@@ -14,38 +16,36 @@ const CYCLES: i64 = 200;
 const CYCLE_NS: i64 = 20_000_000;
 const BUDGET: u32 = 1_000_000;
 
-/// (name, bytes the format-1 compiler made, the source it made them from)
-const FORMAT_1: &[(&str, &[u8], &str)] = &[
-    (
-        "functions_and_blocks",
-        include_bytes!("fixtures/format1/functions_and_blocks.mlbc"),
-        include_str!("differential/functions_and_blocks.st"),
-    ),
-    (
-        "integers_and_control",
-        include_bytes!("fixtures/format1/integers_and_control.mlbc"),
-        include_str!("differential/integers_and_control.st"),
-    ),
-    (
-        "reals_and_conversions",
-        include_bytes!("fixtures/format1/reals_and_conversions.mlbc"),
-        include_str!("differential/reals_and_conversions.st"),
-    ),
-    (
-        "small_plant",
-        include_bytes!("fixtures/format1/small_plant.mlbc"),
-        include_str!("differential/small_plant.st"),
-    ),
-    (
-        "structures_and_arrays",
-        include_bytes!("fixtures/format1/structures_and_arrays.mlbc"),
-        include_str!("differential/structures_and_arrays.st"),
-    ),
-    (
-        "timers_and_counters",
-        include_bytes!("fixtures/format1/timers_and_counters.mlbc"),
-        include_str!("differential/timers_and_counters.st"),
-    ),
+/// (name, bytes an older compiler made, the source it made them from)
+type Fixture = (&'static str, &'static [u8], &'static str);
+
+macro_rules! fixture {
+    ($dir:literal, $name:literal) => {
+        (
+            $name,
+            include_bytes!(concat!("fixtures/", $dir, "/", $name, ".mlbc")),
+            include_str!(concat!("differential/", $name, ".st")),
+        )
+    };
+}
+
+const FORMAT_1: &[Fixture] = &[
+    fixture!("format1", "functions_and_blocks"),
+    fixture!("format1", "integers_and_control"),
+    fixture!("format1", "reals_and_conversions"),
+    fixture!("format1", "small_plant"),
+    fixture!("format1", "structures_and_arrays"),
+    fixture!("format1", "timers_and_counters"),
+];
+
+const FORMAT_2: &[Fixture] = &[
+    fixture!("format2", "functions_and_blocks"),
+    fixture!("format2", "integers_and_control"),
+    fixture!("format2", "reals_and_conversions"),
+    fixture!("format2", "small_plant"),
+    fixture!("format2", "strings"),
+    fixture!("format2", "structures_and_arrays"),
+    fixture!("format2", "timers_and_counters"),
 ];
 
 fn version(bytes: &[u8]) -> u16 {
@@ -109,20 +109,25 @@ impl<'a> Side<'a> {
     }
 }
 
-#[test]
-fn format_1_bytecode_runs_to_the_same_scans_as_its_source_compiled_now() {
+/// Each of `fixtures`, bytes of format `format`, runs beside its source compiled now: the
+/// same inputs before every scan, the same result and the same memory after it.
+fn runs_alike(format: u16, fixtures: &[Fixture]) {
     // A newer compiler than the fixtures', or the comparison is of a format with itself.
-    const { assert!(FORMAT_VERSION > 1) };
-    for (name, old, source) in FORMAT_1 {
-        // Committed format-1 bytes, intact: the loader checks the checksum too.
-        assert_eq!(version(old), 1, "{name}: the fixture is format 1");
+    assert!(format < FORMAT_VERSION);
+    for (name, old, source) in fixtures {
+        // Committed bytes of that format, intact: the loader checks the checksum too.
+        assert_eq!(
+            version(old),
+            format,
+            "{name}: the fixture is format {format}"
+        );
         let now =
             compile(source, &TargetProfile::pc()).unwrap_or_else(|d| panic!("{name}: {}", d[0]));
         assert_eq!(version(&now.bytecode), FORMAT_VERSION, "{name}");
 
         let mut a = Side::new(old);
         let mut b = Side::new(&now.bytecode);
-        assert_eq!(a.p.format_version(), 1, "{name}");
+        assert_eq!(a.p.format_version(), format, "{name}");
         assert_eq!(b.p.format_version(), FORMAT_VERSION, "{name}");
         assert_eq!(a.memory, b.memory, "{name}: the same initial memory");
         assert_eq!(
@@ -157,19 +162,31 @@ fn format_1_bytecode_runs_to_the_same_scans_as_its_source_compiled_now() {
 }
 
 #[test]
+fn format_1_bytecode_runs_to_the_same_scans_as_its_source_compiled_now() {
+    runs_alike(1, FORMAT_1);
+}
+
+#[test]
+fn format_2_bytecode_runs_to_the_same_scans_as_its_source_compiled_now() {
+    runs_alike(2, FORMAT_2);
+}
+
+#[test]
 fn every_fixture_is_one_of_the_differential_programs() {
-    // A program added to tests/differential/ after format 1 has no format-1 bytes; one that
-    // was there then must have them here.
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/format1");
-    let mut on_disk: Vec<String> = std::fs::read_dir(dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().into_string().unwrap())
-        .filter(|f| f.ends_with(".mlbc"))
-        .collect();
-    on_disk.sort();
-    let listed: Vec<String> = FORMAT_1
-        .iter()
-        .map(|(n, _, _)| format!("{n}.mlbc"))
-        .collect();
-    assert_eq!(on_disk, listed);
+    // A program added to tests/differential/ after a format has no bytes of it; one that was
+    // there then must have them here.
+    for (dir, fixtures) in [("format1", FORMAT_1), ("format2", FORMAT_2)] {
+        let path = format!("{}/tests/fixtures/{dir}", env!("CARGO_MANIFEST_DIR"));
+        let mut on_disk: Vec<String> = std::fs::read_dir(path)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|f| f.ends_with(".mlbc"))
+            .collect();
+        on_disk.sort();
+        let listed: Vec<String> = fixtures
+            .iter()
+            .map(|(n, _, _)| format!("{n}.mlbc"))
+            .collect();
+        assert_eq!(on_disk, listed, "{dir}");
+    }
 }
