@@ -1,0 +1,617 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CheckResult, Variable } from '../bridge';
+import { EDITOR } from '../entry';
+import { ProgramEditor } from '../ProgramEditor';
+import { ProgramsTree } from '../ProgramsTree';
+import { isDirty, usePrograms } from '../programs';
+import {
+  button,
+  byLabel,
+  byTestId,
+  click,
+  connection,
+  doing,
+  entryOf,
+  ioStatus,
+  project,
+  render,
+  resetStores,
+  runtimeOf,
+  runtimesOf,
+  sample,
+  server,
+  settle,
+  texts,
+  typeInto,
+  typeSource,
+  unmountAll,
+  useController,
+  useSession,
+  useShell,
+  useTelemetry,
+  type Backend,
+} from './harness';
+
+const LEVEL = 'external.Plant.LT1.level';
+const SPEED = 'external.Plant.P1.speed';
+const TANK = 'PROGRAM Tank\nVAR_INPUT level : INT; ok : BOOL; END_VAR\nVAR_OUTPUT speed : INT; run : BOOL; END_VAR\nEND_PROGRAM\n';
+
+const variable = (path: string, type: string, section: string, bindable = true): Variable => ({ path, type, section, bindable });
+const VARIABLES = [
+  variable('level', 'INT', 'input'),
+  variable('ok', 'BOOL', 'input'),
+  variable('speed', 'INT', 'output'),
+  variable('run', 'BOOL', 'output'),
+  variable('t.ET', 'TIME', 'local', false),
+];
+const compiles = (): CheckResult => ({ ok: true, diagnostics: [], variables: VARIABLES, code_size: 120, memory_size: 16, binding_problems: [] });
+/** A compiler that refuses any text with `oops` in it, at line 3, column 8. */
+const check = (source: string): CheckResult =>
+  source.includes('oops')
+    ? { ok: false, diagnostics: [{ line: 3, col: 8, message: 'oops is not declared' }] }
+    : compiles();
+
+const tank = (over: Partial<Backend> = {}): Backend => ({
+  programs: [{ entry: entryOf('Tank'), source: TANK }],
+  check,
+  runtimes: runtimesOf(),
+  ...over,
+});
+
+const state = () => usePrograms.getState();
+const doc = (name = 'Tank') => {
+  const found = state().programs.find((d) => d.entry.name === name);
+  if (!found) throw new Error(`no program ${name}`);
+  return found;
+};
+const writes = (calls: Array<{ method: string; path: string; body: unknown }>) =>
+  calls.filter((call) => call.method !== 'GET').map((call) => `${call.method} ${call.path.replace(/^.*\/api\/v1/, '')}`);
+
+/** The workbench has `plant` open, the controller runs it, and the logic UI has read it. */
+async function opened(backend: Backend) {
+  const calls = server(backend);
+  useShell.setState({ project: project('plant'), view: 'project' });
+  useController.setState({ activeProjectId: 'plant', io: ioStatus([connection('plc1', [LEVEL, SPEED])]) });
+  await settle();
+  const container = render(<ProgramEditor name="Tank" />);
+  await settle();
+  return { calls, container };
+}
+
+beforeEach(() => {
+  resetStores();
+});
+
+afterEach(() => {
+  unmountAll();
+  vi.unstubAllGlobals();
+});
+
+describe('reading the programs', () => {
+  it('says the programs are unreadable instead of showing a project with none', async () => {
+    const { container } = await opened(tank({ intercept: (call) => (call.path.endsWith('/logic/programs') ? new Response('{"error":"disk"}', { status: 500, statusText: 'Internal Server Error' }) : undefined) }));
+
+    expect(state().phase).toBe('unreadable');
+    expect(byTestId(container, 'programs-unreadable')?.textContent).toContain('disk');
+    expect(byTestId(container, 'program-missing')).toBeNull();
+    const tree = render(<ProgramsTree openEditor={() => undefined} />);
+    expect(byTestId(tree, 'tree-programs-unreadable')).not.toBeNull();
+    // Nothing can be added to a list that was not read.
+    expect(byTestId(tree, 'tree-add-program')).toBeNull();
+  });
+
+  it('shows an opened program as it is saved, checks it once, and lists its variables', async () => {
+    const { calls, container } = await opened(tank());
+
+    expect(container.querySelector('textarea')?.value).toBe(TANK);
+    expect(isDirty(doc())).toBe(false);
+    expect(byTestId(container, 'program-unsaved')).toBeNull();
+    expect(byTestId(container, 'check-ok')?.textContent).toBe('COMPILES');
+    expect(texts(container, 'variable-row').map((row) => row.split('Bind')[0])).toEqual([
+      'levelINTinput',
+      'okBOOLinput',
+      'speedINToutput',
+      'runBOOLoutput',
+      't.ETTIMElocal—',
+    ]);
+    expect(writes(calls)).toEqual(['POST /projects/plant/logic/programs/Tank/check']);
+  });
+
+  it('says a source that could not be read could not be read, and offers no empty editor', async () => {
+    const { container } = await opened(tank({ intercept: (call) => (call.path.endsWith('/programs/Tank') ? new Response('{"error":"gone"}', { status: 500, statusText: 'Internal Server Error' }) : undefined) }));
+
+    expect(byTestId(container, 'program-unreadable')?.textContent).toContain('gone');
+    expect(container.querySelector('textarea')).toBeNull();
+  });
+});
+
+describe('editing, checking and saving', () => {
+  it('keeps an edit unsaved until it is saved, and saves only what changed', async () => {
+    const backend = tank();
+    const { calls, container } = await opened(backend);
+    calls.length = 0;
+
+    typeSource(container, `${TANK}(* edited *)`);
+    expect(byTestId(container, 'program-unsaved')?.textContent).toBe('UNSAVED');
+    expect(backend.programs[0]?.source).toBe(TANK);
+    click(button(container, 'Save'));
+    await settle();
+
+    expect(writes(calls)).toEqual(['PUT /projects/plant/logic/programs/Tank/source']);
+    expect(backend.programs[0]?.source).toBe(`${TANK}(* edited *)`);
+    expect(byTestId(container, 'program-unsaved')).toBeNull();
+
+    calls.length = 0;
+    typeInto(byLabel(container, 'Interval in milliseconds'), '20');
+    expect(byTestId(container, 'program-unsaved')).not.toBeNull();
+    click(button(container, 'Save'));
+    await settle();
+    expect(writes(calls)).toEqual(['PUT /projects/plant/logic/programs/Tank/settings']);
+    expect(backend.programs[0]?.entry.interval_ms).toBe(20);
+    // The name and the language are not the client's to send.
+    expect(Object.keys(calls.find((c) => c.method === 'PUT')?.body as object).sort()).toEqual([
+      'inputs', 'interval_ms', 'outputs', 'published', 'run', 'runtime', 'target',
+    ]);
+  });
+
+  it('discards an edit back to what is saved', async () => {
+    const { container } = await opened(tank());
+    typeSource(container, 'changed');
+    typeInto(byLabel(container, 'Target profile'), 'rp2040');
+    click(button(container, 'Discard'));
+
+    expect(container.querySelector('textarea')?.value).toBe(TANK);
+    expect((byLabel(container, 'Target profile') as HTMLInputElement).value).toBe('pc');
+    expect(isDirty(doc())).toBe(false);
+  });
+
+  it('checks the text in the editor, saved or not, and shows each diagnostic where it is', async () => {
+    const backend = tank();
+    const { calls, container } = await opened(backend);
+    const wrong = 'PROGRAM Tank\nVAR a : INT; END_VAR\n  a := oops;\nEND_PROGRAM';
+    typeSource(container, wrong);
+    calls.length = 0;
+    click(button(container, 'Check'));
+    await settle();
+
+    // Only what was sent: the editor also reads the runtimes on a timer, which is not this.
+    expect(calls.filter((c) => c.method !== 'GET').map((c) => c.body)).toEqual([{ source: wrong }]);
+    expect(backend.programs[0]?.source).toBe(TANK);
+    expect(texts(container, 'diagnostic')).toEqual(['3:8oops is not declared']);
+    expect(byTestId(container, 'source-error-line')?.textContent).toBe('3');
+    expect(byTestId(container, 'source-error-mark')?.textContent).toBe('oops');
+    expect(byTestId(container, 'check-ok')).toBeNull();
+    // The variables shown are those of the last text that compiled, and said to be.
+    expect(byTestId(container, 'variables-stale')).not.toBeNull();
+    expect(texts(container, 'variable-row')).toHaveLength(5);
+
+    // Clicking a diagnostic puts the caret there.
+    click(byTestId(container, 'diagnostic'));
+    const area = container.querySelector('textarea') as HTMLTextAreaElement;
+    expect(area.selectionStart).toBe(wrong.indexOf('oops'));
+
+    // Once the text changes, the diagnostics are of another text: said, and no longer marked.
+    typeSource(container, `${wrong} `);
+    expect(byTestId(container, 'check-stale')).not.toBeNull();
+    expect(byTestId(container, 'source-error-mark')).toBeNull();
+    expect(byTestId(container, 'source-error-line')).toBeNull();
+  });
+
+  it('keeps no result of a check that failed, rather than one of an earlier text', async () => {
+    const backend = tank();
+    const { container } = await opened(backend);
+    expect(byTestId(container, 'check-ok')).not.toBeNull();
+    backend.intercept = (call) => (call.path.endsWith('/check') ? new Response('{"error":"module died"}', { status: 500, statusText: 'Internal Server Error' }) : undefined);
+    click(button(container, 'Check'));
+    await settle();
+
+    expect(byTestId(container, 'check-ok')).toBeNull();
+    expect(byTestId(container, 'check-none')).not.toBeNull();
+    expect(byTestId(container, 'program-error')?.textContent).toContain('module died');
+  });
+});
+
+describe('bindings', () => {
+  it('binds a variable to a tag, and an output has no safe value until one is given', async () => {
+    const backend = tank();
+    const { calls, container } = await opened(backend);
+
+    typeInto(byLabel(container, 'Bind level'), 'input');
+    typeInto(byLabel(container, 'Reads tag for level'), LEVEL);
+    typeInto(byLabel(container, 'Bind speed'), 'output');
+    typeInto(byLabel(container, 'Writes tag for speed'), SPEED);
+
+    // Nothing was typed for the safe value: it is none, said so, and not zero.
+    expect((byLabel(container, 'Safe value of speed') as HTMLInputElement).value).toBe('');
+    expect(texts(container, 'binding-problem')).toEqual([
+      'A safe value is required: what the tag is written whenever the program is not running.',
+    ]);
+    expect(doc().entry.outputs).toEqual([{ variable: 'speed', tag: SPEED, safe: null }]);
+
+    typeInto(byLabel(container, 'Safe value of speed'), '0');
+    expect(texts(container, 'binding-problem')).toEqual([]);
+    calls.length = 0;
+    click(button(container, 'Save'));
+    await settle();
+    expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({
+      inputs: [{ variable: 'level', tag: LEVEL }],
+      outputs: [{ variable: 'speed', tag: SPEED, safe: 0 }],
+    });
+  });
+
+  it('offers GOOD only for a BOOL, and TRUE or FALSE as the safe value of a BOOL output', async () => {
+    const { container } = await opened(tank());
+    const kinds = (label: string) => [...(byLabel(container, label) as HTMLSelectElement).options].map((o) => o.value);
+    expect(kinds('Bind level')).toEqual(['', 'input', 'output', 'published']);
+    expect(kinds('Bind ok')).toEqual(['', 'input', 'good', 'output', 'published']);
+    // A TIME cannot be bound: there is nothing to choose.
+    expect(byLabel(container, 'Bind t.ET')).toBeNull();
+
+    typeInto(byLabel(container, 'Bind run'), 'output');
+    const safe = byLabel(container, 'Safe value of run') as HTMLSelectElement;
+    expect(safe.tagName).toBe('SELECT');
+    expect(safe.value).toBe('');
+    typeInto(safe, 'false');
+    expect(doc().entry.outputs[0]?.safe).toBe(false);
+  });
+
+  it('shows a binding the program has no variable for, and removing one leaves the others', async () => {
+    const entry = entryOf('Tank', {
+      inputs: [{ variable: 'flow', tag: 'external.Plant.FT1.flow' }, { variable: 'level', tag: LEVEL }],
+      published: [{ variable: 'level', tag: 'internal.Plant.Tank.level', writable: false }],
+    });
+    const { container } = await opened(tank({ programs: [{ entry, source: TANK }] }));
+
+    expect(byTestId(container, 'bindings-without-variable')?.textContent).toContain('flow');
+    click(byLabel(container, 'Remove: Reads tag for flow'));
+    expect(byTestId(container, 'bindings-without-variable')).toBeNull();
+    expect(doc().entry.inputs).toEqual([{ variable: 'level', tag: LEVEL }]);
+    expect(doc().entry.published).toHaveLength(1);
+  });
+
+  it('shows a bound tag\'s value only while it is a current one', async () => {
+    const entry = entryOf('Tank', { inputs: [{ variable: 'level', tag: LEVEL }] });
+    const { container } = await opened(tank({ programs: [{ entry, source: TANK }] }));
+    const value = () => {
+      const cell = byTestId(container, 'tag-value');
+      return `${cell?.getAttribute('data-state')}:${cell?.textContent}`;
+    };
+
+    expect(value()).toMatch(/^offline:/);
+    await doing(() => useTelemetry.setState({ stream: 'OPEN', tags: new Map([[LEVEL, sample(LEVEL, { type: 'INT', value: 20 })]]) }));
+    expect(value()).toBe('live:20');
+    await doing(() =>
+      useTelemetry.setState({ tags: new Map([[LEVEL, sample(LEVEL, { type: 'INT', value: 20, qualityName: 'BAD_COMM_FAILURE', qualityCode: 0 })]]) })
+    );
+    expect(value()).toMatch(/^stale:20/);
+  });
+});
+
+describe('loading into a runtime', () => {
+  it('saves, checks, builds, and puts the instance into the project\'s runtimes beside the others', async () => {
+    const other = { id: 'Pump', module: 'vm', run: true, program: { name: 'Pump' } };
+    const old = { id: 'Tank', module: 'vm', run: true, program: { name: 'Tank', source: 'old' } };
+    const backend = tank({ config: { instances: [other, old] } });
+    const { calls, container } = await opened(backend);
+    typeSource(container, `${TANK}(* v2 *)`);
+    calls.length = 0;
+    click(byTestId(container, 'program-load'));
+    await settle();
+
+    expect(writes(calls)).toEqual([
+      'PUT /projects/plant/logic/programs/Tank/source',
+      'POST /projects/plant/logic/programs/Tank/check',
+      'POST /projects/plant/logic/programs/Tank/build',
+      'PUT /projects/plant/runtimes',
+    ]);
+    expect(backend.config?.instances).toEqual([
+      other,
+      { id: 'Tank', module: 'vm', run: false, program: { name: 'Tank', source: `${TANK}(* v2 *)` } },
+    ]);
+    expect(byTestId(container, 'program-built')?.textContent).toContain('Version build1 was built and loaded.');
+    expect(byTestId(container, 'program-unsaved')).toBeNull();
+  });
+
+  it('builds and loads nothing of a program that does not compile, and says where it is wrong', async () => {
+    const backend = tank({ config: { instances: [] } });
+    const { calls, container } = await opened(backend);
+    typeSource(container, 'PROGRAM Tank\n\n  a := oops;\nEND_PROGRAM');
+    calls.length = 0;
+    click(byTestId(container, 'program-load'));
+    await settle();
+
+    expect(writes(calls)).toEqual([
+      'PUT /projects/plant/logic/programs/Tank/source',
+      'POST /projects/plant/logic/programs/Tank/check',
+    ]);
+    expect(backend.config?.instances).toEqual([]);
+    expect(byTestId(container, 'program-error')?.textContent).toBe('Program Tank was not loaded: it does not compile.');
+    expect(texts(container, 'diagnostic')).toEqual(['3:8oops is not declared']);
+    expect(byTestId(container, 'program-built')).toBeNull();
+  });
+
+  it('loads nothing while a binding names a variable the program does not have', async () => {
+    const backend = tank({
+      config: null,
+      check: () => ({ ...compiles(), binding_problems: ['input x: the program has no variable flow'] }),
+    });
+    const { calls, container } = await opened(backend);
+    calls.length = 0;
+    click(byTestId(container, 'program-load'));
+    await settle();
+
+    expect(writes(calls)).toEqual(['POST /projects/plant/logic/programs/Tank/check']);
+    expect(texts(container, 'binding-check-problem')).toEqual(['input x: the program has no variable flow']);
+    expect(byTestId(container, 'program-error')?.textContent).toContain('its bindings do not match its variables');
+  });
+
+  it('says a build was saved and not started when the controller runs another project', async () => {
+    const { container } = await opened(tank({ applied: false, warnings: [`output ${SPEED} is not a tag of this controller now`] }));
+    await doing(() => useController.setState({ activeProjectId: 'other' }));
+    click(byTestId(container, 'program-load'));
+    await settle();
+
+    const built = byTestId(container, 'program-built')?.textContent ?? '';
+    expect(built).toContain('nothing was started');
+    expect(built).not.toContain('and loaded.');
+    expect(texts(container, 'build-warning')).toEqual([`output ${SPEED} is not a tag of this controller now`]);
+    expect(byTestId(container, 'runtime-elsewhere')?.textContent).toContain('(other)');
+  });
+
+  it('says a program the controller saved but did not start did not start, and why', async () => {
+    const backend = tank({
+      intercept: (call) =>
+        call.method === 'PUT' && call.path.endsWith('/runtimes')
+          ? Response.json({ applied: true, changes: { started: [], failed: [['runtime:Tank', 'the module exited at start']] } })
+          : undefined,
+    });
+    const { container } = await opened(backend);
+    click(byTestId(container, 'program-load'));
+    await settle();
+
+    expect(byTestId(container, 'program-error')?.textContent).toBe(
+      "Program Tank version build1 was saved into the project's runtimes but did not start: the module exited at start"
+    );
+    const built = byTestId(container, 'program-built')?.textContent ?? '';
+    expect(built).toContain('but it did not start.');
+    expect(built).not.toContain('and loaded.');
+  });
+
+  it('is not troubled by another runtime that did not start', async () => {
+    const backend = tank({
+      intercept: (call) =>
+        call.method === 'PUT' && call.path.endsWith('/runtimes')
+          ? Response.json({ applied: true, changes: { started: ['runtime:Tank'], failed: [['runtime:Pump', 'no such module']] } })
+          : undefined,
+    });
+    const { container } = await opened(backend);
+    click(byTestId(container, 'program-load'));
+    await settle();
+
+    expect(byTestId(container, 'program-error')).toBeNull();
+    expect(byTestId(container, 'program-built')?.textContent).toContain('was built and loaded.');
+  });
+
+  it('says a build that was refused by the controller was not loaded', async () => {
+    const backend = tank({
+      intercept: (call) =>
+        call.method === 'PUT' && call.path.endsWith('/runtimes')
+          ? new Response('{"error":"the runtimes configuration has problems and was not saved"}', { status: 400, statusText: 'Bad Request' })
+          : undefined,
+    });
+    const { container } = await opened(backend);
+    click(byTestId(container, 'program-load'));
+    await settle();
+
+    expect(byTestId(container, 'program-error')?.textContent).toContain('was not saved');
+    expect(byTestId(container, 'program-built')?.textContent).toContain('was built and is not loaded.');
+  });
+});
+
+describe('what the runtime is doing', () => {
+  const mode = (container: HTMLElement) => byTestId(container, 'runtime-mode')?.textContent;
+
+  it('says a program no runtime runs is not loaded, and offers no run or stop', async () => {
+    const { container } = await opened(tank({ runtimes: runtimesOf(runtimeOf('Pump')) }));
+    expect(mode(container)).toBe('NOT LOADED');
+    expect((byTestId(container, 'runtime-run') as HTMLButtonElement).disabled).toBe(true);
+    expect((byTestId(container, 'runtime-stop') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('shows a running program with its version and scan time, and each later reading', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')) });
+    const { container } = await opened(backend);
+    expect(mode(container)).toBe('RUN');
+    expect(byTestId(container, 'runtime-version')?.textContent).toBe('Tank · version aaaaaaaaaaaa');
+    expect(byTestId(container, 'runtime-scan-time')?.textContent).toBe('last 7 µs · longest 19 µs');
+    // A program with no output writes none: "written by the program" would be a claim.
+    expect(byTestId(container, 'runtime-outputs')?.textContent).toBe('none');
+
+    const outputs = [{ tag: SPEED, variable: 'speed', safe: 0, written: 300, error: null }];
+    backend.runtimes = runtimesOf(runtimeOf('Tank', { outputs }));
+    await doing(() => state().readRuntimes());
+    expect(byTestId(container, 'runtime-outputs')?.textContent).toBe('written by the program');
+
+    backend.runtimes = runtimesOf(runtimeOf('Tank', { mode: 'fault', reason: 'division by zero at 0x1c', outputs_safe: true, outputs }));
+    await doing(() => state().readRuntimes());
+    expect(mode(container)).toBe('FAULT');
+    expect(byTestId(container, 'runtime-mode')?.className).toContain('badge--bad');
+    expect(byTestId(container, 'runtime-reason')?.textContent).toBe('division by zero at 0x1c');
+    expect(byTestId(container, 'runtime-outputs')?.textContent).toBe('at their safe values');
+
+    backend.runtimes = runtimesOf(runtimeOf('Tank', { mode: 'stop', outputs_safe: false, scans: 0, last_scan_us: 0, max_scan_us: 0, outputs }));
+    await doing(() => state().readRuntimes());
+    expect(mode(container)).toBe('STOP');
+    expect(byTestId(container, 'runtime-mode')?.className).not.toContain('badge--good');
+    // A stopped program whose outputs are not confirmed safe is said to be exactly that.
+    expect(byTestId(container, 'runtime-outputs')?.textContent).toBe('NOT CONFIRMED at their safe values');
+    // No scan has run: there is no scan time, and zero is not one.
+    expect(byTestId(container, 'runtime-scan-time')?.textContent).toBe('NOT MEASURED');
+  });
+
+  it('says UNKNOWN while the runtimes have never been read', async () => {
+    const { container } = await opened(tank({ runtimes: 'fails' }));
+    expect(mode(container)).toBe('UNKNOWN');
+    expect(byTestId(container, 'runtime-unknown-why')?.textContent).toContain('the runtimes cannot be read');
+    expect((byTestId(container, 'runtime-unload') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('marks what it shows as last known when the runtimes can no longer be read, until they can', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')) });
+    const { container } = await opened(backend);
+    expect(byTestId(container, 'runtime-stale')).toBeNull();
+
+    backend.runtimes = 'fails';
+    await doing(() => state().readRuntimes());
+    expect(mode(container)).toBe('RUN');
+    expect(byTestId(container, 'runtime-stale')?.textContent).toBe('LAST KNOWN');
+    expect(byTestId(container, 'runtime-stale-why')).not.toBeNull();
+    // Run is not sent on the strength of a state that is no longer known. Stop is the safe
+    // direction and is never taken away.
+    expect((byTestId(container, 'runtime-run') as HTMLButtonElement).disabled).toBe(true);
+    expect((byTestId(container, 'runtime-stop') as HTMLButtonElement).disabled).toBe(false);
+
+    backend.runtimes = runtimesOf(runtimeOf('Tank', { mode: 'stop', outputs_safe: true }));
+    await doing(() => state().readRuntimes());
+    expect(mode(container)).toBe('STOP');
+    expect(byTestId(container, 'runtime-stale')).toBeNull();
+  });
+
+  it('asks the runtime to stop and to run, and takes the program out of the runtimes', async () => {
+    const other = { id: 'Pump', module: 'vm', run: true, program: {} };
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')), config: { instances: [{ id: 'Tank' }, other] } });
+    const { calls, container } = await opened(backend);
+    calls.length = 0;
+    const asked: string[] = [];
+    let agree = false;
+    vi.stubGlobal('confirm', (question: string) => {
+      asked.push(question);
+      return agree;
+    });
+
+    // Stop is not asked about. Run is: it starts writing to the plant.
+    click(byTestId(container, 'runtime-stop'));
+    await settle();
+    expect(asked).toEqual([]);
+    click(byTestId(container, 'runtime-run'));
+    await settle();
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain('cold start');
+    expect(writes(calls)).toEqual(['POST /runtimes/Tank/stop']);
+
+    agree = true;
+    click(byTestId(container, 'runtime-run'));
+    await settle();
+    click(byTestId(container, 'runtime-unload'));
+    await settle();
+
+    expect(writes(calls)).toEqual(['POST /runtimes/Tank/stop', 'POST /runtimes/Tank/run', 'PUT /projects/plant/runtimes']);
+    expect(backend.config?.instances).toEqual([other]);
+  });
+
+  it('keeps Stop within reach while another request is still unanswered', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')) });
+    const { container } = await opened(backend);
+    // A check that never comes back.
+    backend.intercept = (call) => (call.path.endsWith('/check') ? (new Promise(() => undefined) as unknown as Response) : undefined);
+    click(button(container, 'Check'));
+    await settle();
+
+    expect((byTestId(container, 'program-load') as HTMLButtonElement).disabled).toBe(true);
+    expect((byTestId(container, 'runtime-run') as HTMLButtonElement).disabled).toBe(true);
+    expect((byTestId(container, 'runtime-stop') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('says so when the runtime runs another version than the one just built', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank', { version: 'older' })) });
+    const { container } = await opened(backend);
+    click(byTestId(container, 'program-load'));
+    await settle();
+    expect(byTestId(container, 'program-version-differs')?.textContent).toContain('(older)');
+
+    backend.runtimes = runtimesOf(runtimeOf('Tank', { version: 'build1' }));
+    await doing(() => state().readRuntimes());
+    expect(byTestId(container, 'program-version-differs')).toBeNull();
+  });
+});
+
+describe('who may change a program', () => {
+  it('lets a viewer read and check, and change nothing', async () => {
+    useSession.setState({ phase: 'signed-in', user: { username: 'vera', display_name: 'Vera', role: 'viewer', via: 'session' } });
+    const { container } = await opened(tank({ runtimes: runtimesOf(runtimeOf('Tank')) }));
+
+    expect(container.querySelector('textarea')?.readOnly).toBe(true);
+    for (const id of ['program-load', 'runtime-run', 'runtime-stop', 'runtime-unload']) {
+      expect((byTestId(container, id) as HTMLButtonElement).disabled, id).toBe(true);
+    }
+    expect((button(container, 'Save') as HTMLButtonElement).disabled).toBe(true);
+    expect((button(container, 'Check') as HTMLButtonElement).disabled).toBe(false);
+    expect((byLabel(container, 'Bind level') as HTMLSelectElement).disabled).toBe(true);
+    expect(button(container, 'Remove program…')).toBeNull();
+    const tree = render(<ProgramsTree openEditor={() => undefined} />);
+    expect(byTestId(tree, 'tree-add-program')).toBeNull();
+    expect(texts(tree, 'tree-program')).toEqual(['Tank']);
+  });
+});
+
+describe('the Programs section of the tree', () => {
+  it('adds a program by name, refusing what is not a name before asking the controller', async () => {
+    const backend = tank();
+    const { calls } = await opened(backend);
+    const openedEditors: string[] = [];
+    const tree = render(<ProgramsTree openEditor={(name) => openedEditors.push(name)} />);
+    calls.length = 0;
+
+    click(byTestId(tree, 'tree-add-program'));
+    typeInto(byLabel(tree, 'Program name'), '2pump');
+    expect(byTestId(tree, 'tree-program-name-invalid')).not.toBeNull();
+    await doing(() => byLabel(tree, 'Program name')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(writes(calls)).toEqual([]);
+
+    typeInto(byLabel(tree, 'Program name'), 'Pump');
+    await doing(() => byLabel(tree, 'Program name')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(writes(calls)).toEqual(['POST /projects/plant/logic/programs']);
+    expect(texts(tree, 'tree-program')).toEqual(['Tank', 'Pump']);
+    expect(openedEditors).toEqual(['Pump']);
+  });
+
+  it('marks a program with unsaved changes', async () => {
+    const { container } = await opened(tank());
+    const tree = render(<ProgramsTree openEditor={() => undefined} />);
+    expect(texts(tree, 'tree-program')).toEqual(['Tank']);
+    typeSource(container, 'changed');
+    expect(texts(tree, 'tree-program')).toEqual(['Tank*']);
+  });
+
+  it('removes a program only when asked twice, and closes its editor', async () => {
+    const backend = tank();
+    const calls = server(backend);
+    useShell.setState({ project: project('plant'), view: 'project' });
+    await settle();
+    const removed: string[] = [];
+    const container = render(<ProgramEditor name="Tank" onRemoved={(name) => removed.push(name)} />);
+    await settle();
+    calls.length = 0;
+
+    click(button(container, 'Remove program…'));
+    expect(writes(calls)).toEqual([]);
+    click(byTestId(container, 'program-remove-confirm'));
+    await settle();
+
+    expect(writes(calls)).toEqual(['DELETE /projects/plant/logic/programs/Tank']);
+    expect(removed).toEqual(['Tank']);
+    expect(state().programs).toEqual([]);
+  });
+});
+
+describe('in the workbench', () => {
+  it('opens a program in an editor of its own kind, titled with its name', async () => {
+    server(tank());
+    useShell.setState({ project: project('plant'), view: 'project' });
+    await settle();
+    const tree = render(<ProgramsTree openEditor={(name) => useShell.getState().openEditor(EDITOR, name)} />);
+    await doing(() => byTestId(tree, 'tree-program')?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
+
+    expect(useShell.getState().editors.map((editor) => editor.id)).toEqual([`${EDITOR}:Tank`]);
+  });
+});

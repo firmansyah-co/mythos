@@ -310,6 +310,63 @@ try {
   await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
   check('closing the module’s editor returns to the screen', await evaluate(`__t.has('[data-testid="io-field"]')`));
 
+  // 8c. Control logic (ADR-013): a program written in the workbench is checked by the logic
+  // module, bound to a tag of the device, built, loaded into the VM runtime, and its result is
+  // read back from the tag bus. Three module processes and a simulated device; nothing stubbed.
+  check('the logic module adds Programs to the project tree', await evaluate(`__t.has('[data-testid="tree-programs"]')`));
+  await evaluate(`__t.clickTestId('tree-add-program')`); await sleep(200);
+  await evaluate(`__t.type('Program name', 'Doubler'); __t.press('Program name', 'Enter'); true`); await sleep(1500);
+  check('a program added from the tree opens in the program editor', await evaluate(`__t.has('[data-testid="program-editor"]')`));
+  check('under a header the module names', (await evaluate(`__t.text('.workarea__path')[0]`)) === 'Boiler HouseProgramsDoubler',
+    await evaluate(`__t.text('.workarea__path')[0]`));
+  check('a program nothing runs is said to be not loaded', (await evaluate(`__t.text('[data-testid="runtime-mode"]')[0]`)) === 'NOT LOADED',
+    await evaluate(`__t.text('[data-testid="runtime-mode"]')[0]`));
+  const typeSource = (text) => evaluate(`(() => {
+    const area = document.querySelector('[aria-label="Structured Text source"]');
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(area, ${JSON.stringify(text)});
+    area.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  await typeSource('PROGRAM Doubler\nVAR_INPUT seconds : INT; END_VAR\nVAR twice : DINT; END_VAR\n  twice := seconds * oops;\nEND_PROGRAM\n');
+  await evaluate(`__t.click('Check')`); await sleep(1200);
+  const diagnostics = await evaluate(`__t.text('[data-testid="diagnostic"]')`);
+  check('a mistake is reported by the compiler with its line and column', diagnostics.length === 1 && /^4:\d+oops is not declared$/.test(diagnostics[0]), diagnostics.join(' | '));
+  check('and marked in the source', (await evaluate(`__t.text('[data-testid="source-error-mark"]')[0]`)) === 'oops');
+  await typeSource('PROGRAM Doubler\nVAR_INPUT seconds : INT; END_VAR\nVAR twice : DINT; END_VAR\n  twice := seconds * 2;\nEND_PROGRAM\n');
+  await evaluate(`__t.click('Check')`); await sleep(1200);
+  check('the corrected program compiles', (await evaluate(`__t.text('[data-testid="check-ok"]')[0]`)) === 'COMPILES');
+  const variableRows = await evaluate(`__t.text('[data-testid="variable-row"]')`);
+  check('and its variables are listed for binding', variableRows.length === 2 && variableRows[0].startsWith('secondsINT') && variableRows[1].startsWith('twiceDINT'), variableRows.join(' | '));
+  await evaluate(`__t.type('Bind seconds', 'input'); true`); await sleep(200);
+  await evaluate(`__t.type('Reads tag for seconds', 'external.BoilerHouse.Unit1.runtime_s'); true`);
+  await evaluate(`__t.type('Bind twice', 'published'); true`); await sleep(200);
+  await evaluate(`__t.type('Published as for twice', 'internal.BoilerHouse.Doubler.twice'); true`);
+  await evaluate(`__t.type('Interval in milliseconds', '50'); true`);
+  await evaluate(`[...document.querySelectorAll('.settings__check')].find((l) => l.textContent.includes('Run when loaded')).querySelector('input').click(); true`);
+  check('nothing runs before it is loaded', (await (await api(base + '/api/v1/runtimes')).json()).runtimes.length === 0);
+  await evaluate(`__t.clickTestId('program-load')`); await sleep(3000);
+  const builtNote = await evaluate(`__t.text('[data-testid="program-built"]')[0]`);
+  check('Load builds the program and loads it into a runtime', /^Version [0-9a-f]{12} was built and loaded\.$/.test(builtNote ?? ''), builtNote);
+  check('no error is left on screen', !(await evaluate(`__t.has('[data-testid="program-error"]')`)), (await evaluate(`__t.text('[data-testid="program-error"]')`)).join(' '));
+  const loadedRuntime = (await (await api(base + '/api/v1/runtimes')).json()).runtimes[0];
+  check('the controller runs it in the VM runtime module', loadedRuntime?.id === 'Doubler' && loadedRuntime.module === 'vm' && loadedRuntime.mode === 'run' && loadedRuntime.scans > 0, JSON.stringify(loadedRuntime));
+  check('the editor says it runs', (await evaluate(`__t.text('[data-testid="runtime-mode"]')[0]`)) === 'RUN');
+  check('at the version that was built', (await evaluate(`__t.text('[data-testid="runtime-version"]')[0]`)) === `Doubler · version ${loadedRuntime?.version}` && builtNote.includes(loadedRuntime?.version));
+  const liveBindings = await evaluate(`[...document.querySelectorAll('[data-testid="binding"]')].map((b) => {
+    const v = b.querySelector('[data-testid="tag-value"]'); return { kind: b.getAttribute('data-kind'), state: v?.getAttribute('data-state'), value: v?.textContent }; })`);
+  const read = liveBindings.find((b) => b.kind === 'input'); const published = liveBindings.find((b) => b.kind === 'published');
+  check('the program’s result is live on the tag bus: twice the device’s counter',
+    read?.state === 'live' && published?.state === 'live' && Math.abs(Number(published.value) - 2 * Number(read.value)) <= 4 && Number(published.value) > 0,
+    JSON.stringify(liveBindings));
+  await shot('e2e_6c_logic');
+  await evaluate(`__t.clickTestId('runtime-stop')`); await sleep(2500);
+  check('Stop puts the program in STOP', (await evaluate(`__t.text('[data-testid="runtime-mode"]')[0]`)) === 'STOP'
+    && (await (await api(base + '/api/v1/runtimes')).json()).runtimes[0]?.mode === 'stop');
+  const stoppedValue = await evaluate(`(() => { const v = document.querySelector('[data-testid="binding"][data-kind="published"] [data-testid="tag-value"]'); return v.getAttribute('data-state'); })()`);
+  check('and its published tag is no longer shown as a current value', stoppedValue !== 'live', stoppedValue);
+  await evaluate(`__t.clickTestId('runtime-unload')`); await sleep(2500);
+  check('Unload takes it out of the controller’s runtimes', (await (await api(base + '/api/v1/runtimes')).json()).runtimes.length === 0
+    && (await evaluate(`__t.text('[data-testid="runtime-mode"]')[0]`)) === 'NOT LOADED');
+  await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
+
   // 9. Go offline: values disappear, on the screen as everywhere else.
   await evaluate(`__t.click('Go offline')`); await sleep(500);
   const offline = await evaluate(`__t.text('[data-testid="tag-value"]')`);
