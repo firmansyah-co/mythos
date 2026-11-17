@@ -232,9 +232,16 @@ function Outputs({ runtime, stale }: { runtime: RuntimeStatus; stale: boolean })
   return (
     <div data-testid="runtime-outputs">
       <OutputsSafe runtime={runtime} stale={stale} />
-      {(outputs as RuntimeOutput[]).map((output, index) => (
-        <Output key={isText(output.tag) ? output.tag : index} output={output} />
-      ))}
+      {(outputs as unknown[]).map((output, index) =>
+        // An entry that is not an output is not skipped: something is there, and it is not known.
+        typeof output === 'object' && output !== null ? (
+          <Output key={index} output={output as RuntimeOutput} />
+        ) : (
+          <div key={index} data-testid="runtime-output">
+            <Missing />
+          </div>
+        )
+      )}
     </div>
   );
 }

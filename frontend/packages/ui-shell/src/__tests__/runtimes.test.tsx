@@ -631,6 +631,17 @@ describe('Settings → Runtimes: polling, and an answer that is no longer curren
     expect(all(view, 'runtimes-no-module')).toHaveLength(0);
   });
 
+  it('a list with an entry that is not a runtime is a failed read too, and the page still stands', async () => {
+    const { server, view } = await shown({ body: { runtimes: [RUNNING, null], modules: [VM], problem: null } });
+    expect(text(view, 'runtimes-read-error')).toContain('not with a list of runtimes');
+    expect(all(view, 'runtime-row')).toHaveLength(0);
+    server.read = { body: list([{ ...RUNNING, outputs: [null] } as unknown as RuntimeStatus]) };
+    await pass(1000);
+    // An output that is not one is shown as something unknown, not left out.
+    expect(text(view, 'runtime-output')).toBe('UNKNOWN');
+    expect(text(view, 'runtime-id')).toBe('tank');
+  });
+
   it('an empty list that is no longer current says when it was read, not that none is loaded now', async () => {
     const { server, view } = await shown({ body: list([], [VM]) });
     server.read = 'fails';

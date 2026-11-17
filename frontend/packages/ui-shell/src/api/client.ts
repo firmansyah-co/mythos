@@ -592,7 +592,9 @@ export const api = {
    */
   listRuntimes: async (signal?: AbortSignal): Promise<RuntimeList> => {
     const body = await request<Partial<RuntimeList> | null>('/api/v1/runtimes', { signal });
-    if (!body || !Array.isArray(body.runtimes) || !Array.isArray(body.modules)) {
+    const records = (list: unknown): list is object[] =>
+      Array.isArray(list) && list.every((entry) => typeof entry === 'object' && entry !== null && !Array.isArray(entry));
+    if (!body || !records(body.runtimes) || !records(body.modules)) {
       throw new ApiError('The controller answered, but not with a list of runtimes', null);
     }
     return body as RuntimeList;
