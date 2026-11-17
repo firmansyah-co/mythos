@@ -204,11 +204,27 @@ runtime whatever it executes:
 
 ### 2.6 The logic module is authoring
 
-`plugins/logic` (`mythos-module-logic`), a `service` module (ADR-011 §3 step 5): programs and
-tasks in `<project>/logic/`; check; compile for a target; unit tests in ST; the variable table
-and each variable's binding to a tag. It asks the core to load a program into a runtime; it
-never talks to a runtime itself. Every route is an MCP tool. A device's programs are part of its
-slice (ADR-012 §2.5).
+`plugins/logic` (`mythos-module-logic`), a `service` module (ADR-011 §3 step 5): programs in
+`<project>/logic/`; check; compile for a target; the variable table and each variable's binding
+to a tag. It never talks to a runtime itself. Every route is an MCP tool. A device's programs
+are part of its slice (ADR-012 §2.5).
+
+As built (C3):
+
+- A program is its source (`programs/<name>.st`) and an entry in `programs.json`: its interval,
+  the runtime module and the target profile it is built for, whether it runs when loaded, and
+  its bindings (inputs, outputs with their safe values, published variables). One program is
+  one cyclic task; a task that runs several programs is not built.
+- `check` compiles the saved source, or a text sent with the request and not saved, and answers
+  with the diagnostics (line, column, message), or with the variables and every binding that
+  names a variable the program does not have or one that cannot be bound (an array, a TIME).
+- `build` compiles the saved source and answers with the runtime instance of §2.4, its version
+  a hash of the code, the interval and the bindings. **A module cannot call the core**
+  (ADR-011 §2.6), so the module does not load what it builds: the workbench, or an agent, saves
+  the instance into the project's runtimes, and the core loads it. An edit therefore changes
+  nothing that runs until it is built and loaded. A bound tag that no connection provides now
+  is a warning of the build, not a refusal.
+- Not built: unit tests in ST, and programs in a device's slice (C6).
 
 ### 2.7 The HMI is not a runtime
 
@@ -335,7 +351,9 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   `GET /api/v1/runtimes`, a project's `runtimes.json`, run and stop, MCP tools. Proven against
   real Modbus simulators through the real module process on Linux, macOS and Windows. The
   Runtimes page is C4a.
-- C3. **The logic module** (authoring): programs, tasks, bindings, check, compile, load.
+- C3. **The logic module** (done): programs, their bindings, check and build (§2.6), each an
+  MCP tool. Proven through the real logic, runtime and Modbus module processes: a program is
+  written, checked, built, loaded and runs a Modbus simulator.
 - C4. **The ST editor** in the workbench.
   - C4a. **The Runtimes page** (done): Settings → Runtimes shows every runtime of this node as
     `GET /api/v1/runtimes` reports it, with run and stop for an engineer (§2.5, §5).
@@ -382,7 +400,8 @@ Each step leaves `dev` working.
 | 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
 | 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Not built: reading or forcing variables, state carried across a replacement, a watchdog on the scan thread, RETAIN |
 | 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:id/run` and `/stop`, `GET`/`PUT /api/v1/projects/:id/runtimes`, each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
-| 2.6, 2.8, 2.10 | Not built |
+| 2.6 The logic module | Built: `plugins/logic` (programs, bindings, check, build; eight MCP tools), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes. Not built: its editor in the workbench, unit tests in ST, programs in a device's slice |
+| 2.8, 2.10 | Not built |
 | 2.9 Emulators | Built: six programs, 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else |
 | 2.12 Oracle | `differential_strucpp.rs`: 6 programs, 60 cycles, 6,120 values, all agree except the three deliberate rows of §2.13 (167 values). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
 
