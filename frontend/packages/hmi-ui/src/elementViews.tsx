@@ -57,11 +57,11 @@ function IoFieldProperties({ element, update, configuredTags }: PropertiesProps<
               {uri}
             </option>
           ))}
-          {missing && <option value={element.tag}>{element.tag} — not in the I/O configuration</option>}
+          {missing && <option value={element.tag}>{element.tag} — provided by nothing in this project</option>}
         </select>
         {missing && (
           <span className="field__error" role="alert" data-testid="tag-not-configured">
-            No connection of this project provides this tag.
+            No connection or program of this project provides this tag.
           </span>
         )}
       </dd>

@@ -461,7 +461,8 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
 - C4. **The ST editor** (done, §2.6) in the workbench.
   - C4a. **The Runtimes page** (done): Settings → Runtimes shows every runtime of this node as
     `GET /api/v1/runtimes` reports it, with run and stop for an engineer (§2.5, §5).
-- C5. **Online**: monitor (done: `watch`, §2.5), force, runtime tags in the HMI.
+- C5. **Online**: monitor (done: `watch`, §2.5), runtime tags in the HMI (done: the tags a
+  project's programs publish are offered wherever a binding names a tag), force.
 - C6. **Swap and online change; programs in a device's slice.**
 - C7. **Hardening**: watchdog, RETAIN variables across restarts.
 

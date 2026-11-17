@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api/client';
-import { startControllerPolling, stopControllerPolling, useController } from './data/controller';
+import {
+  CONTROLLER_POLL_INTERVAL_MS,
+  startControllerPolling,
+  stopControllerPolling,
+  useController,
+} from './data/controller';
+import { useProgramTags } from './data/programTags';
 import { useIoConfig } from './data/ioConfig';
 import { formatLocation, parseLocation } from './data/location';
 import { log } from './data/log';
@@ -115,6 +121,19 @@ function Workbench() {
       return;
     }
     void useIoConfig.getState().load(projectId);
+  }, [projectId]);
+
+  // The tags its programs publish are read when it opens, and again as often as the controller
+  // is: a program loaded from the program editor offers its tags to the HMI without a reload.
+  useEffect(() => {
+    if (projectId === null) {
+      useProgramTags.getState().reset();
+      return;
+    }
+    const read = () => void useProgramTags.getState().load(projectId);
+    read();
+    const timer = setInterval(read, CONTROLLER_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
   }, [projectId]);
 
   // The controller's own state is read for as long as a project is open.
