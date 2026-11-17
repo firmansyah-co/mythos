@@ -130,21 +130,39 @@ fn integer_arithmetic_wraps_at_the_width_of_its_type() {
 }
 
 #[test]
-fn conversions_round_to_nearest_and_narrowing_wraps() {
+fn conversions_round_a_half_to_the_even_integer_and_narrowing_wraps() {
+    // IEC 61131-3 ed. 3 Table 22 footnote b, with its own examples: 1.6 -> 2, -1.6 -> -2,
+    // 1.5 -> 2, -1.5 -> -2; and so 2.5 -> 2, where rounding a half away from zero gives 3.
     let mut r = Run::new(
-        "PROGRAM P VAR a, b, c, n : INT; x : REAL := 2.5; y : LREAL; f : BOOL; k : DINT := 70000; END_VAR
+        "PROGRAM P VAR a, b, c, n, e1, e2, e3, e4, e5 : INT; d : DINT; x : REAL := 2.5; y : LREAL; f : BOOL; k : DINT := 70000; END_VAR
            a := REAL_TO_INT(x);
            b := REAL_TO_INT(-x);
            c := REAL_TO_INT(2.4);
+           e1 := REAL_TO_INT(1.6);
+           e2 := REAL_TO_INT(-1.6);
+           e3 := REAL_TO_INT(1.5);
+           e4 := REAL_TO_INT(-1.5);
+           e5 := REAL_TO_INT(0.5);
+           d := LREAL_TO_DINT(1000000.5);
            n := DINT_TO_INT(k);
            y := x;
            f := INT_TO_BOOL(a);
          END_PROGRAM",
     );
     r.scan().unwrap();
-    assert_eq!(r.get("a"), Value::Int(3));
-    assert_eq!(r.get("b"), Value::Int(-3));
+    assert_eq!(
+        r.get("a"),
+        Value::Int(2),
+        "2.5 is as near 2 as 3: the even one"
+    );
+    assert_eq!(r.get("b"), Value::Int(-2));
     assert_eq!(r.get("c"), Value::Int(2));
+    assert_eq!(r.get("e1"), Value::Int(2));
+    assert_eq!(r.get("e2"), Value::Int(-2));
+    assert_eq!(r.get("e3"), Value::Int(2));
+    assert_eq!(r.get("e4"), Value::Int(-2));
+    assert_eq!(r.get("e5"), Value::Int(0));
+    assert_eq!(r.get("d"), Value::Dint(1_000_000));
     assert_eq!(r.get("n"), Value::Int(4464), "70000 mod 65536");
     assert_eq!(
         r.get("y"),
@@ -215,6 +233,52 @@ fn return_ends_the_scan_there() {
 fn division_by_zero_stops_the_scan_with_a_fault_instead_of_a_value() {
     let mut r = Run::new("PROGRAM P VAR a, b : INT := 0; c : INT; END_VAR c := a / b; END_PROGRAM");
     assert!(matches!(r.scan(), Err(Fault::DivideByZero(_))));
+}
+
+#[test]
+fn mod_by_zero_is_zero_and_division_truncates_toward_zero() {
+    // IEC 61131-3 ed. 3 Table 29: footnote d (7/3 = 2, (-7)/3 = -2) and footnote e (MOD is
+    // IN1 - (IN1/IN2)*IN2, and 0 when IN2 is 0).
+    let mut r = Run::new(
+        "PROGRAM P VAR z : INT; q1, q2, m1, m2, m3 : INT; big : LINT := 9; lz : LINT; lm : LINT := 5; END_VAR
+           q1 := 7 / 3;
+           q2 := -7 / 3;
+           m1 := 7 MOD 3;
+           m2 := -7 MOD 3;
+           m3 := 7 MOD z;
+           lm := big MOD lz;
+         END_PROGRAM",
+    );
+    r.scan().unwrap();
+    assert_eq!(r.get("q1"), Value::Int(2));
+    assert_eq!(r.get("q2"), Value::Int(-2));
+    assert_eq!(r.get("m1"), Value::Int(1));
+    assert_eq!(r.get("m2"), Value::Int(-1));
+    assert_eq!(r.get("m3"), Value::Int(0), "MOD by zero is 0, not a fault");
+    assert_eq!(r.get("lm"), Value::Lint(0));
+}
+
+#[test]
+fn equality_and_comparison_share_one_precedence_applied_left_to_right() {
+    // IEC 61131-3 ed. 3 Table 71: =, <>, <, >, <=, >= are all precedence 4.
+    let mut r = Run::new(
+        "PROGRAM P VAR a : INT := 1; b : INT := 2; flag : BOOL := TRUE; x, y : BOOL; END_VAR
+           x := a < b = flag;
+           y := a > b <> flag;
+         END_PROGRAM",
+    );
+    r.scan().unwrap();
+    assert_eq!(r.get("x"), Value::Bool(true), "(a < b) = flag");
+    assert_eq!(r.get("y"), Value::Bool(true), "(a > b) <> flag");
+
+    // Written the other way round it is (flag = a) < b: a BOOL compared with an INT.
+    let d = diagnostics(
+        "PROGRAM P VAR a, b : INT; flag, x : BOOL; END_VAR x := flag = a < b; END_PROGRAM",
+    );
+    assert!(
+        d[0].contains("a BOOL and a INT cannot be combined"),
+        "{d:?}"
+    );
 }
 
 #[test]

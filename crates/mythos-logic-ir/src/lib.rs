@@ -3,8 +3,8 @@
 //! ```text
 //!  front-ends (one crate per language)        backends (one crate per target kind)
 //!  mythos-logic-st ─┐                      ┌─► mythos-logic-backend-vm ─► logic VM bytecode
-//!  (LD, FBD, SFC,   ┼──► mythos-logic-ir ──┤
-//!   IL later)      ─┘                      └─► (C later)
+//!  (LD, FBD, SFC    ┼──► mythos-logic-ir ──┤
+//!   later)         ─┘                      └─► (C later)
 //! ```
 //!
 //! This crate is the seam. It knows no language, no target and no VM: a front-end depends on

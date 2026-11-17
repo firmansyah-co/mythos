@@ -1,5 +1,6 @@
-//! Structured Text to a syntax tree. Recursive descent; operator precedence, lowest first:
-//! OR, XOR, AND/&, = <>, < > <= >=, + -, * / MOD, unary - NOT, call.
+//! Structured Text to a syntax tree. Recursive descent; operator precedence as in IEC 61131-3
+//! ed. 3 Table 71, lowest first: OR; XOR; AND, &; = <> < > <= >=; + -; * / MOD; unary - NOT;
+//! call. Operators of one precedence apply left to right.
 
 use crate::ast::*;
 use crate::lexer::{Tok, Token};
@@ -441,12 +442,15 @@ impl Parser {
 
     fn binary(&mut self, level: usize) -> R<Expr> {
         // (operators of this level, by token)
-        const LEVELS: [&[(&str, BinOp)]; 7] = [
+        const LEVELS: [&[(&str, BinOp)]; 6] = [
             &[("OR", BinOp::Or)],
             &[("XOR", BinOp::Xor)],
             &[("AND", BinOp::And)],
-            &[("=", BinOp::Eq), ("<>", BinOp::Ne)],
+            // Equality and comparison share one precedence (IEC 61131-3 ed. 3 Table 71,
+            // precedence 4), applied left to right: `a < b = c` is `(a < b) = c`.
             &[
+                ("=", BinOp::Eq),
+                ("<>", BinOp::Ne),
                 ("<", BinOp::Lt),
                 (">", BinOp::Gt),
                 ("<=", BinOp::Le),

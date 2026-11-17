@@ -15,17 +15,11 @@
   are split so the IR is the only thing languages and targets share.
 - **Written by**: Claude, implementing the request
 
-**About the standard.** IEC 61131-3 ed. 3 (2013) was withdrawn in 2025; the current edition is
-ed. 4 (IEC 61131-3:2025, 518 pages). This project does not hold a copy of either. No free
-authorised copy exists; the identical European adoption is sold by the Estonian standards body
-(EVS-EN IEC 61131-3:2025, 57.04 € for the PDF on 2026-11-17; the IEC's own price is CHF 475).
-**Until a copy is bought, every statement here about what the standard says is from public
-secondary sources or from memory, and is marked so.** §2.13 lists the open questions.
-
-**Supersedes ADR-003** (an in-process STruC++ `.so` under `SCHED_FIFO`). That design was never
-built into anything that ran (`crates/mythos-strucpp` was removed by #75 because no binary used
-it), and it contradicts three later requirements: modules are processes (ADR-010), MythOS runs on
-every OS, and logic must run on microcontrollers.
+**About the standard.** The reference is IEC 61131-3 **ed. 3 (2013)**, read from a copy Adrian
+holds (not in this repository; it is copyright IEC). Every table, figure and clause cited here
+was read in that text on 2026-11-17. Ed. 3 was withdrawn in 2025; the current edition is ed. 4
+(IEC 61131-3:2025), which this project has not read. What ed. 4 changed is in its Annex B and is
+unknown here; nothing below claims to follow ed. 4.
 
 ---
 
@@ -50,8 +44,8 @@ and a GPL-3.0 compiler to ship beside MythOS. Compiling ST to Rust source instea
 ```text
  front-ends (a crate per language)            backends (a crate per target kind)
  mythos-logic-st ─┐                        ┌─► mythos-logic-backend-vm ─► bytecode ─► mythos-logic-vm
- (LD, FBD, SFC,   ┼──► mythos-logic-ir ────┤                                          (PC runner,
-  IL later)      ─┘     (the seam)         └─► (C99 later: MCUs too small for the VM)   ESP32, RP2040)
+ (LD, FBD, SFC    ┼──► mythos-logic-ir ────┤                                          (PC runner,
+  later)         ─┘     (the seam)         └─► (C99 later: MCUs too small for the VM)   ESP32, RP2040)
 
  mythos-logic-compiler: joins a front-end, the target's profile and a backend. Owns neither.
 ```
@@ -75,8 +69,10 @@ the guard each kind of break.
   the VM holds how an instance is stored and run; a test in the backend holds the two equal.
   This is a stopgap: once user function blocks exist, the standard blocks become a library
   written in the IEC languages, and adding a block no longer means new firmware.
-- IL: deprecated in ed. 3 (from memory; whether ed. 4 removed it is in its Annex B, which is not
-  public). It is the last language, if at all.
+- **IL is not planned.** Ed. 3 §7.2.1: "This language is outdated as an assembler like
+  language. Therefore it is deprecated and will not be contained in the next edition of this
+  standard." Four languages remain: ST, LD, FBD, SFC. (Adrian asked for all five "if possible";
+  this is put to him.)
 
 ### 2.2 Target profiles are data
 
@@ -221,23 +217,40 @@ and on our VM for 60 cycles and compares every variable after every cycle. STruC
 it is run as a separate program and none of its code is copied. Its limits: three programs so
 far, reals compared at the precision its REPL prints, and STruC++ can itself be wrong.
 
-### 2.13 Semantics still open, until the standard is in hand
+### 2.13 Semantics settled against the standard
 
-| Question | What we do now | Sources, and what they say |
-| :--- | :--- | :--- |
-| CTU: count past PV? | Yes, to the type's maximum | From memory, the standard's body tests `CV < PVmax`. CODESYS Safety's `SF_CTU` uses `CV < PVmax` (public help). STruC++/OpenPLC and Fernhill's help (citing ed. 3 "Table 44.1a") test `CV < PV`. **Unverified** |
-| CTD: count below 0? | Yes, to the type's minimum | Same split: `CV > PVmin` from memory; `CV > 0` in STruC++ and Fernhill. **Unverified** |
-| REAL to integer, halves | Away from zero (2.5 → 3), as STruC++ does | From memory, the standard asks for IEC 60559 rounding, halves to even (2.5 → 2); Rockwell's public documentation rounds halves to even. **Unverified, and possibly wrong today** |
-| Implicit conversions | SINT→INT→DINT→LINT, SINT/INT→REAL, DINT→LREAL, REAL→LREAL | From memory of ed. 3 Table 11. **Unverified** |
+Adrian, 2026-11-17: where an implementation and the standard differ, follow the standard
+("mengikuti IEC"). Each rule below was read in ed. 3 and is pinned by a named test.
 
-The differential test lists the first two as deliberate differences from STruC++. All four are
-decided, and the tests that pin them changed if needed, when the standard has been read.
+| Rule | IEC 61131-3 ed. 3 | We do | STruC++ 0.7.0 |
+| :--- | :--- | :--- | :--- |
+| CTU counts past PV | Table 45: `ELSIF CU AND (CV < PVmax)`; PVmax is the implementer's | to the type's maximum | stops at PV (as OpenPLC) |
+| CTD counts below 0 | Table 45: `ELSIF CD AND (CV > PVmin)` | to the type's minimum | stops at 0 |
+| REAL/LREAL to integer | Table 22 footnote b: IEC 60559, a half to the nearest even integer; `REAL_TO_INT(1.5)` is 2 | 2.5 → 2, −2.5 → −2 | a half away from zero (2.5 → 3) |
+| F_TRIG | Table 44: `Q := NOT CLK AND NOT M; M := NOT CLK;`, M starting FALSE; its note: Q is TRUE on the first call after a cold start when CLK is FALSE | as the table | M starts TRUE: no Q on the first call |
+| MOD by zero | Table 29 footnote e: the result is 0 | 0 | not compared |
+| Integer division | Table 29 footnote d: truncation toward zero; by zero is an error (§7.3.2) | truncates; by zero the scan stops with a fault | not compared |
+| `=` `<>` and `<` `>` `<=` `>=` | Table 71: one precedence (4), left to right | `a < b = c` is `(a < b) = c` | not compared |
+| Implicit conversions | Figure 11, entries "i": SINT→INT→DINT→LINT; SINT, INT→REAL; SINT, INT, DINT→LREAL; REAL→LREAL | exactly those | agrees |
+| Timers | Figure 15 (timing diagrams) | TON, TOF, TP as drawn, ET included | agrees (it found our TP bug) |
+
+Three places where the standard leaves a choice or we go beyond it:
+
+- **Overflow.** §7.3.2 calls a result outside its type's range an error. We wrap at the type's
+  width, as STruC++ does, and do not stop the scan. Whether to fault instead is open.
+- **Narrowing** a value that does not fit (Table 22's example: implementer specific): we wrap.
+- **`INT_TO_BOOL` and `BOOL_TO_REAL`** families are not defined by Figure 11 ("the implementation
+  may support additional conversions"). We have them: non-zero is TRUE; FALSE and TRUE are 0.0
+  and 1.0.
+
+The differential test lists the first three rows as deliberate differences from STruC++
+(167 of 2,820 values); a rounding difference must be exactly one apart to count as one.
 
 ## 3. Order of work
 
 0. **Spike** (done, §5), and the crates split along §2.1.
 1. **The VM's real model**: calls, instance-relative addressing, user function blocks, arrays and
-   structs; format 1. Run in an emulator in CI (§2.9). Read the standard; settle §2.13.
+   structs; format 1. Run in an emulator in CI (§2.9).
 2. **Writes to field devices** in the core: a driver's `write`, write authority, an MCP tool.
    Also what HMI setpoints need.
 3. **The `runtime` module kind** in the protocol and the module host; the PC runner; safe
@@ -248,7 +261,7 @@ decided, and the tests that pin them changed if needed, when the standard has be
 6. **Swap and online change; programs in a device's slice.**
 7. **Hardening**: watchdog, RETAIN variables across restarts.
 8. **ESP32 and RP2040 firmware** as runtime modules, on real boards.
-9. **LD, FBD, SFC**, each a front-end crate and an editor kind; a **C backend**; a Linux
+9. **LD, FBD, SFC** (not IL, §2.1), each a front-end crate and an editor kind; a **C backend**; a Linux
    real-time mode. The rest of the ST language and the standard library run beside steps 2–8:
    the runtime protocol does not depend on what the bytecode contains.
 
@@ -262,8 +275,9 @@ Each step leaves `dev` working.
   price of memory safety, one format for every target, and variables enumerable by name.
 - The language coverage is ours to build. STruC++ covers far more today (OOP, pointers, strings,
   80+ functions). Until §3 step 8 is far along, a program using those is refused by name.
-- Integer and real semantics are pinned by our tests and by the oracle, not by a C++ compiler,
-  and four of them are not yet checked against the standard (§2.13).
+- Integer and real semantics are pinned by our tests against the standard's text (§2.13), and
+  compared with the oracle. A program moved from OpenPLC that relies on a counter stopping at
+  PV, or on 2.5 rounding to 3, behaves differently here.
 - The core grows: a third module kind, the write path, safe values and runtime management are
   core work, not module work.
 
@@ -272,26 +286,30 @@ Each step leaves `dev` working.
 | Part | Built |
 | :--- | :--- |
 | 2.1 Crates and layers | `mythos-logic-ir`, `-st`, `-vm`, `-backend-vm`, `-compiler`; `layers.rs` guards them |
-| 2.1 ST front-end | Spike: one PROGRAM; VAR, VAR_INPUT, VAR_OUTPUT; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between those types; implicit widening (§2.13); diagnostics with line and column for everything else |
+| 2.1 ST front-end | Spike: one PROGRAM; VAR, VAR_INPUT, VAR_OUTPUT; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between those types; implicit widening per Figure 11; diagnostics with line and column for everything else |
 | 2.2 Profiles | `serde` data with a format version; `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format) proven with profiles read from JSON |
 | 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; loader checks, run-time checks, budget, faults |
 | 2.4–2.6, 2.8, 2.10 | Not built |
 | 2.9 Emulators | Not built: the VM is linked for both targets in CI, not yet run on them |
-| 2.12 Oracle | `differential_strucpp.rs`: 3 programs, 60 cycles, 2,820 values, all agree except the first two rows of §2.13. It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
+| 2.12 Oracle | `differential_strucpp.rs`: 3 programs, 60 cycles, 2,820 values, all agree except the three deliberate rows of §2.13 (167 values). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
 
 Evidence of the spike (2026-11-17):
 
-- **Tests**: `st_runs_on_the_vm.rs` (15), `load_refuses_bad_programs.rs` (8), `layers.rs` (2),
-  and unit tests (14). Mutation-checked: removing INT wrapping, the TP reset, the loader's address check, the
+- **Tests**: `st_runs_on_the_vm.rs` (17), `load_refuses_bad_programs.rs` (8), `layers.rs` (2),
+  and unit tests (15). Mutation-checked: removing INT wrapping, the TP reset, the loader's address check, the
   division-by-zero fault, or counting CTU only to PV each turns a named test red (run before the crates were split;
-  the code moved, it did not change).
+  the code moved, it did not change). So does undoing each rule taken from the standard:
+  rounding a half away from zero, faulting on MOD by zero, the earlier F_TRIG, and giving `=`
+  a lower precedence than `<`.
 - **Scan time on a PC** (`scan_time.rs`, release, i9-11980HK, Linux, not real-time, desktop
   load): a program shaped like a small plant (CASE sequence, 8 TON, CTU, R_TRIG, a PI loop in
   REAL, a 50-turn FOR) is 884 bytes of code and 280 of memory, 970 instructions per scan:
-  mean 8.3 µs, p99 12.3 µs, p99.9 20.5 µs, max 336 µs over 200,000 scans. The VM has not been
+  over 200,000 scans the mean was between 7.3 and 13.1 µs in six runs of the same code (the
+  machine was in use; the fastest run: p99 9.3 µs, max 100 µs; the slowest: p99 22.5 µs; the
+  worst single scan seen in any run: 336 µs). The VM has not been
   optimised. Windows and macOS: not measured.
 - **Microcontrollers** (`scripts/logic-vm-footprint.sh`, CI job `logic-vm-bare-metal`): the VM
   with its loader and scan loop, `opt-level=s`, LTO, linked with `core` alone: **RP2040**
-  (thumbv6m-none-eabi) 15,648 bytes of code; **ESP32-C3** (riscv32imc-unknown-none-elf)
-  18,950 bytes. Run on a real board: not yet (none attached). The original ESP32 and the S3 are
+  (thumbv6m-none-eabi) 15,884 bytes of code; **ESP32-C3** (riscv32imc-unknown-none-elf)
+  19,146 bytes. Run on a real board: not yet (none attached). The original ESP32 and the S3 are
   Xtensa, which needs Espressif's Rust toolchain: not built.

@@ -256,10 +256,13 @@ pub(crate) fn run(kind: FbKind, x: &mut [u8], now: i64) {
             x[1] = (clk && !b(x, 2)) as u8;
             x[2] = clk as u8;
         }
+        // IEC 61131-3 ed. 3 Table 44: `Q := NOT CLK AND NOT M; M := NOT CLK;` with M
+        // starting FALSE. So an F_TRIG whose CLK is FALSE gives Q once, on its first call after
+        // a cold start, as the table's note says.
         FbKind::FTrig => {
             let clk = b(x, 0);
-            x[1] = (!clk && b(x, 2)) as u8;
-            x[2] = clk as u8;
+            x[1] = (!clk && !b(x, 2)) as u8;
+            x[2] = !clk as u8;
         }
         FbKind::Sr => {
             let q = b(x, 0) || (!b(x, 1) && b(x, 2));
@@ -365,8 +368,8 @@ mod tests {
 
     #[test]
     fn ctu_counts_on_past_pv_up_to_the_types_limit() {
-        // STruC++ (as OpenPLC/MatIEC) stops at PV instead. Which the standard says has not
-        // been checked against its text: an open question in ADR-013 §2.13.
+        // IEC 61131-3 ed. 3 Table 45: `ELSIF CU AND (CV < PVmax)`, PVmax being the
+        // implementer's. STruC++ (as OpenPLC/MatIEC) stops at PV instead (ADR-013 §2.13).
         let mut x = [0u8; 8];
         put_i16(&mut x, 4, 2);
         for k in 0..10 {
@@ -408,6 +411,25 @@ mod tests {
         run(FbKind::Ctu, &mut x, 0);
         assert_eq!(get_i16(&x, 6), 0);
         assert!(x[2] == 0);
+    }
+
+    #[test]
+    fn f_trig_is_true_for_one_call_per_falling_edge_and_on_the_first_call_with_clk_false() {
+        // IEC 61131-3 ed. 3 Table 44 and its note: M starts FALSE and holds NOT CLK, so the
+        // first call after a cold start with CLK FALSE gives Q.
+        let mut x = [0u8; 3];
+        let mut seen = [false; 6];
+        for (i, clk) in [0, 0, 1, 1, 0, 0].into_iter().enumerate() {
+            x[0] = clk;
+            run(FbKind::FTrig, &mut x, 0);
+            seen[i] = x[1] != 0;
+        }
+        assert_eq!(seen, [true, false, false, false, true, false]);
+
+        let mut x = [0u8; 3];
+        x[0] = 1;
+        run(FbKind::FTrig, &mut x, 0);
+        assert!(x[1] == 0, "starting with CLK TRUE there is no edge");
     }
 
     #[test]

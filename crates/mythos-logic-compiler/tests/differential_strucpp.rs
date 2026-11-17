@@ -22,19 +22,29 @@ use std::process::{Command, Stdio};
 
 const CYCLES: usize = 60;
 
-/// Where we differ from STruC++ on purpose, each with its reason. A value listed here is
-/// compared and reported, but does not fail the test. Keep this list short and argued.
+/// Where we differ from STruC++ on purpose: in each case STruC++ departs from the text of
+/// IEC 61131-3 ed. 3 and we follow it (Adrian, 2026-11-17: "mengikuti IEC"). A value listed
+/// here is compared and reported, but does not fail the test. Keep this list short and argued.
+const HALF_TO_EVEN: &str =
+    "REAL to integer rounds a half to the even integer (Table 22 footnote b: \
+     REAL_TO_INT(1.5) = 2, so 2.5 -> 2); STruC++ rounds a half away from zero";
 const DELIBERATE: &[(&str, &str, &str)] = &[
     (
         "timers_and_counters.st",
         "UP",
-        "CTU counts on past PV to the type's limit; STruC++ stops at PV (as OpenPLC). Which the standard says is unverified: ADR-013 §2.13",
+        "CTU counts while CV < PVmax (Table 45); STruC++ stops at PV, as OpenPLC does",
     ),
     (
         "timers_and_counters.st",
         "DOWN",
-        "CTD counts on below 0 to the type's limit; STruC++ stops at 0 (as OpenPLC). Which the standard says is unverified: ADR-013 §2.13",
+        "CTD counts while CV > PVmin (Table 45); STruC++ stops at 0, as OpenPLC does",
     ),
+    ("integers_and_control.st", "A", HALF_TO_EVEN),
+    ("integers_and_control.st", "B", HALF_TO_EVEN),
+    ("reals_and_conversions.st", "R1", HALF_TO_EVEN),
+    ("reals_and_conversions.st", "R2", HALF_TO_EVEN),
+    ("reals_and_conversions.st", "R3", HALF_TO_EVEN),
+    ("reals_and_conversions.st", "D2", HALF_TO_EVEN),
 ];
 const CYCLE_NS: i64 = 20_000_000;
 
@@ -177,7 +187,7 @@ fn every_variable_agrees_with_strucpp_after_every_cycle() {
     programs.sort();
     assert!(!programs.is_empty());
     let mut disagreements = Vec::new();
-    let mut deliberate = Vec::new();
+    let mut deliberate: BTreeMap<String, usize> = BTreeMap::new();
     let mut compared = 0usize;
     for st in &programs {
         let src = std::fs::read_to_string(st).unwrap();
@@ -202,9 +212,17 @@ fn every_variable_agrees_with_strucpp_after_every_cycle() {
                         "{file} cycle {}: {name} is {mine:?} here, {text} in STruC++",
                         k + 1
                     );
-                    match DELIBERATE.iter().find(|(f, v, _)| *f == file && *v == name) {
-                        Some((_, _, why)) => deliberate.push(format!("{line} ({why})")),
-                        None => disagreements.push(line),
+                    let listed = DELIBERATE.iter().find(|(f, v, _)| *f == file && *v == name);
+                    // A rounding difference is exactly one apart; more is a real disagreement.
+                    let one_apart =
+                        matches!((&mine, &want), (V::Int(a), V::Int(b)) if (a - b).abs() == 1);
+                    match listed {
+                        Some((_, _, why)) if *why != HALF_TO_EVEN || one_apart => {
+                            *deliberate
+                                .entry(format!("{file} {name}: {why}"))
+                                .or_insert(0usize) += 1;
+                        }
+                        _ => disagreements.push(line),
                     }
                 }
             }
@@ -214,9 +232,12 @@ fn every_variable_agrees_with_strucpp_after_every_cycle() {
         "{} programs, {CYCLES} cycles each, {compared} values compared",
         programs.len()
     );
-    println!("{} deliberate differences:", deliberate.len());
-    for d in &deliberate {
-        println!("  {d}");
+    println!(
+        "{} values differ on purpose:",
+        deliberate.values().sum::<usize>()
+    );
+    for (what, times) in &deliberate {
+        println!("  {times:>3}x {what}");
     }
     assert!(
         disagreements.is_empty(),

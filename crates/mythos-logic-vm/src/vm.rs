@@ -11,7 +11,7 @@ pub enum Fault {
     WrongSizes,
     /// More instructions than the budget: most likely a loop that never ends.
     BudgetExceeded,
-    /// Integer division or `MOD` by zero, at this code offset.
+    /// Integer division by zero, at this code offset. (`MOD` by zero is 0.)
     DivideByZero(u32),
     StackOverflow(u32),
     StackUnderflow(u32),
@@ -104,13 +104,16 @@ pub fn write(memory: &mut [u8], addr: u32, value: Value) -> bool {
     true
 }
 
-/// Round to nearest, halves away from zero, without `std` (no `f64::round` in `core`).
+/// Round to the nearest integer, a half to the nearest even one, as IEC 61131-3 ed. 3 Table 22
+/// footnote b requires of REAL and LREAL to integer conversions (the convention of IEC 60559):
+/// 1.5 and 2.5 both give 2. Without `std` (`core` has no `f64::round_ties_even`).
 fn round_f64(x: f64) -> f64 {
     let t = x as i64 as f64; // truncates toward zero; saturates outside i64
     let frac = x - t;
-    if frac >= 0.5 {
+    let odd = (t as i64) % 2 != 0;
+    if frac > 0.5 || (frac == 0.5 && odd) {
         t + 1.0
-    } else if frac <= -0.5 {
+    } else if frac < -0.5 || (frac == -0.5 && odd) {
         t - 1.0
     } else {
         t
@@ -280,11 +283,13 @@ pub fn scan(
                         }
                         a.wrapping_div(b)
                     }
+                    // IEC 61131-3 ed. 3 Table 29 footnote e: MOD by zero is 0, not an error.
                     _ => {
                         if b == 0 {
-                            return Err(Fault::DivideByZero(at));
+                            0
+                        } else {
+                            a.wrapping_rem(b)
                         }
-                        a.wrapping_rem(b)
                     }
                 };
                 s.push(of_i32(r))?;
@@ -306,11 +311,13 @@ pub fn scan(
                         }
                         a.wrapping_div(b)
                     }
+                    // IEC 61131-3 ed. 3 Table 29 footnote e: MOD by zero is 0, not an error.
                     _ => {
                         if b == 0 {
-                            return Err(Fault::DivideByZero(at));
+                            0
+                        } else {
+                            a.wrapping_rem(b)
                         }
-                        a.wrapping_rem(b)
                     }
                 };
                 s.push(r as u64)?;

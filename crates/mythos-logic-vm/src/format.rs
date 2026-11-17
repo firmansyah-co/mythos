@@ -124,7 +124,7 @@ pub mod op {
     pub const I64_TO_F64: u8 = 0x94;
     pub const F32_TO_F64: u8 = 0x95;
     pub const F64_TO_F32: u8 = 0x96;
-    /// Round to nearest, halves away from zero; saturates at the type's bounds.
+    /// Round to nearest, a half to the nearest even integer; saturates at the type's bounds.
     pub const F32_TO_I32: u8 = 0x97;
     pub const F64_TO_I64: u8 = 0x98;
     pub const F64_TO_I32: u8 = 0x99;

@@ -1,7 +1,7 @@
 //! The intermediate representation: a checked program, every name resolved and every
 //! expression typed, and nothing yet decided about how a target stores or runs it.
 //!
-//! This is the seam of ADR-013. Every language (ST now; LD, FBD, SFC and IL later) is lowered
+//! This is the seam of ADR-013. Every language (ST now; LD, FBD and SFC later) is lowered
 //! to it, and every backend (VM bytecode now; C later) starts from it. So it holds no memory
 //! addresses, no instruction choices and no word sizes: variables are indices, and a backend
 //! decides where they live.
@@ -75,7 +75,7 @@ impl Ty {
     }
 
     /// Whether a value of `self` may be used where `to` is wanted without a conversion
-    /// function: the lossless conversions. Not yet checked against the standard (ADR-013 §2.13).
+    /// function: the conversions marked "i" in IEC 61131-3 ed. 3 Figure 11.
     pub fn widens_to(self, to: Ty) -> bool {
         use Ty::*;
         self == to
