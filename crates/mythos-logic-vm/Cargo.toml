@@ -17,3 +17,7 @@ workspace = true
 [[example]]
 name = "footprint"
 path = "examples/footprint/main.rs"
+
+[[example]]
+name = "on_target"
+path = "examples/on_target/main.rs"

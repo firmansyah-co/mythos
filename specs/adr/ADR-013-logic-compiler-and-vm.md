@@ -2,15 +2,15 @@
 
 - **Status**: ACCEPTED, 2026-11-17. Adrian reviewed it in two rounds (agreed the `runtime` module
   kind and where runtime management lives; supplied the standard and decided "mengikuti IEC"),
-  then left the decision to merge to its author ("mana yang paling bagus menurutmu"). One
-  question stays with him: dropping IL (§2.1). Step 0 is done; step 1 is next.
+  then left the decision to merge to its author ("mana yang paling bagus menurutmu"), and
+  decided IL is not built. Step 0 is done; step 1 is in progress.
 - **Date**: 2026-11-17
 - **Requested by**: Adrian ("bagaimana planning implementasi logika kontrol ini? harus ada runtime,
   editor, dan manager kan?"; "menurutmu mending pakai struc++ atau kita bangun compiler sendiri";
   "kedepannya aku juga mau program dari compiler ST kita bisa jalan di bare metal /
   mikrokontroller dan PLC murah lain ... jadi harus kita siapkan sejak dini juga")
 - **Decided with Adrian, 2026-11-17**: outputs go to a safe value when logic stops; the operator
-  may not write an output logic owns; all five IEC languages if possible; the manager manages the
+  may not write an output logic owns; all five IEC languages if possible (later: four, IL is not built); the manager manages the
   runtimes on a PC, possibly several at once; first boards ESP32 and RP2040; closed PLCs
   (Mitsubishi, Schneider M221) not now.
 - **Agreed with Adrian after review, 2026-11-17**: a third module kind, `runtime`, started and
@@ -72,10 +72,9 @@ the guard each kind of break.
   the VM holds how an instance is stored and run; a test in the backend holds the two equal.
   This is a stopgap: once user function blocks exist, the standard blocks become a library
   written in the IEC languages, and adding a block no longer means new firmware.
-- **IL is not planned.** Ed. 3 §7.2.1: "This language is outdated as an assembler like
-  language. Therefore it is deprecated and will not be contained in the next edition of this
-  standard." Four languages remain: ST, LD, FBD, SFC. (Adrian asked for all five "if possible";
-  this is put to him.)
+- **IL is not built** (Adrian, 2026-11-17: "iya, IL tidak dibuat"). Ed. 3 §7.2.1: "This
+  language is outdated as an assembler like language. Therefore it is deprecated and will not
+  be contained in the next edition of this standard." The languages are ST, LD, FBD and SFC.
 
 ### 2.2 Target profiles are data
 
@@ -191,11 +190,17 @@ ST front-end's parser is rewritten for that before the editor is built.
 
 Firmware for a board family is the VM plus a host for that board. Before a real board:
 
-- **Run in an emulator, in CI.** QEMU has a Cortex-M0 machine (thumbv6m, the RP2040's instruction
-  set) and Espressif publishes a QEMU with the ESP32-C3; RP2040-specific emulators exist
-  (rp2040js from Wokwi, in Node; picoem, in Rust). This proves the same program gives the same
-  values on the target's instruction set, and gives an instruction count per scan.
-- **Real timing needs a real board.** An emulator counts instructions; it does not reproduce
+- **Run in an emulator, in CI.** `scripts/logic-vm-on-emulators.sh` builds firmware around each
+  program's bytecode and runs it in QEMU on a Cortex-M0 (machine `microbit`; thumbv6m, the
+  RP2040's instruction set, with no hardware divide or floating point) and on an RV32IMC machine
+  (`virt`; the ESP32-C3's instruction set). After every scan the firmware prints a CRC-32 of the
+  VM's whole memory, and the script requires each to equal what the same program gives on the
+  machine running the script. The format lays memory out identically everywhere, so this
+  compares every variable and every function block's inner state, byte for byte. These machines
+  stand for instruction sets, not for the boards: no RP2040 or ESP32 peripheral is emulated
+  (board emulators exist for that: rp2040js, picoem, Espressif's QEMU).
+- **Real timing needs a real board.** The emulator run counts no processor instructions (the
+  number it prints is VM instructions), and an emulator does not reproduce
   flash wait states, cache or the cost of software floating point exactly. Scan time on a
   microcontroller stays "not measured" until one is attached.
 
@@ -247,13 +252,13 @@ Three places where the standard leaves a choice or we go beyond it:
   and 1.0.
 
 The differential test lists the first three rows as deliberate differences from STruC++
-(167 of 2,820 values); a rounding difference must be exactly one apart to count as one.
+(167 of 3,840 values); a rounding difference must be exactly one apart to count as one.
 
 ## 3. Order of work
 
 0. **Spike** (done, §5), and the crates split along §2.1.
-1. **The VM's real model**: calls, instance-relative addressing, user function blocks, arrays and
-   structs; format 1. Run in an emulator in CI (§2.9).
+1. **Run in an emulator in CI** (done, §2.9), then **the VM's real model**: calls,
+   instance-relative addressing, user function blocks, arrays and structs; format 1.
 2. **Writes to field devices** in the core: a driver's `write`, write authority, an MCP tool.
    Also what HMI setpoints need.
 3. **The `runtime` module kind** in the protocol and the module host; the PC runner; safe
@@ -293,8 +298,8 @@ Each step leaves `dev` working.
 | 2.2 Profiles | `serde` data with a format version; `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format) proven with profiles read from JSON |
 | 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; loader checks, run-time checks, budget, faults |
 | 2.4–2.6, 2.8, 2.10 | Not built |
-| 2.9 Emulators | Not built: the VM is linked for both targets in CI, not yet run on them |
-| 2.12 Oracle | `differential_strucpp.rs`: 3 programs, 60 cycles, 2,820 values, all agree except the three deliberate rows of §2.13 (167 values). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
+| 2.9 Emulators | Built: four programs, 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else |
+| 2.12 Oracle | `differential_strucpp.rs`: 4 programs, 60 cycles, 3,840 values, all agree except the three deliberate rows of §2.13 (167 values). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
 
 Evidence of the spike (2026-11-17):
 
