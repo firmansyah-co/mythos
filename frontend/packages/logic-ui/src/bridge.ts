@@ -86,9 +86,17 @@ export interface ProgramEntry {
   published: PublishedBinding[];
 }
 
+/**
+ * A message of the compiler and the stretch of the text it is about: from `line`:`col` up to,
+ * not including, `end_line`:`end_col`, all counted from 1, a column in characters. The end
+ * equals the start when the message is about a point; all four are 0 when it is about the
+ * whole program.
+ */
 export interface Diagnostic {
   line: number;
   col: number;
+  end_line: number;
+  end_col: number;
   message: string;
 }
 

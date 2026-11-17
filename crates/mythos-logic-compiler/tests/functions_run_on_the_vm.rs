@@ -59,11 +59,11 @@ fn a_functions_variables_and_result_start_afresh_at_every_call() {
     // feature 2e: its VAR is temporary, unlike a function block's.
     let mut r = Run::new(
         "FUNCTION Count : INT
-         VAR_INPUT step : INT; END_VAR
+         VAR_INPUT inc : INT; END_VAR
          VAR n : INT := 10; seen : BOOL; END_VAR
            IF seen THEN n := 1000; END_IF;
            seen := TRUE;
-           n := n + step;
+           n := n + inc;
            Count := n;
          END_FUNCTION
          FUNCTION OnlyWhenPositive : INT

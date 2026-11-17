@@ -1,0 +1,4 @@
+# Structured Text sources are checked out with LF on every system, so a test that damages
+# them from a fixed seed (damaged_sources_never_panic.rs) damages the same text everywhere:
+# what it finds on Windows is reproducible on Linux. That test damages CRLF forms on purpose.
+*.st text eol=lf

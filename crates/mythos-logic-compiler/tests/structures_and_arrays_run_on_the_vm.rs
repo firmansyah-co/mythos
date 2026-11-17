@@ -39,15 +39,15 @@ fn a_structure_has_members_to_any_depth_starting_at_the_values_its_type_gives() 
 fn a_whole_structure_is_copied_by_assignment_and_only_to_its_own_type() {
     let mut r = Run::new(
         "TYPE Point : STRUCT x, y : INT; END_STRUCT;
-              Line : STRUCT from, to : Point; END_STRUCT; END_TYPE
+              Line : STRUCT head, tail : Point; END_STRUCT; END_TYPE
          PROGRAM Main VAR a, b : Point; l, m : Line; END_VAR
            a.x := 3; a.y := 4;
            b := a;
            a.x := 99;
-           l.from := b;
-           l.to := a;
+           l.head := b;
+           l.tail := a;
            m := l;
-           l.to.y := -1;
+           l.tail.y := -1;
          END_PROGRAM",
     );
     r.scan().unwrap();
@@ -57,7 +57,7 @@ fn a_whole_structure_is_copied_by_assignment_and_only_to_its_own_type() {
         "a copy: not changed with a"
     );
     assert_eq!(
-        (r.int("m.from.x"), r.int("m.to.x"), r.int("m.to.y")),
+        (r.int("m.head.x"), r.int("m.tail.x"), r.int("m.tail.y")),
         (3, 99, 4)
     );
 

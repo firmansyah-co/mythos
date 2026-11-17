@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { offsetOf, tokenize } from '../st';
+import { offsetOf, rangeOf, tokenize } from '../st';
 
 const SOURCE = `PROGRAM Tank (* a tank
   over two lines *)
@@ -41,5 +41,31 @@ describe('painting Structured Text', () => {
     expect(offsetOf('ab\ncd', 1, 4)).toBeNull();
     expect(offsetOf('ab\ncd', 3, 1)).toBeNull();
     expect(offsetOf('ab', 0, 1)).toBeNull();
+  });
+
+  it('counts a column in characters, as the compiler does, not in UTF-16 units', () => {
+    // The emoji is one character and two units: the x after it is column 9, offset 9.
+    const text = '(* \u{1F600} *) x';
+    expect(offsetOf(text, 1, 9)).toBe(text.indexOf('x'));
+    expect(offsetOf(text, 1, 10)).toBe(text.length);
+    expect(offsetOf(text, 1, 11)).toBeNull();
+  });
+
+  it('finds the stretch a diagnostic is about: its range, or the word at a point', () => {
+    const text = 'PROGRAM P\n  a := (oops +\n    1);\nEND_PROGRAM';
+    const at = (line: number, col: number, end_line: number, end_col: number) =>
+      rangeOf(text, { line, col, end_line, end_col });
+    const slice = (r: { from: number; to: number } | null) => (r === null ? null : text.slice(r.from, r.to));
+    // A range, over lines.
+    expect(slice(at(2, 8, 3, 6))).toBe('(oops +\n    1');
+    // A point: the word there, or the one character.
+    expect(slice(at(2, 9, 2, 9))).toBe('oops');
+    expect(slice(at(2, 14, 2, 14))).toBe('+');
+    // An end before the start is no range: the point at the start.
+    expect(slice(at(2, 9, 1, 1))).toBe('oops');
+    // About the whole program, about no place, or about the very end: nothing to underline.
+    expect(at(0, 0, 0, 0)).toBeNull();
+    expect(at(9, 1, 9, 2)).toBeNull();
+    expect(at(4, 12, 4, 12)).toBeNull();
   });
 });

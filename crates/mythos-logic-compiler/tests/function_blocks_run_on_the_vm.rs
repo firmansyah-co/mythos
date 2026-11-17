@@ -8,11 +8,11 @@ use mythos_logic_vm::Value;
 
 const COUNTER: &str = "
     FUNCTION_BLOCK UpCounter
-    VAR_INPUT step : INT := 1; reset : BOOL; END_VAR
+    VAR_INPUT inc : INT := 1; reset : BOOL; END_VAR
     VAR_OUTPUT total : DINT; full : BOOL; END_VAR
     VAR calls : INT; limit : DINT := 10; END_VAR
       calls := calls + 1;
-      IF reset THEN total := 0; ELSE total := total + step; END_IF;
+      IF reset THEN total := 0; ELSE total := total + inc; END_IF;
       full := total >= limit;
     END_FUNCTION_BLOCK";
 
@@ -21,7 +21,7 @@ fn a_function_block_keeps_its_variables_from_one_call_to_the_next() {
     let mut r = Run::new(&format!(
         "{COUNTER}
          PROGRAM Main VAR c : UpCounter; t : DINT; f : BOOL; END_VAR
-           c(step := 3);
+           c(inc := 3);
            t := c.total;
            f := c.full;
          END_PROGRAM"
@@ -43,9 +43,9 @@ fn two_instances_of_one_type_each_have_their_own_variables() {
     let mut r = Run::new(&format!(
         "{COUNTER}
          PROGRAM Main VAR a, b : UpCounter; ta, tb : DINT; END_VAR
-           a(step := 1);
-           b(step := 100);
-           a(step := 1);
+           a(inc := 1);
+           b(inc := 100);
+           a(inc := 1);
            ta := a.total;
            tb := b.total;
          END_PROGRAM"
@@ -63,8 +63,8 @@ fn outputs_are_copied_out_by_the_arrow_and_widen_as_an_assignment_would() {
     let mut r = Run::new(&format!(
         "{COUNTER}
          PROGRAM Main VAR c : UpCounter; wide : LINT; flag : BOOL; grid : ARRAY [1..2] OF DINT; i : INT := 2; END_VAR
-           c(step := 5, total => wide);
-           c(step := 5, total => grid[i], full => flag);
+           c(inc := 5, total => wide);
+           c(inc := 5, total => grid[i], full => flag);
          END_PROGRAM"
     ));
     r.scan().unwrap();
@@ -91,20 +91,20 @@ fn an_input_not_given_keeps_its_value_and_may_be_set_apart_from_the_call() {
          PROGRAM Main VAR c : UpCounter; t0, t1, t2, t3 : DINT; END_VAR
            c();
            t0 := c.total;
-           c(step := 10);
+           c(inc := 10);
            t1 := c.total;
            c();
            t2 := c.total;
-           c.step := 100;
+           c.inc := 100;
            c();
            t3 := c.total;
-           c.step := 1;
+           c.inc := 1;
          END_PROGRAM"
     ));
     r.scan().unwrap();
-    assert_eq!(r.int("t0"), 1, "step starts at its declared 1");
+    assert_eq!(r.int("t0"), 1, "inc starts at its declared 1");
     assert_eq!(r.int("t1"), 11);
-    assert_eq!(r.int("t2"), 21, "step is still the 10 of the call before");
+    assert_eq!(r.int("t2"), 21, "inc is still the 10 of the call before");
     assert_eq!(r.int("t3"), 121, "set apart from the call");
 }
 
@@ -116,7 +116,7 @@ fn every_instance_starts_at_the_initial_values_its_type_declares() {
          PROGRAM Main VAR a : UpCounter; h : Holder; many : ARRAY [1..3] OF UpCounter; END_VAR
          END_PROGRAM"
     ));
-    assert_eq!(r.int("a.step"), 1);
+    assert_eq!(r.int("a.inc"), 1);
     assert_eq!(r.int("a.limit"), 10);
     assert_eq!(r.int("h.inner.limit"), 10, "an instance inside an instance");
     assert_eq!(r.get("h.gain"), Value::Real(2.5));
@@ -125,7 +125,7 @@ fn every_instance_starts_at_the_initial_values_its_type_declares() {
         10,
         "each element of an array of instances"
     );
-    assert_eq!(r.int("many[3].step"), 1);
+    assert_eq!(r.int("many[3].inc"), 1);
 }
 
 const STATION: &str = "
