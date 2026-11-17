@@ -120,9 +120,9 @@ jobs:
         run: >
           cargo build --release --locked --target ${{ matrix.target }}
           -p mythos-cli -p mythos-core -p driver-modbus -p mythos-hmi -p mythos-discovery
-          -p mythos-runtime-vm
+          -p mythos-runtime-vm -p mythos-logic
           --bin mythos --bin mythos-server --bin mythos-module-modbus --bin mythos-module-hmi
-          --bin mythos-module-discovery --bin mythos-module-runtime-vm
+          --bin mythos-module-discovery --bin mythos-module-runtime-vm --bin mythos-module-logic
       - name: Pack the bundle
         shell: bash
         run: >

@@ -51,6 +51,7 @@ echo "=== build ==="
     && cargo build -p mythos-discovery --bin mythos-module-discovery \
     && cargo build -p mythos-runtime-vm --bin mythos-module-runtime-vm \
     && cargo build -p mythos-logic-compiler --example runtime_program \
+    && cargo build -p mythos-logic --bin mythos-module-logic \
     && cargo build -p mythos-module-tests --bin service-module-under-test \
     && cargo build -p driver-modbus --features sim --example modbus_sim ) \
     || cannot_run "the server or the simulator did not build"
@@ -89,6 +90,8 @@ cp "$ROOT/target/debug/mythos-module-discovery" "$WORK/install/bin/"
 cp "$ROOT/plugins/discovery/ui/entry.js" "$WORK/install/modules-ui/org.mythos.discovery/"
 # The logic runtime (ADR-013 §2.4): a runtime module, with no UI of its own.
 cp "$ROOT/target/debug/mythos-module-runtime-vm" "$WORK/install/bin/"
+# Logic authoring (ADR-013 §2.6): a service module; its editor comes with the workbench (C4).
+cp "$ROOT/target/debug/mythos-module-logic" "$WORK/install/bin/"
 cp "$ROOT/target/debug/service-module-under-test" "$WORK/install/bin/mythos-module-notes"
 cp "$ROOT/crates/mythos-module-tests/ui/entry.js" "$WORK/install/modules-ui/org.mythos.test.notes/"
 API="http://127.0.0.1:${HTTP_PORT}"
@@ -163,7 +166,7 @@ curl -fsS -o /dev/null "${AUTH[@]}" -X PUT "$API/api/v1/projects/plant_a/notes/n
     || cannot_run "the notes module did not take a note"
 
 # The control program the run loads into a runtime (ADR-013 §2.5), compiled here for the PC
-# profile: there is no logic module to compile it in the workbench yet.
+# profile by the compiler itself: this step is of the Runtimes page, not of the logic module.
 "$ROOT/target/debug/examples/runtime_program" "$ROOT/frontend/e2e/fan.st" pc >"$WORK/fan.json" \
     || cannot_run "the control program frontend/e2e/fan.st did not compile"
 

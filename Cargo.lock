@@ -2594,6 +2594,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mythos-logic"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "mythos-logic-compiler",
+ "mythos-module",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "mythos-logic-backend-vm"
 version = "0.1.0"
 dependencies = [
@@ -2660,6 +2675,7 @@ dependencies = [
  "mythos-core",
  "mythos-discovery",
  "mythos-hmi",
+ "mythos-logic",
  "mythos-logic-compiler",
  "mythos-module",
  "mythos-pal",
