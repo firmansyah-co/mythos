@@ -118,6 +118,19 @@ pub fn compile_in(
             out.code_size, target.name, target.max_code
         )));
     }
+    // What the VM would find at the program's start on that target, found here instead.
+    if let Some(max) = target.max_stack_depth.filter(|max| out.stack_depth > *max) {
+        diags.push(Diagnostic::whole(format!(
+            "the program needs a stack {} values deep; the target {} allows {max}",
+            out.stack_depth, target.name
+        )));
+    }
+    if let Some(max) = target.max_call_depth.filter(|max| out.call_depth > *max) {
+        diags.push(Diagnostic::whole(format!(
+            "the program nests its calls {} deep; the target {} allows {max}",
+            out.call_depth, target.name
+        )));
+    }
     if !diags.is_empty() {
         return Err(diags);
     }

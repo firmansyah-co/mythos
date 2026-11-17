@@ -3,7 +3,7 @@
 
 use mythos_logic_vm::format::{op, PLACE_INDEXED, PLACE_RELATIVE};
 use mythos_logic_vm::{
-    cold_start, crc32, scan, Fault, Frame, LoadError, Program, FORMAT_VERSION, MAGIC,
+    cold_start, crc32, scan, Fault, Frame, Limits, LoadError, Program, FORMAT_VERSION, MAGIC,
 };
 
 /// A program from its parts, with a correct checksum. `bodies` are each body's code and the
@@ -835,5 +835,196 @@ fn init_puts_initial_values_back_and_move_copies_even_onto_itself() {
         mem,
         [1, 2, 3, 4, 5, 0x77, 7, 8],
         "byte 1 is back to its initial value; byte 5, outside the INIT, keeps what was stored"
+    );
+}
+
+/// `JMP target`, `JZ target`.
+fn jump(opcode: u8, target: u32) -> Vec<u8> {
+    with_addr(opcode, target)
+}
+
+#[test]
+fn a_jump_into_the_middle_of_an_instruction_is_refused_at_load() {
+    // 0: PUSH32 v   5: JZ 11   10: NOT... is not reached; 11: END.
+    // The good program: both jumps land where an instruction starts.
+    let good = |forward: u32, back: u32| {
+        let mut code = with_addr(op::PUSH32, 0); // 0..5
+        code.extend(jump(op::JZ, forward)); // 5..10
+        code.extend(with_addr(op::PUSH32, 0)); // 10..15
+        code.extend(jump(op::JZ, back)); // 15..20
+        code.push(op::END); // 20
+        build(FORMAT_VERSION, 1, &[], &code)
+    };
+    assert_eq!(
+        refused(&good(20, 0)),
+        None,
+        "to the END, and back to the start"
+    );
+    assert_eq!(refused(&good(10, 5)), None, "to an instruction between");
+    let (result, _) = run(&good(20, 0));
+    assert_eq!(result, Ok(()), "and what loads runs");
+
+    // Forward, into the operand of the PUSH32 at 10: every byte of it.
+    for target in 11..15 {
+        assert_eq!(
+            refused(&good(target, 0)),
+            Some(LoadError::BadJump(5)),
+            "forward to {target}"
+        );
+    }
+    // Back, into the operand of the PUSH32 at 0, and into the JZ at 5.
+    for target in (1..5).chain(6..10) {
+        assert_eq!(
+            refused(&good(20, target)),
+            Some(LoadError::BadJump(15)),
+            "back to {target}"
+        );
+    }
+    // A jump into its own operand, forward by one byte.
+    assert_eq!(refused(&good(6, 0)), Some(LoadError::BadJump(5)));
+    assert_eq!(refused(&good(20, 16)), Some(LoadError::BadJump(15)));
+}
+
+#[test]
+fn a_jump_into_operands_that_read_as_instructions_is_still_refused() {
+    // The operand of the PUSH32 is four bytes that are each a whole instruction (NOT), so
+    // code read from offset 1 decodes and falls in step with the real instructions at 5.
+    // Only walking from where an instruction is known to start tells that 1 is not one.
+    let operand = u32::from_le_bytes([op::NOT; 4]);
+    let mut code = with_addr(op::PUSH32, operand); // 0..5
+    code.extend(jump(op::JMP, 1)); // 5..10, back into the operand
+    assert_eq!(
+        refused(&build(FORMAT_VERSION, 1, &[], &code)),
+        Some(LoadError::BadJump(5))
+    );
+    // The same forward: the JMP at 0 lands in the operand of the PUSH32 at 5.
+    let mut code = jump(op::JMP, 7); // 0..5
+    code.extend(with_addr(op::PUSH32, operand)); // 5..10
+    code.extend(with_addr(op::ST_32, 0)); // 10..15
+    code.push(op::END);
+    assert_eq!(
+        refused(&build(FORMAT_VERSION, 1, &[0; 4], &code)),
+        Some(LoadError::BadJump(0))
+    );
+    // And to the instruction itself it loads.
+    let mut code = jump(op::JMP, 5);
+    code.extend(with_addr(op::PUSH32, operand));
+    code.extend(with_addr(op::ST_32, 0));
+    code.push(op::END);
+    assert_eq!(refused(&build(FORMAT_VERSION, 1, &[0; 4], &code)), None);
+}
+
+#[test]
+fn a_jump_is_checked_against_the_instructions_of_its_own_body() {
+    // Two bodies. In the second, at code offset 6, a jump back to the start of its body
+    // (6) loads; a jump to 7, the middle of itself, does not. Offsets are of the whole
+    // code, and the walk starts at the body's start, not at 0.
+    let f: &[u8] = &[op::RET];
+    let body = |target: u32| {
+        let mut main = with_addr(op::PUSH32, 0); // 1..6
+        main.extend(jump(op::JZ, target)); // 6..11
+        main.push(op::END); // 11
+        program(FORMAT_VERSION, 1, 0, &[], &[(f, 0), (&main, 0)])
+    };
+    assert_eq!(refused(&body(1)), None, "the first instruction of the body");
+    assert_eq!(refused(&body(6)), None, "the jump itself");
+    assert_eq!(refused(&body(11)), None, "the END");
+    assert_eq!(refused(&body(3)), Some(LoadError::BadJump(6)));
+    assert_eq!(refused(&body(8)), Some(LoadError::BadJump(6)));
+}
+
+#[test]
+fn the_stack_stops_at_the_depth_the_program_declares_whatever_the_host_gives() {
+    // Declares a depth of 1 but pushes 2.
+    let mut code = with_addr(op::PUSH32, 1);
+    code.extend(with_addr(op::PUSH32, 2));
+    code.push(op::ADD_I32);
+    code.extend(with_addr(op::ST_32, 0));
+    code.push(op::END);
+    let one = build(FORMAT_VERSION, 1, &[0; 4], &code);
+    let p = Program::load(&one).unwrap();
+    // A host with a stack of 64: the program faults all the same, as it will on a
+    // controller that has exactly what it declares.
+    let mut memory = [0u8; 4];
+    assert_eq!(
+        scan(&p, &mut memory, &mut [0u64; 64], &mut [], 0, 100),
+        Err(Fault::StackOverflow(5))
+    );
+    assert_eq!(memory, [0; 4], "and nothing was stored");
+
+    // Declaring the 2 it uses, it runs: in exactly 2 and in 64.
+    let two = build(FORMAT_VERSION, 2, &[0; 4], &code);
+    let p = Program::load(&two).unwrap();
+    for host in [2usize, 64] {
+        let mut memory = [0u8; 4];
+        let mut stack = vec![0u64; host];
+        assert!(scan(&p, &mut memory, &mut stack, &mut [], 0, 100).is_ok());
+        assert_eq!(memory, 3i32.to_le_bytes(), "a stack of {host}");
+    }
+    // A host with less than the program declares is refused before anything runs.
+    assert_eq!(
+        scan(&p, &mut [0u8; 4], &mut [0u64; 1], &mut [], 0, 100),
+        Err(Fault::WrongSizes)
+    );
+}
+
+#[test]
+fn a_program_that_declares_more_than_the_host_has_is_refused_when_it_is_loaded() {
+    // main calls f: a stack of 2, one call frame, 4 bytes of memory.
+    let mut main = call(0);
+    main.extend(with_addr(op::PUSH32, 1));
+    main.extend(with_addr(op::PUSH32, 2));
+    main.push(op::ADD_I32);
+    main.extend(with_addr(op::ST_32, 0));
+    main.push(op::END);
+    let bytes = program(
+        FORMAT_VERSION,
+        2,
+        1,
+        &[0; 4],
+        &[(&[op::RET], 0), (&main, 0)],
+    );
+    let host = Limits {
+        memory: 4,
+        stack_depth: 2,
+        call_depth: 1,
+    };
+    let p = Program::load_within(&bytes, &host).expect("exactly what it declares is enough");
+    assert_eq!(
+        (p.memory_size(), p.stack_depth(), p.call_depth()),
+        (4, 2, 1)
+    );
+    let within = |limits: Limits| Program::load_within(&bytes, &limits).err();
+    assert_eq!(
+        within(Limits { memory: 3, ..host }),
+        Some(LoadError::TooMuchMemory(4))
+    );
+    assert_eq!(
+        within(Limits {
+            stack_depth: 1,
+            ..host
+        }),
+        Some(LoadError::StackTooDeep(2))
+    );
+    assert_eq!(
+        within(Limits {
+            call_depth: 0,
+            ..host
+        }),
+        Some(LoadError::CallsTooDeep(1))
+    );
+    // A host with more than enough takes it, and a damaged program is refused for its
+    // damage whatever the host has.
+    let roomy = Limits {
+        memory: 4096,
+        stack_depth: 64,
+        call_depth: 16,
+    };
+    assert!(Program::load_within(&bytes, &roomy).is_ok());
+    let mut damaged = bytes.clone();
+    damaged[25] ^= 0x10;
+    assert_eq!(
+        Program::load_within(&damaged, &roomy).err(),
+        Some(LoadError::Corrupt)
     );
 }

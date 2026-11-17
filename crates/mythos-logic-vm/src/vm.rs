@@ -16,6 +16,7 @@ pub enum Fault {
     BudgetExceeded,
     /// Integer division by zero, at this code offset. (`MOD` by zero is 0.)
     DivideByZero(u32),
+    /// A push beyond the stack depth the program declares, at this code offset.
     StackOverflow(u32),
     StackUnderflow(u32),
     /// Execution reached a byte that is not an instruction, or ran off the end of the code, or
@@ -276,7 +277,8 @@ fn fetch(cell: Cell, b: &[u8]) -> u64 {
 
 /// Run one scan of `program` over `memory` at time `now` (nanoseconds of a monotonic clock),
 /// executing at most `budget` instructions. `stack` and `calls` are working space the host
-/// owns: at least [`Program::stack_depth`] slots and [`Program::call_depth`] frames.
+/// owns: at least [`Program::stack_depth`] slots and [`Program::call_depth`] frames. What the
+/// host gives beyond that is not used.
 pub fn scan(
     program: &Program,
     memory: &mut [u8],
@@ -285,11 +287,15 @@ pub fn scan(
     now: i64,
     budget: u32,
 ) -> Result<ScanReport, Fault> {
-    if memory.len() != program.memory_size() || stack.len() < program.stack_depth() {
+    if memory.len() != program.memory_size() {
         return Err(Fault::WrongSizes);
     }
-    // Calls may nest as deep as the program declares and no deeper, whatever the host gave:
-    // a program behaves the same on every host.
+    // The stack is as deep, and calls may nest as deep, as the program declares and no
+    // deeper, whatever the host gave: a program behaves the same on every host, and one that
+    // would go deeper than it says is found on a PC, not on the controller.
+    let stack = stack
+        .get_mut(..program.stack_depth())
+        .ok_or(Fault::WrongSizes)?;
     let calls = calls
         .get_mut(..program.call_depth())
         .ok_or(Fault::WrongSizes)?;
