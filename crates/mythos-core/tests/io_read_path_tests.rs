@@ -527,6 +527,7 @@ impl ProtocolDriver for ScriptedDriver {
         vec![TagDeclaration {
             uri: HANG_URI.into(),
             description: "test".into(),
+            writable: false,
         }]
     }
     async fn poll_cycle(&mut self, _ctx: &PluginContext) -> Result<Vec<TagSample>, PluginError> {

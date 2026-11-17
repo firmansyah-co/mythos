@@ -287,6 +287,9 @@ pub struct TagDeclaration {
     pub uri: String,
     /// Where the tag comes from, in the driver's own terms (for example the register address).
     pub description: String,
+    /// Whether `write_tag` can write it. The host refuses a write to a tag that is not
+    /// writable without asking the driver, and registers the tag as read-only.
+    pub writable: bool,
 }
 
 /// Protocol Driver Service Provider Interface (SPI).

@@ -21,5 +21,5 @@ pub use manager::{ConfigProblem, IoManager, RescanReport};
 pub use registry::{module_dirs_from_env, DriverFactory, DriverInfo, DriverRegistry};
 pub use runtime::{
     ApplyReport, ConnectionState, ConnectionStatus, IoRuntime, IoStatus, IoStatusHandle,
-    TagFaultStatus,
+    TagFaultStatus, WriteError,
 };

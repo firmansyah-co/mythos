@@ -18,6 +18,7 @@ pub enum Access {
 }
 
 const V: Access = Access::Role(Role::Viewer);
+const O: Access = Access::Role(Role::Operator);
 const E: Access = Access::Role(Role::Engineer);
 const A: Access = Access::Role(Role::Admin);
 
@@ -85,6 +86,8 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     ("GET", "/api/v1/tags/values", V),
     ("GET", "/api/v1/remote", V),
     ("GET", "/api/v1/tags/:uri", V),
+    // Commanding the plant: the first route an operator has that a viewer does not.
+    ("PUT", "/api/v1/tags/:uri/value", O),
     ("GET", "/api/v1/projects", V),
     ("GET", "/api/v1/projects/active", V),
     ("GET", "/api/v1/projects/:id", V),

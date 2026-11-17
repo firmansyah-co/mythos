@@ -256,22 +256,35 @@ The differential test lists the first three rows as deliberate differences from 
 
 ## 3. Order of work
 
-0. **Spike** (done, §5), and the crates split along §2.1.
-1. **Run in an emulator in CI** (done, §2.9), then **the VM's real model**: calls,
-   instance-relative addressing, user function blocks, arrays and structs; format 1.
-2. **Writes to field devices** in the core: a driver's `write`, write authority, an MCP tool.
-   Also what HMI setpoints need.
-3. **The `runtime` module kind** in the protocol and the module host; the PC runner; safe
-   values; `GET /api/v1/runtimes` and Settings → Runtimes. Proven against a real Modbus simulator
-   on Linux, macOS and Windows.
-4. **The logic module** (authoring) and the **ST editor**, on a parser that recovers from errors.
-5. **Online**: monitor, force, runtime tags in the HMI.
-6. **Swap and online change; programs in a device's slice.**
-7. **Hardening**: watchdog, RETAIN variables across restarts.
-8. **ESP32 and RP2040 firmware** as runtime modules, on real boards.
-9. **LD, FBD, SFC** (not IL, §2.1), each a front-end crate and an editor kind; a **C backend**; a Linux
-   real-time mode. The rest of the ST language and the standard library run beside steps 2–8:
-   the runtime protocol does not depend on what the bytecode contains.
+Two tracks. The core path comes first because Adrian asked for logic that runs end to end
+(2026-11-17), and it does not wait for the language: a runtime takes bytecode as a black box.
+
+**Done:** the spike and the crate split (§2.1); programs run on emulated microcontrollers in CI
+(§2.9).
+
+**Track C, the core path, in order:**
+
+- C1. **Writes to field devices** (done): `PUT /api/v1/tags/<uri>/value`, a driver's `write`,
+  the tag's declared access, an MCP tool. Also what HMI setpoints need.
+- C2. **The `runtime` module kind** in the protocol and the module host; the PC runner; safe
+  values and write authority (§2.4); `GET /api/v1/runtimes` and Settings → Runtimes. Proven
+  against a real Modbus simulator on Linux, macOS and Windows.
+- C3. **The logic module** (authoring): programs, tasks, bindings, check, compile, load.
+- C4. **The ST editor** and the Runtimes page in the workbench.
+- C5. **Online**: monitor, force, runtime tags in the HMI.
+- C6. **Swap and online change; programs in a device's slice.**
+- C7. **Hardening**: watchdog, RETAIN variables across restarts.
+
+**Track L, the language, beside it:**
+
+- L1. **The VM's real model**: functions, user function blocks, arrays and structures; static
+  allocation, no recursion, instance-relative addressing, a bounded call stack; format 1.
+- L2. A parser that recovers from errors and gives ranges (for the editor); more of the
+  standard library; strings.
+- L3. **LD, FBD, SFC** (not IL, §2.1), each a front-end crate and an editor kind.
+
+**Later:** ESP32 and RP2040 firmware as runtime modules on real boards; a C backend; a Linux
+real-time mode.
 
 Each step leaves `dev` working.
 
@@ -297,7 +310,8 @@ Each step leaves `dev` working.
 | 2.1 ST front-end | Spike: one PROGRAM; VAR, VAR_INPUT, VAR_OUTPUT; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between those types; implicit widening per Figure 11; diagnostics with line and column for everything else |
 | 2.2 Profiles | `serde` data with a format version; `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format) proven with profiles read from JSON |
 | 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; loader checks, run-time checks, budget, faults |
-| 2.4–2.6, 2.8, 2.10 | Not built |
+| 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
+| 2.4 the `runtime` kind, 2.5, 2.6, 2.8, 2.10 | Not built |
 | 2.9 Emulators | Built: four programs, 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else |
 | 2.12 Oracle | `differential_strucpp.rs`: 4 programs, 60 cycles, 3,840 values, all agree except the three deliberate rows of §2.13 (167 values). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
 

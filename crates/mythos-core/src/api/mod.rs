@@ -175,6 +175,8 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
             get(telemetry::tag_values_handler::<S>),
         )
         .route("/api/v1/tags/:uri", get(get_tag_handler::<S>))
+        // The one way to command a field device: an operator writes a value to a tag.
+        .route("/api/v1/tags/:uri/value", put(write_tag_handler::<S>))
         // Projects
         .route(
             "/api/v1/projects",
@@ -299,6 +301,70 @@ async fn get_tag_handler<S: PlatformShm + 'static>(
     let catalog = state.tag_catalog.read().await;
     let meta = catalog.get_by_uri(&uri).ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(meta.clone()))
+}
+
+/// The body of `PUT /api/v1/tags/:uri/value`.
+#[derive(Debug, Deserialize)]
+struct WriteTagRequest {
+    /// The value in engineering units, as the tag is read: a number or a boolean.
+    value: serde_json::Value,
+}
+
+/// `PUT /api/v1/tags/:uri/value` — write a value to the field device behind a tag.
+///
+/// `200` means the device confirmed the write. It does not change what the tag reads: the
+/// next poll does, by reading the device. Every refusal says whether anything reached the
+/// device: `written` is `false` when nothing did, and `"unknown"` when a request went out and
+/// no confirmation came back.
+async fn write_tag_handler<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    Path(uri): Path<String>,
+    identity: Option<axum::Extension<crate::auth::Identity>>,
+    Json(request): Json<WriteTagRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    use crate::io::WriteError;
+    let who = identity
+        .map(|axum::Extension(i)| format!("{} ({})", i.username, i.via))
+        .unwrap_or_else(|| "an unauthenticated caller".to_string());
+    let refuse = |status: StatusCode, written: serde_json::Value, error: String| {
+        tracing::warn!(target: "mythos::audit", "{who} could not write {} to '{uri}': {error}", request.value);
+        (
+            status,
+            Json(json!({ "uri": uri, "written": written, "error": error })),
+        )
+    };
+    // A tag of another device of the plant is read here over the pairing; this node has no
+    // driver for it, and commanding another controller's outputs from here is not built.
+    if uri.contains(':') {
+        return refuse(
+            StatusCode::CONFLICT,
+            json!(false),
+            "this is another device's tag, read here over the pairing; write it on the device that owns it".to_string(),
+        );
+    }
+    if !(request.value.is_number() || request.value.is_boolean()) {
+        return refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!(false),
+            "nothing was written: the value must be a number or a boolean".to_string(),
+        );
+    }
+    match state.io_status.write_tag(&uri, request.value.clone()).await {
+        Ok(()) => {
+            tracing::info!(target: "mythos::audit", "{who} wrote {} to '{uri}'", request.value);
+            (StatusCode::OK, Json(json!({ "uri": uri, "written": true })))
+        }
+        Err(e) => {
+            let (status, written) = match &e {
+                WriteError::UnknownTag => (StatusCode::NOT_FOUND, json!(false)),
+                WriteError::ReadOnly => (StatusCode::CONFLICT, json!(false)),
+                WriteError::Stopped => (StatusCode::SERVICE_UNAVAILABLE, json!(false)),
+                WriteError::Refused(_) => (StatusCode::UNPROCESSABLE_ENTITY, json!(false)),
+                WriteError::NotConfirmed(_) => (StatusCode::BAD_GATEWAY, json!("unknown")),
+            };
+            refuse(status, written, e.to_string())
+        }
+    }
 }
 
 async fn list_projects_handler<S: PlatformShm + 'static>(

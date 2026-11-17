@@ -12,7 +12,7 @@ use crate::io::registry::DriverRegistry;
 use crate::tag::{AccessMode, TagCatalog, TagMetadata};
 use mythos_pal::PlatformShm;
 use mythos_plugin_sdk::{
-    PluginContext, ProtocolDriver, SampleFault, SampleValue, TagDeclaration, TagSample,
+    PluginContext, PluginError, ProtocolDriver, SampleFault, SampleValue, TagDeclaration, TagSample,
 };
 use mythos_shm::{QualityCode, ShmWriterHandle, TagDataType, TagValueRaw};
 use serde::Serialize;
@@ -81,9 +81,84 @@ pub struct IoStatus {
     pub connections: Vec<ConnectionStatus>,
 }
 
-/// Shared, cheaply cloned view of the runtime's status.
+/// The shared, cheaply cloned handle to the field I/O of one server: what it is doing
+/// ([`IoStatusHandle::snapshot`]) and the way to write through it
+/// ([`IoStatusHandle::write_tag`]). One handle outlives every reload of the configuration, so
+/// whoever holds it always reaches what is running now.
 #[derive(Clone, Default)]
-pub struct IoStatusHandle(Arc<StdRwLock<IoStatus>>);
+pub struct IoStatusHandle {
+    status: Arc<StdRwLock<IoStatus>>,
+    /// Every tag a running connection provides, and how to reach that connection's task.
+    writes: Arc<StdRwLock<HashMap<String, WriteTarget>>>,
+}
+
+/// Where a write to one tag goes.
+#[derive(Clone)]
+struct WriteTarget {
+    /// The task of the connection that provides the tag. Polls and writes of one connection
+    /// run in that one task, one at a time: a driver has one conversation with its device.
+    connection: mpsc::Sender<WriteRequest>,
+    /// What the driver declared.
+    writable: bool,
+}
+
+struct WriteRequest {
+    uri: String,
+    value: serde_json::Value,
+    done: oneshot::Sender<Result<(), WriteError>>,
+}
+
+/// Why a value was not written, or is not known to have been.
+///
+/// The cases are kept apart because what the caller may conclude differs: after the first
+/// four nothing reached the device; after `NotConfirmed` it is not known whether the device
+/// took the value, and saying "not written" would be a guess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteError {
+    /// No running connection provides this tag.
+    UnknownTag,
+    /// The driver declares the tag read-only.
+    ReadOnly,
+    /// The connection that provides the tag is not running.
+    Stopped,
+    /// The driver refused before sending anything: the value does not fit, or is not a value.
+    Refused(String),
+    /// A request was or may have been sent and no confirmation came back.
+    NotConfirmed(String),
+}
+
+impl std::fmt::Display for WriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WriteError::UnknownTag => write!(f, "no running connection provides this tag"),
+            WriteError::ReadOnly => {
+                write!(f, "the tag is read-only: its driver cannot write it")
+            }
+            WriteError::Stopped => write!(
+                f,
+                "the connection that provides this tag is not running; nothing was written"
+            ),
+            WriteError::Refused(why) => write!(f, "nothing was written: {why}"),
+            WriteError::NotConfirmed(why) => write!(
+                f,
+                "the device did not confirm the write, so it is not known whether it took the value: {why}"
+            ),
+        }
+    }
+}
+
+impl WriteError {
+    /// What a driver's refusal means. A driver that says the tag or the value is wrong sent
+    /// nothing; anything else happened during or after the conversation with the device.
+    fn from_driver(e: PluginError) -> Self {
+        match e {
+            PluginError::InvalidTag(m) | PluginError::InvalidConfiguration(m) => {
+                WriteError::Refused(m)
+            }
+            other => WriteError::NotConfirmed(other.to_string()),
+        }
+    }
+}
 
 impl IoStatusHandle {
     /// A status for a server on which no I/O runtime is running, stating why.
@@ -94,7 +169,66 @@ impl IoStatusHandle {
     }
 
     pub fn snapshot(&self) -> IoStatus {
-        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.status
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Write `value` to the field device behind `uri`, and wait for the device's answer.
+    ///
+    /// `Ok` means the driver had the device confirm the write. The tag's value on the tag bus
+    /// is not touched: it changes when the next poll reads the device, so what is shown is
+    /// always what was read, never what was asked for.
+    pub async fn write_tag(&self, uri: &str, value: serde_json::Value) -> Result<(), WriteError> {
+        let target = self
+            .writes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(uri)
+            .cloned();
+        let target = target.ok_or(WriteError::UnknownTag)?;
+        if !target.writable {
+            return Err(WriteError::ReadOnly);
+        }
+        let (done, answer) = oneshot::channel();
+        let request = WriteRequest {
+            uri: uri.to_string(),
+            value,
+            done,
+        };
+        // Not delivered: the task is gone, and nothing was sent to the device.
+        target
+            .connection
+            .send(request)
+            .await
+            .map_err(|_| WriteError::Stopped)?;
+        // Delivered and then dropped unanswered: the task ended with the request in hand.
+        answer.await.unwrap_or_else(|_| {
+            Err(WriteError::NotConfirmed(
+                "the connection stopped before answering".to_string(),
+            ))
+        })
+    }
+
+    fn set_write_targets(&self, tags: &[(String, bool)], connection: &mpsc::Sender<WriteRequest>) {
+        let mut writes = self.writes.write().unwrap_or_else(|e| e.into_inner());
+        for (uri, writable) in tags {
+            writes.insert(
+                uri.clone(),
+                WriteTarget {
+                    connection: connection.clone(),
+                    writable: *writable,
+                },
+            );
+        }
+    }
+
+    fn drop_write_targets<'a>(&self, uris: impl Iterator<Item = &'a String>) {
+        let mut writes = self.writes.write().unwrap_or_else(|e| e.into_inner());
+        for uri in uris {
+            writes.remove(uri);
+        }
     }
 
     /// Report that nothing is running, and why. Replaces whatever was reported before.
@@ -110,7 +244,7 @@ impl IoStatusHandle {
     }
 
     fn update(&self, change: impl FnOnce(&mut IoStatus)) {
-        change(&mut self.0.write().unwrap_or_else(|e| e.into_inner()));
+        change(&mut self.status.write().unwrap_or_else(|e| e.into_inner()));
     }
 
     fn update_connection(&self, id: &str, change: impl FnOnce(&mut ConnectionStatus)) {
@@ -585,7 +719,11 @@ impl IoRuntime {
                 Ok(meta) => {
                     metas.push(
                         meta.with_description(declaration.description.clone())
-                            .with_access(AccessMode::ReadOnly),
+                            .with_access(if declaration.writable {
+                                AccessMode::ReadWrite
+                            } else {
+                                AccessMode::ReadOnly
+                            }),
                     );
                     slots.push(probe as usize);
                     taken.insert(probe);
@@ -641,6 +779,12 @@ impl IoRuntime {
 
         let (shutdown, shutdown_rx) = watch::channel(false);
         let (swap, swap_rx) = mpsc::channel::<Swap>(1);
+        let (writes, writes_rx) = mpsc::channel::<WriteRequest>(16);
+        let targets: Vec<(String, bool)> = prepared
+            .declared
+            .iter()
+            .map(|d| (d.uri.clone(), d.writable))
+            .collect();
         info!(
             "I/O connection '{}' started with {} tag(s)",
             connection.id,
@@ -651,10 +795,15 @@ impl IoRuntime {
             prepared,
             tags.clone(),
             scanner,
-            shutdown_rx,
-            swap_rx,
+            Inbox {
+                shutdown: shutdown_rx,
+                swaps: swap_rx,
+                writes: writes_rx,
+            },
             self.status.clone(),
         ));
+        // Only now can a write find the connection: its task exists and its tags are registered.
+        self.status.set_write_targets(&targets, &writes);
 
         self.connections.insert(
             connection.id.clone(),
@@ -702,6 +851,9 @@ impl IoRuntime {
         let Some(running) = self.connections.remove(id) else {
             return;
         };
+        // First: no new write may find a connection that is about to stop.
+        self.status
+            .drop_write_targets(running.tags.iter().map(|(uri, _)| uri));
         let _ = running.shutdown.send(true);
         let _ = running.task.await;
 
@@ -728,6 +880,8 @@ impl IoRuntime {
     pub async fn shutdown(mut self) {
         let mut tags: Vec<String> = Vec::new();
         for (id, running) in self.connections.drain() {
+            self.status
+                .drop_write_targets(running.tags.iter().map(|(uri, _)| uri));
             let _ = running.shutdown.send(true);
             let _ = running.task.await;
             tags.extend(running.tags.into_iter().map(|(uri, _)| uri));
@@ -827,15 +981,26 @@ fn ticker_for(period: Duration) -> tokio::time::Interval {
     ticker
 }
 
+/// What a connection's task is told from outside, between two poll cycles.
+struct Inbox {
+    shutdown: watch::Receiver<bool>,
+    swaps: mpsc::Receiver<Swap>,
+    writes: mpsc::Receiver<WriteRequest>,
+}
+
 async fn run_connection(
     id: String,
     mut current: Prepared,
     tags: Vec<(String, usize)>,
     scanner: mpsc::Sender<ScanMsg>,
-    mut shutdown: watch::Receiver<bool>,
-    mut swaps: mpsc::Receiver<Swap>,
+    inbox: Inbox,
     status: IoStatusHandle,
 ) {
+    let Inbox {
+        mut shutdown,
+        mut swaps,
+        mut writes,
+    } = inbox;
     let by_uri: HashMap<&str, usize> = tags
         .iter()
         .map(|(uri, slot)| (uri.as_str(), *slot))
@@ -854,6 +1019,45 @@ async fn run_connection(
                     ticker = ticker_for(current.poll_interval);
                 }
                 let _ = swap.done.send(());
+                continue;
+            }
+            Some(request) = writes.recv() => {
+                // Between two poll cycles, never during one: the driver has one conversation
+                // with its device. Bounded like a poll, and for the same reason.
+                let outcome = timeout(
+                    current.cycle_timeout,
+                    current.driver.write_tag(&current.ctx, &request.uri, &request.value),
+                )
+                .await;
+                let (answer, timed_out) = match outcome {
+                    Ok(Ok(())) => (Ok(()), false),
+                    Ok(Err(e)) => (Err(WriteError::from_driver(e)), false),
+                    Err(_) => (
+                        Err(WriteError::NotConfirmed(format!(
+                            "no answer within {} ms",
+                            current.cycle_timeout.as_millis()
+                        ))),
+                        true,
+                    ),
+                };
+                match &answer {
+                    Ok(()) => info!("I/O connection '{}': wrote '{}'", id, request.uri),
+                    Err(e) => warn!("I/O connection '{}': write to '{}': {}", id, request.uri, e),
+                }
+                let _ = request.done.send(answer);
+                if timed_out {
+                    // As after a poll that overran: the request was cancelled mid-flight, so a
+                    // late answer must not be read as the reply to the next request.
+                    let _ = current.driver.stop(&current.ctx).await;
+                    if let Err(e) = current
+                        .driver
+                        .start(&current.ctx, &current.driver_config)
+                        .await
+                    {
+                        stop_reason = Some(format!("driver could not be restarted: {e}"));
+                        break;
+                    }
+                }
                 continue;
             }
             _ = ticker.tick() => {}
