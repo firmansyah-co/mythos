@@ -49,7 +49,7 @@ const compiles = (): CheckResult => ({ ok: true, diagnostics: [], variables: VAR
 /** A compiler that refuses any text with `oops` in it, at line 3, column 8. */
 const check = (source: string): CheckResult =>
   source.includes('oops')
-    ? { ok: false, diagnostics: [{ line: 3, col: 8, message: 'oops is not declared' }] }
+    ? { ok: false, diagnostics: [{ line: 3, col: 8, end_line: 3, end_col: 12, message: 'oops is not declared' }] }
     : compiles();
 
 const tank = (over: Partial<Backend> = {}): Backend => ({
@@ -199,6 +199,63 @@ describe('editing, checking and saving', () => {
     expect(byTestId(container, 'check-stale')).not.toBeNull();
     expect(byTestId(container, 'source-error-mark')).toBeNull();
     expect(byTestId(container, 'source-error-line')).toBeNull();
+  });
+
+  it('underlines the whole of what each diagnostic is about, over words and lines', async () => {
+    const wrong = 'PROGRAM Tank\nVAR a : INT; END_VAR\n  a := (oops +\n    NOT 1);\nEND_PROGRAM';
+    const backend = tank({
+      check: () => ({
+        ok: false,
+        diagnostics: [
+          // About the program as a whole: listed, underlined nowhere.
+          { line: 0, col: 0, end_line: 0, end_col: 0, message: 'the source has a mistake of its own' },
+          // From a parenthesis on line 3 to its partner on line 4, a keyword between.
+          { line: 3, col: 8, end_line: 4, end_col: 11, message: 'a INT and a BOOL cannot be combined' },
+          // A point: the word there.
+          { line: 2, col: 5, end_line: 2, end_col: 5, message: 'a is not used' },
+        ],
+      }),
+    });
+    const { container } = await opened(backend);
+    typeSource(container, wrong);
+    click(button(container, 'Check'));
+    await settle();
+
+    expect(texts(container, 'diagnostic')).toEqual([
+      '0:0the source has a mistake of its own',
+      '3:8a INT and a BOOL cannot be combined',
+      '2:5a is not used',
+    ]);
+    // Each underlined piece is the source's own text: the range across a keyword and a line
+    // break comes in more than one piece, and nothing else is underlined.
+    const marks = [...container.querySelectorAll('[data-testid="source-error-mark"]')].map((m) => m.textContent);
+    expect(marks.join('|')).toBe('a|(oops +\n    |NOT| |1|)');
+    expect(marks.slice(1).join('')).toBe(wrong.slice(wrong.indexOf('('), wrong.indexOf(')') + 1));
+    expect([...container.querySelectorAll('[data-testid="source-error-line"]')].map((l) => l.textContent)).toEqual(['2', '3']);
+  });
+
+  it('paints the text once where diagnostics share a word or a stretch of it', async () => {
+    const wrong = 'PROGRAM Tank\nVAR a : INT; END_VAR\n  a := oops + oops2;\nEND_PROGRAM';
+    const backend = tank({
+      check: () => ({
+        ok: false,
+        diagnostics: [
+          // Two in one stretch of names, apart; and one over the first and the name before it.
+          { line: 3, col: 8, end_line: 3, end_col: 12, message: 'oops is not declared' },
+          { line: 3, col: 15, end_line: 3, end_col: 20, message: 'oops2 is not declared' },
+          { line: 3, col: 3, end_line: 3, end_col: 12, message: 'a INT cannot hold this' },
+        ],
+      }),
+    });
+    const { container } = await opened(backend);
+    typeSource(container, wrong);
+    click(button(container, 'Check'));
+    await settle();
+
+    const marks = [...container.querySelectorAll('[data-testid="source-error-mark"]')].map((m) => m.textContent);
+    expect(marks).toEqual(['a := oops', 'oops2']);
+    // What is painted under the text area is the text, each character once.
+    expect(container.querySelector('.logic-source__paint')?.textContent).toBe(`${wrong}\n`);
   });
 
   it('keeps no result of a check that failed, rather than one of an earlier text', async () => {

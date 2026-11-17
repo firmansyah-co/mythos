@@ -11,6 +11,11 @@
 //! checked (its declarations are); a variable whose declaration was refused is known by
 //! name and nothing is said where it is used; a member or a parameter that is not found in
 //! a type or a POU with a gap in its declarations is not called missing.
+//!
+//! **Depth.** Types that contain one another are followed by recursive passes (here, in the
+//! IR, in a backend), so a structure that contains itself loses its members as soon as it is
+//! told, before anything follows them, and types nested deeper than [`MAX_TYPE_NESTING`] are
+//! refused. A type that holds one refused for its depth is refused silently: one message.
 
 use crate::ast::{self, BinOp, CaseLabel, ExprKind as A};
 use mythos_logic_ir::*;
@@ -34,6 +39,9 @@ pub fn check(src: &ast::Source) -> Result<Unit, Vec<Diagnostic>> {
         refused: vec![Vec::new(); src.pous.len()],
         gaps: src.pous.iter().map(|p| p.partial_vars).collect(),
         struct_gaps: Vec::new(),
+        struct_depth: Vec::new(),
+        struct_cycled: false,
+        resolving: 0,
         result_unknown: vec![false; src.pous.len()],
         lost: src.lost.clone(),
         diags: Vec::new(),
@@ -43,7 +51,7 @@ pub fn check(src: &ast::Source) -> Result<Unit, Vec<Diagnostic>> {
     };
     c.names(src);
     c.declarations(src);
-    let contained = c.containment();
+    let contained = c.containment(src) || c.struct_cycled;
     for (i, p) in src.pous.iter().enumerate() {
         // A POU that was not read whole: a statement may be missing, or a variable its
         // statements use. Whatever they would be told here follows from that.
@@ -135,6 +143,12 @@ struct Checker {
     gaps: Vec<bool>,
     /// The same for each structure of the unit.
     struct_gaps: Vec<bool>,
+    /// For each structure of the unit: how deep it nests ([`Checker::type_depth`]).
+    struct_depth: Vec<usize>,
+    /// A structure that contains itself was told.
+    struct_cycled: bool,
+    /// How many named array types are being worked out, each within the one before.
+    resolving: usize,
     /// For each POU: it is a function and what it returns is not known.
     result_unknown: Vec<bool>,
     /// What the source declares under names the parser could not read.
@@ -164,6 +178,13 @@ fn chain(names: &[String], verb: &str) -> String {
         s.push_str(&format!(", which {verb} {n}"));
     }
     s
+}
+
+/// What is said of a type, `what`, nested deeper than [`MAX_TYPE_NESTING`].
+fn too_deep(what: &str) -> String {
+    format!(
+        "{what} is nested more than {MAX_TYPE_NESTING} deep: structures, arrays and function block instances within one another each count"
+    )
 }
 
 /// The most elements an array may have. A backend's and a target's limits on memory are far
@@ -302,6 +323,8 @@ impl Checker {
 
     /// Second pass: the members of every structure and the variables of every POU.
     fn declarations(&mut self, src: &ast::Source) {
+        // Each member read, with its structure: what is checked once all are read.
+        let mut members: Vec<(usize, &ast::VarDecl)> = Vec::new();
         for (k, t) in src.types.iter().enumerate() {
             let fields = match &t.kind {
                 ast::TypeDeclKind::Struct(fields) => fields,
@@ -335,21 +358,37 @@ impl Checker {
                     self.struct_gaps[at] = true;
                     continue;
                 };
-                if self.unit.holds_instance(ty) {
-                    self.err(
-                        f.ty.span,
-                        "a function block instance inside a structure is not supported yet",
-                    );
-                    self.struct_gaps[at] = true;
-                    continue;
-                }
-                let init = f.init.as_ref().and_then(|i| self.init(i, ty));
                 self.unit.structs[at].fields.push(Field {
                     name: f.name.clone(),
                     ty,
-                    init,
+                    init: None,
                 });
+                members.push((at, f));
             }
+        }
+        // Every member's type is known: what follows members can be followed now.
+        self.struct_shapes(src);
+        for (at, f) in members {
+            let fields = &self.unit.structs[at].fields;
+            let Some(i) = fields
+                .iter()
+                .position(|x| x.name.eq_ignore_ascii_case(&f.name))
+            else {
+                // Its structure lost its members.
+                continue;
+            };
+            let ty = fields[i].ty;
+            if self.unit.holds_instance(ty) {
+                self.err(
+                    f.ty.span,
+                    "a function block instance inside a structure is not supported yet",
+                );
+                self.struct_gaps[at] = true;
+                self.unit.structs[at].fields.remove(i);
+                continue;
+            }
+            let init = f.init.as_ref().and_then(|i| self.init(i, ty));
+            self.unit.structs[at].fields[i].init = init;
         }
         for (i, p) in src.pous.iter().enumerate() {
             self.cur = i;
@@ -513,6 +552,16 @@ impl Checker {
                 if !ok {
                     return None;
                 }
+                let mut within = elem;
+                let mut arrays = 1;
+                while let Ty::Array(a) = within {
+                    arrays += 1;
+                    within = self.unit.arrays[a].elem;
+                }
+                if arrays > MAX_TYPE_NESTING {
+                    self.err(spec.span, too_deep("this array type"));
+                    return None;
+                }
                 let dims = dims
                     .iter()
                     .map(|(lo, hi)| (*lo as i64, *hi as i64))
@@ -531,13 +580,22 @@ impl Checker {
                 None
             }
             Alias::Unread => {
+                // Each named array type within another adds an array: past the limit, this
+                // one is too deep whatever it names, and is not followed further.
+                if self.resolving >= MAX_TYPE_NESTING {
+                    self.err(span, too_deep(&format!("the type {name}")));
+                    self.aliases[k] = Alias::Known(None);
+                    return None;
+                }
                 self.aliases[k] = Alias::Reading;
+                self.resolving += 1;
                 let ty = self
                     .alias_specs
                     .get(k)
                     .cloned()
                     .flatten()
                     .and_then(|spec| self.resolve(&spec));
+                self.resolving -= 1;
                 self.aliases[k] = Alias::Known(ty);
                 ty
             }
@@ -672,9 +730,77 @@ impl Checker {
 
     /// A type that contains itself has no size, and a function block that holds an instance
     /// of itself would be recursion. Returns whether one was found.
-    fn containment(&mut self) -> bool {
-        let mut found = false;
-        if let Some(cycle) = self.unit.struct_cycle() {
+    fn containment(&mut self, src: &ast::Source) -> bool {
+        // No body has been read yet, so a cycle here is one of instances held.
+        let order = match self.unit.order() {
+            Ok(order) => order,
+            Err(cycle) => {
+                let names: Vec<String> = cycle
+                    .iter()
+                    .map(|p| self.unit.pous[*p].name.clone())
+                    .collect();
+                self.err(
+                    self.pou_spans[cycle[0]],
+                    format!(
+                        "recursion is not allowed: the function block {} would hold an instance of itself: {}",
+                        names[0],
+                        chain(&names, "holds")
+                    ),
+                );
+                return true;
+            }
+        };
+        // How deep each function block type nests, each after those it holds.
+        let mut depth = vec![0; self.unit.pous.len()];
+        let mut refused = vec![false; self.unit.pous.len()];
+        for p in order {
+            let vars = &self.unit.pous[p].vars;
+            let follows = vars
+                .iter()
+                .any(|v| matches!(self.unit.innermost(v.ty), Ty::Instance(q) if refused[q]));
+            let d = 1 + vars
+                .iter()
+                .map(|v| self.type_depth(v.ty, &depth))
+                .max()
+                .unwrap_or(0);
+            depth[p] = d;
+            let is_fb = src.pous[p].kind == ast::PouKind::FunctionBlock;
+            if is_fb && (follows || d > MAX_TYPE_NESTING) {
+                refused[p] = true;
+                if !follows {
+                    let what = format!("the function block {}", self.unit.pous[p].name);
+                    self.err(self.pou_spans[p], too_deep(&what));
+                }
+            }
+        }
+        false
+    }
+
+    /// How deep a value of `ty` nests: 0 for an elementary type or a standard function
+    /// block, and one more for each array, structure or instance it is within. `pous` holds
+    /// the depths of the function block types known so far.
+    fn type_depth(&self, ty: Ty, pous: &[usize]) -> usize {
+        let mut arrays = 0;
+        let mut ty = ty;
+        while let Ty::Array(a) = ty {
+            arrays += 1;
+            ty = self.unit.arrays[a].elem;
+        }
+        arrays
+            + match ty {
+                Ty::Struct(i) => self.struct_depth[i],
+                // An instance in a structure is refused once structures are measured.
+                Ty::Instance(p) => pous.get(p).copied().unwrap_or(0),
+                _ => 0,
+            }
+    }
+
+    /// Before anything follows a structure into its members: a structure that contains
+    /// itself is told and loses its members, and so does one nested deeper than
+    /// [`MAX_TYPE_NESTING`]; one that holds a structure refused for its depth loses them
+    /// silently. Leaves how deep each structure nests in `struct_depth`.
+    fn struct_shapes(&mut self, src: &ast::Source) {
+        while let Some(cycle) = self.unit.struct_cycle() {
             let names: Vec<String> = cycle
                 .iter()
                 .map(|s| self.unit.structs[*s].name.clone())
@@ -684,25 +810,69 @@ impl Checker {
                 names[0],
                 chain(&names, "holds")
             )));
-            found = true;
+            for s in cycle {
+                self.unit.structs[s].fields.clear();
+                self.struct_gaps[s] = true;
+            }
+            self.struct_cycled = true;
         }
-        // No body has been read yet, so a cycle here is one of instances held.
-        if let Err(cycle) = self.unit.order() {
-            let names: Vec<String> = cycle
+        let n = self.unit.structs.len();
+        let mut spans = vec![Span::default(); n];
+        for (k, t) in src.types.iter().enumerate() {
+            if let Some(s) = self.struct_of[k] {
+                spans[s] = t.span;
+            }
+        }
+        // The structures `s` holds directly (through arrays, not through structures).
+        let held = |u: &Unit, s: usize| -> Vec<usize> {
+            u.structs[s]
+                .fields
                 .iter()
-                .map(|p| self.unit.pous[*p].name.clone())
-                .collect();
-            self.err(
-                self.pou_spans[cycle[0]],
-                format!(
-                    "recursion is not allowed: the function block {} would hold an instance of itself: {}",
-                    names[0],
-                    chain(&names, "holds")
-                ),
-            );
-            found = true;
+                .filter_map(|f| match u.innermost(f.ty) {
+                    Ty::Struct(i) => Some(i),
+                    _ => None,
+                })
+                .collect()
+        };
+        // Each structure after those it holds; no cycle is left, so this ends.
+        let mut known = vec![false; n];
+        let mut refused = vec![false; n];
+        self.struct_depth = vec![0; n];
+        for root in 0..n {
+            let mut todo = vec![root];
+            while let Some(&s) = todo.last() {
+                if known[s] {
+                    todo.pop();
+                    continue;
+                }
+                let inner = held(&self.unit, s);
+                if let Some(&next) = inner.iter().find(|i| !known[**i]) {
+                    todo.push(next);
+                    continue;
+                }
+                todo.pop();
+                known[s] = true;
+                let follows = inner.iter().any(|i| refused[*i]);
+                let d = 1 + self.unit.structs[s]
+                    .fields
+                    .iter()
+                    .map(|f| self.type_depth(f.ty, &[]))
+                    .max()
+                    .unwrap_or(0);
+                if follows || d > MAX_TYPE_NESTING {
+                    if !follows {
+                        let what = format!("the structure {}", self.unit.structs[s].name);
+                        self.err(spans[s], too_deep(&what));
+                    }
+                    refused[s] = true;
+                    self.unit.structs[s].fields.clear();
+                    self.struct_gaps[s] = true;
+                    self.struct_depth[s] = 1;
+                } else {
+                    self.struct_depth[s] = d;
+                }
+            }
         }
-        found
     }
 
     /// IEC 61131-3 ed. 3 §6.6.1.1 leaves recursion to the implementer. Here it is refused, so
@@ -761,6 +931,26 @@ impl Checker {
 
     /// Resolve a place: the variable, then each step of its path, with what may be done there.
     fn place(&mut self, p: &ast::Place) -> Option<Target> {
+        let mut t = self.place_root(p)?;
+        let mut text = p.name.clone();
+        for sel in &p.path {
+            match sel {
+                ast::Selector::Member(m, mspan) => {
+                    self.member_step(&mut t, p, &text, m, *mspan)?;
+                    text.push('.');
+                    text.push_str(m);
+                }
+                ast::Selector::Index(subscripts, ispan) => {
+                    self.index_step(&mut t, &text, subscripts, *ispan)?;
+                    text.push_str("[…]");
+                }
+            }
+        }
+        Some(t)
+    }
+
+    /// The variable a place starts from, before its members and elements.
+    fn place_root(&mut self, p: &ast::Place) -> Option<Target> {
         let Some(var) = self.find(&p.name) else {
             if !self.is_refused(&p.name) {
                 self.err(p.span, format!("{} is not declared", p.name));
@@ -768,156 +958,173 @@ impl Checker {
             return None;
         };
         let pou = &self.unit.pous[self.cur];
-        let mut ty = pou.vars[var].ty;
-        let mut readonly = None;
-        let mut unreadable = None;
         // IEC 61131-3 ed. 3 Figure 7: VAR_INPUT is "not modifiable within the entity"
         // (Figure 13 rule 2a says the same of a function block's inputs). A PROGRAM's too: its
         // inputs are what the runtime binds to tags.
-        if pou.vars[var].section == Section::Input {
-            readonly = Some(format!(
+        let readonly = (pou.vars[var].section == Section::Input).then(|| {
+            format!(
                 "{} is an input of {}; it cannot be written inside it",
                 p.name, pou.name
-            ));
-        }
-        let mut inside_instance = false;
-        let mut path = Vec::new();
-        let mut text = p.name.clone();
-        for sel in &p.path {
-            match sel {
-                ast::Selector::Member(m, mspan) => match ty {
-                    Ty::Struct(i) => {
-                        let fields = &self.unit.structs[i].fields;
-                        let Some(at) = fields.iter().position(|f| f.name.eq_ignore_ascii_case(m))
-                        else {
-                            if !self.struct_gaps[i] {
-                                let what = self.n(ty);
-                                self.err(*mspan, format!("{what} has no member {m}"));
-                            }
-                            return None;
-                        };
-                        ty = fields[at].ty;
-                        path.push(Sel::Member(at));
+            )
+        });
+        Some(Target {
+            place: Place {
+                var,
+                path: Vec::new(),
+            },
+            ty: pou.vars[var].ty,
+            readonly,
+            unreadable: None,
+            inside_instance: false,
+        })
+    }
+
+    /// The member `m` of the place `t`, written `text` so far.
+    fn member_step(
+        &mut self,
+        t: &mut Target,
+        p: &ast::Place,
+        text: &str,
+        m: &str,
+        mspan: Span,
+    ) -> Option<()> {
+        match t.ty {
+            Ty::Struct(i) => {
+                let fields = &self.unit.structs[i].fields;
+                let Some(at) = fields.iter().position(|f| f.name.eq_ignore_ascii_case(m)) else {
+                    if !self.struct_gaps[i] {
+                        let what = self.n(t.ty);
+                        self.err(mspan, format!("{what} has no member {m}"));
                     }
-                    Ty::Fb(_) | Ty::Instance(_) => {
-                        let block = self.n(ty);
-                        let Some((at, mty, role)) = self.fb_member(ty, m) else {
-                            if !self.has_gap(ty) {
-                                self.err(p.span, format!("{block} has no member {m}"));
-                            }
-                            return None;
-                        };
-                        match role {
-                            Role::Output => {
-                                readonly.get_or_insert(format!(
-                                    "{text}.{m} is an output of the block; it cannot be written"
-                                ));
-                            }
-                            // Figure 13 rule 2b: an input may be set from outside, separately
-                            // from the call. Only the POU that holds the instance does so.
-                            Role::Input => {
-                                // Figure 13 rule 1b: an input is not read from outside.
-                                unreadable.get_or_insert(format!(
-                                    "{text}.{m} is an input of the block; it is set from outside, not read there"
-                                ));
-                                if inside_instance {
-                                    readonly.get_or_insert(format!(
-                                        "{text} is inside another function block instance; only that block's body sets {m}"
-                                    ));
-                                }
-                            }
-                            // §6.6.3.2 rule 11: a VAR of a function block is private. An
-                            // instance held there can still be looked into; nothing else.
-                            Role::Internal => {
-                                if !self.unit.holds_instance(mty) {
-                                    self.err(
-                                        *mspan,
-                                        format!(
-                                            "{m} is an internal variable of {block}; only its inputs and outputs can be named from outside"
-                                        ),
-                                    );
-                                    return None;
-                                }
-                                readonly.get_or_insert(format!(
-                                    "{text}.{m} is inside the function block {block}; only its body writes there"
-                                ));
-                            }
+                    return None;
+                };
+                t.ty = fields[at].ty;
+                t.place.path.push(Sel::Member(at));
+            }
+            Ty::Fb(_) | Ty::Instance(_) => {
+                let block = self.n(t.ty);
+                let Some((at, mty, role)) = self.fb_member(t.ty, m) else {
+                    if !self.has_gap(t.ty) {
+                        self.err(p.span, format!("{block} has no member {m}"));
+                    }
+                    return None;
+                };
+                match role {
+                    Role::Output => {
+                        t.readonly.get_or_insert(format!(
+                            "{text}.{m} is an output of the block; it cannot be written"
+                        ));
+                    }
+                    // Figure 13 rule 2b: an input may be set from outside, separately
+                    // from the call. Only the POU that holds the instance does so.
+                    Role::Input => {
+                        // Figure 13 rule 1b: an input is not read from outside.
+                        t.unreadable.get_or_insert(format!(
+                            "{text}.{m} is an input of the block; it is set from outside, not read there"
+                        ));
+                        if t.inside_instance {
+                            t.readonly.get_or_insert(format!(
+                                "{text} is inside another function block instance; only that block's body sets {m}"
+                            ));
                         }
-                        inside_instance = true;
-                        ty = mty;
-                        path.push(Sel::Member(at));
                     }
-                    other => {
-                        let what = self.n(other);
-                        self.err(
-                            p.span,
-                            format!("{text} is a {what}, which has no member {m}"),
-                        );
-                        return None;
-                    }
-                },
-                ast::Selector::Index(subscripts, ispan) => {
-                    let Ty::Array(a) = ty else {
-                        let what = self.n(ty);
-                        self.err(*ispan, format!("{text} is a {what}, not an array"));
-                        return None;
-                    };
-                    let array = self.unit.arrays[a].clone();
-                    if subscripts.len() != array.dims.len() {
-                        self.err(
-                            *ispan,
-                            format!(
-                                "{text} has {} dimension(s); {} subscript(s) given",
-                                array.dims.len(),
-                                subscripts.len()
-                            ),
-                        );
-                        return None;
-                    }
-                    let mut lowered = Vec::new();
-                    for (e, (lo, hi)) in subscripts.iter().zip(&array.dims) {
-                        // §6.4.4.5.1: a subscript is an expression of an integer type.
-                        let x = self.expr(e, Some(Ty::Dint))?;
-                        if !x.ty.is_int() {
-                            let what = self.n(x.ty);
+                    // §6.6.3.2 rule 11: a VAR of a function block is private. An
+                    // instance held there can still be looked into; nothing else.
+                    Role::Internal => {
+                        if !self.unit.holds_instance(mty) {
                             self.err(
-                                e.span,
-                                format!("a subscript must be an integer; this is a {what}"),
+                                mspan,
+                                format!(
+                                    "{m} is an internal variable of {block}; only its inputs and outputs can be named from outside"
+                                ),
                             );
                             return None;
                         }
-                        // The same section makes a subscript outside its range an error. A
-                        // literal one is found here; a computed one stops the scan.
-                        if let ExprKind::Const(Const::Int(v)) = x.kind {
-                            if v < *lo || v > *hi {
-                                self.err(
-                                    e.span,
-                                    format!("the subscript {v} is outside {lo}..{hi}"),
-                                );
-                                return None;
-                            }
-                        }
-                        lowered.push(x);
+                        t.readonly.get_or_insert(format!(
+                            "{text}.{m} is inside the function block {block}; only its body writes there"
+                        ));
                     }
-                    ty = array.elem;
-                    path.push(Sel::Index(lowered));
                 }
+                t.inside_instance = true;
+                t.ty = mty;
+                t.place.path.push(Sel::Member(at));
             }
-            match sel {
-                ast::Selector::Member(m, _) => {
-                    text.push('.');
-                    text.push_str(m);
-                }
-                ast::Selector::Index(..) => text.push_str("[…]"),
+            other => {
+                let what = self.n(other);
+                self.err(
+                    p.span,
+                    format!("{text} is a {what}, which has no member {m}"),
+                );
+                return None;
             }
         }
-        Some(Target {
-            place: Place { var, path },
-            ty,
-            readonly,
-            unreadable,
-            inside_instance,
-        })
+        Some(())
+    }
+
+    /// The element `[subscripts]` of the place `t`, written `text` so far.
+    fn index_step(
+        &mut self,
+        t: &mut Target,
+        text: &str,
+        subscripts: &[ast::Expr],
+        ispan: Span,
+    ) -> Option<()> {
+        let (dims, elem) = self.dims(t.ty, text, subscripts.len(), ispan)?;
+        let mut lowered = Vec::with_capacity(dims.len());
+        for (e, (lo, hi)) in subscripts.iter().zip(dims) {
+            // §6.4.4.5.1: a subscript is an expression of an integer type.
+            let x = self.expr(e, Some(Ty::Dint))?;
+            lowered.push(self.subscript(x, e.span, lo, hi)?);
+        }
+        t.ty = elem;
+        t.place.path.push(Sel::Index(lowered));
+        Some(())
+    }
+
+    /// The ranges and the element type of the array `ty`, when `given` subscripts fit it.
+    fn dims(
+        &mut self,
+        ty: Ty,
+        text: &str,
+        given: usize,
+        ispan: Span,
+    ) -> Option<(Vec<(i64, i64)>, Ty)> {
+        let Ty::Array(a) = ty else {
+            let what = self.n(ty);
+            self.err(ispan, format!("{text} is a {what}, not an array"));
+            return None;
+        };
+        let array = &self.unit.arrays[a];
+        if given != array.dims.len() {
+            let msg = format!(
+                "{text} has {} dimension(s); {given} subscript(s) given",
+                array.dims.len(),
+            );
+            self.err(ispan, msg);
+            return None;
+        }
+        Some((array.dims.clone(), array.elem))
+    }
+
+    /// A subscript `x` within `lo..hi`.
+    fn subscript(&mut self, x: Expr, span: Span, lo: i64, hi: i64) -> Option<Expr> {
+        if !x.ty.is_int() {
+            let what = self.n(x.ty);
+            self.err(
+                span,
+                format!("a subscript must be an integer; this is a {what}"),
+            );
+            return None;
+        }
+        // The same section makes a subscript outside its range an error. A literal one is
+        // found here; a computed one stops the scan.
+        if let ExprKind::Const(Const::Int(v)) = x.kind {
+            if v < lo || v > hi {
+                self.err(span, format!("the subscript {v} is outside {lo}..{hi}"));
+                return None;
+            }
+        }
+        Some(x)
     }
 
     /// `value` where `want` is needed: as is, widened, or a diagnostic.
@@ -989,204 +1196,26 @@ impl Checker {
     }
 
     fn stmts(&mut self, s: &[ast::Stmt]) -> Vec<Stmt> {
-        s.iter().filter_map(|x| self.stmt(x)).collect()
+        // A loop and not an iterator: a statement within statements comes back here, and
+        // each frame on that way counts against the stack (see MAX_NESTING).
+        let mut out = Vec::with_capacity(s.len());
+        for x in s {
+            if let Some(st) = self.stmt(x) {
+                out.push(st);
+            }
+        }
+        out
     }
 
+    /// One statement. Each kind is a function of its own, so that what a statement within
+    /// statements keeps on the stack is the frame of its own kind only.
     fn stmt(&mut self, s: &ast::Stmt) -> Option<Stmt> {
         match s {
-            ast::Stmt::Assign(place, value) => {
-                let target = self.assign_to(place, true);
-                let v = self.expr(value, target.as_ref().map(|t| t.1));
-                let (p, ty) = target?;
-                if p.var == 0 && matches!(self.unit.pous[self.cur].kind, PouKind::Function { .. }) {
-                    self.result_assigned = true;
-                }
-                let v = self.coerce(v?, ty, value.span)?;
-                Some(Stmt::Assign(p, v))
-            }
-            ast::Stmt::Call(called, args) => {
-                let name = &called.name;
-                if called.path.is_empty() && self.find(name).is_none() {
-                    if self.is_refused(name) {
-                        return None;
-                    }
-                    let msg = if self.function(name).is_some() {
-                        // Table 72 lets a function be called as a statement, its result
-                        // discarded; a function here has no other effect, so that is refused.
-                        format!("{name} is a function: use its result, as in x := {name}(…);")
-                    } else if matches!(self.named(name), Some(Named::Pou(_))) {
-                        format!(
-                            "{name} is a function block type; declare an instance of it and call that"
-                        )
-                    } else if name.to_ascii_uppercase().contains("_TO_") {
-                        format!("{name}(…) gives a value; assign it: x := {name}(…);")
-                    } else {
-                        format!("{name} is not declared")
-                    };
-                    self.err(called.span, msg);
-                    return None;
-                }
-                let t = self.place(called)?;
-                let block = self.n(t.ty);
-                if !matches!(t.ty, Ty::Fb(_) | Ty::Instance(_)) {
-                    self.err(
-                        called.span,
-                        format!(
-                            "{} is a {block}, not a function block instance",
-                            called.text()
-                        ),
-                    );
-                    return None;
-                }
-                if t.inside_instance {
-                    self.err(
-                        called.span,
-                        format!(
-                            "{} is inside another function block instance; only that block's body calls it",
-                            called.text()
-                        ),
-                    );
-                    return None;
-                }
-                let mut inputs: Vec<(usize, Expr)> = Vec::new();
-                let mut outputs: Vec<(usize, Place)> = Vec::new();
-                for a in args {
-                    let (pname, pspan) = match a {
-                        ast::Arg::In(n, _, s) | ast::Arg::Out(n, _, s) => (n, *s),
-                        ast::Arg::Value(e) => {
-                            self.err(
-                                e.span,
-                                "a call of a function block names each parameter: IN := …, or Q => …",
-                            );
-                            continue;
-                        }
-                    };
-                    let Some((mi, mty, role)) = self.fb_member(t.ty, pname) else {
-                        if !self.has_gap(t.ty) {
-                            self.err(pspan, format!("{block} has no parameter {pname}"));
-                        }
-                        continue;
-                    };
-                    if role == Role::Internal {
-                        self.err(
-                            pspan,
-                            format!("{pname} is an internal variable of {block}, not a parameter"),
-                        );
-                        continue;
-                    }
-                    match a {
-                        ast::Arg::In(_, e, _) => {
-                            if role != Role::Input {
-                                self.err(pspan, format!("{pname} is an output of {block}: read it with {pname} => variable"));
-                                continue;
-                            }
-                            if inputs.iter().any(|(m, _)| *m == mi) {
-                                self.err(pspan, format!("{pname} is given twice"));
-                                continue;
-                            }
-                            if let Some(v) = self
-                                .expr(e, Some(mty))
-                                .and_then(|v| self.coerce(v, mty, e.span))
-                            {
-                                inputs.push((mi, v));
-                            }
-                        }
-                        ast::Arg::Value(_) => {}
-                        ast::Arg::Out(_, target, _) => {
-                            if role != Role::Output {
-                                self.err(
-                                    pspan,
-                                    format!(
-                                        "{pname} is an input of {block}: set it with {pname} := value"
-                                    ),
-                                );
-                                continue;
-                            }
-                            if let Some((p, ty)) = self.assign_to(target, true) {
-                                if !mty.widens_to(ty) {
-                                    let (from, to) = (self.n(mty), self.n(ty));
-                                    self.err(
-                                        target.span,
-                                        format!(
-                                            "{pname} is a {from}, which does not fit in a {to}"
-                                        ),
-                                    );
-                                    continue;
-                                }
-                                outputs.push((mi, p));
-                            }
-                        }
-                    }
-                }
-                Some(Stmt::Call {
-                    instance: t.place,
-                    inputs,
-                    outputs,
-                })
-            }
-            ast::Stmt::If(branches, otherwise) => {
-                let mut out = Vec::new();
-                for (c, b) in branches {
-                    let c = self.condition(c);
-                    let b = self.stmts(b);
-                    out.push((c?, b));
-                }
-                let e = otherwise
-                    .as_ref()
-                    .map(|b| self.stmts(b))
-                    .unwrap_or_default();
-                Some(Stmt::If(out, e))
-            }
+            ast::Stmt::Assign(place, value) => self.assign_stmt(place, value),
+            ast::Stmt::Call(called, args) => self.call_stmt(called, args),
+            ast::Stmt::If(branches, otherwise) => self.if_stmt(branches, otherwise.as_deref()),
             ast::Stmt::Case(sel, arms, otherwise) => {
-                let s = self.expr(sel, None);
-                let sty = s.as_ref().map(|s| s.ty);
-                if let Some(t) = sty {
-                    if !t.is_int() {
-                        let what = self.n(t);
-                        self.err(
-                            sel.span,
-                            format!("CASE needs an integer selector; this is a {what}"),
-                        );
-                    }
-                }
-                let mut out = Vec::new();
-                let mut seen: Vec<(i64, i64)> = Vec::new();
-                for (labels, body) in arms {
-                    let mut ranges = Vec::new();
-                    for l in labels {
-                        let (lo, hi, span) = match l {
-                            CaseLabel::One(e) => (self.label(e, sty), None, e.span),
-                            CaseLabel::Range(a, b) => {
-                                (self.label(a, sty), self.label(b, sty), a.span)
-                            }
-                        };
-                        let Some(lo) = lo else { continue };
-                        let hi = match l {
-                            CaseLabel::One(_) => lo,
-                            CaseLabel::Range(..) => match hi {
-                                Some(h) => h,
-                                None => continue,
-                            },
-                        };
-                        if hi < lo {
-                            self.err(span, format!("the range {lo}..{hi} is empty"));
-                            continue;
-                        }
-                        if seen.iter().any(|(a, b)| lo <= *b && *a <= hi) {
-                            self.err(span, "this label is already covered by an earlier one");
-                            continue;
-                        }
-                        seen.push((lo, hi));
-                        ranges.push((lo, hi));
-                    }
-                    let b = self.stmts(body);
-                    out.push((ranges, b));
-                }
-                let e = otherwise
-                    .as_ref()
-                    .map(|b| self.stmts(b))
-                    .unwrap_or_default();
-                Some(Stmt::Case(s?, out, e))
+                self.case_stmt(sel, arms, otherwise.as_deref())
             }
             ast::Stmt::For {
                 var,
@@ -1194,59 +1223,7 @@ impl Checker {
                 to,
                 by,
                 body,
-            } => {
-                let target = self.assign_to(var, true);
-                if let Some((_, ty)) = &target {
-                    if !ty.is_int() {
-                        let what = self.n(*ty);
-                        self.err(
-                            var.span,
-                            format!(
-                                "a FOR variable must be an integer; {} is a {what}",
-                                var.name
-                            ),
-                        );
-                    }
-                }
-                let ty = target.as_ref().map(|t| t.1);
-                let f = self
-                    .expr(from, ty)
-                    .and_then(|f| ty.and_then(|t| self.coerce(f, t, from.span)));
-                let t = self
-                    .expr(to, ty)
-                    .and_then(|x| ty.and_then(|tt| self.coerce(x, tt, to.span)));
-                let step = match by {
-                    None => Some(1),
-                    Some(e) => match self.expr(e, ty) {
-                        Some(Expr {
-                            kind: ExprKind::Const(Const::Int(0)),
-                            ..
-                        }) => {
-                            self.err(e.span, "BY 0 never ends");
-                            None
-                        }
-                        Some(Expr {
-                            kind: ExprKind::Const(Const::Int(v)),
-                            ..
-                        }) => Some(v),
-                        Some(_) => {
-                            self.err(e.span, "BY must be a constant integer for now");
-                            None
-                        }
-                        None => None,
-                    },
-                };
-                self.loops += 1;
-                let b = self.stmts(body);
-                self.loops -= 1;
-                Some(Stmt::For {
-                    var: target?.0,
-                    from: f?,
-                    to: t?,
-                    by: step?,
-                    body: b,
-                })
-            }
+            } => self.for_stmt(var, from, to, by.as_ref(), body),
             ast::Stmt::While(c, b) => {
                 let c = self.condition(c);
                 self.loops += 1;
@@ -1270,6 +1247,271 @@ impl Checker {
             }
             ast::Stmt::Return(_) => Some(Stmt::Return),
         }
+    }
+
+    fn assign_stmt(&mut self, place: &ast::Place, value: &ast::Expr) -> Option<Stmt> {
+        let target = self.assign_to(place, true);
+        let v = self.expr(value, target.as_ref().map(|t| t.1));
+        let (p, ty) = target?;
+        if p.var == 0 && matches!(self.unit.pous[self.cur].kind, PouKind::Function { .. }) {
+            self.result_assigned = true;
+        }
+        let v = self.coerce(v?, ty, value.span)?;
+        Some(Stmt::Assign(p, v))
+    }
+
+    fn call_stmt(&mut self, called: &ast::Place, args: &[ast::Arg]) -> Option<Stmt> {
+        let name = &called.name;
+        if called.path.is_empty() && self.find(name).is_none() {
+            if self.is_refused(name) {
+                return None;
+            }
+            let msg = if self.function(name).is_some() {
+                // Table 72 lets a function be called as a statement, its result
+                // discarded; a function here has no other effect, so that is refused.
+                format!("{name} is a function: use its result, as in x := {name}(…);")
+            } else if matches!(self.named(name), Some(Named::Pou(_))) {
+                format!("{name} is a function block type; declare an instance of it and call that")
+            } else if name.to_ascii_uppercase().contains("_TO_") {
+                format!("{name}(…) gives a value; assign it: x := {name}(…);")
+            } else {
+                format!("{name} is not declared")
+            };
+            self.err(called.span, msg);
+            return None;
+        }
+        let t = self.place(called)?;
+        let block = self.n(t.ty);
+        if !matches!(t.ty, Ty::Fb(_) | Ty::Instance(_)) {
+            self.err(
+                called.span,
+                format!(
+                    "{} is a {block}, not a function block instance",
+                    called.text()
+                ),
+            );
+            return None;
+        }
+        if t.inside_instance {
+            self.err(
+                called.span,
+                format!(
+                    "{} is inside another function block instance; only that block's body calls it",
+                    called.text()
+                ),
+            );
+            return None;
+        }
+        let mut inputs: Vec<(usize, Expr)> = Vec::new();
+        let mut outputs: Vec<(usize, Place)> = Vec::new();
+        for a in args {
+            let (pname, pspan) = match a {
+                ast::Arg::In(n, _, s) | ast::Arg::Out(n, _, s) => (n, *s),
+                ast::Arg::Value(e) => {
+                    self.err(
+                        e.span,
+                        "a call of a function block names each parameter: IN := …, or Q => …",
+                    );
+                    continue;
+                }
+            };
+            let Some((mi, mty, role)) = self.fb_member(t.ty, pname) else {
+                if !self.has_gap(t.ty) {
+                    self.err(pspan, format!("{block} has no parameter {pname}"));
+                }
+                continue;
+            };
+            if role == Role::Internal {
+                self.err(
+                    pspan,
+                    format!("{pname} is an internal variable of {block}, not a parameter"),
+                );
+                continue;
+            }
+            match a {
+                ast::Arg::In(_, e, _) => {
+                    if role != Role::Input {
+                        self.err(
+                            pspan,
+                            format!(
+                                "{pname} is an output of {block}: read it with {pname} => variable"
+                            ),
+                        );
+                        continue;
+                    }
+                    if inputs.iter().any(|(m, _)| *m == mi) {
+                        self.err(pspan, format!("{pname} is given twice"));
+                        continue;
+                    }
+                    if let Some(v) = self
+                        .expr(e, Some(mty))
+                        .and_then(|v| self.coerce(v, mty, e.span))
+                    {
+                        inputs.push((mi, v));
+                    }
+                }
+                ast::Arg::Value(_) => {}
+                ast::Arg::Out(_, target, _) => {
+                    if role != Role::Output {
+                        self.err(
+                            pspan,
+                            format!("{pname} is an input of {block}: set it with {pname} := value"),
+                        );
+                        continue;
+                    }
+                    if let Some((p, ty)) = self.assign_to(target, true) {
+                        if !mty.widens_to(ty) {
+                            let (from, to) = (self.n(mty), self.n(ty));
+                            self.err(
+                                target.span,
+                                format!("{pname} is a {from}, which does not fit in a {to}"),
+                            );
+                            continue;
+                        }
+                        outputs.push((mi, p));
+                    }
+                }
+            }
+        }
+        Some(Stmt::Call {
+            instance: t.place,
+            inputs,
+            outputs,
+        })
+    }
+
+    fn if_stmt(
+        &mut self,
+        branches: &[(ast::Expr, Vec<ast::Stmt>)],
+        otherwise: Option<&[ast::Stmt]>,
+    ) -> Option<Stmt> {
+        let mut out = Vec::new();
+        for (c, b) in branches {
+            let c = self.condition(c);
+            let b = self.stmts(b);
+            out.push((c?, b));
+        }
+        let e = match otherwise {
+            Some(b) => self.stmts(b),
+            None => Vec::new(),
+        };
+        Some(Stmt::If(out, e))
+    }
+
+    fn case_stmt(
+        &mut self,
+        sel: &ast::Expr,
+        arms: &[(Vec<CaseLabel>, Vec<ast::Stmt>)],
+        otherwise: Option<&[ast::Stmt]>,
+    ) -> Option<Stmt> {
+        let s = self.expr(sel, None);
+        let sty = s.as_ref().map(|s| s.ty);
+        if let Some(t) = sty {
+            if !t.is_int() {
+                let what = self.n(t);
+                self.err(
+                    sel.span,
+                    format!("CASE needs an integer selector; this is a {what}"),
+                );
+            }
+        }
+        let mut out = Vec::new();
+        let mut seen: Vec<(i64, i64)> = Vec::new();
+        for (labels, body) in arms {
+            let mut ranges = Vec::new();
+            for l in labels {
+                let (lo, hi, span) = match l {
+                    CaseLabel::One(e) => (self.label(e, sty), None, e.span),
+                    CaseLabel::Range(a, b) => (self.label(a, sty), self.label(b, sty), a.span),
+                };
+                let Some(lo) = lo else { continue };
+                let hi = match l {
+                    CaseLabel::One(_) => lo,
+                    CaseLabel::Range(..) => match hi {
+                        Some(h) => h,
+                        None => continue,
+                    },
+                };
+                if hi < lo {
+                    self.err(span, format!("the range {lo}..{hi} is empty"));
+                    continue;
+                }
+                if seen.iter().any(|(a, b)| lo <= *b && *a <= hi) {
+                    self.err(span, "this label is already covered by an earlier one");
+                    continue;
+                }
+                seen.push((lo, hi));
+                ranges.push((lo, hi));
+            }
+            let b = self.stmts(body);
+            out.push((ranges, b));
+        }
+        let e = match otherwise {
+            Some(b) => self.stmts(b),
+            None => Vec::new(),
+        };
+        Some(Stmt::Case(s?, out, e))
+    }
+
+    fn for_stmt(
+        &mut self,
+        var: &ast::Place,
+        from: &ast::Expr,
+        to: &ast::Expr,
+        by: Option<&ast::Expr>,
+        body: &[ast::Stmt],
+    ) -> Option<Stmt> {
+        let target = self.assign_to(var, true);
+        if let Some((_, ty)) = &target {
+            if !ty.is_int() {
+                let what = self.n(*ty);
+                self.err(
+                    var.span,
+                    format!(
+                        "a FOR variable must be an integer; {} is a {what}",
+                        var.name
+                    ),
+                );
+            }
+        }
+        let ty = target.as_ref().map(|t| t.1);
+        let f = self
+            .expr(from, ty)
+            .and_then(|f| ty.and_then(|t| self.coerce(f, t, from.span)));
+        let t = self
+            .expr(to, ty)
+            .and_then(|x| ty.and_then(|tt| self.coerce(x, tt, to.span)));
+        let step = match by {
+            None => Some(1),
+            Some(e) => match self.expr(e, ty) {
+                Some(Expr {
+                    kind: ExprKind::Const(Const::Int(0)),
+                    ..
+                }) => {
+                    self.err(e.span, "BY 0 never ends");
+                    None
+                }
+                Some(Expr {
+                    kind: ExprKind::Const(Const::Int(v)),
+                    ..
+                }) => Some(v),
+                Some(_) => {
+                    self.err(e.span, "BY must be a constant integer for now");
+                    None
+                }
+                None => None,
+            },
+        };
+        self.loops += 1;
+        let b = self.stmts(body);
+        self.loops -= 1;
+        Some(Stmt::For {
+            var: target?.0,
+            from: f?,
+            to: t?,
+            by: step?,
+            body: b,
+        })
     }
 
     fn label(&mut self, e: &ast::Expr, sel: Option<Ty>) -> Option<i64> {
@@ -1311,128 +1553,143 @@ impl Checker {
     /// Type an expression. `want` is the type its context needs; it decides what type a bare
     /// literal takes, and nothing else.
     fn expr(&mut self, e: &ast::Expr, want: Option<Ty>) -> Option<Expr> {
+        // What an expression within expressions keeps on the stack is this frame and the
+        // one of its own kind: every arm that says something is a function of its own.
         let span = e.span;
         match &e.kind {
-            A::Int(v) => {
-                let v = *v;
-                let ty = match want {
-                    Some(t) if t.is_int() => {
-                        if !fits(t, v) {
-                            let what = self.n(t);
-                            self.err(span, format!("{v} is outside the range of {what}"));
-                            return None;
-                        }
-                        t
-                    }
-                    Some(t) if t.is_real() => {
-                        return Some(Expr {
-                            ty: t,
-                            kind: ExprKind::Const(Const::Real(v as f64)),
-                        })
-                    }
-                    _ if fits(Ty::Dint, v) => Ty::Dint,
-                    _ if fits(Ty::Lint, v) => Ty::Lint,
-                    _ => {
-                        self.err(span, format!("{v} is too large for any integer type"));
-                        return None;
-                    }
-                };
-                Some(Expr {
-                    ty,
-                    kind: ExprKind::Const(Const::Int(v as i64)),
-                })
-            }
-            A::Real(v) => {
-                let ty = if want == Some(Ty::Real) {
-                    Ty::Real
-                } else {
-                    Ty::Lreal
-                };
-                Some(Expr {
-                    ty,
-                    kind: ExprKind::Const(Const::Real(*v)),
-                })
-            }
-            A::Bool(b) => Some(Expr {
-                ty: Ty::Bool,
-                kind: ExprKind::Const(Const::Bool(*b)),
-            }),
-            A::Time(t) => Some(Expr {
-                ty: Ty::Time,
-                kind: ExprKind::Const(Const::Time(*t)),
-            }),
-            A::Var(p) => {
-                let t = self.place(p)?;
-                if let Some(why) = t.unreadable {
-                    self.err(span, why);
-                    return None;
-                }
-                let text = p.text();
-                match t.ty {
-                    Ty::Fb(_) => {
-                        self.err(
-                            span,
-                            format!(
-                                "{text} is a function block instance; name one of its outputs, like {text}.Q"
-                            ),
-                        );
-                        return None;
-                    }
-                    Ty::Instance(_) => {
-                        self.err(
-                            span,
-                            format!(
-                                "{text} is a function block instance; name one of its inputs or outputs"
-                            ),
-                        );
-                        return None;
-                    }
-                    ty if self.unit.holds_instance(ty) => {
-                        self.err(
-                            span,
-                            format!("{text} holds function block instances; it is not a value"),
-                        );
-                        return None;
-                    }
-                    _ => {}
-                }
-                Some(Expr {
-                    ty: t.ty,
-                    kind: ExprKind::Load(t.place),
-                })
-            }
+            A::Int(_) | A::Real(_) | A::Bool(_) | A::Time(_) => self.literal(e, want),
+            A::Var(p) => self.load(p, span),
             A::Not(inner) => {
                 let x = self.expr(inner, Some(Ty::Bool))?;
-                if x.ty != Ty::Bool {
-                    let what = self.n(x.ty);
-                    self.err(
-                        span,
-                        format!(
-                            "NOT on a {what} (bit operations on integers are not supported yet)"
-                        ),
-                    );
-                    return None;
-                }
-                Some(Expr {
-                    ty: Ty::Bool,
-                    kind: ExprKind::Not(Box::new(x)),
-                })
+                self.not(x, span)
             }
             A::Neg(inner) => {
                 let x = self.expr(inner, want)?;
-                if !(x.ty.is_int() || x.ty.is_real() || x.ty == Ty::Time) {
-                    let what = self.n(x.ty);
-                    self.err(span, format!("a {what} cannot be negated"));
-                    return None;
-                }
-                Some(Expr {
-                    ty: x.ty,
-                    kind: ExprKind::Neg(Box::new(x)),
-                })
+                self.neg(x, span)
             }
             A::Binary(op, l, r) => self.binary(*op, l, r, want, span),
             A::Call(name, args) => self.call(name, args, span),
         }
+    }
+
+    /// A literal where `want` is needed.
+    fn literal(&mut self, e: &ast::Expr, want: Option<Ty>) -> Option<Expr> {
+        let (ty, k) = match e.kind {
+            A::Int(v) => return self.int_literal(v, want, e.span),
+            A::Real(v) if want == Some(Ty::Real) => (Ty::Real, Const::Real(v)),
+            A::Real(v) => (Ty::Lreal, Const::Real(v)),
+            A::Bool(b) => (Ty::Bool, Const::Bool(b)),
+            A::Time(t) => (Ty::Time, Const::Time(t)),
+            _ => return None,
+        };
+        Some(Expr {
+            ty,
+            kind: ExprKind::Const(k),
+        })
+    }
+
+    /// The value of a variable or a part of one.
+    fn load(&mut self, p: &ast::Place, span: Span) -> Option<Expr> {
+        let t = self.place(p)?;
+        self.value_of(t, p, span)
+    }
+
+    /// An integer literal where `want` is needed.
+    fn int_literal(&mut self, v: i128, want: Option<Ty>, span: Span) -> Option<Expr> {
+        let ty = match want {
+            Some(t) if t.is_int() => {
+                if !fits(t, v) {
+                    let what = self.n(t);
+                    self.err(span, format!("{v} is outside the range of {what}"));
+                    return None;
+                }
+                t
+            }
+            Some(t) if t.is_real() => {
+                return Some(Expr {
+                    ty: t,
+                    kind: ExprKind::Const(Const::Real(v as f64)),
+                })
+            }
+            _ if fits(Ty::Dint, v) => Ty::Dint,
+            _ if fits(Ty::Lint, v) => Ty::Lint,
+            _ => {
+                self.err(span, format!("{v} is too large for any integer type"));
+                return None;
+            }
+        };
+        Some(Expr {
+            ty,
+            kind: ExprKind::Const(Const::Int(v as i64)),
+        })
+    }
+
+    /// The value of the place `p` names, resolved as `t`.
+    fn value_of(&mut self, t: Target, p: &ast::Place, span: Span) -> Option<Expr> {
+        if let Some(why) = t.unreadable {
+            self.err(span, why);
+            return None;
+        }
+        let text = p.text();
+        match t.ty {
+            Ty::Fb(_) => {
+                self.err(
+                    span,
+                    format!(
+                        "{text} is a function block instance; name one of its outputs, like {text}.Q"
+                    ),
+                );
+                return None;
+            }
+            Ty::Instance(_) => {
+                self.err(
+                    span,
+                    format!(
+                        "{text} is a function block instance; name one of its inputs or outputs"
+                    ),
+                );
+                return None;
+            }
+            ty if self.unit.holds_instance(ty) => {
+                self.err(
+                    span,
+                    format!("{text} holds function block instances; it is not a value"),
+                );
+                return None;
+            }
+            _ => {}
+        }
+        Some(Expr {
+            ty: t.ty,
+            kind: ExprKind::Load(t.place),
+        })
+    }
+
+    fn not(&mut self, x: Expr, span: Span) -> Option<Expr> {
+        if x.ty != Ty::Bool {
+            let what = self.n(x.ty);
+            self.err(
+                span,
+                format!("NOT on a {what} (bit operations on integers are not supported yet)"),
+            );
+            return None;
+        }
+        Some(Expr {
+            ty: Ty::Bool,
+            kind: ExprKind::Not(Box::new(x)),
+        })
+    }
+
+    fn neg(&mut self, x: Expr, span: Span) -> Option<Expr> {
+        if !(x.ty.is_int() || x.ty.is_real() || x.ty == Ty::Time) {
+            let what = self.n(x.ty);
+            self.err(span, format!("a {what} cannot be negated"));
+            return None;
+        }
+        Some(Expr {
+            ty: x.ty,
+            kind: ExprKind::Neg(Box::new(x)),
+        })
     }
 
     fn binary(
@@ -1465,7 +1722,24 @@ impl Checker {
             let b = self.expr(r, rhint);
             (a, b)
         };
-        let (a, b) = (a?, b?);
+        self.combine(op, a?, b?, l.span, r.span, span)
+    }
+
+    /// The operation `op` on `a` and `b`, typed: `lspan` and `rspan` are where each is.
+    fn combine(
+        &mut self,
+        op: BinOp,
+        a: Expr,
+        b: Expr,
+        lspan: Span,
+        rspan: Span,
+        span: Span,
+    ) -> Option<Expr> {
+        let comparison = matches!(
+            op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+        );
+        let logical = matches!(op, BinOp::And | BinOp::Or | BinOp::Xor);
         if logical {
             if a.ty != Ty::Bool || b.ty != Ty::Bool {
                 self.err(span, "AND, OR and XOR take BOOL operands (bit operations on integers are not supported yet)");
@@ -1491,7 +1765,7 @@ impl Checker {
                 );
                 return None;
             }
-            let b = self.coerce(b, Ty::Lint, r.span)?;
+            let b = self.coerce(b, Ty::Lint, rspan)?;
             let aop = if op == BinOp::Mul {
                 Arith::Mul
             } else {
@@ -1517,8 +1791,8 @@ impl Checker {
             );
             return None;
         };
-        let a = self.coerce(a, common, l.span)?;
-        let b = self.coerce(b, common, r.span)?;
+        let a = self.coerce(a, common, lspan)?;
+        let b = self.coerce(b, common, rspan)?;
         if !common.is_elementary() {
             // IEC 61131-3 ed. 3 §7.3.3.2.2 compares multi-element variables of one type.
             let what = self.n(common);
@@ -1581,6 +1855,22 @@ impl Checker {
         if let Some(f) = self.function(name) {
             return self.call_function(f, args, span);
         }
+        let (from, to) = self.conversion(name, args, span)?;
+        let x = self.expr(&args[0].value, Some(from))?;
+        let x = self.coerce(x, from, args[0].value.span)?;
+        if from == to {
+            return Some(x);
+        }
+        Some(Expr {
+            ty: to,
+            kind: ExprKind::Convert(Box::new(x)),
+        })
+    }
+
+    /// What `name(args)` converts from and to, when it is a conversion that can be called
+    /// with these arguments; otherwise what is wrong is told (or follows from something told)
+    /// and the call is not typed.
+    fn conversion(&mut self, name: &str, args: &[ast::CallArg], span: Span) -> Option<(Ty, Ty)> {
         if matches!(self.named(name), Some(Named::Pou(_))) {
             self.err(
                 span,
@@ -1639,36 +1929,54 @@ impl Checker {
             self.err(*nspan, format!("{upper} takes its argument by position"));
             return None;
         }
-        let x = self.expr(&args[0].value, Some(from))?;
-        let x = self.coerce(x, from, args[0].value.span)?;
-        if from == to {
-            return Some(x);
-        }
-        Some(Expr {
-            ty: to,
-            kind: ExprKind::Convert(Box::new(x)),
-        })
+        Some((from, to))
     }
 
     /// A call of the function `f` of this source (IEC 61131-3 ed. 3 §6.6.1.4.2, Table 20):
     /// by position, every input in the order declared; or by name, in any order, an input
     /// left out starting at its initial value.
     fn call_function(&mut self, f: usize, args: &[ast::CallArg], span: Span) -> Option<Expr> {
-        let (name, result) = {
-            let p = &self.unit.pous[f];
-            (p.name.clone(), p.vars[0].ty)
-        };
-        let inputs: Vec<(usize, String, Ty)> = self.unit.pous[f]
-            .vars
-            .iter()
-            .enumerate()
-            .filter(|(_, v)| v.section == Section::Input)
-            .map(|(i, v)| (i, v.name.clone(), v.ty))
-            .collect();
         self.calls.push((self.cur, f, span));
+        let named = self.call_shape(f, args, span)?;
+        let mut lowered: Vec<(usize, Expr)> = Vec::new();
+        let mut ok = true;
+        for (k, a) in args.iter().enumerate() {
+            let input = if named {
+                self.named_input(f, a, &lowered)
+            } else {
+                self.input(f, k)
+            };
+            let Some((vi, ty)) = input else {
+                ok = false;
+                continue;
+            };
+            match self
+                .expr(&a.value, Some(ty))
+                .and_then(|v| self.coerce(v, ty, a.value.span))
+            {
+                Some(v) => lowered.push((vi, v)),
+                None => ok = false,
+            }
+        }
+        if !ok {
+            return None;
+        }
+        Some(Expr {
+            ty: self.unit.pous[f].vars[0].ty,
+            kind: ExprKind::Call {
+                pou: f,
+                args: lowered,
+            },
+        })
+    }
+
+    /// Whether the arguments of a call of `f` are named (or by position), once what is wrong
+    /// with them as a whole has been told; `None` when the call is not typed.
+    fn call_shape(&mut self, f: usize, args: &[ast::CallArg], span: Span) -> Option<bool> {
         if self.result_unknown[f] {
             return None;
         }
+        let name = self.unit.pous[f].name.clone();
         let named = args.iter().filter(|a| a.name.is_some()).count();
         if named != 0 && named != args.len() {
             self.err(
@@ -1677,70 +1985,65 @@ impl Checker {
             );
             return None;
         }
-        let mut lowered: Vec<(usize, Expr)> = Vec::new();
-        let mut ok = true;
-        if named == 0 {
-            if args.len() != inputs.len() {
-                if self.gaps[f] {
-                    return None;
-                }
-                self.err(
-                    span,
-                    format!(
-                        "{name} takes {} argument(s) by position; {} given",
-                        inputs.len(),
-                        args.len()
-                    ),
-                );
+        let inputs = self.unit.pous[f]
+            .vars
+            .iter()
+            .filter(|v| v.section == Section::Input)
+            .count();
+        if named == 0 && args.len() != inputs {
+            if self.gaps[f] {
                 return None;
             }
-            for (a, (vi, _, ty)) in args.iter().zip(&inputs) {
-                match self
-                    .expr(&a.value, Some(*ty))
-                    .and_then(|v| self.coerce(v, *ty, a.value.span))
-                {
-                    Some(v) => lowered.push((*vi, v)),
-                    None => ok = false,
-                }
-            }
-        } else {
-            for a in args {
-                let Some((pname, pspan)) = &a.name else {
-                    continue;
-                };
-                let Some((vi, _, ty)) = inputs
-                    .iter()
-                    .find(|(_, n, _)| n.eq_ignore_ascii_case(pname))
-                else {
-                    if !self.gaps[f] {
-                        self.err(*pspan, format!("{name} has no input {pname}"));
-                    }
-                    ok = false;
-                    continue;
-                };
-                if lowered.iter().any(|(i, _)| i == vi) {
-                    self.err(*pspan, format!("{pname} is given twice"));
-                    ok = false;
-                    continue;
-                }
-                match self
-                    .expr(&a.value, Some(*ty))
-                    .and_then(|v| self.coerce(v, *ty, a.value.span))
-                {
-                    Some(v) => lowered.push((*vi, v)),
-                    None => ok = false,
-                }
-            }
-        }
-        if !ok {
+            self.err(
+                span,
+                format!(
+                    "{name} takes {inputs} argument(s) by position; {} given",
+                    args.len()
+                ),
+            );
             return None;
         }
-        Some(Expr {
-            ty: result,
-            kind: ExprKind::Call {
-                pou: f,
-                args: lowered,
-            },
-        })
+        Some(named != 0)
+    }
+
+    /// The `k`th input of `f`: its variable and type.
+    fn input(&self, f: usize, k: usize) -> Option<(usize, Ty)> {
+        self.unit.pous[f]
+            .vars
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.section == Section::Input)
+            .nth(k)
+            .map(|(i, v)| (i, v.ty))
+    }
+
+    /// The input of `f` the named argument `a` gives, unless it has none of that name or
+    /// is given it twice (told).
+    fn named_input(
+        &mut self,
+        f: usize,
+        a: &ast::CallArg,
+        lowered: &[(usize, Expr)],
+    ) -> Option<(usize, Ty)> {
+        let (pname, pspan) = a.name.as_ref()?;
+        let found = self.unit.pous[f]
+            .vars
+            .iter()
+            .enumerate()
+            .find(|(_, v)| v.section == Section::Input && v.name.eq_ignore_ascii_case(pname))
+            .map(|(i, v)| (i, v.ty));
+        let Some((vi, ty)) = found else {
+            if !self.gaps[f] {
+                let name = &self.unit.pous[f].name;
+                let msg = format!("{name} has no input {pname}");
+                self.err(*pspan, msg);
+            }
+            return None;
+        };
+        if lowered.iter().any(|(i, _)| *i == vi) {
+            self.err(*pspan, format!("{pname} is given twice"));
+            return None;
+        }
+        Some((vi, ty))
     }
 }

@@ -25,6 +25,23 @@ pub use keywords::{is_keyword, KEYWORDS, TYPE_KEYWORDS};
 /// program), structures and arrays; places with a path. 0 was one program of scalar variables.
 pub const IR_VERSION: u32 = 1;
 
+/// How deep a front-end lets constructs of a body nest within one another: statements within
+/// statements, and within one statement, operations, calls, subscripts and parentheses. An
+/// operation counts once for each operator of a chain (`a + b + c` is two deep), because the
+/// tree a chain makes is that deep. A source nested deeper is refused with a diagnostic.
+///
+/// Every pass over a unit (checking, lowering, a backend's walk) is recursive, and a compiler
+/// runs inside the logic module's service process: a source must never be able to exhaust
+/// the stack it is compiled on. The smallest one is 2 MiB (a tokio worker thread, a Rust test
+/// thread). `deep_sources_are_refused.rs` compiles the deepest source of each kind allowed on
+/// a thread of half that, in a debug build, where frames are largest.
+pub const MAX_NESTING: usize = 100;
+
+/// How deep a front-end lets types contain one another: a structure, an array or a function
+/// block instance within another. A type nested deeper is refused with a diagnostic, for the
+/// same reason as [`MAX_NESTING`].
+pub const MAX_TYPE_NESTING: usize = 100;
+
 /// A stretch of a source text: from `line`:`col`, where it starts, up to `end_line`:`end_col`,
 /// the first position after it. Lines and columns count from 1; a column counts characters
 /// (Unicode scalar values), not bytes, and a tab is one.

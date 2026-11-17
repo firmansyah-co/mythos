@@ -18,6 +18,10 @@
 //!   (The checker may have something of its own to say about a name the parser refused: a
 //!   keyword as a name that is also declared twice is two mistakes.)
 //!
+//! Each program is damaged as written (LF, which `.gitattributes` keeps on every system) and,
+//! less often, with CRLF line ends, as an editor on Windows sends it: a CRLF source once
+//! reached a structure holding itself that no LF one had, and overflowed the stack.
+//!
 //! The damage is drawn from a fixed seed: a failure here is reproducible.
 
 use mythos_logic_compiler::{compile, Diagnostic, TargetProfile};
@@ -260,6 +264,16 @@ fn a_damaged_source_compiles_or_is_refused_with_usable_diagnostics_and_never_pan
         // And cut short, at every third length: a program being typed.
         for len in (0..good.len()).step_by(3) {
             check(&good[..len].iter().collect::<String>());
+        }
+    }
+    for (_, good) in &corpus {
+        let crlf: Vec<char> = good.replace('\n', "\r\n").chars().collect();
+        for _ in 0..500 {
+            let mut chars = crlf.clone();
+            for _ in 0..1 + rng.below(4) {
+                damage(&mut chars, &mut rng);
+            }
+            check(&chars.iter().collect::<String>());
         }
     }
     println!(

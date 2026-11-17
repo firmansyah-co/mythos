@@ -2,6 +2,11 @@
 //! ed. 3 Table 71, lowest first: OR; XOR; AND, &; = <> < > <= >=; + -; * / MOD; unary - NOT;
 //! call. Operators of one precedence apply left to right.
 //!
+//! **Depth.** Every pass over the tree is recursive, so the tree may not be deeper than
+//! [`MAX_NESTING`]: a statement within statements, or a part of an expression within
+//! operations, calls, subscripts and parentheses, deeper than that is refused where the limit
+//! is reached, and the reading goes on after it as after any other mistake.
+//!
 //! **Recovery.** A rule that cannot go on says why once and gives up; whoever holds a list
 //! (of statements, of declarations, of POUs) then moves to where the next item can start and
 //! reads on, so one pass reports every independent mistake:
@@ -21,7 +26,7 @@
 
 use crate::ast::*;
 use crate::lexer::{Lexed, Tok, Token};
-use mythos_logic_ir::{is_keyword, Diagnostic, Span, TYPE_KEYWORDS};
+use mythos_logic_ir::{is_keyword, Diagnostic, Span, MAX_NESTING, TYPE_KEYWORDS};
 
 pub struct Parser {
     toks: Vec<Token>,
@@ -39,6 +44,19 @@ pub struct Parser {
     /// is declared; where it is used it stands as the name it was meant to be, so that the
     /// one mistake is told once.
     named_keywords: Vec<String>,
+    /// How deep the construct being read is nested: the statements and the parts of an
+    /// expression it is within (see [`MAX_NESTING`]).
+    nest: usize,
+    /// The height of the tree of the expression last read: 1 for a value alone, one more
+    /// for each operation, call or subscript above it.
+    height: usize,
+}
+
+/// What is said where a source nests deeper than [`MAX_NESTING`].
+fn too_deep() -> String {
+    format!(
+        "nested more than {MAX_NESTING} deep: statements within statements, and operations, calls, subscripts, parentheses and arrays within one another, each count"
+    )
 }
 
 /// A rule could not go on. What was wrong has been said.
@@ -163,7 +181,32 @@ impl Parser {
             diags: lexed.diags,
             failures: 0,
             told_at: None,
+            nest: 0,
+            height: 0,
         }
+    }
+
+    /// Go one level deeper to read what `read` reads, or refuse at the next token when
+    /// that is deeper than a source may nest.
+    fn deeper<T>(&mut self, read: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        if self.nest >= MAX_NESTING {
+            return self.refuse(too_deep());
+        }
+        self.nest += 1;
+        let read = read(self);
+        self.nest -= 1;
+        read
+    }
+
+    /// An expression whose tree is `height` high has been read at `span`: refused when the
+    /// tree, from the statement it is in, is deeper than a source may nest.
+    fn grew(&mut self, height: usize, span: Span) -> R<()> {
+        // A value alone stands where `deeper` let it.
+        if height > 1 && self.nest + height > MAX_NESTING {
+            return self.fail(span, too_deep());
+        }
+        self.height = height;
+        Ok(())
     }
 
     fn peek(&self) -> &Tok {
@@ -718,7 +761,7 @@ impl Parser {
             }
             self.expect_sym("]")?;
             self.expect_kw("OF")?;
-            let elem = self.type_spec()?;
+            let elem = self.deeper(|p| p.type_spec())?;
             return Ok(TypeSpec {
                 span: self.since(span),
                 kind: TypeSpecKind::Array(dims, Box::new(elem)),
@@ -808,7 +851,7 @@ impl Parser {
             if let (Tok::Int(n), Some(Tok::Sym("("))) = (self.peek().clone(), self.peek2()) {
                 self.bump();
                 self.bump();
-                let inner = self.array_items(")")?;
+                let inner = self.deeper(|p| p.array_items(")"))?;
                 self.expect_sym(")")?;
                 items.push(ArrayInit::Repeat(n, inner, self.since(span)));
             } else if self.is_sym("[") {
@@ -860,9 +903,11 @@ impl Parser {
         Ok(())
     }
 
-    /// The steps after a name: `.member`, `[i, j]`, any number of them.
+    /// The steps after a name: `.member`, `[i, j]`, any number of them. Leaves in `height`
+    /// the height of the highest subscript, 0 when there is none.
     fn selectors(&mut self) -> R<Vec<Selector>> {
         let mut path = Vec::new();
+        let mut highest = 0;
         loop {
             let span = self.span();
             if self.is_sym(".") {
@@ -872,13 +917,16 @@ impl Parser {
             } else if self.is_sym("[") {
                 self.bump();
                 let mut subscripts = vec![self.expr()?];
+                highest = highest.max(self.height);
                 while self.is_sym(",") {
                     self.bump();
                     subscripts.push(self.expr()?);
+                    highest = highest.max(self.height);
                 }
                 self.expect_sym("]")?;
                 path.push(Selector::Index(subscripts, self.since(span)));
             } else {
+                self.height = highest;
                 return Ok(path);
             }
         }
@@ -902,7 +950,15 @@ impl Parser {
         self.stmt_list(true)
     }
 
+    /// A list of statements is one level deeper than the statement it is in.
     fn stmt_list(&mut self, in_case: bool) -> Vec<Stmt> {
+        self.nest += 1;
+        let out = self.stmt_list_here(in_case);
+        self.nest -= 1;
+        out
+    }
+
+    fn stmt_list_here(&mut self, in_case: bool) -> Vec<Stmt> {
         let mut out = Vec::new();
         loop {
             if self.ends_stmts() {
@@ -1019,24 +1075,47 @@ impl Parser {
     /// One statement. `Ok(None)`: it could not be read whole, has said why, and the parser
     /// stands after it. `Err`: it could not be read and the parser stands inside it.
     fn stmt(&mut self) -> R<Option<Stmt>> {
-        let span = self.span();
         if self.opens_block() {
-            let read = if self.is_kw("IF") {
-                self.if_stmt()
-            } else if self.is_kw("CASE") {
-                self.case_stmt()
-            } else if self.is_kw("FOR") {
-                self.for_stmt()
-            } else if self.is_kw("WHILE") {
-                self.while_stmt()
-            } else {
-                self.repeat_stmt()
-            };
-            return Ok(read.unwrap_or_else(|Failed| {
+            return Ok(self.block());
+        }
+        self.other_stmt()
+    }
+
+    /// A statement with an `END_` of its own. `None`: it could not be read whole, has said
+    /// why, and the parser stands after it.
+    fn block(&mut self) -> Option<Stmt> {
+        if self.nest >= MAX_NESTING {
+            // Said at its keyword; then left whole, with all that is nested in it.
+            let _ = self.refuse::<()>(too_deep());
+            self.bump();
+            self.skip_block();
+            return None;
+        }
+        // One call for every kind: a statement within statements keeps one result on the
+        // stack, not one for each kind.
+        let kind: fn(&mut Self) -> R<Option<Stmt>> = if self.is_kw("IF") {
+            Self::if_stmt
+        } else if self.is_kw("CASE") {
+            Self::case_stmt
+        } else if self.is_kw("FOR") {
+            Self::for_stmt
+        } else if self.is_kw("WHILE") {
+            Self::while_stmt
+        } else {
+            Self::repeat_stmt
+        };
+        match kind(self) {
+            Ok(read) => read,
+            Err(Failed) => {
                 self.skip_block();
                 None
-            }));
+            }
         }
+    }
+
+    /// A statement without an `END_` of its own.
+    fn other_stmt(&mut self) -> R<Option<Stmt>> {
+        let span = self.span();
         if self.is_kw("EXIT") {
             self.bump();
             self.expect_sym(";")?;
@@ -1059,6 +1138,11 @@ impl Parser {
                 return self.not_yet(kw);
             }
         }
+        self.simple_stmt().map(Some)
+    }
+
+    /// An assignment or a call of a function block instance.
+    fn simple_stmt(&mut self) -> R<Stmt> {
         let target = self.place()?;
         if self.is_sym("(") {
             self.bump();
@@ -1087,12 +1171,12 @@ impl Parser {
             }
             self.expect_sym(")")?;
             self.expect_sym(";")?;
-            return Ok(Some(Stmt::Call(target, args)));
+            return Ok(Stmt::Call(target, args));
         }
         self.expect_sym(":=")?;
         let value = self.expr()?;
         self.expect_sym(";")?;
-        Ok(Some(Stmt::Assign(target, value)))
+        Ok(Stmt::Assign(target, value))
     }
 
     fn if_stmt(&mut self) -> R<Option<Stmt>> {
@@ -1226,12 +1310,49 @@ impl Parser {
         Ok(cond.map(|c| Stmt::Repeat(body, c)))
     }
 
+    /// An expression. Its operations are taken by precedence (IEC 61131-3 ed. 3 Table 71),
+    /// left to right within one, in a loop rather than a rule per precedence, so that a
+    /// level of parentheses costs one call of this and not one for each precedence. Leaves
+    /// the height of its tree in `height`.
     pub fn expr(&mut self) -> R<Expr> {
-        self.binary(0)
+        // The operands read and the operators between them still waiting for their right
+        // operand; each operator waiting has a lower precedence than the one after it.
+        let mut operands = vec![self.operand()?];
+        let mut waiting: Vec<(usize, BinOp, Span)> = Vec::new();
+        loop {
+            if self.is_sym("**") {
+                return self.refuse("** (power) is not supported yet".into());
+            }
+            // A message about an operation is about its operator.
+            let span = self.span();
+            let Some((level, op)) = self.operator() else {
+                break;
+            };
+            while waiting.last().is_some_and(|(before, ..)| *before >= level) {
+                self.apply(&mut operands, &mut waiting)?;
+            }
+            self.bump();
+            waiting.push((level, op, span));
+            operands.push(self.operand()?);
+        }
+        while !waiting.is_empty() {
+            self.apply(&mut operands, &mut waiting)?;
+        }
+        let Some((e, height)) = operands.pop() else {
+            return self.unexpected("a value");
+        };
+        self.height = height;
+        Ok(e)
     }
 
-    fn binary(&mut self, level: usize) -> R<Expr> {
-        // (operators of this level, by token)
+    /// An operand of an operation, with the height of its tree.
+    fn operand(&mut self) -> R<(Expr, usize)> {
+        let e = self.unary()?;
+        Ok((e, self.height))
+    }
+
+    /// The operator at the next token: its precedence (0 binds least) and what it does.
+    fn operator(&self) -> Option<(usize, BinOp)> {
         const LEVELS: [&[(&str, BinOp)]; 6] = [
             &[("OR", BinOp::Or)],
             &[("XOR", BinOp::Xor)],
@@ -1249,142 +1370,175 @@ impl Parser {
             &[("+", BinOp::Add), ("-", BinOp::Sub)],
             &[("*", BinOp::Mul), ("/", BinOp::Div), ("MOD", BinOp::Mod)],
         ];
-        if level == LEVELS.len() {
-            return self.unary();
-        }
-        let mut left = self.binary(level + 1)?;
-        loop {
-            // A message about an operation is about its operator.
-            let span = self.span();
-            let op = LEVELS[level].iter().find(|(t, _)| match self.peek() {
-                Tok::Sym(s) => s == t,
-                Tok::Word(u, _) => u == t,
-                _ => false,
-            });
-            let Some((_, op)) = op else { break };
-            self.bump();
-            let right = self.binary(level + 1)?;
-            left = Expr {
-                kind: ExprKind::Binary(*op, Box::new(left), Box::new(right)),
-                span,
-            };
-        }
-        if self.is_sym("**") {
-            return self.refuse("** (power) is not supported yet".into());
-        }
-        Ok(left)
+        let token = match self.peek() {
+            Tok::Sym(s) => *s,
+            Tok::Word(u, _) => u.as_str(),
+            _ => return None,
+        };
+        LEVELS.iter().enumerate().find_map(|(level, ops)| {
+            ops.iter()
+                .find(|(t, _)| *t == token)
+                .map(|(_, op)| (level, *op))
+        })
     }
 
+    /// Join the last two operands by the last operator waiting.
+    fn apply(
+        &mut self,
+        operands: &mut Vec<(Expr, usize)>,
+        waiting: &mut Vec<(usize, BinOp, Span)>,
+    ) -> R<()> {
+        let (Some((_, op, span)), Some((right, rh)), Some((left, lh))) =
+            (waiting.pop(), operands.pop(), operands.pop())
+        else {
+            return Ok(());
+        };
+        let height = 1 + lh.max(rh);
+        self.grew(height, span)?;
+        operands.push((
+            Expr {
+                kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
+                span,
+            },
+            height,
+        ));
+        Ok(())
+    }
+
+    /// A unary operation or what it applies to: one level deeper than where it stands.
     fn unary(&mut self) -> R<Expr> {
-        let span = self.span();
+        self.deeper(|p| p.unary_here())
+    }
+
+    fn unary_here(&mut self) -> R<Expr> {
         if self.is_sym("-") {
-            self.bump();
-            let inner = self.unary()?;
-            // Fold a negative literal, so INT's -32768 is a value, not -(32768).
-            let kind = match inner.kind {
-                ExprKind::Int(v) => ExprKind::Int(-v),
-                ExprKind::Real(v) => ExprKind::Real(-v),
-                ExprKind::Time(v) => ExprKind::Time(-v),
-                k => ExprKind::Neg(Box::new(Expr {
-                    kind: k,
-                    span: inner.span,
-                })),
-            };
-            return Ok(Expr {
-                kind,
-                span: self.since(span),
-            });
+            return self.minus();
         }
         if self.is_sym("+") {
             self.bump();
             return self.unary();
         }
         if self.is_kw("NOT") {
-            self.bump();
-            let inner = self.unary()?;
-            return Ok(Expr {
-                kind: ExprKind::Not(Box::new(inner)),
-                span: self.since(span),
-            });
+            return self.not();
         }
         self.primary()
     }
 
+    fn minus(&mut self) -> R<Expr> {
+        let span = self.span();
+        self.bump();
+        let inner = self.unary()?;
+        // Fold a negative literal, so INT's -32768 is a value, not -(32768).
+        let kind = match inner.kind {
+            ExprKind::Int(v) => ExprKind::Int(-v),
+            ExprKind::Real(v) => ExprKind::Real(-v),
+            ExprKind::Time(v) => ExprKind::Time(-v),
+            k => {
+                self.grew(self.height + 1, self.since(span))?;
+                ExprKind::Neg(Box::new(Expr {
+                    kind: k,
+                    span: inner.span,
+                }))
+            }
+        };
+        Ok(Expr {
+            kind,
+            span: self.since(span),
+        })
+    }
+
+    fn not(&mut self) -> R<Expr> {
+        let span = self.span();
+        self.bump();
+        let inner = self.unary()?;
+        self.grew(self.height + 1, self.since(span))?;
+        Ok(Expr {
+            kind: ExprKind::Not(Box::new(inner)),
+            span: self.since(span),
+        })
+    }
+
     fn primary(&mut self) -> R<Expr> {
         let span = self.span();
-        let kind = match self.peek().clone() {
-            Tok::Int(v) => {
-                self.bump();
-                ExprKind::Int(v)
-            }
-            Tok::Real(v) => {
-                self.bump();
-                ExprKind::Real(v)
-            }
-            Tok::Time(v) => {
-                self.bump();
-                ExprKind::Time(v)
-            }
+        let kind = match self.peek() {
+            Tok::Int(v) => ExprKind::Int(*v),
+            Tok::Real(v) => ExprKind::Real(*v),
+            Tok::Time(v) => ExprKind::Time(*v),
+            Tok::Word(u, _) if u == "TRUE" || u == "FALSE" => ExprKind::Bool(u == "TRUE"),
             Tok::Sym("(") => {
                 self.bump();
                 let e = self.expr()?;
                 self.expect_sym(")")?;
                 return Ok(e);
             }
-            Tok::Word(u, _) if u == "TRUE" || u == "FALSE" => {
-                self.bump();
-                ExprKind::Bool(u == "TRUE")
-            }
-            Tok::Word(..) if self.at_name() => {
-                let (name, nspan) = self.ident()?;
-                if self.is_sym("(") {
-                    self.bump();
-                    let mut args = Vec::new();
-                    while !self.is_sym(")") {
-                        // `name := value` names the input; a value alone goes by position.
-                        let named = match (self.peek(), self.peek2()) {
-                            (Tok::Word(..), Some(Tok::Sym(":="))) => true,
-                            (Tok::Word(..), Some(Tok::Sym("=>"))) => {
-                                return self.not_yet("an output of a function (name => variable)")
-                            }
-                            _ => false,
-                        };
-                        let name = if named {
-                            let n = self.ident()?;
-                            self.bump();
-                            Some(n)
-                        } else {
-                            None
-                        };
-                        args.push(CallArg {
-                            name,
-                            value: self.expr()?,
-                        });
-                        if self.is_sym(",") {
-                            self.bump();
-                        } else {
-                            break;
-                        }
-                    }
-                    self.expect_sym(")")?;
-                    if self.is_sym(".") || self.is_sym("[") {
-                        return self.not_yet("a member or an element of a function's result");
-                    }
-                    ExprKind::Call(name, args)
-                } else {
-                    let path = self.selectors()?;
-                    ExprKind::Var(Place {
-                        name,
-                        span: nspan,
-                        path,
-                    })
-                }
-            }
+            Tok::Word(..) if self.at_name() => return self.named(),
             _ => return self.unexpected("a value"),
         };
+        self.bump();
+        self.height = 1;
+        Ok(Expr { kind, span })
+    }
+
+    /// A variable, a part of one, or a call of a function.
+    fn named(&mut self) -> R<Expr> {
+        let span = self.span();
+        let (name, nspan) = self.ident()?;
+        let kind = if self.is_sym("(") {
+            let args = self.call_args()?;
+            ExprKind::Call(name, args)
+        } else {
+            let path = self.selectors()?;
+            ExprKind::Var(Place {
+                name,
+                span: nspan,
+                path,
+            })
+        };
+        self.grew(self.height + 1, self.since(span))?;
         Ok(Expr {
             kind,
             span: self.since(span),
         })
+    }
+
+    /// The arguments of a function called in an expression, from its `(` to its `)`. Leaves
+    /// in `height` the height of the highest argument, 0 when there is none.
+    fn call_args(&mut self) -> R<Vec<CallArg>> {
+        self.bump();
+        let mut args = Vec::new();
+        let mut highest = 0;
+        while !self.is_sym(")") {
+            // `name := value` names the input; a value alone goes by position.
+            let named = match (self.peek(), self.peek2()) {
+                (Tok::Word(..), Some(Tok::Sym(":="))) => true,
+                (Tok::Word(..), Some(Tok::Sym("=>"))) => {
+                    return self.not_yet("an output of a function (name => variable)")
+                }
+                _ => false,
+            };
+            let name = if named {
+                let n = self.ident()?;
+                self.bump();
+                Some(n)
+            } else {
+                None
+            };
+            args.push(CallArg {
+                name,
+                value: self.expr()?,
+            });
+            highest = highest.max(self.height);
+            if self.is_sym(",") {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.expect_sym(")")?;
+        if self.is_sym(".") || self.is_sym("[") {
+            return self.not_yet("a member or an element of a function's result");
+        }
+        self.height = highest;
+        Ok(args)
     }
 }
