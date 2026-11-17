@@ -19,6 +19,7 @@ export {
   unmountAll,
 } from '../../../ui-shell/src/__tests__/harness';
 export { useController } from '../../../ui-shell/src/data/controller';
+export { useProgramTags } from '../../../ui-shell/src/data/programTags';
 export { goOffline, useTelemetry } from '../../../ui-shell/src/data/telemetry';
 export { useWorkbench as useShell } from '../../../ui-shell/src/data/workbench';
 export { Inspector } from '../../../ui-shell/src/shell/Inspector';

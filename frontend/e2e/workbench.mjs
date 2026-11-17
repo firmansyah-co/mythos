@@ -350,6 +350,17 @@ try {
   check('the controller runs it in the VM runtime module', loadedRuntime?.id === 'Doubler' && loadedRuntime.module === 'vm' && loadedRuntime.mode === 'run' && loadedRuntime.scans > 0, JSON.stringify(loadedRuntime));
   check('the editor says it runs', (await evaluate(`__t.text('[data-testid="runtime-mode"]')[0]`)) === 'RUN');
   check('at the version that was built', (await evaluate(`__t.text('[data-testid="runtime-version"]')[0]`)) === `Doubler · version ${loadedRuntime?.version}` && builtNote.includes(loadedRuntime?.version));
+  // What the program publishes can be put on a screen: the HMI's tag picker offers it (C5).
+  const editorTab = (text) => evaluate(`(() => { const t = [...document.querySelectorAll('.editorbar__tab-label')].find((el) => el.textContent.includes(${JSON.stringify(text)})); if (!t) throw new Error('no tab: ' + ${JSON.stringify(text)}); t.click(); return true; })()`);
+  await editorTab('Boiler overview'); await sleep(600);
+  // Select the I/O field with the mouse, as an engineer does.
+  const fieldBox = await evaluate(`__t.rect('[data-element-type="io_field"]')`);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: fieldBox.x + fieldBox.width / 2, y: fieldBox.y + fieldBox.height / 2, button: 'left', clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: fieldBox.x + fieldBox.width / 2, y: fieldBox.y + fieldBox.height / 2, button: 'left', clickCount: 1 });
+  await sleep(400);
+  const offered = await evaluate(`[...document.querySelectorAll('select[aria-label="Tag"] option')].map((o) => o.value)`);
+  check('the HMI offers the tag the program publishes, beside the device’s', Array.isArray(offered) && offered.includes('internal.BoilerHouse.Doubler.twice') && offered.includes('external.BoilerHouse.Unit1.steam_temp'), JSON.stringify(offered));
+  await editorTab('Programs / Doubler'); await sleep(600);
   const liveBindings = await evaluate(`[...document.querySelectorAll('[data-testid="binding"]')].map((b) => {
     const v = b.querySelector('[data-testid="tag-value"]'); return { kind: b.getAttribute('data-kind'), state: v?.getAttribute('data-state'), value: v?.textContent }; })`);
   const read = liveBindings.find((b) => b.kind === 'input'); const published = liveBindings.find((b) => b.kind === 'published');

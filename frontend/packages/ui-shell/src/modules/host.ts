@@ -17,6 +17,7 @@ import { useController } from '../data/controller';
 import { useIoConfig } from '../data/ioConfig';
 import { connectionTags } from '../data/ioForm';
 import { log } from '../data/log';
+import { useProgramTags } from '../data/programTags';
 import { useSession } from '../data/session';
 import { goOnline, onStreamEvent, useTelemetry } from '../data/telemetry';
 import { CORE_EDITOR_KINDS, editorId, useWorkbench } from '../data/workbench';
@@ -59,7 +60,8 @@ let lastView: ControllerView | null = null;
 export function controllerView(): ControllerView {
   const controller = useController.getState();
   const io = useIoConfig.getState();
-  const sources = [controller.activeProjectId, controller.io, controller.error, io.draft, io.schemas];
+  const programs = useProgramTags.getState().published;
+  const sources = [controller.activeProjectId, controller.io, controller.error, io.draft, io.schemas, programs];
   if (lastView && sources.every((source, index) => source === lastSources[index])) return lastView;
   lastSources = sources;
   lastView = {
@@ -67,7 +69,10 @@ export function controllerView(): ControllerView {
     io: controller.io,
     error: controller.error,
     configuredTags: [
-      ...new Set(io.draft.flatMap((connection) => connectionTags(connection, io.schemas) ?? [])),
+      ...new Set([
+        ...io.draft.flatMap((connection) => connectionTags(connection, io.schemas) ?? []),
+        ...programs,
+      ]),
     ]
       .filter((uri) => uri !== '')
       .sort((a, b) => a.localeCompare(b)),
@@ -144,7 +149,7 @@ export function createHost(module: string): WorkbenchHost {
             listener();
           }
         };
-        const stops = [useController.subscribe(check), useIoConfig.subscribe(check)];
+        const stops = [useController.subscribe(check), useIoConfig.subscribe(check), useProgramTags.subscribe(check)];
         return () => stops.forEach((stop) => stop());
       },
     },

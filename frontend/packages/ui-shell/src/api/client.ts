@@ -529,6 +529,15 @@ export const api = {
     ),
   removeModule: (id: string) =>
     request<{ removed: string }>(`/api/v1/modules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** A project's runtimes configuration (`runtimes.json`); `null` when it has none. */
+  getRuntimesConfig: async (projectId: string) =>
+    (
+      await request<{
+        config: {
+          instances?: Array<{ id: string; program?: { published?: Array<{ variable: string; tag: string }> } }>;
+        } | null;
+      }>(`/api/v1/projects/${encodeURIComponent(projectId)}/runtimes`)
+    ).config,
   getIoConfig: async (projectId: string) =>
     (await request<{ config: IoConfig | null }>(`/api/v1/projects/${encodeURIComponent(projectId)}/io`))
       .config,

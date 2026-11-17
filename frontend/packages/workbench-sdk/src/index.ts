@@ -54,8 +54,9 @@ export interface ControllerView {
   /** Why the controller cannot be reached, when it cannot. */
   error: string | null;
   /**
-   * The tag URIs the open project's I/O configuration provides, as the engineer is editing it:
-   * what a binding may name, whether or not the project runs.
+   * What a binding may name, whether or not the project runs: the tag URIs the open project's
+   * I/O configuration provides, as the engineer is editing it, and the `internal.` tags its
+   * control programs publish, as its runtimes configuration says.
    */
   configuredTags: string[];
 }

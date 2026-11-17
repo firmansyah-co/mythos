@@ -15,6 +15,7 @@ import type {
 } from '../api/client';
 import { useController } from '../data/controller';
 import { useIoConfig } from '../data/ioConfig';
+import { useProgramTags } from '../data/programTags';
 import { toForm, type DriverSchemas } from '../data/ioForm';
 import type { JsonSchema } from '../data/schemaForm';
 import modbusManifest from './fixtures/modbus-manifest.json';
@@ -68,6 +69,7 @@ export function resetStores(): void {
   useController.setState({ activeProjectId: undefined, io: null, tagMeta: new Map(), error: null });
   useLog.setState({ entries: [] });
   useIoConfig.getState().reset();
+  useProgramTags.getState().reset();
   useIoConfig.setState({ drivers: [], driverInfo: [], schemas: {} });
   useSession.setState({ phase: 'loading', user: null, error: null, notice: null });
   useWorkbench.setState({

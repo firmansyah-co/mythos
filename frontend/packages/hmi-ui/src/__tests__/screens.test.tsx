@@ -7,6 +7,7 @@ import {
   Inspector,
   useController,
   useShell,
+  useProgramTags,
   useTelemetry,
   connection,
   ioStatus,
@@ -357,6 +358,16 @@ describe('element properties', () => {
 
     typeInto(container.querySelector('select[aria-label="Tag"]'), TAG);
     expect(element().tag).toBe(TAG);
+  });
+
+  it('offers the tags the project’s programs publish, beside the I/O configuration’s', async () => {
+    const SETPOINT = 'internal.BoilerHouse.Unit1.setpoint';
+    act(() => useProgramTags.setState({ projectId: 'plant', published: [SETPOINT], error: null }));
+    const container = await selected({ ...FIELD, tag: SETPOINT }, 'f1');
+    const options = [...container.querySelectorAll('select[aria-label="Tag"] option')].map((o) => o.textContent);
+    expect(options).toEqual(['(not bound)', ...[TAG, SETPOINT].sort((a, b) => a.localeCompare(b))]);
+    // A program's tag is provided: the field is not flagged.
+    expect(container.querySelector('[data-testid="tag-not-configured"]')).toBeNull();
   });
 
   it('flags a field bound to a tag no connection provides', async () => {
