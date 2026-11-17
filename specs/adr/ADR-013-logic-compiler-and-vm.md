@@ -198,6 +198,9 @@ runtime whatever it executes:
 - `GET /api/v1/runtimes` and Settings → Runtimes: every runtime on this node, possibly several
   (one per device of a plant simulated on this PC), with its state, scan time and program
   version; start, stop, restart. Fleet (ADR-012 §2.6) shows the same for paired nodes.
+  A scan figure is what the runtime's module last said, or absent (`null`): while its module
+  does not answer nothing is known, and before the first scan no scan time was measured. It
+  is never `0` in their place, which would read as a measurement.
 - The write path to field devices, the safe values and the write authority of §2.4.
 - **Watching.** `POST /api/v1/runtimes/<id>/watch` (any signed-in role; MCP `watch_runtime`)
   gives the values of a program's variables as its last scan left them: any variable with one

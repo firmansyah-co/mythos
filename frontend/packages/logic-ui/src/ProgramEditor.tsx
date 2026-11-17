@@ -117,17 +117,20 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
             <dd className="mono">{state.runtime.interval_ms} ms</dd>
             <dt>Scans</dt>
             <dd className="mono" data-testid="runtime-scans">
-              {state.runtime.scans}
+              {state.runtime.scans ?? 'NOT MEASURED'}
             </dd>
             <dt>Scan time</dt>
             <dd className="mono" data-testid="runtime-scan-time">
-              {/* Before the first scan there is nothing measured: zero would read as a time. */}
-              {state.runtime.scans > 0
+              {/* The controller sends no time before the first scan, nor while its module does
+                  not answer: there is nothing measured to show. */}
+              {state.runtime.last_scan_us !== null && state.runtime.max_scan_us !== null
                 ? `last ${state.runtime.last_scan_us} µs · longest ${state.runtime.max_scan_us} µs`
                 : 'NOT MEASURED'}
             </dd>
             <dt>Overruns</dt>
-            <dd className="mono">{state.runtime.overruns}</dd>
+            <dd className="mono" data-testid="runtime-overruns">
+              {state.runtime.overruns ?? 'NOT MEASURED'}
+            </dd>
             <dt>Outputs</dt>
             <dd data-testid="runtime-outputs">
               {state.runtime.outputs.length === 0
