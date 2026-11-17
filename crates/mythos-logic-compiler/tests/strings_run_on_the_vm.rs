@@ -453,13 +453,15 @@ fn every_string_instruction_reads_an_element_of_an_array_where_it_is() {
     // An element's offset is computed at run time and popped by the instruction that names
     // it, after its integers, from its last string to its first. The stack the program
     // declares is exactly what the run is given: one offset too many left behind, or one
-    // counted that is not there, shows here as a fault or as a deeper stack.
+    // counted that is not there, shows here as a fault or as a deeper stack (each statement
+    // with an element comes before the deepest, so a count that drifts raises it).
     let mut r = Run::new(
         "PROGRAM Main
          VAR w : ARRAY [1..4] OF STRING[6] := ['ab', 'cd', 'abcd', '42'];
              i, j, k, n, len, pos : INT; less : BOOL; num : DINT;
              cat, left, ins, rep, mid : STRING[20]; END_VAR
            i := 1; j := 2; k := 3; n := 1;
+           less := w[j] < w[k];
            len := LEN(w[k]);
            cat := CONCAT(w[i], w[j], w[k]);
            left := LEFT(w[k], n + 1);
@@ -467,7 +469,6 @@ fn every_string_instruction_reads_an_element_of_an_array_where_it_is() {
            ins := INSERT(w[i], w[j], n);
            rep := REPLACE(w[k], w[i], j, n + 2);
            pos := FIND(w[k], w[j]);
-           less := w[j] < w[k];
            num := STRING_TO_DINT(w[k + 1]);
            w[n] := w[j + 2];
          END_PROGRAM",
