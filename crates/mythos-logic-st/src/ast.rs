@@ -4,10 +4,26 @@ pub use mythos_logic_ir::Section;
 use mythos_logic_ir::Span;
 
 /// Everything one source declares, in the order written.
+///
+/// A source with mistakes still gives a tree: what could not be read is left out and marked
+/// (`lost`, [`TypeDecl::partial`], [`TypeDeclKind::Unknown`], [`Pou::partial_vars`],
+/// [`Pou::partial_body`]), so that the checker says nothing about what follows from the gap.
 #[derive(Debug, Clone, Default)]
 pub struct Source {
     pub types: Vec<TypeDecl>,
     pub pous: Vec<Pou>,
+    /// Declarations whose name could not be read: the source declares something more of
+    /// each kind listed, and the tree does not know what it is called.
+    pub lost: Vec<Lost>,
+}
+
+/// A kind of declaration, of one the parser could not read the name of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lost {
+    Program,
+    Function,
+    /// A function block type, a structure or another type.
+    Type,
 }
 
 /// One declaration of a `TYPE … END_TYPE` block.
@@ -16,6 +32,8 @@ pub struct TypeDecl {
     pub name: String,
     pub span: Span,
     pub kind: TypeDeclKind,
+    /// Part of the declaration could not be read: a structure may have more members.
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +42,8 @@ pub enum TypeDeclKind {
     Struct(Vec<VarDecl>),
     /// `name : ARRAY […] OF …;`: another name for that array type.
     Alias(TypeSpec),
+    /// What the name stands for could not be read.
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +63,11 @@ pub struct Pou {
     pub result: Option<TypeSpec>,
     pub vars: Vec<VarDecl>,
     pub body: Vec<Stmt>,
+    /// Its head or one of its declarations could not be read: it may have a result type and
+    /// variables that are not in `vars`.
+    pub partial_vars: bool,
+    /// One of its statements could not be read: `body` is not all it does.
+    pub partial_body: bool,
 }
 
 /// A type as a declaration names it.

@@ -266,7 +266,8 @@ async fn a_program_is_written_checked_built_loaded_and_runs_the_plant() {
     assert_eq!(checked["ok"], true, "{checked}");
     assert_eq!(checked["variables"], json!([]), "{checked}");
 
-    // A text is checked without being saved: the diagnostics have a line and a column.
+    // A text is checked without being saved: a diagnostic says where what it is about starts
+    // and ends (the end exclusive), so an editor can underline `b`.
     let wrong = "PROGRAM Tank\nVAR a : INT; END_VAR\n  a := b;\nEND_PROGRAM";
     let checked = rig
         .eng(
@@ -279,7 +280,7 @@ async fn a_program_is_written_checked_built_loaded_and_runs_the_plant() {
     assert_eq!(checked["ok"], false, "{checked}");
     assert_eq!(
         checked["diagnostics"],
-        json!([{"line": 3, "col": 8, "message": "b is not declared"}]),
+        json!([{"line": 3, "col": 8, "end_line": 3, "end_col": 9, "message": "b is not declared"}]),
     );
     let read = rig.eng("GET", &tank, None, 200).await;
     assert_eq!(read["source"], created["source"], "the check saved nothing");

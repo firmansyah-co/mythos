@@ -4,6 +4,13 @@
 //!
 //! The order of a source does not matter: every type and POU is known by name before any
 //! declaration is read, and every declaration before any body.
+//!
+//! **One mistake, one message.** The tree may come from a source the parser could not read
+//! whole, and a declaration may be refused here. What follows from either is not a second
+//! mistake, so it is not told: the statements of a POU that was not read whole are not
+//! checked (its declarations are); a variable whose declaration was refused is known by
+//! name and nothing is said where it is used; a member or a parameter that is not found in
+//! a type or a POU with a gap in its declarations is not called missing.
 
 use crate::ast::{self, BinOp, CaseLabel, ExprKind as A};
 use mythos_logic_ir::*;
@@ -18,12 +25,17 @@ pub fn check(src: &ast::Source) -> Result<Unit, Vec<Diagnostic>> {
             .iter()
             .map(|t| match &t.kind {
                 ast::TypeDeclKind::Alias(spec) => Some(spec.clone()),
-                ast::TypeDeclKind::Struct(_) => None,
+                ast::TypeDeclKind::Struct(_) | ast::TypeDeclKind::Unknown => None,
             })
             .collect(),
         struct_of: Vec::new(),
         pou_spans: src.pous.iter().map(|p| p.span).collect(),
         calls: Vec::new(),
+        refused: vec![Vec::new(); src.pous.len()],
+        gaps: src.pous.iter().map(|p| p.partial_vars).collect(),
+        struct_gaps: Vec::new(),
+        result_unknown: vec![false; src.pous.len()],
+        lost: src.lost.clone(),
         diags: Vec::new(),
         cur: 0,
         loops: 0,
@@ -33,6 +45,11 @@ pub fn check(src: &ast::Source) -> Result<Unit, Vec<Diagnostic>> {
     c.declarations(src);
     let contained = c.containment();
     for (i, p) in src.pous.iter().enumerate() {
+        // A POU that was not read whole: a statement may be missing, or a variable its
+        // statements use. Whatever they would be told here follows from that.
+        if p.partial_vars || p.partial_body {
+            continue;
+        }
         c.cur = i;
         c.loops = 0;
         c.result_assigned = false;
@@ -66,6 +83,8 @@ enum Named {
     /// A name for an array type: an index into the source's type declarations.
     Alias(usize),
     Pou(usize),
+    /// A type the parser could not read: the name is taken, what it stands for is unknown.
+    Unknown,
 }
 
 /// How far a named array type has been worked out.
@@ -108,6 +127,18 @@ struct Checker {
     pou_spans: Vec<Span>,
     /// Every function call: (the POU it is in, the function called, where).
     calls: Vec<(usize, usize, Span)>,
+    /// For each POU: the variables whose declaration was refused, in upper case. They are
+    /// known by name, so that their uses are not told as undeclared.
+    refused: Vec<Vec<String>>,
+    /// For each POU: its declarations have a gap (one the parser could not read, or one
+    /// refused here), so a member or parameter not found in it may be in the gap.
+    gaps: Vec<bool>,
+    /// The same for each structure of the unit.
+    struct_gaps: Vec<bool>,
+    /// For each POU: it is a function and what it returns is not known.
+    result_unknown: Vec<bool>,
+    /// What the source declares under names the parser could not read.
+    lost: Vec<ast::Lost>,
     diags: Vec<Diagnostic>,
     /// The POU whose declarations or body are being read.
     cur: usize,
@@ -140,13 +171,35 @@ fn chain(names: &[String], verb: &str) -> String {
 const MAX_ELEMENTS: i128 = u32::MAX as i128;
 
 impl Checker {
+    /// Tell a mistake, unless the same has been told of the same place: `a, b : Nope;` names
+    /// one type that does not exist, not two.
     fn err(&mut self, span: Span, msg: impl Into<String>) {
-        self.diags.push(Diagnostic::at(span, msg));
+        let d = Diagnostic::at(span, msg);
+        if !self.diags.contains(&d) {
+            self.diags.push(d);
+        }
     }
 
     /// A type's name as the program writes it.
     fn n(&self, ty: Ty) -> String {
         self.unit.ty_name(ty)
+    }
+
+    /// The declaration of `name` in the POU being read was refused.
+    fn is_refused(&self, name: &str) -> bool {
+        let upper = name.to_ascii_uppercase();
+        self.refused[self.cur].contains(&upper)
+    }
+
+    /// Remember that the declaration of `name` was refused, and why is already told.
+    fn refuse(&mut self, name: &str) {
+        self.refused[self.cur].push(name.to_ascii_uppercase());
+        self.gaps[self.cur] = true;
+    }
+
+    /// `ty` is a function block type whose declarations have a gap.
+    fn has_gap(&self, ty: Ty) -> bool {
+        matches!(ty, Ty::Instance(p) if self.gaps[p])
     }
 
     fn named(&self, name: &str) -> Option<Named> {
@@ -175,10 +228,13 @@ impl Checker {
                 .split_once("_TO_")
                 .is_some_and(|(a, b)| Ty::from_name(a).is_some() && Ty::from_name(b).is_some());
             if Ty::from_name(&upper).is_some() || conversion {
-                c.err(
-                    span,
-                    format!("{name} is a name of the standard; choose another"),
-                );
+                // A keyword as a name is told by the parser, once.
+                if !is_keyword(&upper) {
+                    c.err(
+                        span,
+                        format!("{name} is a name of the standard; choose another"),
+                    );
+                }
             } else if c.names.iter().any(|(n, _)| *n == upper) {
                 c.err(span, format!("{name} is declared twice"));
             } else {
@@ -193,7 +249,12 @@ impl Checker {
                         fields: Vec::new(),
                     });
                     self.struct_of.push(Some(self.unit.structs.len() - 1));
+                    self.struct_gaps.push(t.partial);
                     Named::Struct(self.unit.structs.len() - 1)
+                }
+                ast::TypeDeclKind::Unknown => {
+                    self.struct_of.push(None);
+                    Named::Unknown
                 }
                 ast::TypeDeclKind::Alias(_) => {
                     self.struct_of.push(None);
@@ -231,7 +292,8 @@ impl Checker {
             });
             taken(self, &p.name, p.span, Named::Pou(i));
         }
-        if programs == 0 {
+        // A PROGRAM the parser could not read the name of is one all the same.
+        if programs == 0 && !self.lost.contains(&ast::Lost::Program) {
             self.diags.push(Diagnostic::whole(
                 "the source has no PROGRAM; it needs one, where a scan starts",
             ));
@@ -241,18 +303,23 @@ impl Checker {
     /// Second pass: the members of every structure and the variables of every POU.
     fn declarations(&mut self, src: &ast::Source) {
         for (k, t) in src.types.iter().enumerate() {
-            let ast::TypeDeclKind::Struct(fields) = &t.kind else {
-                // Read a named array type even when nothing uses it, so its mistakes are told.
-                self.resolve(&ast::TypeSpec {
-                    span: t.span,
-                    kind: ast::TypeSpecKind::Named(t.name.clone()),
-                });
-                continue;
+            let fields = match &t.kind {
+                ast::TypeDeclKind::Struct(fields) => fields,
+                ast::TypeDeclKind::Alias(_) => {
+                    // Read a named array type even when nothing uses it, so its mistakes
+                    // are told.
+                    self.resolve(&ast::TypeSpec {
+                        span: t.span,
+                        kind: ast::TypeSpecKind::Named(t.name.clone()),
+                    });
+                    continue;
+                }
+                ast::TypeDeclKind::Unknown => continue,
             };
             let Some(at) = self.struct_of[k] else {
                 continue;
             };
-            if fields.is_empty() {
+            if fields.is_empty() && !t.partial {
                 self.err(t.span, format!("the structure {} has no members", t.name));
             }
             for f in fields {
@@ -265,6 +332,7 @@ impl Checker {
                     continue;
                 }
                 let Some(ty) = self.resolve(&f.ty) else {
+                    self.struct_gaps[at] = true;
                     continue;
                 };
                 if self.unit.holds_instance(ty) {
@@ -272,6 +340,7 @@ impl Checker {
                         f.ty.span,
                         "a function block instance inside a structure is not supported yet",
                     );
+                    self.struct_gaps[at] = true;
                     continue;
                 }
                 let init = f.init.as_ref().and_then(|i| self.init(i, ty));
@@ -284,11 +353,13 @@ impl Checker {
         }
         for (i, p) in src.pous.iter().enumerate() {
             self.cur = i;
-            if let Some(spec) = &p.result {
-                // A function's result is its variable 0, named as the function.
-                let ty = match self.resolve(spec) {
-                    Some(t) if t.is_elementary() => t,
-                    Some(t) => {
+            if p.kind == ast::PouKind::Function {
+                // A function's result is its variable 0, named as the function. When its
+                // type is not known (the parser or this has said why), the variable stands
+                // in with a type nothing reads: no call of the function is typed.
+                let ty = match p.result.as_ref().map(|spec| (spec, self.resolve(spec))) {
+                    Some((_, Some(t))) if t.is_elementary() => Some(t),
+                    Some((spec, Some(t))) => {
                         let what = self.n(t);
                         self.err(
                             spec.span,
@@ -296,10 +367,12 @@ impl Checker {
                                 "a function returning a {what} is not supported yet; a result is of an elementary type"
                             ),
                         );
-                        Ty::Bool
+                        None
                     }
-                    None => Ty::Bool,
+                    Some((_, None)) | None => None,
                 };
+                self.result_unknown[i] = ty.is_none();
+                let ty = ty.unwrap_or(Ty::Bool);
                 self.unit.pous[i].vars.push(Var {
                     name: p.name.clone(),
                     ty,
@@ -321,7 +394,7 @@ impl Checker {
     }
 
     fn declare(&mut self, d: &ast::VarDecl, pou: &ast::Pou) {
-        if self.find(&d.name).is_some() {
+        if self.find(&d.name).is_some() || self.is_refused(&d.name) {
             self.err(d.span, format!("{} is declared twice", d.name));
             return;
         }
@@ -336,9 +409,11 @@ impl Checker {
                     d.name
                 ),
             );
+            self.refuse(&d.name);
             return;
         }
         let Some(ty) = self.resolve(&d.ty) else {
+            self.refuse(&d.name);
             return;
         };
         if self.unit.holds_instance(ty) {
@@ -353,6 +428,7 @@ impl Checker {
                             pou.name
                         ),
                     );
+                    self.refuse(&d.name);
                     return;
                 }
                 (ast::PouKind::FunctionBlock, Section::Input | Section::Output) => {
@@ -360,6 +436,7 @@ impl Checker {
                         d.ty.span,
                         "a function block instance as an input or an output of a function block is not supported yet",
                     );
+                    self.refuse(&d.name);
                     return;
                 }
                 _ => {}
@@ -395,6 +472,9 @@ impl Checker {
                         }
                     },
                     Some(Named::Alias(k)) => self.alias(k, name, spec.span),
+                    Some(Named::Unknown) => None,
+                    // It may be one of the types whose name the parser could not read.
+                    None if self.lost.contains(&ast::Lost::Type) => None,
                     None => {
                         self.err(
                             spec.span,
@@ -682,7 +762,9 @@ impl Checker {
     /// Resolve a place: the variable, then each step of its path, with what may be done there.
     fn place(&mut self, p: &ast::Place) -> Option<Target> {
         let Some(var) = self.find(&p.name) else {
-            self.err(p.span, format!("{} is not declared", p.name));
+            if !self.is_refused(&p.name) {
+                self.err(p.span, format!("{} is not declared", p.name));
+            }
             return None;
         };
         let pou = &self.unit.pous[self.cur];
@@ -708,8 +790,10 @@ impl Checker {
                         let fields = &self.unit.structs[i].fields;
                         let Some(at) = fields.iter().position(|f| f.name.eq_ignore_ascii_case(m))
                         else {
-                            let what = self.n(ty);
-                            self.err(*mspan, format!("{what} has no member {m}"));
+                            if !self.struct_gaps[i] {
+                                let what = self.n(ty);
+                                self.err(*mspan, format!("{what} has no member {m}"));
+                            }
                             return None;
                         };
                         ty = fields[at].ty;
@@ -718,7 +802,9 @@ impl Checker {
                     Ty::Fb(_) | Ty::Instance(_) => {
                         let block = self.n(ty);
                         let Some((at, mty, role)) = self.fb_member(ty, m) else {
-                            self.err(p.span, format!("{block} has no member {m}"));
+                            if !self.has_gap(ty) {
+                                self.err(p.span, format!("{block} has no member {m}"));
+                            }
                             return None;
                         };
                         match role {
@@ -921,6 +1007,9 @@ impl Checker {
             ast::Stmt::Call(called, args) => {
                 let name = &called.name;
                 if called.path.is_empty() && self.find(name).is_none() {
+                    if self.is_refused(name) {
+                        return None;
+                    }
                     let msg = if self.function(name).is_some() {
                         // Table 72 lets a function be called as a statement, its result
                         // discarded; a function here has no other effect, so that is refused.
@@ -973,7 +1062,9 @@ impl Checker {
                         }
                     };
                     let Some((mi, mty, role)) = self.fb_member(t.ty, pname) else {
-                        self.err(pspan, format!("{block} has no parameter {pname}"));
+                        if !self.has_gap(t.ty) {
+                            self.err(pspan, format!("{block} has no parameter {pname}"));
+                        }
                         continue;
                     };
                     if role == Role::Internal {
@@ -1499,6 +1590,9 @@ impl Checker {
             );
             return None;
         }
+        if self.is_refused(name) {
+            return None;
+        }
         if let Some(v) = self.find(name) {
             let ty = self.unit.pous[self.cur].vars[v].ty;
             let msg = if matches!(ty, Ty::Fb(_) | Ty::Instance(_)) {
@@ -1516,6 +1610,10 @@ impl Checker {
             .split_once("_TO_")
             .and_then(|(f, t)| Some((Ty::from_name(f)?, Ty::from_name(t)?)));
         let Some((from, to)) = conv else {
+            // It may be the function whose name the parser could not read.
+            if self.lost.contains(&ast::Lost::Function) {
+                return None;
+            }
             self.err(
                 span,
                 format!(
@@ -1568,6 +1666,9 @@ impl Checker {
             .map(|(i, v)| (i, v.name.clone(), v.ty))
             .collect();
         self.calls.push((self.cur, f, span));
+        if self.result_unknown[f] {
+            return None;
+        }
         let named = args.iter().filter(|a| a.name.is_some()).count();
         if named != 0 && named != args.len() {
             self.err(
@@ -1580,6 +1681,9 @@ impl Checker {
         let mut ok = true;
         if named == 0 {
             if args.len() != inputs.len() {
+                if self.gaps[f] {
+                    return None;
+                }
                 self.err(
                     span,
                     format!(
@@ -1608,7 +1712,9 @@ impl Checker {
                     .iter()
                     .find(|(_, n, _)| n.eq_ignore_ascii_case(pname))
                 else {
-                    self.err(*pspan, format!("{name} has no input {pname}"));
+                    if !self.gaps[f] {
+                        self.err(*pspan, format!("{name} has no input {pname}"));
+                    }
                     ok = false;
                     continue;
                 };
