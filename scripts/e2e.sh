@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end check: a real server, a simulated Modbus TCP device, and the workbench driven in a
 # real headless browser. It adds a connection through the form, has the controller refuse a bad
-# one, saves a good one, and reads live values off the page.
+# one, saves a good one, and reads live values off the page. It also loads a control program into
+# a runtime over the API, and watches, stops and runs it on Settings → Runtimes.
 #
 # This is not part of scripts/check.sh and does not run in CI: it needs Chromium. If it cannot
 # run it says so and exits non-zero. It never reports a pass for a check that did not execute.
@@ -49,6 +50,7 @@ echo "=== build ==="
     && cargo build -p mythos-hmi --bin mythos-module-hmi \
     && cargo build -p mythos-discovery --bin mythos-module-discovery \
     && cargo build -p mythos-runtime-vm --bin mythos-module-runtime-vm \
+    && cargo build -p mythos-logic-compiler --example runtime_program \
     && cargo build -p mythos-module-tests --bin service-module-under-test \
     && cargo build -p driver-modbus --features sim --example modbus_sim ) \
     || cannot_run "the server or the simulator did not build"
@@ -160,8 +162,14 @@ curl -fsS -o /dev/null "${AUTH[@]}" -X PUT "$API/api/v1/projects/plant_a/notes/n
     -H 'content-type: application/json' -d '{"text":"Boiler 1 inspected"}' \
     || cannot_run "the notes module did not take a note"
 
+# The control program the run loads into a runtime (ADR-013 §2.5), compiled here for the PC
+# profile: there is no logic module to compile it in the workbench yet.
+"$ROOT/target/debug/examples/runtime_program" "$ROOT/frontend/e2e/fan.st" pc >"$WORK/fan.json" \
+    || cannot_run "the control program frontend/e2e/fan.st did not compile"
+
 echo "=== workbench, in $BROWSER ==="
 MYTHOS_E2E_USER="$E2E_USER" MYTHOS_E2E_PASSWORD="$E2E_PASSWORD" MYTHOS_E2E_TOKEN="$TOKEN" \
+MYTHOS_E2E_PROGRAM="$WORK/fan.json" \
     node "$ROOT/frontend/e2e/workbench.mjs" "$WORK/shots" "$API" "$SIM_PORT" "$BROWSER"
 status=$?
 

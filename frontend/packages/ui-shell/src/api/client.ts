@@ -252,6 +252,67 @@ export interface FleetMember {
   running?: { project: string; hash: string | null } | null;
 }
 
+/** One output of a runtime, as last handled (`OutputStatus` in `crate::runtimes`). */
+export interface RuntimeOutput {
+  tag: string;
+  variable: string;
+  /** What the tag is written whenever the program is not running. Set in the project; no default. */
+  safe: unknown;
+  /** What the device last confirmed, written by this runtime; `null` when nothing was confirmed yet. */
+  written: unknown;
+  /** Why the last write was not confirmed, when it was not. */
+  error: string | null;
+}
+
+/** What a runtime instance is doing (`RuntimeStatus` in `crate::runtimes`, ADR-013 §2.4). */
+export interface RuntimeStatus {
+  id: string;
+  /** The runtime module that runs it: a module's `provides`. */
+  module: string;
+  program: string;
+  version: string;
+  interval_ms: number;
+  /** `run`, `stop`, `fault`, or `unreachable` when its module does not answer. As reported. */
+  mode: string;
+  /** Why it is in `fault`, or why it is `unreachable`. */
+  reason: string | null;
+  /** Scans completed since the program was last put in RUN. */
+  scans: number;
+  last_scan_us: number;
+  max_scan_us: number;
+  overruns: number;
+  /** Whether every output is confirmed at its safe value. Meaningful while not in `run`. */
+  outputs_safe: boolean;
+  outputs: RuntimeOutput[];
+  pid: number | null;
+  restarts: number;
+}
+
+/** A runtime module that could run a program, and the target profile it declares (ADR-013 §2.2). */
+export interface RuntimeModule {
+  id: string;
+  provides: string;
+  name: string;
+  version: string;
+  /** Module-defined data; `null` when the module declares none. */
+  profile: unknown;
+}
+
+/** What `GET /api/v1/runtimes` answers. */
+export interface RuntimeList {
+  runtimes: RuntimeStatus[];
+  modules: RuntimeModule[];
+  /** Why the active project's runtimes are not as configured, when they are not. */
+  problem: string | null;
+}
+
+/** What `POST /api/v1/runtimes/<id>/run` and `/stop` answer. */
+export interface RuntimeCommandAnswer {
+  id: string;
+  asked: string;
+  note: string;
+}
+
 export type NodeRole = 'workstation' | 'edge' | 'server';
 export const NODE_ROLES: readonly NodeRole[] = ['workstation', 'edge', 'server'];
 
@@ -524,6 +585,26 @@ export const api = {
   setCallHome: (id: string, callHome: boolean) =>
     request<{ peer: PairedNode }>(`/api/v1/pairings/${encodeURIComponent(id)}`, json('PUT', { call_home: callHome })),
   getFleet: () => request<{ nodes: FleetMember[]; note?: string }>('/api/v1/fleet'),
+  /**
+   * Every runtime of this node and the runtime modules that could run one. An answer that is not
+   * that (a server without the route answering something else) is a failed read, never an empty
+   * list: "no runtime is loaded" is a statement only the controller can make.
+   */
+  listRuntimes: async (signal?: AbortSignal): Promise<RuntimeList> => {
+    const body = await request<Partial<RuntimeList> | null>('/api/v1/runtimes', { signal });
+    const records = (list: unknown): list is object[] =>
+      Array.isArray(list) && list.every((entry) => typeof entry === 'object' && entry !== null && !Array.isArray(entry));
+    if (!body || !records(body.runtimes) || !records(body.modules)) {
+      throw new ApiError('The controller answered, but not with a list of runtimes', null);
+    }
+    return body as RuntimeList;
+  },
+  /** Put a loaded program in RUN (engineer). From STOP or FAULT that is a cold start. */
+  runRuntime: (id: string) =>
+    request<RuntimeCommandAnswer>(`/api/v1/runtimes/${encodeURIComponent(id)}/run`, { method: 'POST' }),
+  /** Put a program in STOP (engineer): its outputs are written their safe values. */
+  stopRuntime: (id: string) =>
+    request<RuntimeCommandAnswer>(`/api/v1/runtimes/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
   pairedNodeStatus: (id: string) =>
     request<{ reachable: boolean; node?: { name: string; role: string; version: string }; error?: string }>(
       `/api/v1/pairings/${encodeURIComponent(id)}/status`
