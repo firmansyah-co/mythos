@@ -332,7 +332,8 @@ pub enum LoadError {
     /// A load, store, copy, function block instance or array region outside the program's
     /// memory, or, in a function block's body, outside the instance it runs on.
     OutOfMemory(u32),
-    /// A jump outside the body it is in.
+    /// A jump outside the body it is in, or to a byte that is not where one of the body's
+    /// instructions starts.
     BadJump(u32),
     /// A function block kind this VM does not have.
     UnknownFunctionBlock(u32),
@@ -347,6 +348,25 @@ pub enum LoadError {
     /// A body whose last instruction lets execution run into the next one, an `END` outside
     /// the program's body, or a `RET` inside it.
     BadEnd(u32),
+    /// The program declares this many bytes of memory, more than the host has ([`Limits`]).
+    TooMuchMemory(u32),
+    /// The program declares a stack this deep, deeper than the host's.
+    StackTooDeep(u16),
+    /// The program declares calls nested this deep, deeper than the host has frames for.
+    CallsTooDeep(u16),
+}
+
+/// What a host has to run a program in. A PC runner gives each program what it declares; the
+/// firmware of a microcontroller has arrays of a fixed size, and says here how large they are
+/// so that a program too large for them is refused when it is loaded, not at its first scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// Bytes of memory.
+    pub memory: usize,
+    /// Slots of the evaluation stack.
+    pub stack_depth: usize,
+    /// Call frames.
+    pub call_depth: usize,
 }
 
 /// A program checked and ready to run. It borrows the bytes it was loaded from.
@@ -418,12 +438,29 @@ impl<'a> Program<'a> {
         })
     }
 
+    /// [`Program::load`], for a host with `limits`: a program that declares more memory, a
+    /// deeper stack or deeper calls than the host has is refused, naming what it declares.
+    pub fn load_within(bytes: &'a [u8], limits: &Limits) -> Result<Program<'a>, LoadError> {
+        let program = Program::load(bytes)?;
+        if program.memory_size() > limits.memory {
+            return Err(LoadError::TooMuchMemory(program.init.len() as u32));
+        }
+        if program.stack_depth() > limits.stack_depth {
+            return Err(LoadError::StackTooDeep(program.stack_depth));
+        }
+        if program.call_depth() > limits.call_depth {
+            return Err(LoadError::CallsTooDeep(program.call_depth));
+        }
+        Ok(program)
+    }
+
     /// Bytes of memory the host must give it.
     pub fn memory_size(&self) -> usize {
         self.init.len()
     }
 
-    /// Stack slots the host must give it.
+    /// Stack slots the host must give it. A scan uses that many and no more: a push beyond
+    /// them is a fault, however many the host gave.
     pub fn stack_depth(&self) -> usize {
         self.stack_depth as usize
     }
@@ -458,9 +495,11 @@ fn inside(addr: u32, len: u32, limit: u32) -> bool {
     addr.checked_add(len).is_some_and(|end| end <= limit)
 }
 
-/// Walk the table of bodies and then every body once: every opcode known, every operand inside
-/// the code, every address inside memory (or, relative to the base, inside the instance the
-/// body runs on), every jump inside its body, every call to an earlier body.
+/// Walk the table of bodies and then every body: every opcode known, every operand inside the
+/// code, every address inside memory (or, relative to the base, inside the instance the body
+/// runs on), every jump to the start of an instruction of its own body, every call to an
+/// earlier body. (A call goes to the start of a body, which is where its first instruction
+/// starts: each body is decoded from its own start.)
 fn verify(code: &[u8], bodies: &[u8], memory: u32) -> Result<(), LoadError> {
     let count = bodies.len() / BODY;
     if count == 0 {
@@ -605,7 +644,62 @@ fn verify_body(
     if !matches!(last.1, op::END | op::RET | op::JMP) {
         return Err(LoadError::BadEnd(last.0 as u32));
     }
+    // A second walk, now that every instruction of the body is known to decode: a jump must
+    // land where one of them starts. Landing inside one would run its operands as code.
+    //
+    // There is no memory to note every start in, so a target is proved by walking to it from
+    // a place where an instruction is known to start. Such places are the start of the body,
+    // the jump itself, and four targets already proved: the farthest one ahead (the END of
+    // the CASE or IF being walked, which every arm jumps to), the last one ahead, the last
+    // one behind (the head of the last loop), and the one behind before that (the head of
+    // the loop before the nest of loops being walked). Whichever is nearest before the
+    // target is where the walk starts; any of them would give the same answer.
+    let (mut far, mut near, mut back, mut older) = (start, start, start, start);
+    let mut pc = start;
+    while pc < end {
+        let opcode = code[pc];
+        let len = instruction_len(opcode).ok_or(LoadError::UnknownInstruction(pc as u32))?;
+        if matches!(opcode, op::JMP | op::JZ) {
+            let target = u32_at(code, pc + 1) as usize;
+            let mut from = start;
+            for known in [pc, far, near, back, older] {
+                if known <= target && known > from {
+                    from = known;
+                }
+            }
+            if !starts_instruction(code, from, target) {
+                return Err(LoadError::BadJump(pc as u32));
+            }
+            if target <= pc {
+                // The head of an inner loop is proved before that of the loop around it,
+                // which lies before it: the head proved before the nest began stays known.
+                if target > back {
+                    older = back;
+                }
+                back = target;
+            } else if far <= pc || target > far {
+                far = target;
+            } else {
+                near = target;
+            }
+        }
+        pc += len;
+    }
     Ok(())
+}
+
+/// Whether an instruction starts at `target`, walking from `from`, where one does. The walk
+/// must start at such a place: from anywhere else it could fall in step with the real
+/// instructions by chance, and take the middle of one for a start.
+fn starts_instruction(code: &[u8], from: usize, target: usize) -> bool {
+    let mut pc = from;
+    while pc < target {
+        match code.get(pc).copied().and_then(instruction_len) {
+            Some(len) => pc += len,
+            None => return false,
+        }
+    }
+    pc == target
 }
 
 /// CRC-32 (IEEE 802.3, the zlib one), bit by bit: no table, so nothing extra in flash.
