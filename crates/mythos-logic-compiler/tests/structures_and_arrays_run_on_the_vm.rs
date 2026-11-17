@@ -522,11 +522,11 @@ fn what_types_do_not_support_yet_is_refused_by_name() {
         ),
         (
             "TYPE Level : INT (0..100); END_TYPE PROGRAM Main END_PROGRAM",
-            "a type derived from 'INT' is not supported yet; TYPE takes STRUCT and ARRAY",
+            "a type derived from 'INT' is not supported yet; TYPE takes STRUCT, ARRAY and STRING",
         ),
         (
             "TYPE Speed : REAL; END_TYPE PROGRAM Main END_PROGRAM",
-            "a type derived from 'REAL' is not supported yet; TYPE takes STRUCT and ARRAY",
+            "a type derived from 'REAL' is not supported yet; TYPE takes STRUCT, ARRAY and STRING",
         ),
         (
             "PROGRAM Main VAR x : INT (0..10); END_VAR END_PROGRAM",
@@ -597,8 +597,8 @@ fn what_types_do_not_support_yet_is_refused_by_name() {
             "the bounds 0..3000000000 do not fit in a DINT",
         ),
         (
-            "PROGRAM Main VAR a : ARRAY [1..2] OF STRING; END_VAR END_PROGRAM",
-            "'STRING' is not supported yet",
+            "PROGRAM Main VAR a : ARRAY [1..2] OF WSTRING; END_VAR END_PROGRAM",
+            "'WSTRING' is not supported yet",
         ),
         (
             "PROGRAM Main VAR a : ARRAY [1..2] OF WORD; END_VAR END_PROGRAM",
@@ -713,7 +713,7 @@ fn an_array_is_one_symbol_with_its_element_type_size_and_bounds() {
 #[test]
 fn a_target_refuses_a_type_wherever_it_is_used_and_a_program_too_large_for_it() {
     let no_lreal: TargetProfile = serde_json::from_str(
-        r#"{"name":"no-lreal","format_version":1,"max_memory":65536,"max_code":65536,"refuses":["Lreal"]}"#,
+        r#"{"name":"no-lreal","format_version":2,"max_memory":65536,"max_code":65536,"refuses":["Lreal"]}"#,
     )
     .unwrap();
     for src in [
@@ -729,7 +729,7 @@ fn a_target_refuses_a_type_wherever_it_is_used_and_a_program_too_large_for_it() 
         );
     }
     let small: TargetProfile = serde_json::from_str(
-        r#"{"name":"small","format_version":1,"max_memory":100,"max_code":65536}"#,
+        r#"{"name":"small","format_version":2,"max_memory":100,"max_code":65536}"#,
     )
     .unwrap();
     let err = compile(

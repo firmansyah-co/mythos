@@ -19,7 +19,8 @@
 
 pub mod fb;
 pub mod format;
+mod strings;
 mod vm;
 
-pub use format::{crc32, ElemType, Limits, LoadError, Program, FORMAT_VERSION, MAGIC};
-pub use vm::{cold_start, read, scan, write, Fault, Frame, ScanReport, Value};
+pub use format::{crc32, string_size, ElemType, Limits, LoadError, Program, FORMAT_VERSION, MAGIC};
+pub use vm::{cold_start, read, read_string, scan, write, Fault, Frame, ScanReport, Value};

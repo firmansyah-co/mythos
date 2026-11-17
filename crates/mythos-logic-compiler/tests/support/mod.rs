@@ -3,7 +3,9 @@
 #![allow(dead_code)]
 
 use mythos_logic_compiler::{compile, Compiled, TargetProfile};
-use mythos_logic_vm::{cold_start, read, scan, write, ElemType, Fault, Frame, Program, Value};
+use mythos_logic_vm::{
+    cold_start, read, read_string, scan, write, ElemType, Fault, Frame, Program, Value,
+};
 
 pub const MS: i64 = 1_000_000;
 pub const BUDGET: u32 = 1_000_000;
@@ -61,6 +63,18 @@ impl Run {
     pub fn get(&self, path: &str) -> Value {
         let (offset, ty) = self.locate(path);
         read(&self.memory, offset, elem(&ty)).unwrap()
+    }
+    /// The characters of the STRING at `path`, each byte the character of that code.
+    pub fn text(&self, path: &str) -> String {
+        let (offset, ty) = self.locate(path);
+        let n: u16 = ty
+            .strip_prefix("STRING[")
+            .and_then(|t| t.strip_suffix(']'))
+            .and_then(|t| t.parse().ok())
+            .unwrap_or_else(|| panic!("{path} is a {ty}, not a STRING"));
+        let bytes = read_string(&self.memory, offset, n)
+            .unwrap_or_else(|| panic!("{path} holds a length past {n}"));
+        bytes.iter().map(|b| *b as char).collect()
     }
     pub fn set(&mut self, path: &str, v: Value) {
         let (offset, _) = self.locate(path);

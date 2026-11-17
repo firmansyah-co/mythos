@@ -77,7 +77,7 @@ END_PROGRAM
 ";
 
 /// As TANK, with what watching reaches beyond a variable bound to a tag: locals, arrays, a
-/// timer's members, a REAL.
+/// timer's members, a REAL, strings.
 const WATCHED: &str = "
 PROGRAM Tank
 VAR_INPUT level : INT; level_ok : BOOL; setpoint : INT := 50; END_VAR
@@ -88,8 +88,11 @@ VAR
   grid : ARRAY [0..1, 1..2] OF INT := [1, 2, 3, 4];
   t : TON;
   half : REAL;
+  label : STRING[12];
+  names : ARRAY [1..2] OF STRING[4] := ['ab', 'cd'];
 END_VAR
   scans := scans + 1;
+  label := CONCAT('level ', INT_TO_STRING(level));
   t(IN := TRUE, PT := T#1h);
   hist[2] := level;
   half := INT_TO_REAL(level) / 2.0;
@@ -876,7 +879,9 @@ async fn any_variable_is_read_as_the_last_scan_left_it_bound_to_a_tag_or_not() {
         "grid[1, 2]",
         "grid[0,2]",
         "t.Q",
-        "t.ET", // what has a value
+        "t.ET",
+        "label",
+        "names[2]", // what has a value
         "flow",
         "hist",
         "hist[4]",
@@ -933,6 +938,9 @@ async fn any_variable_is_read_as_the_last_scan_left_it_bound_to_a_tag_or_not() {
     has("grid[1, 2]", "INT", json!(4));
     has("grid[0,2]", "INT", json!(2));
     has("t.Q", "BOOL", json!(false));
+    // A STRING is its characters; an element of an array of them as well.
+    has("label", "STRING[12]", json!("level 20"));
+    has("names[2]", "STRING[4]", json!("cd"));
     let scans = value(&reply, "scans");
     assert!(
         scans.value.as_ref().and_then(Value::as_i64).unwrap() > 0,

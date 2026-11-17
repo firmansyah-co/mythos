@@ -17,7 +17,9 @@
 
 use mythos_logic_ir::*;
 use mythos_logic_vm::fb::FbKind;
-use mythos_logic_vm::format::{crc32, op, ElemType, MAGIC, PLACE_INDEXED, PLACE_RELATIVE};
+use mythos_logic_vm::format::{
+    crc32, op, string_size, ElemType, MAGIC, PLACE_INDEXED, PLACE_RELATIVE,
+};
 
 pub use mythos_logic_vm::FORMAT_VERSION;
 
@@ -122,7 +124,7 @@ fn class(t: Ty) -> Class {
         Ty::Lint | Ty::Time => Class::I64,
         Ty::Real => Class::F32,
         Ty::Lreal => Class::F64,
-        Ty::Fb(_) | Ty::Struct(_) | Ty::Array(_) | Ty::Instance(_) => {
+        Ty::String(_) | Ty::Fb(_) | Ty::Struct(_) | Ty::Array(_) | Ty::Instance(_) => {
             unreachable!("only an elementary value is on the stack")
         }
     }
@@ -138,7 +140,7 @@ pub fn elem(t: Ty) -> ElemType {
         Ty::Real => ElemType::Real,
         Ty::Lreal => ElemType::Lreal,
         Ty::Time => ElemType::Time,
-        Ty::Fb(_) | Ty::Struct(_) | Ty::Array(_) | Ty::Instance(_) => {
+        Ty::String(_) | Ty::Fb(_) | Ty::Struct(_) | Ty::Array(_) | Ty::Instance(_) => {
             unreachable!("not an element")
         }
     }
@@ -234,6 +236,7 @@ impl<'u> Layouts<'u> {
             Ty::Int => 2,
             Ty::Dint | Ty::Real => 4,
             Ty::Lint | Ty::Lreal | Ty::Time => 8,
+            Ty::String(n) => string_size(n) as u64,
             Ty::Fb(k) => vm_fb(k).size() as u64,
             Ty::Struct(i) => self.structs[i].size,
             Ty::Instance(p) => self.pous[p].size,
@@ -314,6 +317,8 @@ struct Emitter<'u> {
     calls: u32,
     /// For each loop being emitted, the jumps its EXITs must be patched to.
     exits: Vec<Vec<usize>>,
+    /// Every string literal and where its string is: put in the memory image, never written.
+    literals: Vec<(Vec<u8>, u32)>,
 }
 
 fn too_big(what: impl std::fmt::Display) -> Diagnostic {
@@ -424,6 +429,7 @@ pub fn emit(u: &Unit) -> Result<Output, Diagnostic> {
         max_depth: 0,
         calls: 0,
         exits: Vec::new(),
+        literals: Vec::new(),
     };
     let mut starts = Vec::new();
     for &p in &order {
@@ -472,6 +478,11 @@ pub fn emit(u: &Unit) -> Result<Output, Diagnostic> {
         );
     }
     let types = e.lay.types();
+    for (text, at) in &e.literals {
+        let at = *at as usize;
+        init[at..at + 2].copy_from_slice(&(text.len() as u16).to_le_bytes());
+        init[at + 2..at + 2 + text.len()].copy_from_slice(text);
+    }
 
     let mut bytes = Vec::with_capacity(20 + 8 * order.len() + init.len() + e.code.len() + 4);
     bytes.extend_from_slice(&MAGIC);
@@ -502,6 +513,26 @@ pub fn emit(u: &Unit) -> Result<Output, Diagnostic> {
         symbols,
         types,
     })
+}
+
+/// The length of a STRING type.
+fn string_cap(ty: Ty) -> u16 {
+    match ty {
+        Ty::String(n) => n,
+        other => unreachable!("{other:?} is not a STRING"),
+    }
+}
+
+/// What `CMP_*` and `SCMP` add for each comparison.
+fn cmp_code(c: Cmp) -> u8 {
+    match c {
+        Cmp::Eq => 0,
+        Cmp::Ne => 1,
+        Cmp::Lt => 2,
+        Cmp::Le => 3,
+        Cmp::Gt => 4,
+        Cmp::Ge => 5,
+    }
 }
 
 fn const_bytes(ty: Ty, k: Const) -> Vec<u8> {
@@ -547,6 +578,13 @@ impl Layouts<'_> {
             (Ty::Array(a), init) => {
                 let array = &self.u.arrays[a];
                 let size = self.size(array.elem);
+                if let Some(Init::Texts(texts)) = init {
+                    for (k, text) in texts.iter().enumerate() {
+                        let text = Init::Str(text.clone());
+                        self.init(image, at + k as u64 * size, array.elem, Some(&text));
+                    }
+                    return;
+                }
                 let given: &[Const] = match init {
                     Some(Init::Elements(values)) => values,
                     _ => &[],
@@ -566,6 +604,10 @@ impl Layouts<'_> {
                 }
             }
             (Ty::Fb(_), _) => {}
+            (Ty::String(_), Some(Init::Str(text))) => {
+                put(image, at, &(text.len() as u16).to_le_bytes());
+                put(image, at + 2, text);
+            }
             (ty, Some(Init::Value(c))) => put(image, at, &const_bytes(ty, *c)),
             (_, _) => {}
         }
@@ -883,6 +925,172 @@ impl Emitter<'_> {
         self.code.extend_from_slice(&len.to_le_bytes());
     }
 
+    // ---- Strings ----------------------------------------------------------------------
+    //
+    // A string never goes on the stack: an instruction names each string it reads or writes
+    // (`cap place`). What an expression of a STRING type gives is a string somewhere in
+    // memory: the variable it loads, a literal's string in the memory image, or scratch the
+    // value was written to. Every string an instruction reads, but the source of an
+    // assignment, is at a place without an offset, so only `SMOVE` pops offsets.
+
+    /// A string operand: `cap` and the place of `2 + cap` bytes at `loc`.
+    fn string_operand(&mut self, cap: u16, loc: Loc) {
+        self.code.extend_from_slice(&cap.to_le_bytes());
+        self.place_operand(loc, string_size(cap));
+    }
+
+    /// The string of a literal: one place for each distinct text, never written.
+    fn literal(&mut self, text: &[u8]) -> Loc {
+        if let Some((_, at)) = self.literals.iter().find(|(t, _)| t == text) {
+            return Loc::absolute(*at);
+        }
+        let loc = self.scratch(string_size(text.len() as u16) as u64);
+        self.literals.push((text.to_vec(), loc.addr));
+        loc
+    }
+
+    /// `dst := src`, cut to `dst`'s length. When both take an offset, `dst`'s was pushed
+    /// first.
+    fn string_move(&mut self, dst: (u16, Loc), src: (u16, Loc)) {
+        let popped = dst.1.indexed.is_some() as i32 + src.1.indexed.is_some() as i32;
+        self.op(op::SMOVE, -popped);
+        self.string_operand(dst.0, dst.1);
+        self.string_operand(src.0, src.1);
+    }
+
+    /// Where the string `e` gives is, at a place without an offset, and its length.
+    fn string_value(&mut self, e: &Expr) -> (u16, Loc) {
+        match &e.kind {
+            ExprKind::Str(text) => (text.len() as u16, self.literal(text)),
+            ExprKind::Load(p) => {
+                let cap = string_cap(self.u.place_ty(self.cur, p));
+                let loc = self.place(p);
+                if loc.indexed.is_none() {
+                    return (cap, loc);
+                }
+                let tmp = self.scratch(string_size(cap) as u64);
+                self.string_move((cap, tmp), (cap, loc));
+                (cap, tmp)
+            }
+            _ => {
+                let cap = string_cap(e.ty);
+                let tmp = self.scratch(string_size(cap) as u64);
+                self.string_into(e, (cap, tmp));
+                (cap, tmp)
+            }
+        }
+    }
+
+    /// The string of `e` where an assignment takes it from: a place that may take an
+    /// offset, which is then on the stack.
+    fn string_source(&mut self, e: &Expr) -> (u16, Loc) {
+        match &e.kind {
+            ExprKind::Load(p) => {
+                let cap = string_cap(self.u.place_ty(self.cur, p));
+                (cap, self.place(p))
+            }
+            _ => self.string_value(e),
+        }
+    }
+
+    /// An integer argument, as the i64 the instructions on strings pop.
+    fn int64(&mut self, e: &Expr) {
+        self.expr(e);
+        if class(e.ty) == Class::I32 {
+            self.op(op::I32_TO_I64, 0);
+        }
+    }
+
+    /// Write the string `e` gives to `dst`, a string of `e`'s own type at a place without an
+    /// offset that none of `e`'s operands is.
+    fn string_into(&mut self, e: &Expr, dst: (u16, Loc)) {
+        match &e.kind {
+            ExprKind::Std(f, args) => self.string_function(*f, args, dst),
+            ExprKind::Convert(a) => {
+                self.int64(a);
+                self.op(op::ITOS, -1);
+                self.string_operand(dst.0, dst.1);
+            }
+            ExprKind::Call { pou, args } => {
+                let result = self.call_body(*pou, args);
+                self.string_move(dst, result);
+            }
+            ExprKind::Str(_) | ExprKind::Load(_) => {
+                let src = self.string_source(e);
+                self.string_move(dst, src);
+            }
+            _ => unreachable!("{:?} does not give a STRING", e.kind),
+        }
+    }
+
+    /// A function of Table 34 that gives a string, written to `dst`.
+    fn string_function(&mut self, f: StdFn, args: &[Expr], dst: (u16, Loc)) {
+        let mut strings = Vec::new();
+        let (code, ints): (u8, &[Expr]) = match f {
+            StdFn::Concat => {
+                // Two at a time, into `dst`: the first two, then `dst` and each next one.
+                let a = self.string_value(&args[0]);
+                let b = self.string_value(&args[1]);
+                self.op(op::SCAT, 0);
+                self.string_operand(dst.0, dst.1);
+                self.string_operand(a.0, a.1);
+                self.string_operand(b.0, b.1);
+                for next in &args[2..] {
+                    let b = self.string_value(next);
+                    self.op(op::SCAT, 0);
+                    self.string_operand(dst.0, dst.1);
+                    self.string_operand(dst.0, dst.1);
+                    self.string_operand(b.0, b.1);
+                }
+                return;
+            }
+            StdFn::Left => (op::SLEFT, &args[1..2]),
+            StdFn::Right => (op::SRIGHT, &args[1..2]),
+            StdFn::Mid => (op::SMID, &args[1..3]),
+            StdFn::Delete => (op::SDELETE, &args[1..3]),
+            StdFn::Insert => {
+                strings.push(1);
+                (op::SINSERT, &args[2..3])
+            }
+            StdFn::Replace => {
+                strings.push(1);
+                (op::SREPLACE, &args[2..4])
+            }
+            StdFn::Len | StdFn::Find => unreachable!("{} gives an INT", f.name()),
+        };
+        let mut operands = vec![self.string_value(&args[0])];
+        for k in strings {
+            operands.push(self.string_value(&args[k]));
+        }
+        for i in ints {
+            self.int64(i);
+        }
+        self.op(code, -(ints.len() as i32));
+        self.string_operand(dst.0, dst.1);
+        for (cap, loc) in operands {
+            self.string_operand(cap, loc);
+        }
+    }
+
+    /// A function of the standard library that gives a value on the stack.
+    fn std_value(&mut self, f: StdFn, args: &[Expr]) {
+        match f {
+            StdFn::Len => {
+                let a = self.string_value(&args[0]);
+                self.op(op::SLEN, 1);
+                self.string_operand(a.0, a.1);
+            }
+            StdFn::Find => {
+                let a = self.string_value(&args[0]);
+                let b = self.string_value(&args[1]);
+                self.op(op::SFIND, 1);
+                self.string_operand(a.0, a.1);
+                self.string_operand(b.0, b.1);
+            }
+            _ => unreachable!("{} gives a STRING", f.name()),
+        }
+    }
+
     /// Note that the body being emitted calls POU `q`, with the stack as deep as it is now.
     fn calling(&mut self, q: usize) {
         self.calls = self.calls.max(1 + self.need_calls[q]);
@@ -949,6 +1157,8 @@ impl Emitter<'_> {
     fn expr(&mut self, e: &Expr) {
         match &e.kind {
             ExprKind::Const(k) => self.push_const(e.ty, *k),
+            ExprKind::Str(_) => unreachable!("a string is not a value on the stack"),
+            ExprKind::Std(f, args) => self.std_value(*f, args),
             ExprKind::Load(p) => {
                 let a = self.place(p);
                 self.load(e.ty, a);
@@ -980,6 +1190,14 @@ impl Emitter<'_> {
                 };
                 self.op(code, -1);
             }
+            ExprKind::Cmp(c, a, b) if a.ty.is_string() => {
+                let a = self.string_value(a);
+                let b = self.string_value(b);
+                self.op(op::SCMP, 1);
+                self.code.push(cmp_code(*c));
+                self.string_operand(a.0, a.1);
+                self.string_operand(b.0, b.1);
+            }
             ExprKind::Cmp(c, a, b) => {
                 self.expr(a);
                 self.expr(b);
@@ -989,15 +1207,7 @@ impl Emitter<'_> {
                     Class::F32 => op::CMP_F32,
                     Class::F64 => op::CMP_F64,
                 };
-                let which = match c {
-                    Cmp::Eq => 0,
-                    Cmp::Ne => 1,
-                    Cmp::Lt => 2,
-                    Cmp::Le => 3,
-                    Cmp::Gt => 4,
-                    Cmp::Ge => 5,
-                };
-                self.op(base + which, -1);
+                self.op(base + cmp_code(*c), -1);
             }
             ExprKind::Arith(a_op, a, b) => {
                 self.expr(a);
@@ -1019,6 +1229,12 @@ impl Emitter<'_> {
                 self.op(base + which, -1);
                 self.wrap(e.ty);
             }
+            ExprKind::Convert(a) if a.ty.is_string() => {
+                let a = self.string_value(a);
+                self.op(op::STOI, 1);
+                self.string_operand(a.0, a.1);
+                self.convert(Ty::Lint, e.ty);
+            }
             ExprKind::Convert(a) => {
                 self.expr(a);
                 self.convert(a.ty, e.ty);
@@ -1026,22 +1242,35 @@ impl Emitter<'_> {
         }
     }
 
-    /// A call of function `f`. Every argument is worked out before any is put in its place:
-    /// an argument may itself call `f`, whose parameters are the same bytes.
+    /// A call of function `f` in an expression whose value goes on the stack.
     fn call(&mut self, f: usize, args: &[(usize, Expr)]) {
+        let (_, result) = self.call_body(f, args);
+        let PouKind::Function { result: r } = self.u.pous[f].kind else {
+            unreachable!("only a function is called in an expression")
+        };
+        self.load(self.u.pous[f].vars[r].ty, result);
+    }
+
+    /// Emit a call of function `f`, and say where its result is (and, for a STRING, how long
+    /// it is). Every argument is worked out before any is put in its place: an argument may
+    /// itself call `f`, whose parameters are the same bytes.
+    fn call_body(&mut self, f: usize, args: &[(usize, Expr)]) -> (u16, Loc) {
         let u = self.u;
         let frame = self.frame[f];
         let at =
             |e: &Emitter, var: usize| Loc::absolute((frame + e.lay.pous[f].offsets[var]) as u32);
-        // A value goes on the stack; a structure or an array stays where it is, and only an
-        // offset computed for it goes on the stack.
-        let mut waiting: Vec<(usize, Ty, Option<Loc>)> = Vec::new();
+        // A value goes on the stack; a structure, an array or a string stays where it is, and
+        // only an offset computed for it goes on the stack.
+        let mut waiting: Vec<(usize, Ty, Option<(u16, Loc)>)> = Vec::new();
         for (var, a) in args {
             if a.ty.is_aggregate() {
                 let ExprKind::Load(src) = &a.kind else {
                     unreachable!("a structure or an array is always loaded from a place")
                 };
                 let src = self.place(src);
+                waiting.push((*var, a.ty, Some((0, src))));
+            } else if a.ty.is_string() {
+                let src = self.string_source(a);
                 waiting.push((*var, a.ty, Some(src)));
             } else {
                 self.expr(a);
@@ -1051,7 +1280,11 @@ impl Emitter<'_> {
         for (var, ty, src) in waiting.into_iter().rev() {
             let dst = at(self, var);
             match src {
-                Some(src) => self.copy(self.size(ty), dst, src),
+                Some(src) if ty.is_string() => {
+                    let cap = string_cap(u.pous[f].vars[var].ty);
+                    self.string_move((cap, dst), src);
+                }
+                Some((_, src)) => self.copy(self.size(ty), dst, src),
                 None => self.store(ty, dst),
             }
         }
@@ -1068,7 +1301,11 @@ impl Emitter<'_> {
         let PouKind::Function { result } = u.pous[f].kind else {
             unreachable!("only a function is called in an expression")
         };
-        self.load(u.pous[f].vars[result].ty, at(self, result));
+        let cap = match u.pous[f].vars[result].ty {
+            Ty::String(n) => n,
+            _ => 0,
+        };
+        (cap, at(self, result))
     }
 
     fn convert(&mut self, from: Ty, to: Ty) {
@@ -1112,8 +1349,12 @@ impl Emitter<'_> {
     fn stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Assign(p, v) => {
+                let ty = self.u.place_ty(self.cur, p);
                 let dst = self.place(p);
-                if v.ty.is_aggregate() {
+                if let Ty::String(cap) = ty {
+                    let src = self.string_source(v);
+                    self.string_move((cap, dst), src);
+                } else if v.ty.is_aggregate() {
                     let ExprKind::Load(src) = &v.kind else {
                         unreachable!("a structure or an array is always loaded from a place")
                     };
@@ -1142,7 +1383,10 @@ impl Emitter<'_> {
                 for (m, v) in inputs {
                     let (mty, offset) = member(self, *m);
                     let dst = self.within(inst, offset);
-                    if mty.is_aggregate() {
+                    if let Ty::String(cap) = mty {
+                        let src = self.string_source(v);
+                        self.string_move((cap, dst), src);
+                    } else if mty.is_aggregate() {
                         let ExprKind::Load(src) = &v.kind else {
                             unreachable!("a structure or an array is always loaded from a place")
                         };
@@ -1179,7 +1423,9 @@ impl Emitter<'_> {
                     let tty = u.place_ty(self.cur, target);
                     let dst = self.place(target);
                     let src = self.within(inst, offset);
-                    if mty.is_aggregate() {
+                    if let (Ty::String(to), Ty::String(from)) = (tty, mty) {
+                        self.string_move((to, dst), (from, src));
+                    } else if mty.is_aggregate() {
                         self.copy(self.size(mty), dst, src);
                     } else {
                         self.load(mty, src);

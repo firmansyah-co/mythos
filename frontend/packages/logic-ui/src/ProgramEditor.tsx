@@ -503,7 +503,12 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
                           own.length === 0 && (
                             <span
                               className="muted"
-                              title="Only BOOL, integer and real variables can be bound to a tag."
+                              data-testid="not-bindable"
+                              title={
+                                variable.type.startsWith('STRING[')
+                                  ? 'A tag carries a number, never text: a STRING cannot be bound to one.'
+                                  : 'Only BOOL, integer and real variables can be bound to a tag.'
+                              }
                             >
                               —
                             </span>

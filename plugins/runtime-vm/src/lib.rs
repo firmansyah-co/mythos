@@ -22,7 +22,8 @@
 
 use async_trait::async_trait;
 use mythos_logic_vm::{
-    cold_start, read, scan, write, ElemType, Fault, Frame, Program, Value as VmValue,
+    cold_start, read, read_string, scan, string_size, write, ElemType, Fault, Frame, Program,
+    Value as VmValue,
 };
 use mythos_module::protocol::{
     ExchangeReply, InputOf, ModuleKind, ModuleManifest, RuntimeMode, RuntimeProgram, RuntimeState,
@@ -142,11 +143,49 @@ fn elem_of(name: &str) -> Option<ElemType> {
     })
 }
 
-/// A type whose value can be read and shown: what can be bound, and TIME.
-fn watchable(name: &str) -> Option<ElemType> {
+/// Why a variable of the type `name` cannot be bound, beyond its not being a number: the tag
+/// bus carries numbers and BOOLs (`SampleValue`), and no text.
+fn not_on_the_bus(name: &str) -> &'static str {
+    if string_length(name).is_some() {
+        " (a tag carries a number, never text)"
+    } else {
+        ""
+    }
+}
+
+/// What a watched variable is in memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// One value.
+    Value(ElemType),
+    /// A `STRING[n]`: `2 + n` bytes.
+    Text(u16),
+}
+
+impl Shape {
+    fn size(self) -> u32 {
+        match self {
+            Shape::Value(ty) => ty.size(),
+            Shape::Text(n) => string_size(n),
+        }
+    }
+}
+
+/// The length of a `STRING[n]`, by the name the compiler gives its type.
+fn string_length(name: &str) -> Option<u16> {
+    name.strip_prefix("STRING[")?
+        .strip_suffix(']')?
+        .parse()
+        .ok()
+}
+
+/// A type whose value can be read and shown: what can be bound, TIME and STRING.
+fn watchable(name: &str) -> Option<Shape> {
     match name {
-        "TIME" => Some(ElemType::Time),
-        other => elem_of(other),
+        "TIME" => Some(Shape::Value(ElemType::Time)),
+        other => elem_of(other)
+            .map(Shape::Value)
+            .or_else(|| string_length(other).map(Shape::Text)),
     }
 }
 
@@ -167,7 +206,7 @@ fn subscripts(variable: &str) -> Result<(&str, Vec<i64>), String> {
 }
 
 /// Where a watched variable is and what it is, or why it cannot be read.
-fn locate(plan: &Plan, variable: &str) -> Result<(Var, String), String> {
+fn locate(plan: &Plan, variable: &str) -> Result<(u32, Shape, String), String> {
     let (name, indices) = subscripts(variable)?;
     let entry = plan
         .symbols
@@ -204,19 +243,15 @@ fn locate(plan: &Plan, variable: &str) -> Result<(Var, String), String> {
             )
         }
     };
-    let ty = watchable(&type_name).ok_or_else(|| {
-        format!("{variable} is a {type_name}; only a BOOL, a number or a TIME has a value to show")
+    let shape = watchable(&type_name).ok_or_else(|| {
+        format!(
+            "{variable} is a {type_name}; only a BOOL, a number, a TIME or a STRING has a value to show"
+        )
     })?;
-    if offset + u64::from(ty.size()) > plan.memory_size as u64 {
+    if offset + u64::from(shape.size()) > plan.memory_size as u64 {
         return Err(format!("{variable} lies outside the program's memory"));
     }
-    Ok((
-        Var {
-            offset: offset as u32,
-            ty,
-        },
-        type_name,
-    ))
+    Ok((offset as u32, shape, type_name))
 }
 
 /// Check a configuration and work out where everything is. Starts nothing.
@@ -244,8 +279,9 @@ fn plan(config: &Value) -> Result<(Plan, bool), PluginError> {
             .ok_or_else(|| invalid(format!("the program has no variable {variable}")))?;
         let ty = elem_of(&entry.ty).ok_or_else(|| {
             invalid(format!(
-                "{variable} is a {}; only BOOL, integer and real variables can be bound to a tag",
-                entry.ty
+                "{variable} is a {}; only BOOL, integer and real variables can be bound to a tag{}",
+                entry.ty,
+                not_on_the_bus(&entry.ty)
             ))
         })?;
         if entry.offset as usize + ty.size() as usize > memory_size {
@@ -400,6 +436,24 @@ fn watched(read: Option<VmValue>) -> (Option<Value>, Option<String>) {
     }
 }
 
+/// A watched STRING as it is sent: its characters, each byte the character of that code
+/// (IEC 61131-3 ed. 3 Table 10 footnote l: ISO/IEC 10646, whose first 256 codes are those a
+/// single-byte string writes with `$XX`). A stored length its type cannot hold is said.
+fn watched_text(memory: &[u8], offset: u32, n: u16) -> (Option<Value>, Option<String>) {
+    match read_string(memory, offset, n) {
+        Some(bytes) => (
+            Some(Value::String(bytes.iter().map(|b| *b as char).collect())),
+            None,
+        ),
+        None => (
+            None,
+            Some(format!(
+                "its stored length is more than the {n} characters a STRING[{n}] holds"
+            )),
+        ),
+    }
+}
+
 fn to_sample(value: VmValue) -> SampleValue {
     match value {
         VmValue::Bool(b) => SampleValue::Bool(b),
@@ -427,6 +481,18 @@ fn describe(fault: Fault) -> String {
         }
         Fault::CallDepthExceeded(at) => {
             format!("calls nested deeper than the program declares (code offset {at})")
+        }
+        Fault::StringTooLong(at) => {
+            format!("a string function gave a string longer than it may be (code offset {at})")
+        }
+        Fault::StringArgument(at) => format!(
+            "a string function was given a length or position below zero or past its string (code offset {at})"
+        ),
+        Fault::BadString(at) => {
+            format!("a string holds more characters than it is declared with (code offset {at})")
+        }
+        Fault::BadNumber(at) => {
+            format!("a string converted to an integer does not write one (code offset {at})")
         }
     }
 }
@@ -831,8 +897,11 @@ impl RuntimeEngine for VmEngine {
                     value: None,
                     error: Some(why),
                 },
-                Ok((var, ty)) => {
-                    let (value, error) = watched(read(&l.memory, var.offset, var.ty));
+                Ok((offset, shape, ty)) => {
+                    let (value, error) = match shape {
+                        Shape::Value(elem) => watched(read(&l.memory, offset, elem)),
+                        Shape::Text(n) => watched_text(&l.memory, offset, n),
+                    };
                     WatchedValue {
                         variable,
                         ty: Some(ty),
@@ -897,6 +966,29 @@ mod tests {
         let (sent, why) = watched(None);
         assert_eq!(sent, None);
         assert!(why.unwrap().contains("outside the program's memory"));
+    }
+
+    #[test]
+    fn a_watched_string_is_its_characters_or_why_it_has_none() {
+        assert_eq!(watchable("STRING[10]"), Some(Shape::Text(10)));
+        assert_eq!(watchable("STRING[10"), None);
+        assert_eq!(
+            watchable("STRING"),
+            None,
+            "the compiler always names the length"
+        );
+        assert_eq!(Shape::Text(10).size(), 12);
+        // Length 3, room for 4: 'A', 'é' written $E9, a line feed.
+        let memory = [3, 0, b'A', 0xE9, b'\n', 0];
+        assert_eq!(
+            watched_text(&memory, 0, 4),
+            (Some(json!("A\u{e9}\n")), None)
+        );
+        // A stored length past what the type holds is never followed.
+        let memory = [5, 0, b'A', b'B', b'C', b'D'];
+        let (sent, why) = watched_text(&memory, 0, 4);
+        assert_eq!(sent, None);
+        assert!(why.unwrap().contains("more than the 4 characters"));
     }
 
     #[test]

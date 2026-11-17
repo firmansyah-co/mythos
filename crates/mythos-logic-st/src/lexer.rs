@@ -4,8 +4,8 @@
 //! The lexer does not stop at what it cannot read: it says so, puts a [`Tok::Error`] where
 //! the unreadable text was, and goes on, so one pass finds every such place.
 
-use mythos_logic_ir::Diagnostic;
 pub use mythos_logic_ir::Span;
+use mythos_logic_ir::{Diagnostic, MAX_STRING_LENGTH};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
@@ -15,6 +15,9 @@ pub enum Tok {
     Real(f64),
     /// A duration in nanoseconds.
     Time(i64),
+    /// A single-byte character string (`'…'` or `STRING#'…'`): its characters, `$`
+    /// combinations read (IEC 61131-3 ed. 3 Table 6, Table 7).
+    Str(Vec<u8>),
     /// Punctuation and operators: `:=`, `=>`, `<>`, `<=`, `>=`, `**`, `..`, and single characters.
     Sym(&'static str),
     /// Text the lexer could not read and has already given a diagnostic for. The parser
@@ -184,6 +187,13 @@ pub fn tokens(src: &str) -> Lexed {
             let upper = word.to_ascii_uppercase();
             if c.peek(0) == Some('#') {
                 c.step();
+                // Table 6 feature 3a: a typed string, STRING#'OK'.
+                if upper == "STRING" && c.peek(0) == Some('\'') {
+                    match string_literal(&mut c) {
+                        Ok(text) => token!(Tok::Str(text)),
+                        Err(m) => unreadable!(m),
+                    }
+                }
                 if upper == "T" || upper == "TIME" {
                     match duration(&chars[c.i..]) {
                         Ok((ns, used)) => {
@@ -280,9 +290,15 @@ pub fn tokens(src: &str) -> Lexed {
             let text = format!("%{rest}");
             token!(Tok::Word(text.to_ascii_uppercase(), text));
         }
-        if ch == '\'' || ch == '"' {
+        if ch == '\'' {
+            match string_literal(&mut c) {
+                Ok(text) => token!(Tok::Str(text)),
+                Err(m) => unreadable!(m),
+            }
+        }
+        if ch == '"' {
             string_body(&mut c);
-            unreadable!("strings are not supported yet");
+            unreadable!("a double-byte string (\"…\", WSTRING) is not supported yet");
         }
         if let Some(n) = next {
             let two: String = [ch, n].iter().collect();
@@ -353,6 +369,101 @@ fn string_body(c: &mut Cursor) {
         if x == '$' && c.peek(0).is_some_and(|n| n != '\n') {
             c.step();
         }
+    }
+}
+
+/// A single-byte character string from its opening quote to its closing one (IEC 61131-3
+/// ed. 3 §6.3.3, Table 6, Table 7, Annex A `S_Byte_Char_Str`): its characters, each a byte.
+/// Written as itself, a character is a printable one of ISO/IEC 646 (`' '` to `'~'`) other
+/// than `$` and `'`; any other is written `$` and two hexadecimal digits, its eight-bit code.
+/// `$$`, `$'`, `$L`, `$N`, `$P`, `$R`, `$T` (either case) are the combinations of Table 7;
+/// `$N`, the newline, is a line feed (`$0A`), which the standard leaves to the implementer.
+/// The whole literal is stepped over even when it is wrong, so it is one thing told once.
+fn string_literal(c: &mut Cursor) -> Result<Vec<u8>, String> {
+    let mut text = Vec::new();
+    let mut wrong: Option<String> = None;
+    let mut fail = |m: String| {
+        wrong.get_or_insert(m);
+    };
+    c.step();
+    loop {
+        let Some(x) = c.peek(0) else {
+            fail("a string that is never closed".into());
+            break;
+        };
+        if x == '\n' {
+            fail("a string that is not closed on its line".into());
+            break;
+        }
+        c.step();
+        match x {
+            '\'' => break,
+            '$' => {
+                let Some(n) = c.peek(0).filter(|n| *n != '\n') else {
+                    fail("a $ with nothing after it".into());
+                    continue;
+                };
+                c.step();
+                let byte = match n.to_ascii_uppercase() {
+                    '$' => b'$',
+                    '\'' => b'\'',
+                    'L' | 'N' => b'\n',
+                    'P' => 0x0C,
+                    'R' => b'\r',
+                    'T' => b'\t',
+                    '"' => {
+                        fail(
+                            "$\" belongs in a double-byte string; here a \" stands for itself"
+                                .into(),
+                        );
+                        continue;
+                    }
+                    h if h.is_ascii_hexdigit() => {
+                        match c.peek(0).filter(|l| l.is_ascii_hexdigit()) {
+                            Some(l) => {
+                                c.step();
+                                // Two hexadecimal digits: always a byte.
+                                u8::from_str_radix(&format!("{h}{l}"), 16).unwrap_or(0)
+                            }
+                            None => {
+                                fail(format!(
+                                    "${n} is not a character: write $ and two hexadecimal digits"
+                                ));
+                                continue;
+                            }
+                        }
+                    }
+                    _ => {
+                        fail(format!(
+                            "${n} is not a character: $ is followed by $, ', L, N, P, R, T or two hexadecimal digits"
+                        ));
+                        continue;
+                    }
+                };
+                text.push(byte);
+            }
+            x if (' '..='~').contains(&x) => text.push(x as u8),
+            x => {
+                let code = x as u32;
+                fail(if code <= 0xFF {
+                    format!("the character {x:?} is written ${code:02X} in a string")
+                } else {
+                    format!(
+                        "{x:?} is not a single-byte character; a STRING holds codes up to $FF (WSTRING is not supported yet)"
+                    )
+                });
+            }
+        }
+    }
+    if text.len() > MAX_STRING_LENGTH as usize {
+        fail(format!(
+            "a string of {} characters is longer than the {MAX_STRING_LENGTH} a STRING may hold",
+            text.len()
+        ));
+    }
+    match wrong {
+        Some(m) => Err(m),
+        None => Ok(text),
     }
 }
 
@@ -481,14 +592,14 @@ mod tests {
     #[test]
     fn what_cannot_be_read_is_said_once_and_the_rest_is_still_read() {
         let lexed = tokens(
-            "a := 'it$'s' + INT#16#FF + §§ + 9#1;
+            "a := \"it$\"s\" + INT#16#FF + §§ + 9#1;
 b := DT#1970-01-01-00:00:00;",
         );
         let said: Vec<String> = lexed.diags.iter().map(|d| d.to_string()).collect();
         assert_eq!(
             said,
             vec![
-                "1:6: strings are not supported yet",
+                "1:6: a double-byte string (\"…\", WSTRING) is not supported yet",
                 "1:16: the typed literal INT#… is not supported yet; only T# and TIME#",
                 "1:28: '§' is not part of Structured Text",
                 "1:33: 9# is not a base; use 2#, 8# or 16#",
@@ -506,6 +617,54 @@ b := DT#1970-01-01-00:00:00;",
         assert_eq!(errors, 5);
         assert!(!lexed.cut);
         assert!(matches!(lexed.toks.last().unwrap().tok, Tok::Eof));
+    }
+
+    #[test]
+    fn a_string_is_its_characters_with_the_dollar_combinations_read() {
+        let lexed = tokens("'' 'A' '$'' '\"' '$$1$L$l$N$P$R$T$0a$FF' STRING#'OK' 'two words'");
+        assert!(lexed.diags.is_empty(), "{:?}", lexed.diags);
+        let texts: Vec<Vec<u8>> = lexed
+            .toks
+            .iter()
+            .filter_map(|t| match &t.tok {
+                Tok::Str(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                b"".to_vec(),
+                b"A".to_vec(),
+                b"'".to_vec(),
+                b"\"".to_vec(),
+                vec![b'$', b'1', 10, 10, 10, 12, 13, 9, 10, 0xFF],
+                b"OK".to_vec(),
+                b"two words".to_vec(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_string_that_cannot_be_read_is_one_thing_told_once() {
+        let lexed = tokens("'$Q' '$4' '$\"' 'é' 'tab\there' '→' 'open\nx := 1;");
+        let said: Vec<String> = lexed.diags.iter().map(|d| d.to_string()).collect();
+        assert_eq!(
+            said,
+            vec![
+                "1:1: $Q is not a character: $ is followed by $, ', L, N, P, R, T or two hexadecimal digits",
+                "1:6: $4 is not a character: write $ and two hexadecimal digits",
+                "1:11: $\" belongs in a double-byte string; here a \" stands for itself",
+                "1:16: the character 'é' is written $E9 in a string",
+                "1:20: the character '\\t' is written $09 in a string",
+                "1:31: '→' is not a single-byte character; a STRING holds codes up to $FF (WSTRING is not supported yet)",
+                "1:35: a string that is not closed on its line",
+            ]
+        );
+        let errors = lexed.toks.iter().filter(|t| t.tok == Tok::Error).count();
+        assert_eq!(errors, 7);
+        // What follows on the next line is read.
+        assert!(lexed.toks.iter().any(|t| t.tok == Tok::Sym(":=")));
     }
 
     #[test]

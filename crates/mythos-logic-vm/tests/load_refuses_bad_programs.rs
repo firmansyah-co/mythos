@@ -1028,3 +1028,127 @@ fn a_program_that_declares_more_than_the_host_has_is_refused_when_it_is_loaded()
         Some(LoadError::Corrupt)
     );
 }
+
+/// A string operand: the string's length and its place.
+fn text(cap: u16, at: &[u8]) -> Vec<u8> {
+    let mut v = cap.to_le_bytes().to_vec();
+    v.extend_from_slice(at);
+    v
+}
+
+#[test]
+fn a_string_operand_must_hold_its_whole_string_inside_its_region() {
+    // A STRING[4] is 6 bytes: its length, then four characters.
+    let memory = [0u8; 12];
+    let good = |dst: &[u8], src: &[u8]| {
+        let mut code = ins(op::SMOVE, &[dst, src]);
+        code.push(op::END);
+        build(FORMAT_VERSION, 2, &memory, &code)
+    };
+    assert!(Program::load(&good(
+        &text(4, &place(ABSOLUTE, 0, 6)),
+        &text(4, &place(ABSOLUTE, 6, 6))
+    ))
+    .is_ok());
+    // Its bytes past the memory, or past a region too small for them.
+    for (dst, src) in [
+        (
+            text(4, &place(ABSOLUTE, 8, 6)),
+            text(4, &place(ABSOLUTE, 0, 6)),
+        ),
+        (
+            text(4, &place(ABSOLUTE, 0, 6)),
+            text(10, &place(ABSOLUTE, 0, 6)),
+        ),
+        (
+            text(4, &place(ABSOLUTE, 0, 5)),
+            text(4, &place(ABSOLUTE, 6, 6)),
+        ),
+        (
+            text(4, &place(ABSOLUTE, 0, 6)),
+            text(4, &place(RELATIVE, 0, 6)),
+        ),
+    ] {
+        assert_eq!(
+            refused(&good(&dst, &src)),
+            Some(LoadError::OutOfMemory(0)),
+            "{dst:?} {src:?}"
+        );
+    }
+    // An addressing mode the format does not have.
+    assert_eq!(
+        refused(&good(
+            &text(4, &place(4, 0, 6)),
+            &text(4, &place(ABSOLUTE, 6, 6))
+        )),
+        Some(LoadError::BadOperand(0))
+    );
+}
+
+#[test]
+fn a_string_comparison_names_one_of_six_comparisons() {
+    let memory = [0u8; 12];
+    let a = text(4, &place(ABSOLUTE, 0, 6));
+    let b = text(4, &place(ABSOLUTE, 6, 6));
+    for which in 0..=6u8 {
+        let mut code = ins(op::SCMP, &[&[which], &a, &b]);
+        code.extend(with_addr(op::ST_BOOL, 0));
+        code.push(op::END);
+        let loaded = refused(&build(FORMAT_VERSION, 2, &memory, &code));
+        if which <= 5 {
+            assert_eq!(loaded, None, "{which}");
+        } else {
+            assert_eq!(loaded, Some(LoadError::BadOperand(0)));
+        }
+    }
+    // Cut short: its operands run past the code.
+    let mut code = ins(op::SCMP, &[&[0], &a]);
+    code.push(op::END);
+    assert_eq!(
+        refused(&build(FORMAT_VERSION, 2, &memory, &code)),
+        Some(LoadError::Truncated(0))
+    );
+}
+
+#[test]
+fn a_string_whose_stored_length_is_past_its_own_stops_the_scan() {
+    // s : STRING[4] at 0 holding a length of 5, t : STRING[4] at 6; t := s.
+    let mut memory = [0u8; 12];
+    memory[0] = 5;
+    let mut code = ins(
+        op::SMOVE,
+        &[
+            &text(4, &place(ABSOLUTE, 6, 6)),
+            &text(4, &place(ABSOLUTE, 0, 6)),
+        ],
+    );
+    code.push(op::END);
+    let (r, mem) = run(&build(FORMAT_VERSION, 2, &memory, &code));
+    assert_eq!(r, Err(Fault::BadString(0)));
+    assert_eq!(&mem[6..12], &[0; 6], "nothing written");
+}
+
+#[test]
+fn an_indexed_string_operand_pops_its_offset_and_stays_in_its_region() {
+    // An array of two STRING[2] at 0 (8 bytes), and t : STRING[2] at 8; t := arr[k] with
+    // the offset k * 4 on the stack. Offset 4 is the second element; 8 would leave the
+    // region and is a fault, not a read of t.
+    let mut memory = [0u8; 12];
+    memory[4..8].copy_from_slice(&[2, 0, b'h', b'i']);
+    for (offset, want) in [(4u32, Ok(())), (8, Err(Fault::BadCode(5)))] {
+        let mut code = with_addr(op::PUSH32, offset);
+        code.extend(ins(
+            op::SMOVE,
+            &[
+                &text(2, &place(ABSOLUTE, 8, 4)),
+                &text(2, &place(INDEXED, 0, 8)),
+            ],
+        ));
+        code.push(op::END);
+        let (r, mem) = run(&build(FORMAT_VERSION, 2, &memory, &code));
+        assert_eq!(r, want, "offset {offset}");
+        if want.is_ok() {
+            assert_eq!(&mem[8..12], &[2, 0, b'h', b'i']);
+        }
+    }
+}

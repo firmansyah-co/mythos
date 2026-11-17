@@ -36,13 +36,24 @@
 //!   (the array's own bytes): the access must lie inside it, whatever the offset.
 //!
 //! An offset is made by `IDX`, which is what checks a subscript against its declared bounds.
+//!
+//! **Strings** (format 2). A `STRING[n]` is `2 + n` bytes: its length now (u16), then room
+//! for `n` characters of one byte each. It never moves to the stack: an instruction on strings
+//! names each string by a *string operand*, `cap:u16 place` (11 bytes), the place reaching
+//! the `2 + cap` bytes of a string of length `cap`. A stored length greater than `cap` is
+//! never followed: the scan stops with `Fault::BadString`. Integer arguments (a length, a
+//! position) are i64 on the stack, above the offsets of any operands that take one; an
+//! instruction pops its integers first, then the offsets from its last operand to its first.
 
 use crate::fb::FbKind;
 
 /// The first four bytes of every program.
 pub const MAGIC: [u8; 4] = *b"MLBC";
 /// The format this VM reads. A program of another version is refused, never guessed at.
-pub const FORMAT_VERSION: u16 = 1;
+///
+/// 2: strings (`STRING[n]` and the instructions on them). 1: functions, function blocks,
+/// arrays and structures.
+pub const FORMAT_VERSION: u16 = 2;
 const HEADER: usize = 20;
 /// Bytes of one entry of the table of bodies.
 const BODY: usize = 8;
@@ -208,6 +219,68 @@ pub mod op {
     pub const STP_16: u8 = 0xCA;
     pub const STP_32: u8 = 0xCB;
     pub const STP_64: u8 = 0xCC;
+
+    // Strings: each `s` below is a string operand, `cap:u16 place`. A string a function
+    // gives is written to its `dst`; one longer than `dst`'s length stops the scan with
+    // `StringTooLong`. IEC 61131-3 ed. 3 §6.6.2.5.11: an integer argument less than zero, or
+    // one naming a character position the string does not have, stops it with
+    // `StringArgument`.
+    /// `SMOVE dst:s src:s`: assignment, cut to `dst`'s length (§6.6.1.2.2 leaves a longer
+    /// source to the implementer).
+    pub const SMOVE: u8 = 0xD0;
+    /// `SCMP which:u8 a:s b:s`: push a BOOL, as `CMP_*` (0 EQ … 5 GE). The shorter string is
+    /// taken as extended with characters of code zero; characters compare by their codes.
+    pub const SCMP: u8 = 0xD1;
+    /// `SLEN a:s`: push the length (an i32).
+    pub const SLEN: u8 = 0xD2;
+    /// `SCAT dst:s a:s b:s`: `a` then `b`.
+    pub const SCAT: u8 = 0xD3;
+    /// `SLEFT dst:s a:s`, pops L: the first L characters.
+    pub const SLEFT: u8 = 0xD4;
+    /// `SRIGHT dst:s a:s`, pops L: the last L characters.
+    pub const SRIGHT: u8 = 0xD5;
+    /// `SMID dst:s a:s`, pops P then L: L characters from position P (the first is 1).
+    pub const SMID: u8 = 0xD6;
+    /// `SDELETE dst:s a:s`, pops P then L: `a` without L characters from position P.
+    pub const SDELETE: u8 = 0xD7;
+    /// `SINSERT dst:s a:s b:s`, pops P: `b` put in `a` after its P-th character (0: first).
+    pub const SINSERT: u8 = 0xD8;
+    /// `SREPLACE dst:s a:s b:s`, pops P then L: L characters of `a` from position P made `b`.
+    pub const SREPLACE: u8 = 0xD9;
+    /// `SFIND a:s b:s`: push (an i32) the position where `b` first occurs in `a`, 0 if it
+    /// does not.
+    pub const SFIND: u8 = 0xDA;
+    /// `ITOS dst:s`, pops an i64: its decimal text.
+    pub const ITOS: u8 = 0xDB;
+    /// `STOI a:s`: push (an i64) the integer `a` writes, in the form of an integer literal
+    /// (§6.3.2): a sign, decimal digits, or `2#`, `8#`, `16#` and digits of that base, with
+    /// single underscores between digits. Anything else, or a value beyond 64 bits, stops the
+    /// scan with `BadNumber`.
+    pub const STOI: u8 = 0xDC;
+}
+
+/// Bytes of a string operand: `cap:u16 place`.
+pub const SOP_LEN: usize = 2 + PLACE_LEN;
+/// The bytes a string of length `cap` takes: its length, then its characters.
+pub const fn string_size(cap: u16) -> u32 {
+    2 + cap as u32
+}
+
+/// An instruction on strings: how many string operands follow its opcode (after `SCMP`'s
+/// `which`), and how many integers it pops.
+pub(crate) fn string_shape(opcode: u8) -> Option<(usize, usize)> {
+    use op::*;
+    Some(match opcode {
+        SLEN | STOI => (1, 0),
+        ITOS => (1, 1),
+        SMOVE | SCMP | SFIND => (2, 0),
+        SLEFT | SRIGHT => (2, 1),
+        SMID | SDELETE => (2, 2),
+        SCAT => (3, 0),
+        SINSERT => (3, 1),
+        SREPLACE => (3, 2),
+        _ => return None,
+    })
 }
 
 /// Bytes of a place operand: `mode:u8 addr:u32 span:u32`.
@@ -223,6 +296,11 @@ pub(crate) struct Place {
     pub mode: u8,
     pub addr: u32,
     pub span: u32,
+}
+
+/// The string operand at `at`: the string's length and its place.
+pub(crate) fn string_operand_at(code: &[u8], at: usize) -> (u16, Place) {
+    (u16_at(code, at), place_at(code, at + 2))
 }
 
 /// The place operand at `at`. The caller has checked the instruction lies inside the code.
@@ -311,6 +389,10 @@ pub fn instruction_len(opcode: u8) -> Option<usize> {
         }
         I32_TO_I64..=I64_TO_BOOL => 1,
         FB => 6,
+        SCMP => 2 + 2 * SOP_LEN,
+        x if string_shape(x).is_some() => {
+            1 + string_shape(x).map_or(0, |(operands, _)| operands) * SOP_LEN
+        }
         _ => return None,
     })
 }
@@ -380,7 +462,7 @@ pub struct Program<'a> {
     call_depth: u16,
 }
 
-fn u16_at(b: &[u8], at: usize) -> u16 {
+pub(crate) fn u16_at(b: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([b[at], b[at + 1]])
 }
 pub(crate) fn u32_at(b: &[u8], at: usize) -> u32 {
@@ -633,6 +715,20 @@ fn verify_body(
                 let kind =
                     FbKind::from_code(code[pc + 1]).ok_or(LoadError::UnknownFunctionBlock(at))?;
                 place(place_at(code, pc + 2), kind.size(), at)?;
+            }
+            x if string_shape(x).is_some() => {
+                let (operands, _) = string_shape(x).unwrap_or((0, 0));
+                let mut from = pc + 1;
+                if x == op::SCMP {
+                    if code[from] > 5 {
+                        return Err(LoadError::BadOperand(at));
+                    }
+                    from += 1;
+                }
+                for k in 0..operands {
+                    let (cap, p) = string_operand_at(code, from + k * SOP_LEN);
+                    place(p, string_size(cap), at)?;
+                }
             }
             _ => {}
         }

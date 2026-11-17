@@ -12,7 +12,7 @@
 //! contain itself), which [`Unit::order`] checks; that is what lets a backend give every
 //! variable one fixed place.
 
-use crate::{Section, StdFb, IR_VERSION};
+use crate::{Section, StdFb, DEFAULT_STRING_LENGTH, IR_VERSION};
 
 /// The types the IR knows. The user-defined ones are indices into the [`Unit`] that holds them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -25,6 +25,11 @@ pub enum Ty {
     Real,
     Lreal,
     Time,
+    /// A single-byte character string of at most this many characters (IEC 61131-3 ed. 3
+    /// §6.4.2.2, Table 10 feature 16a): `STRING[n]`, or [`DEFAULT_STRING_LENGTH`] when the
+    /// declaration gives none. Two strings of different lengths are two types, but a value of
+    /// one is assigned to the other (§6.6.1.2.2): truncated when it does not fit.
+    String(u16),
     /// An instance of a standard function block.
     Fb(StdFb),
     /// A structure: an index into [`Unit::structs`].
@@ -48,6 +53,7 @@ impl Ty {
             "REAL" => Ty::Real,
             "LREAL" => Ty::Lreal,
             "TIME" => Ty::Time,
+            "STRING" => Ty::String(DEFAULT_STRING_LENGTH),
             _ => {
                 return StdFb::ALL
                     .into_iter()
@@ -69,6 +75,7 @@ impl Ty {
             Ty::Real => "REAL",
             Ty::Lreal => "LREAL",
             Ty::Time => "TIME",
+            Ty::String(_) => "STRING",
             Ty::Fb(k) => k.name(),
             Ty::Struct(_) | Ty::Array(_) | Ty::Instance(_) => return None,
         })
@@ -91,6 +98,15 @@ impl Ty {
     pub fn is_aggregate(self) -> bool {
         matches!(self, Ty::Struct(_) | Ty::Array(_))
     }
+    pub fn is_string(self) -> bool {
+        matches!(self, Ty::String(_))
+    }
+
+    /// The same type, or, for strings, a string of any length: what a target refuses is a
+    /// kind of type, not one length of it.
+    pub fn same_kind(self, other: Ty) -> bool {
+        self == other || (self.is_string() && other.is_string())
+    }
 
     /// The range of an integer type.
     pub fn int_range(self) -> Option<(i128, i128)> {
@@ -111,7 +127,9 @@ impl Ty {
         self == to
             || matches!(
                 (self, to),
-                (Sint, Int | Dint | Lint | Real | Lreal)
+                // §6.6.1.2.2: a STRING is assigned to a STRING, whatever their lengths.
+                (String(_), String(_))
+                    | (Sint, Int | Dint | Lint | Real | Lreal)
                     | (Int, Dint | Lint | Real | Lreal)
                     | (Dint, Lint | Lreal)
                     | (Real, Lreal)
@@ -137,6 +155,10 @@ pub enum Init {
     /// varying fastest (IEC 61131-3 ed. 3 §6.4.4.5.2). Elements past the end of the list start
     /// at their type's default.
     Elements(Vec<Const>),
+    /// Of a STRING: its characters, no more than its declared length.
+    Str(Vec<u8>),
+    /// Of an array of STRING: each element's characters, as `Elements`.
+    Texts(Vec<Vec<u8>>),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -229,6 +251,78 @@ pub enum Cmp {
     Ge,
 }
 
+/// A function of the standard library, called in an expression. Each takes its arguments in
+/// the order the standard lists its inputs, every one given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum StdFn {
+    /// IEC 61131-3 ed. 3 Table 34, the character string functions. `L` and `P` are of an
+    /// integer type; the result of each that gives a STRING is the expression's type, long
+    /// enough for any result of its arguments, up to [`MAX_STRING_LENGTH`].
+    /// `LEN(IN)`: an INT.
+    Len,
+    /// `LEFT(IN, L)`
+    Left,
+    /// `RIGHT(IN, L)`
+    Right,
+    /// `MID(IN, L, P)`
+    Mid,
+    /// `CONCAT(IN1, IN2, …)`: two or more.
+    Concat,
+    /// `INSERT(IN1, IN2, P)`
+    Insert,
+    /// `DELETE(IN, L, P)`
+    Delete,
+    /// `REPLACE(IN1, IN2, L, P)`
+    Replace,
+    /// `FIND(IN1, IN2)`: an INT.
+    Find,
+}
+
+impl StdFn {
+    pub const ALL: [StdFn; 9] = [
+        StdFn::Len,
+        StdFn::Left,
+        StdFn::Right,
+        StdFn::Mid,
+        StdFn::Concat,
+        StdFn::Insert,
+        StdFn::Delete,
+        StdFn::Replace,
+        StdFn::Find,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            StdFn::Len => "LEN",
+            StdFn::Left => "LEFT",
+            StdFn::Right => "RIGHT",
+            StdFn::Mid => "MID",
+            StdFn::Concat => "CONCAT",
+            StdFn::Insert => "INSERT",
+            StdFn::Delete => "DELETE",
+            StdFn::Replace => "REPLACE",
+            StdFn::Find => "FIND",
+        }
+    }
+
+    /// The names of its inputs, in order (Table 34). CONCAT's are IN1, IN2, … however many.
+    pub fn inputs(self) -> &'static [&'static str] {
+        match self {
+            StdFn::Len => &["IN"],
+            StdFn::Left | StdFn::Right => &["IN", "L"],
+            StdFn::Mid | StdFn::Delete => &["IN", "L", "P"],
+            StdFn::Concat => &["IN1", "IN2"],
+            StdFn::Insert => &["IN1", "IN2", "P"],
+            StdFn::Replace => &["IN1", "IN2", "L", "P"],
+            StdFn::Find => &["IN1", "IN2"],
+        }
+    }
+
+    pub fn by_name(upper: &str) -> Option<StdFn> {
+        StdFn::ALL.into_iter().find(|f| f.name() == upper)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Logic {
     And,
@@ -245,6 +339,9 @@ pub struct Expr {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ExprKind {
     Const(Const),
+    /// A character string literal: its characters, each one byte. Its type is a STRING of
+    /// exactly that length.
+    Str(Vec<u8>),
     /// The value at a place. An expression whose type is a structure or an array is always
     /// this: a whole variable or part, copied where it is assigned or passed.
     Load(Place),
@@ -255,8 +352,12 @@ pub enum ExprKind {
     /// Both operands have the same type; the result is BOOL.
     Cmp(Cmp, Box<Expr>, Box<Expr>),
     Logic(Logic, Box<Expr>, Box<Expr>),
-    /// The operand's value as the expression's type.
+    /// The operand's value as the expression's type. Between an integer type and STRING it is
+    /// the integer's decimal text (IEC 61131-3 ed. 3 Table 22 footnote e: the external
+    /// representation of the value).
     Convert(Box<Expr>),
+    /// A function of the standard library; see [`StdFn`] for what each takes.
+    Std(StdFn, Vec<Expr>),
     /// A call of the function `pou`, giving its result. Each argument names the input it sets
     /// (an index into the function's `vars`); an input not named starts at its initial value
     /// (IEC 61131-3 ed. 3 §6.6.1.4.2). The function's other variables start at theirs at
@@ -274,7 +375,8 @@ pub type CaseArm = (Vec<(i64, i64)>, Vec<Stmt>);
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Stmt {
     /// The value has the place's type. For a structure or an array it is a `Load`, and every
-    /// element is copied.
+    /// element is copied. For a STRING it is a STRING of any length, cut to the place's
+    /// length if it is longer (§6.6.1.2.2 leaves that to the implementer).
     Assign(Place, Expr),
     /// Set the inputs given, run the function block instance at `instance`, copy the outputs
     /// asked for. The indices are into the block's members (as [`Sel::Member`]). An input not
@@ -381,6 +483,7 @@ impl Unit {
                     .collect();
                 format!("ARRAY [{}] OF {}", dims.join(", "), self.ty_name(a.elem))
             }
+            Ty::String(n) => format!("STRING[{n}]"),
             other => other.builtin_name().unwrap_or("?").to_string(),
         }
     }
@@ -503,6 +606,8 @@ impl Unit {
                 }
                 Ty::Array(a) => in_ty(u, u.arrays[a].elem, add),
                 Ty::Struct(_) | Ty::Instance(_) => {}
+                // A kind of type: one entry for every length.
+                Ty::String(_) => add(Ty::String(DEFAULT_STRING_LENGTH)),
                 t => add(t),
             }
         }
@@ -589,7 +694,8 @@ pub fn walk_exprs(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
             }
             ExprKind::Load(p) => in_place(p, f),
             ExprKind::Call { args, .. } => args.iter().for_each(|(_, a)| in_expr(a, f)),
-            ExprKind::Const(_) => {}
+            ExprKind::Std(_, args) => args.iter().for_each(|a| in_expr(a, f)),
+            ExprKind::Const(_) | ExprKind::Str(_) => {}
         }
     }
     for st in stmts {

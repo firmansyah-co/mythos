@@ -44,6 +44,7 @@ const VARIABLES = [
   variable('speed', 'INT', 'output'),
   variable('run', 'BOOL', 'output'),
   variable('t.ET', 'TIME', 'local', false),
+  variable('note', 'STRING[8]', 'local', false),
 ];
 const compiles = (): CheckResult => ({ ok: true, diagnostics: [], variables: VARIABLES, code_size: 120, memory_size: 16, binding_problems: [] });
 /** A compiler that refuses any text with `oops` in it, at line 3, column 8. */
@@ -122,6 +123,7 @@ describe('reading the programs', () => {
       'speedINToutput—',
       'runBOOLoutput—',
       't.ETTIMElocal——',
+      'noteSTRING[8]local——',
     ]);
     expect(calls.some((call) => call.path.endsWith('/watch'))).toBe(false);
     expect(writes(calls)).toEqual(['POST /projects/plant/logic/programs/Tank/check']);
@@ -193,7 +195,7 @@ describe('editing, checking and saving', () => {
     expect(byTestId(container, 'check-ok')).toBeNull();
     // The variables shown are those of the last text that compiled, and said to be.
     expect(byTestId(container, 'variables-stale')).not.toBeNull();
-    expect(texts(container, 'variable-row')).toHaveLength(5);
+    expect(texts(container, 'variable-row')).toHaveLength(6);
 
     // Clicking a diagnostic puts the caret there.
     click(byTestId(container, 'diagnostic'));
@@ -313,6 +315,11 @@ describe('bindings', () => {
     expect(kinds('Bind ok')).toEqual(['', 'input', 'good', 'output', 'published']);
     // A TIME cannot be bound: there is nothing to choose.
     expect(byLabel(container, 'Bind t.ET')).toBeNull();
+    // Nor a STRING, and the table says why: a tag holds no text.
+    expect(byLabel(container, 'Bind note')).toBeNull();
+    const titles = [...container.querySelectorAll('[data-testid="not-bindable"]')].map((e) => e.getAttribute('title'));
+    expect(titles).toContain('A tag carries a number, never text: a STRING cannot be bound to one.');
+    expect(titles).toContain('Only BOOL, integer and real variables can be bound to a tag.');
 
     typeInto(byLabel(container, 'Bind run'), 'output');
     const safe = byLabel(container, 'Safe value of run') as HTMLSelectElement;
@@ -626,6 +633,7 @@ describe('the values of the running program', () => {
     // A BOOL that is not one: the runtime sent something else.
     run: { type: 'BOOL', value: 5 },
     't.ET': { type: 'TIME', value: 1_500_000_000 },
+    note: { type: 'STRING[8]', value: "it's 5" },
   };
 
   it('shows each variable as the running program has it, and says what is not a value', async () => {
@@ -635,7 +643,7 @@ describe('the values of the running program', () => {
     // Every variable with one value is asked for by name, bound to a tag or not.
     const asked = calls.filter((call) => call.path.endsWith('/runtimes/Tank/watch'));
     expect(asked.length).toBeGreaterThan(0);
-    expect(asked[0]?.body).toEqual({ variables: ['level', 'ok', 'speed', 'run', 't.ET'] });
+    expect(asked[0]?.body).toEqual({ variables: ['level', 'ok', 'speed', 'run', 't.ET', 'note'] });
     expect(values(container)).toEqual([
       'live:20',
       'live:TRUE',
@@ -643,6 +651,8 @@ describe('the values of the running program', () => {
       'absent:not in the running program',
       'none:—',
       'live:1500 ms',
+      // A STRING as ST writes it.
+      "live:'it$'s 5'",
     ]);
   });
 
@@ -658,8 +668,8 @@ describe('the values of the running program', () => {
     expect(values(container)[0]).toBe('live:20');
 
     backend.watch = 'fails';
-    await doing(() => state().readWatch('Tank', ['level', 'ok', 'speed', 'run', 't.ET']));
-    expect(values(container)).toEqual(['unknown:UNKNOWN', 'unknown:UNKNOWN', 'unknown:UNKNOWN', 'unknown:UNKNOWN', 'unknown:UNKNOWN']);
+    await doing(() => state().readWatch('Tank', ['level', 'ok', 'speed', 'run', 't.ET', 'note']));
+    expect(values(container)).toEqual(Array(6).fill('unknown:UNKNOWN'));
     expect(container.querySelector('[data-testid="variable-value"]')?.getAttribute('title')).toContain('does not answer');
   });
 
