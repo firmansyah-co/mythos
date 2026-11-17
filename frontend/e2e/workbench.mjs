@@ -325,16 +325,16 @@ try {
     const area = document.querySelector('[aria-label="Structured Text source"]');
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(area, ${JSON.stringify(text)});
     area.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
-  await typeSource('PROGRAM Doubler\nVAR_INPUT seconds : INT; END_VAR\nVAR twice : DINT; END_VAR\n  twice := seconds * oops;\nEND_PROGRAM\n');
+  await typeSource('PROGRAM Doubler\nVAR_INPUT seconds : INT; END_VAR\nVAR twice : DINT; ticks : DINT; END_VAR\n  ticks := ticks + 1;\n  twice := seconds * oops;\nEND_PROGRAM\n');
   await evaluate(`__t.click('Check')`); await sleep(1200);
   const diagnostics = await evaluate(`__t.text('[data-testid="diagnostic"]')`);
-  check('a mistake is reported by the compiler with its line and column', diagnostics.length === 1 && /^4:\d+oops is not declared$/.test(diagnostics[0]), diagnostics.join(' | '));
+  check('a mistake is reported by the compiler with its line and column', diagnostics.length === 1 && /^5:\d+oops is not declared$/.test(diagnostics[0]), diagnostics.join(' | '));
   check('and marked in the source', (await evaluate(`__t.text('[data-testid="source-error-mark"]')[0]`)) === 'oops');
-  await typeSource('PROGRAM Doubler\nVAR_INPUT seconds : INT; END_VAR\nVAR twice : DINT; END_VAR\n  twice := seconds * 2;\nEND_PROGRAM\n');
+  await typeSource('PROGRAM Doubler\nVAR_INPUT seconds : INT; END_VAR\nVAR twice : DINT; ticks : DINT; END_VAR\n  ticks := ticks + 1;\n  twice := seconds * 2;\nEND_PROGRAM\n');
   await evaluate(`__t.click('Check')`); await sleep(1200);
   check('the corrected program compiles', (await evaluate(`__t.text('[data-testid="check-ok"]')[0]`)) === 'COMPILES');
   const variableRows = await evaluate(`__t.text('[data-testid="variable-row"]')`);
-  check('and its variables are listed for binding', variableRows.length === 2 && variableRows[0].startsWith('secondsINT') && variableRows[1].startsWith('twiceDINT'), variableRows.join(' | '));
+  check('and its variables are listed for binding', variableRows.length === 3 && variableRows[0].startsWith('secondsINT') && variableRows[1].startsWith('twiceDINT') && variableRows[2].startsWith('ticksDINT'), variableRows.join(' | '));
   await evaluate(`__t.type('Bind seconds', 'input'); true`); await sleep(200);
   await evaluate(`__t.type('Reads tag for seconds', 'external.BoilerHouse.Unit1.runtime_s'); true`);
   await evaluate(`__t.type('Bind twice', 'published'); true`); await sleep(200);
@@ -356,12 +356,23 @@ try {
   check('the program’s result is live on the tag bus: twice the device’s counter',
     read?.state === 'live' && published?.state === 'live' && Math.abs(Number(published.value) - 2 * Number(read.value)) <= 4 && Number(published.value) > 0,
     JSON.stringify(liveBindings));
+  // Watching (ADR-013 C5): every variable's value in the running program, bound to a tag or not.
+  const watchedNow = () => evaluate(`[...document.querySelectorAll('[data-testid="variable-row"]')].map((row) => {
+    const v = row.querySelector('[data-testid="variable-value"]'); return { name: row.querySelector('td').textContent, state: v?.getAttribute('data-state'), value: v?.textContent }; })`);
+  const watchedFirst = await watchedNow(); await sleep(1500); const watchedLater = await watchedNow();
+  const ticksOf = (rows) => rows.find((r) => r.name === 'ticks');
+  check('a variable bound to no tag shows its value in the running program', ticksOf(watchedFirst)?.state === 'live' && Number(ticksOf(watchedFirst).value) > 0, JSON.stringify(watchedFirst));
+  check('and the value follows the program scan by scan', Number(ticksOf(watchedLater)?.value) > Number(ticksOf(watchedFirst)?.value), `${ticksOf(watchedFirst)?.value} -> ${ticksOf(watchedLater)?.value}`);
+  const twiceWatched = watchedLater.find((r) => r.name === 'twice'); const secondsWatched = watchedLater.find((r) => r.name === 'seconds');
+  check('the values are of one scan: twice is exactly two times seconds', twiceWatched?.state === 'live' && Number(twiceWatched.value) === 2 * Number(secondsWatched?.value), JSON.stringify(watchedLater));
   await shot('e2e_6c_logic');
   await evaluate(`__t.clickTestId('runtime-stop')`); await sleep(2500);
   check('Stop puts the program in STOP', (await evaluate(`__t.text('[data-testid="runtime-mode"]')[0]`)) === 'STOP'
     && (await (await api(base + '/api/v1/runtimes')).json()).runtimes[0]?.mode === 'stop');
   const stoppedValue = await evaluate(`(() => { const v = document.querySelector('[data-testid="binding"][data-kind="published"] [data-testid="tag-value"]'); return v.getAttribute('data-state'); })()`);
   check('and its published tag is no longer shown as a current value', stoppedValue !== 'live', stoppedValue);
+  const watchedStopped = await watchedNow();
+  check('its variables are shown as what it stopped with, not as running values', watchedStopped.length === 3 && watchedStopped.every((r) => r.state === 'stopped'), JSON.stringify(watchedStopped));
   await evaluate(`__t.clickTestId('runtime-unload')`); await sleep(2500);
   check('Unload takes it out of the controller’s runtimes', (await (await api(base + '/api/v1/runtimes')).json()).runtimes.length === 0
     && (await evaluate(`__t.text('[data-testid="runtime-mode"]')[0]`)) === 'NOT LOADED');

@@ -13,6 +13,7 @@ import {
   type ProgramEntry,
   type RuntimeStatus,
   type Variable,
+  type WatchAnswer,
 } from './bridge';
 
 export interface ProgramDoc {
@@ -54,6 +55,13 @@ export interface RuntimesView {
   readAtMs: number | null;
 }
 
+/** The variables of a running program as last read, or why they could not be. */
+export interface WatchView {
+  /** `null`: not read, or the last read failed: nothing read before is shown as a value. */
+  answer: WatchAnswer | null;
+  error: string | null;
+}
+
 export interface ProgramsState {
   projectId: string | null;
   phase: Phase;
@@ -63,6 +71,8 @@ export interface ProgramsState {
   /** Why the last request failed. */
   error: string | null;
   runtimes: RuntimesView;
+  /** By program name. */
+  watches: Record<string, WatchView>;
 
   load: (projectId: string) => Promise<void>;
   reset: () => void;
@@ -80,6 +90,10 @@ export interface ProgramsState {
   unload: (name: string) => Promise<boolean>;
   command: (name: string, run: boolean) => Promise<void>;
   readRuntimes: () => Promise<void>;
+  /** Read these variables of the runtime that runs the program. */
+  readWatch: (name: string, variables: string[]) => Promise<void>;
+  /** Stop showing the program's values: nothing reads them any more. */
+  dropWatch: (name: string) => void;
 }
 
 /** A value as text with every object's keys in one fixed order (the module sorts them). */
@@ -166,6 +180,7 @@ const EMPTY = {
   busy: null as Busy,
   error: null,
   runtimes: EMPTY_RUNTIMES,
+  watches: {} as Record<string, WatchView>,
 };
 
 export const usePrograms = create<ProgramsState>((set, get) => {
@@ -417,5 +432,21 @@ export const usePrograms = create<ProgramsState>((set, get) => {
         set((state) => ({ runtimes: { ...state.runtimes, error: message(cause) } }));
       }
     },
+
+    readWatch: async (name, variables) => {
+      try {
+        const answer = await api.watch(name, variables);
+        set((state) => ({ watches: { ...state.watches, [name]: { answer, error: null } } }));
+      } catch (cause) {
+        // The values read before are dropped: shown on, they would read as the program's now.
+        set((state) => ({ watches: { ...state.watches, [name]: { answer: null, error: message(cause) } } }));
+      }
+    },
+
+    dropWatch: (name) =>
+      set((state) => {
+        const { [name]: _dropped, ...watches } = state.watches;
+        return { watches };
+      }),
   };
 });

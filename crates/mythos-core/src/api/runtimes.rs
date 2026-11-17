@@ -3,7 +3,7 @@
 
 use crate::api::state::ApiState;
 use crate::io::ConfigProblem;
-use crate::runtimes::{RuntimesConfig, RUNTIMES_FILE};
+use crate::runtimes::{RuntimesConfig, RUNTIMES_FILE, WATCH_LIMIT};
 use crate::storage::StorageError;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -104,6 +104,81 @@ pub async fn stop<S: PlatformShm + 'static>(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     command(&state, &id, false).await
+}
+
+/// An answer no older than this is given at once; an older one is waited out.
+const WATCH_FRESH: std::time::Duration = std::time::Duration::from_millis(1_000);
+/// How long a watch waits for the runtime's next exchange.
+const WATCH_WAIT: std::time::Duration = std::time::Duration::from_millis(2_500);
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WatchBody {
+    variables: Vec<String>,
+}
+
+/// `POST /api/v1/runtimes/:runtime/watch` — the values of a program's variables as its last
+/// scan left them, any variable, bound to a tag or not. It changes nothing in the program.
+///
+/// The runtime is asked at its next exchange, so the first answer takes up to one; asking
+/// again within a few seconds keeps it reading, and gives what it last read at once.
+/// `age_ms` says how old the values are. A variable the program does not have, or one that
+/// has no single value (a whole array, a structure), has an `error` instead of a `value`.
+pub async fn watch<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    Path(id): Path<String>,
+    Json(body): Json<WatchBody>,
+) -> Result<Json<Value>, ApiError> {
+    if body.variables.is_empty() || body.variables.len() > WATCH_LIMIT {
+        return Err(failure(
+            StatusCode::BAD_REQUEST,
+            format!("a watch names between 1 and {WATCH_LIMIT} variables"),
+        ));
+    }
+    let Some(io) = &state.io_manager else {
+        return Err(failure(
+            StatusCode::NOT_FOUND,
+            format!("no runtime '{id}' is loaded on this node"),
+        ));
+    };
+    let runtimes = io.runtimes();
+    let answered = runtimes.answered();
+    let deadline = tokio::time::Instant::now() + WATCH_WAIT;
+    loop {
+        // Registered before the state is read, so an answer between the two is not missed.
+        let woken = answered.notified();
+        tokio::pin!(woken);
+        woken.as_mut().enable();
+        // Asked again on every turn: the instance may have been unloaded while waiting.
+        if !runtimes.watch(&id, &body.variables) {
+            return Err(failure(
+                StatusCode::NOT_FOUND,
+                format!("no runtime '{id}' is loaded on this node"),
+            ));
+        }
+        if let Some((age, answer)) = runtimes.watched(&id, &body.variables) {
+            if age <= WATCH_FRESH {
+                return match answer {
+                    Ok(reply) => Ok(Json(json!({
+                        "id": id,
+                        "state": reply.state,
+                        "values": reply.values,
+                        "age_ms": age.as_millis() as u64,
+                    }))),
+                    Err(why) => Err(failure(StatusCode::BAD_GATEWAY, why)),
+                };
+            }
+        }
+        if tokio::time::timeout_at(deadline, woken).await.is_err() {
+            return Err(failure(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!(
+                    "runtime '{id}' gave no values within {} ms",
+                    WATCH_WAIT.as_millis()
+                ),
+            ));
+        }
+    }
 }
 
 /// `GET /api/v1/projects/:id/runtimes` — the project's runtimes, or `null` when it has none.

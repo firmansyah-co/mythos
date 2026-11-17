@@ -342,6 +342,71 @@ async fn an_engineer_loads_a_program_it_runs_the_plant_and_each_role_does_what_i
     assert_eq!(tank["program"], "Tank");
     assert_eq!(tank["outputs"][0]["written"], 300, "{tank}");
 
+    // Anybody signed in reads the program's variables, bound to a tag or not: reading is not
+    // engineering, and it changes nothing.
+    let (status, body) = rig
+        .send(
+            &rig.viewer,
+            "POST",
+            "/api/v1/runtimes/tank/watch",
+            Some(json!({"variables": ["level", "speed", "flow"]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["id"], "tank", "{body}");
+    assert_eq!(body["state"]["mode"], "run", "{body}");
+    assert_eq!(body["state"]["program"], "Tank", "{body}");
+    assert_eq!(
+        body["values"],
+        json!([
+            {"variable": "level", "type": "INT", "value": 20, "error": null},
+            {"variable": "speed", "type": "INT", "value": 300, "error": null},
+            {"variable": "flow", "type": null, "value": null,
+             "error": "the program has no variable flow"}
+        ]),
+        "{body}"
+    );
+    assert!(
+        body["age_ms"].as_u64().is_some_and(|age| age <= 1_000),
+        "the values come with their age: {body}"
+    );
+    let (status, body) = rig
+        .send(
+            &rig.viewer,
+            "POST",
+            "/api/v1/runtimes/tank/watch",
+            Some(json!({"variables": []})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    // A watch is bounded: the runtime is asked for all of it at every exchange.
+    let many: Vec<String> = (0..257).map(|i| format!("v{i}")).collect();
+    let (status, body) = rig
+        .send(
+            &rig.viewer,
+            "POST",
+            "/api/v1/runtimes/tank/watch",
+            Some(json!({ "variables": many })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"], "a watch names between 1 and 256 variables",
+        "{body}"
+    );
+    let (status, body) = rig
+        .send(
+            &rig.viewer,
+            "POST",
+            "/api/v1/runtimes/nobody/watch",
+            Some(json!({"variables": ["level"]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"], "no runtime 'nobody' is loaded on this node");
+    rig.speed_is("watched, the program still commands 300", 300)
+        .await;
+
     // An operator cannot write the output the program owns, and can change its setpoint.
     let (status, body) = rig
         .send(

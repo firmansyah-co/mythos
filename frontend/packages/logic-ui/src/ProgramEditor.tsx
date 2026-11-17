@@ -24,7 +24,15 @@ import {
   type BindingRow,
   type Kind,
 } from './bindings';
-import { mayEngineer, useController, useProject, useTelemetry, type ProgramEntry, type Variable } from './bridge';
+import {
+  mayEngineer,
+  useController,
+  useProject,
+  useTelemetry,
+  type ProgramEntry,
+  type Variable,
+  type WatchedValue,
+} from './bridge';
 import {
   checkIsCurrent,
   isDirty,
@@ -32,11 +40,15 @@ import {
   usePrograms,
   type ProgramDoc,
   type RunState,
+  type WatchView,
 } from './programs';
+import { formatVariable, hasOneValue } from './values';
 import { SourceEditor, type SourceEditorHandle } from './SourceEditor';
 
 /** How often the controller's runtimes are read while an editor is open. */
 export const RUNTIMES_POLL_MS = 1000;
+/** How often the running program's variables are read while its editor is open. */
+export const WATCH_POLL_MS = 500;
 
 const MODE_TONE: Record<string, string> = { run: 'good', stop: 'neutral', fault: 'bad', unreachable: 'bad' };
 
@@ -353,8 +365,55 @@ function BindingEditor({
 
 const KINDS: Kind[] = ['input', 'good', 'output', 'published'];
 
+/**
+ * A variable's value in the running program. Only a value read from a program in RUN is shown
+ * as a plain value; everything else says what it is instead.
+ */
+function VariableValue({
+  variable,
+  state,
+  watch,
+}: {
+  variable: Variable;
+  state: RunState;
+  watch: WatchView | undefined;
+}) {
+  const cell = (dataState: string, text: string, title?: string, flag?: string) => (
+    <span
+      className={`tagvalue mono tagvalue--${dataState === 'live' ? 'live' : dataState === 'stopped' ? 'stale' : 'none'}`}
+      data-testid="variable-value"
+      data-state={dataState}
+      title={title}
+    >
+      {text}
+      {flag && <span className="tagvalue__flag">{flag}</span>}
+    </span>
+  );
+  if (!hasOneValue(variable.type)) return cell('none', '—', 'It has no single value to show.');
+  if (state.kind !== 'loaded') return cell('none', '—', 'No runtime runs this program.');
+  // What the runtime last said is no longer known to be so: neither are its values.
+  if (state.stale) return cell('unknown', 'UNKNOWN', 'The runtimes can no longer be read.');
+  if (!watch) return cell('none', '—', 'Not read yet.');
+  if (watch.answer === null) return cell('unknown', 'UNKNOWN', watch.error ?? undefined);
+  const found: WatchedValue | undefined = watch.answer.values.find(
+    (value) => value.variable.toLowerCase() === variable.path.toLowerCase()
+  );
+  if (!found) return cell('none', '—', 'Not read yet.');
+  if (found.error !== null || found.type === null) {
+    return found.error?.startsWith('the program has no variable')
+      ? cell('absent', 'not in the running program', found.error)
+      : cell('none', '—', found.error ?? undefined);
+  }
+  const text = formatVariable(found.type, found.value);
+  if (text === null) return cell('none', '—', 'The runtime sent something that is not a value of its type.');
+  return watch.answer.state.mode === 'run'
+    ? cell('live', text)
+    : cell('stopped', text, 'The program is not running: this is the value it stopped with.', watch.answer.state.mode);
+}
+
 /** The program's variables, each with its bindings to tags. */
-function VariablesPanel({ doc, readOnly }: { doc: ProgramDoc; readOnly: boolean }) {
+function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: boolean; state: RunState }) {
+  const watch = usePrograms((s) => s.watches[doc.entry.name]);
   const setSettings = usePrograms((s) => s.setSettings);
   const configured = useController((s) => s.configuredTags);
   const io = useController((s) => s.io);
@@ -394,6 +453,7 @@ function VariablesPanel({ doc, readOnly }: { doc: ProgramDoc; readOnly: boolean 
                   <th>Variable</th>
                   <th>Type</th>
                   <th>Section</th>
+                  <th title="The variable's value in the running program, as its last scan left it">Value</th>
                   <th>Bindings</th>
                 </tr>
               </thead>
@@ -405,6 +465,9 @@ function VariablesPanel({ doc, readOnly }: { doc: ProgramDoc; readOnly: boolean 
                       <td className="mono">{variable.path}</td>
                       <td className="mono">{variable.type}</td>
                       <td>{variable.section}</td>
+                      <td>
+                        <VariableValue variable={variable} state={state} watch={watch} />
+                      </td>
                       <td className="grow">
                         {own.map((row) => (
                           <BindingEditor
@@ -598,6 +661,29 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
     return () => clearInterval(timer);
   }, [readRuntimes]);
 
+  // The running program's variables are read while its editor is shown and a runtime runs it.
+  // Asked by name: a variable the running version does not have says so.
+  const runtimeKnown = usePrograms((s) => {
+    const view = runState(name, s.runtimes);
+    return view.kind === 'loaded' && !view.stale;
+  });
+  const watched = (doc?.variables ?? [])
+    .filter((variable) => hasOneValue(variable.type))
+    .map((variable) => variable.path)
+    .join('\n');
+  const readWatch = usePrograms((s) => s.readWatch);
+  const dropWatch = usePrograms((s) => s.dropWatch);
+  useEffect(() => {
+    if (!runtimeKnown || watched === '') {
+      dropWatch(name);
+      return undefined;
+    }
+    const variables = watched.split('\n');
+    void readWatch(name, variables);
+    const timer = setInterval(() => void readWatch(name, variables), WATCH_POLL_MS);
+    return () => clearInterval(timer);
+  }, [runtimeKnown, watched, name, readWatch, dropWatch]);
+
   if (phase === 'reading' || phase === 'idle') {
     return <p className="editor__loading muted">Reading the project's programs…</p>;
   }
@@ -728,7 +814,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
           </div>
         </div>
         <div className="logic-editor__bottom">
-          <VariablesPanel doc={doc} readOnly={!may} />
+          <VariablesPanel doc={doc} readOnly={!may} state={state} />
         </div>
       </div>
     </div>

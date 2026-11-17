@@ -25,6 +25,7 @@ import {
   typeInto,
   typeSource,
   unmountAll,
+  watchOf,
   useController,
   useSession,
   useShell,
@@ -64,8 +65,9 @@ const doc = (name = 'Tank') => {
   if (!found) throw new Error(`no program ${name}`);
   return found;
 };
+/** What was asked to change something: a watch is a POST that only reads. */
 const writes = (calls: Array<{ method: string; path: string; body: unknown }>) =>
-  calls.filter((call) => call.method !== 'GET').map((call) => `${call.method} ${call.path.replace(/^.*\/api\/v1/, '')}`);
+  calls.filter((call) => call.method !== 'GET' && !call.path.endsWith('/watch')).map((call) => `${call.method} ${call.path.replace(/^.*\/api\/v1/, '')}`);
 
 /** The workbench has `plant` open, the controller runs it, and the logic UI has read it. */
 async function opened(backend: Backend) {
@@ -107,13 +109,15 @@ describe('reading the programs', () => {
     expect(isDirty(doc())).toBe(false);
     expect(byTestId(container, 'program-unsaved')).toBeNull();
     expect(byTestId(container, 'check-ok')?.textContent).toBe('COMPILES');
+    // No runtime runs it: no variable has a value, and none is asked for.
     expect(texts(container, 'variable-row').map((row) => row.split('Bind')[0])).toEqual([
-      'levelINTinput',
-      'okBOOLinput',
-      'speedINToutput',
-      'runBOOLoutput',
-      't.ETTIMElocal—',
+      'levelINTinput—',
+      'okBOOLinput—',
+      'speedINToutput—',
+      'runBOOLoutput—',
+      't.ETTIMElocal——',
     ]);
+    expect(calls.some((call) => call.path.endsWith('/watch'))).toBe(false);
     expect(writes(calls)).toEqual(['POST /projects/plant/logic/programs/Tank/check']);
   });
 
@@ -175,7 +179,7 @@ describe('editing, checking and saving', () => {
     await settle();
 
     // Only what was sent: the editor also reads the runtimes on a timer, which is not this.
-    expect(calls.filter((c) => c.method !== 'GET').map((c) => c.body)).toEqual([{ source: wrong }]);
+    expect(calls.filter((c) => c.path.endsWith('/check')).map((c) => c.body)).toEqual([{ source: wrong }]);
     expect(backend.programs[0]?.source).toBe(TANK);
     expect(texts(container, 'diagnostic')).toEqual(['3:8oops is not declared']);
     expect(byTestId(container, 'source-error-line')?.textContent).toBe('3');
@@ -532,6 +536,65 @@ describe('what the runtime is doing', () => {
     backend.runtimes = runtimesOf(runtimeOf('Tank', { version: 'build1' }));
     await doing(() => state().readRuntimes());
     expect(byTestId(container, 'program-version-differs')).toBeNull();
+  });
+});
+
+describe('the values of the running program', () => {
+  const values = (container: HTMLElement) =>
+    [...container.querySelectorAll('[data-testid="variable-value"]')].map(
+      (cell) => `${cell.getAttribute('data-state')}:${cell.textContent}`
+    );
+  const RUNNING = {
+    level: { type: 'INT', value: 20 },
+    ok: { type: 'BOOL', value: true },
+    // A BOOL that is not one: the runtime sent something else.
+    run: { type: 'BOOL', value: 5 },
+    't.ET': { type: 'TIME', value: 1_500_000_000 },
+  };
+
+  it('shows each variable as the running program has it, and says what is not a value', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')), watch: watchOf(RUNNING) });
+    const { calls, container } = await opened(backend);
+
+    // Every variable with one value is asked for by name, bound to a tag or not.
+    const asked = calls.filter((call) => call.path.endsWith('/runtimes/Tank/watch'));
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked[0]?.body).toEqual({ variables: ['level', 'ok', 'speed', 'run', 't.ET'] });
+    expect(values(container)).toEqual([
+      'live:20',
+      'live:TRUE',
+      // The running version has no such variable: said, and not shown as a value or as zero.
+      'absent:not in the running program',
+      'none:—',
+      'live:1500 ms',
+    ]);
+  });
+
+  it('marks the values of a program that is not running as what it stopped with', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank', { mode: 'stop' })), watch: watchOf(RUNNING, 'stop') });
+    const { container } = await opened(backend);
+    expect(values(container).slice(0, 2)).toEqual(['stopped:20stop', 'stopped:TRUEstop']);
+  });
+
+  it('says UNKNOWN when the values cannot be read, and shows none that was read before', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')), watch: watchOf(RUNNING) });
+    const { container } = await opened(backend);
+    expect(values(container)[0]).toBe('live:20');
+
+    backend.watch = 'fails';
+    await doing(() => state().readWatch('Tank', ['level', 'ok', 'speed', 'run', 't.ET']));
+    expect(values(container)).toEqual(['unknown:UNKNOWN', 'unknown:UNKNOWN', 'unknown:UNKNOWN', 'unknown:UNKNOWN', 'unknown:UNKNOWN']);
+    expect(container.querySelector('[data-testid="variable-value"]')?.getAttribute('title')).toContain('does not answer');
+  });
+
+  it('shows no value once the runtimes can no longer be read', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')), watch: watchOf(RUNNING) });
+    const { container } = await opened(backend);
+    expect(values(container)[0]).toBe('live:20');
+
+    backend.runtimes = 'fails';
+    await doing(() => state().readRuntimes());
+    expect(values(container)[0]).toBe('unknown:UNKNOWN');
   });
 });
 

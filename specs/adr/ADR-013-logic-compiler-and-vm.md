@@ -199,6 +199,16 @@ runtime whatever it executes:
   (one per device of a plant simulated on this PC), with its state, scan time and program
   version; start, stop, restart. Fleet (ADR-012 §2.6) shows the same for paired nodes.
 - The write path to field devices, the safe values and the write authority of §2.4.
+- **Watching.** `POST /api/v1/runtimes/<id>/watch` (any signed-in role; MCP `watch_runtime`)
+  gives the values of a program's variables as its last scan left them: any variable with one
+  value (BOOL, the integers, REAL, LREAL, TIME), bound to a tag or not, and one element of an
+  array of those. The protocol call is `Call::Watch`; the VM module reads them under the lock
+  its scan thread holds for a whole scan, so every value of an answer is of one scan. The core
+  asks at the runtime's exchange while somebody watches (a watch nobody renews for five
+  seconds stops), and an answer carries the program's state and its age. Reading changes
+  nothing in the program. A variable the program does not have, a whole array, a structure or
+  an instance has an error in place of a value; a REAL that is not a finite number is said,
+  not sent as null. A runtime module without `watch` answers that it gives no values.
 - Data types shared by more than one module (logic and the HMI both have them today, apart) live
   in the core, since a module may not depend on another (ADR-011 §2.6).
 
@@ -243,7 +253,11 @@ Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (A
   and Run is disabled. Stop is never taken away, by a stale state or by a request still
   unanswered: it is the safe direction. Run asks first, as on Settings → Runtimes. Scan times are NOT MEASURED until a scan has run. A new output
   binding has no safe value, and none is written for it, until one is given.
-- Not built: watching or forcing a variable that is not bound to a tag (C5); underlining a
+- While a runtime runs the program, the variables table shows each variable's value in it,
+  read twice a second by name with `watch` (§2.5). A variable the running version does not
+  have says so; a value read from a program that is not in RUN is marked as what it stopped
+  with; when the values cannot be read the cell says UNKNOWN and shows none read before.
+- Not built: forcing a variable (C5); watching an element of an array from the table; underlining a
   diagnostic's whole range (the compiler gives a point until L2); an editor for LD, FBD, SFC.
 
 ### 2.7 The HMI is not a runtime
@@ -377,7 +391,7 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
 - C4. **The ST editor** (done, §2.6) in the workbench.
   - C4a. **The Runtimes page** (done): Settings → Runtimes shows every runtime of this node as
     `GET /api/v1/runtimes` reports it, with run and stop for an engineer (§2.5, §5).
-- C5. **Online**: monitor, force, runtime tags in the HMI.
+- C5. **Online**: monitor (done: `watch`, §2.5), force, runtime tags in the HMI.
 - C6. **Swap and online change; programs in a device's slice.**
 - C7. **Hardening**: watchdog, RETAIN variables across restarts.
 
@@ -418,8 +432,8 @@ Each step leaves `dev` working.
 | 2.2 Profiles | `serde` data with a format version; `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format) proven with profiles read from JSON |
 | 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 1: bodies, call frames, instance-relative and region-confined addressing; loader checks, run-time checks, budget; faults, with `IndexOutOfRange` and `CallDepthExceeded` |
 | 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
-| 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Not built: reading or forcing variables, state carried across a replacement, a watchdog on the scan thread, RETAIN |
-| 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:id/run` and `/stop`, `GET`/`PUT /api/v1/projects/:id/runtimes`, each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
+| 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Not built: forcing variables, state carried across a replacement, a watchdog on the scan thread, RETAIN |
+| 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run`, `/stop` and `/watch`, `GET`/`PUT /api/v1/projects/:id/runtimes`, each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
 | 2.6 The logic module | Built: `plugins/logic` (programs, bindings, check, build; eight MCP tools), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes; its workbench UI `frontend/packages/logic-ui` (tree section, program editor, load, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus. Not built: unit tests in ST, programs in a device's slice |
 | 2.8, 2.10 | Not built |
 | 2.9 Emulators | Built: six programs, 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else |

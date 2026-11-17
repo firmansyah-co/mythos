@@ -244,8 +244,12 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
         )
         // Runtimes (ADR-013): what this node executes, and a project's programs for it
         .route("/api/v1/runtimes", get(runtimes::list::<S>))
-        .route("/api/v1/runtimes/:id/run", post(runtimes::run::<S>))
-        .route("/api/v1/runtimes/:id/stop", post(runtimes::stop::<S>))
+        .route("/api/v1/runtimes/:runtime/run", post(runtimes::run::<S>))
+        .route("/api/v1/runtimes/:runtime/stop", post(runtimes::stop::<S>))
+        .route(
+            "/api/v1/runtimes/:runtime/watch",
+            post(runtimes::watch::<S>),
+        )
         .route(
             "/api/v1/projects/:id/runtimes",
             get(runtimes::get_config::<S>).put(runtimes::put_config::<S>),
