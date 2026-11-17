@@ -21,7 +21,9 @@
 //!   the reason and no output is reported; the server then writes the outputs' safe values.
 
 use async_trait::async_trait;
-use mythos_logic_vm::{cold_start, read, scan, write, ElemType, Fault, Program, Value as VmValue};
+use mythos_logic_vm::{
+    cold_start, read, scan, write, ElemType, Fault, Frame, Program, Value as VmValue,
+};
 use mythos_module::protocol::{
     ExchangeReply, InputOf, ModuleKind, ModuleManifest, RuntimeMode, RuntimeProgram, RuntimeState,
     WireInput, WireOutput, WireSample, PROTOCOL_VERSION,
@@ -307,6 +309,12 @@ fn describe(fault: Fault) -> String {
         Fault::StackOverflow(at) => format!("stack overflow (code offset {at})"),
         Fault::StackUnderflow(at) => format!("stack underflow (code offset {at})"),
         Fault::BadCode(at) => format!("not an instruction (code offset {at})"),
+        Fault::IndexOutOfRange(at) => {
+            format!("an array subscript outside its bounds (code offset {at})")
+        }
+        Fault::CallDepthExceeded(at) => {
+            format!("calls nested deeper than the program declares (code offset {at})")
+        }
     }
 }
 
@@ -397,6 +405,7 @@ fn scan_loop(plan: Arc<Plan>, live: Arc<Mutex<Live>>, quit: Arc<AtomicBool>) {
         return;
     };
     let mut stack = vec![0u64; program.stack_depth().max(1)];
+    let mut calls = vec![Frame::default(); program.call_depth()];
     let interval = Duration::from_millis(plan.program.interval_ms);
     let mut next = Instant::now();
     while !quit.load(Ordering::SeqCst) {
@@ -440,7 +449,14 @@ fn scan_loop(plan: Arc<Plan>, live: Arc<Mutex<Live>>, quit: Arc<AtomicBool>) {
         }
         let started = Instant::now();
         let now_ns = l.since.elapsed().as_nanos().min(i64::MAX as u128) as i64;
-        match scan(&program, &mut l.memory, &mut stack, now_ns, BUDGET) {
+        match scan(
+            &program,
+            &mut l.memory,
+            &mut stack,
+            &mut calls,
+            now_ns,
+            BUDGET,
+        ) {
             Ok(_) => {
                 let us = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
                 l.scans += 1;

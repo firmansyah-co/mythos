@@ -429,14 +429,23 @@ fn from_outside_an_instance_only_its_inputs_are_written_and_only_its_holder_call
     let main = |body: &str| {
         format!("{blocks} PROGRAM Main VAR x : Outer; v : INT; END_VAR {body} END_PROGRAM")
     };
-    // What is allowed: set an input, read an input and an output, look into an inner instance.
-    let mut r = Run::new(&main("x.i := 4; x(); v := x.o + x.i + x.inner.o;"));
+    // What is allowed: set an input, read an output, look into an inner instance's output.
+    let mut r = Run::new(&main("x.i := 4; x(); v := x.o + x.inner.o;"));
     r.scan().unwrap();
-    assert_eq!(r.int("v"), 12);
+    assert_eq!(r.int("v"), 8);
 
     for (body, said) in [
         // Figure 13 rule 4: an output is assigned inside the block only.
         ("x.o := 1;", "x.o is an output of the block; it cannot be written"),
+        // Figure 13 rule 1b: an input is set from outside, and not read there.
+        (
+            "v := x.i;",
+            "x.i is an input of the block; it is set from outside, not read there",
+        ),
+        (
+            "v := x.inner.i;",
+            "x.inner.i is an input of the block; it is set from outside, not read there",
+        ),
         // §6.6.3.2 rule 11: a VAR of a function block is private.
         (
             "v := x.m;",
@@ -482,6 +491,12 @@ fn from_outside_an_instance_only_its_inputs_are_written_and_only_its_holder_call
     );
     assert!(
         d.contains("i is an input of B; it cannot be written inside it"),
+        "{d}"
+    );
+    // A PROGRAM's inputs are the same: they are what the runtime binds to tags.
+    let d = refusal("PROGRAM Main VAR_INPUT level : INT; END_VAR level := 1; END_PROGRAM");
+    assert!(
+        d.contains("level is an input of Main; it cannot be written inside it"),
         "{d}"
     );
 }

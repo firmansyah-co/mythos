@@ -90,6 +90,8 @@ struct Target {
     ty: Ty,
     /// Why it may not be written, when it may not.
     readonly: Option<String>,
+    /// Why it may not be read, when it may not.
+    unreadable: Option<String>,
     /// It lies inside a function block instance: named through the instance, from outside.
     inside_instance: bool,
 }
@@ -686,9 +688,11 @@ impl Checker {
         let pou = &self.unit.pous[self.cur];
         let mut ty = pou.vars[var].ty;
         let mut readonly = None;
+        let mut unreadable = None;
         // IEC 61131-3 ed. 3 Figure 7: VAR_INPUT is "not modifiable within the entity"
-        // (Figure 13 rule 2a says the same of a function block's inputs).
-        if pou.vars[var].section == Section::Input && pou.kind != PouKind::Program {
+        // (Figure 13 rule 2a says the same of a function block's inputs). A PROGRAM's too: its
+        // inputs are what the runtime binds to tags.
+        if pou.vars[var].section == Section::Input {
             readonly = Some(format!(
                 "{} is an input of {}; it cannot be written inside it",
                 p.name, pou.name
@@ -726,6 +730,10 @@ impl Checker {
                             // Figure 13 rule 2b: an input may be set from outside, separately
                             // from the call. Only the POU that holds the instance does so.
                             Role::Input => {
+                                // Figure 13 rule 1b: an input is not read from outside.
+                                unreadable.get_or_insert(format!(
+                                    "{text}.{m} is an input of the block; it is set from outside, not read there"
+                                ));
                                 if inside_instance {
                                     readonly.get_or_insert(format!(
                                         "{text} is inside another function block instance; only that block's body sets {m}"
@@ -821,6 +829,7 @@ impl Checker {
             place: Place { var, path },
             ty,
             readonly,
+            unreadable,
             inside_instance,
         })
     }
@@ -1263,6 +1272,10 @@ impl Checker {
             }),
             A::Var(p) => {
                 let t = self.place(p)?;
+                if let Some(why) = t.unreadable {
+                    self.err(span, why);
+                    return None;
+                }
                 let text = p.text();
                 match t.ty {
                     Ty::Fb(_) => {

@@ -321,8 +321,9 @@ pub fn scan(
         // Loads and stores were checked against the memory size when the program was loaded,
         // but `get` keeps that a fact of this function too.
         let mem = |addr: u32, n: usize| -> Result<&[u8], Fault> {
-            let a = addr as usize;
-            memory.get(a..a + n).ok_or(Fault::BadCode(at))
+            range(addr, n, memory.len())
+                .and_then(|r| memory.get(r))
+                .ok_or(Fault::BadCode(at))
         };
         match opcode {
             op::END => {
@@ -435,8 +436,8 @@ pub fn scan(
                     op::ST_32 => 4,
                     _ => 8,
                 };
-                let a = operand() as usize;
-                let dst = memory.get_mut(a..a + n).ok_or(Fault::BadCode(at))?;
+                let r = range(operand(), n, memory.len()).ok_or(Fault::BadCode(at))?;
+                let dst = memory.get_mut(r).ok_or(Fault::BadCode(at))?;
                 let v = if opcode == op::ST_BOOL {
                     (v != 0) as u64
                 } else {
