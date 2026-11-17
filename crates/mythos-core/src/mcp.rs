@@ -1133,7 +1133,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "list_runtimes",
         title: "List the runtimes of this node",
-        description: "Every program this node executes: its mode (run, stop, fault, or unreachable when its module does not answer) and why, scan count and times, and each output with what the device last confirmed and whether it is at its safe value. Also the runtime modules found, each with the target profile a program is compiled for.",
+        description: "Every program this node executes: its mode (run, stop, fault, or unreachable when its module does not answer) and why, scan count and times (null when nothing is known: the module does not answer, or no scan has run; never 0 in their place), and each output with what the device last confirmed and whether it is at its safe value. Also the runtime modules found, each with the target profile a program is compiled for.",
         method: "GET",
         path: "/api/v1/runtimes",
         query: &[],
