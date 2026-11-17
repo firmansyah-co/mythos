@@ -354,12 +354,8 @@ fn what_is_not_supported_yet_is_refused_by_name_never_compiled_as_something_else
             "RETAIN is not supported yet",
         ),
         (
-            "PROGRAM P VAR a : REAL; END_VAR a := 2.0 ** 2.0; END_PROGRAM",
-            "** (power) is not supported yet",
-        ),
-        (
-            "PROGRAM P VAR a : INT; END_VAR a := ABS(a); END_PROGRAM",
-            "ABS is not a function this compiler knows yet",
+            "PROGRAM P VAR a : INT; END_VAR a := SHL(a, 1); END_PROGRAM",
+            "SHL is not a function this compiler knows yet",
         ),
         (
             "PROGRAM P VAR a : WORD; END_VAR END_PROGRAM",
@@ -382,7 +378,7 @@ fn profile(json: &str) -> TargetProfile {
 #[test]
 fn a_target_that_cannot_run_a_type_refuses_the_program_at_compile_time() {
     let no_lreal = profile(
-        r#"{"name":"no-lreal","format_version":2,"max_memory":65536,"max_code":65536,"refuses":["Lreal"]}"#,
+        r#"{"name":"no-lreal","format_version":3,"max_memory":65536,"max_code":65536,"refuses":["Lreal"]}"#,
     );
     let err = compile("PROGRAM P VAR x : LREAL; END_VAR END_PROGRAM", &no_lreal)
         .err()
@@ -398,7 +394,7 @@ fn a_target_that_cannot_run_a_type_refuses_the_program_at_compile_time() {
 
     // A target that refuses STRING refuses every length of it.
     let no_text = profile(
-        r#"{"name":"no-text","format_version":2,"max_memory":65536,"max_code":65536,"refuses":[{"String":254}]}"#,
+        r#"{"name":"no-text","format_version":3,"max_memory":65536,"max_code":65536,"refuses":[{"String":254}]}"#,
     );
     let err = compile(
         "PROGRAM P VAR x : STRING[10]; END_VAR END_PROGRAM",
@@ -411,7 +407,7 @@ fn a_target_that_cannot_run_a_type_refuses_the_program_at_compile_time() {
         "STRING is not supported on the target no-text"
     );
 
-    let tiny = profile(r#"{"name":"tiny","format_version":2,"max_memory":8,"max_code":65536}"#);
+    let tiny = profile(r#"{"name":"tiny","format_version":3,"max_memory":8,"max_code":65536}"#);
     let err = compile("PROGRAM P VAR t : TON; END_VAR END_PROGRAM", &tiny)
         .err()
         .unwrap();
@@ -431,7 +427,7 @@ fn a_target_whose_vm_reads_another_bytecode_format_is_refused_at_compile_time() 
         .unwrap();
     assert_eq!(
         err[0].message,
-        "the target board-x runs bytecode format 7; this compiler makes format 2"
+        "the target board-x runs bytecode format 7; this compiler makes format 3"
     );
 }
 

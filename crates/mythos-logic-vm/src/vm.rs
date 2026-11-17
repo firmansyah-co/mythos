@@ -1,10 +1,12 @@
 //! Running a scan.
 
 use crate::fb::{self, FbKind};
+use crate::format::rfn;
 use crate::format::{
     access, op, place_at, string_operand_at, string_shape, string_size, u32_at, Cell, ElemType,
     Place, Program, Reach, PLACE_INDEXED, PLACE_LEN, PLACE_RELATIVE, SOP_LEN,
 };
+use crate::math;
 use crate::strings::{self, Str};
 
 /// Why a scan stopped before its end. The host then treats the program as stopped: its outputs
@@ -42,6 +44,9 @@ pub enum Fault {
     /// A string converted to an integer does not write one in the form of an integer literal,
     /// or writes one beyond 64 bits, at this code offset.
     BadNumber(u32),
+    /// MUX was given a K outside the inputs it has, at this code offset (IEC 61131-3 ed. 3
+    /// Table 32 footnote e: an error).
+    SelectorOutOfRange(u32),
 }
 
 /// One call in progress: where to go back to, and the base to give back. The host supplies
@@ -670,6 +675,72 @@ pub fn scan(
                 let r = range(start, n, memory.len()).ok_or(Fault::BadCode(at))?;
                 let x = memory.get_mut(r).ok_or(Fault::BadCode(at))?;
                 fb::run(kind, x, now);
+            }
+            op::RFN | op::RFN32 => {
+                let v = s.pop()?;
+                let x = if opcode == op::RFN {
+                    f64::from_bits(v)
+                } else {
+                    f32_of(v) as f64
+                };
+                let r = match code[pc + 1] {
+                    rfn::SQRT => math::sqrt(x),
+                    rfn::LN => math::ln(x),
+                    rfn::LOG => math::log10(x),
+                    rfn::EXP => math::exp(x),
+                    rfn::SIN => math::sin(x),
+                    rfn::COS => math::cos(x),
+                    rfn::TAN => math::tan(x),
+                    rfn::ASIN => math::asin(x),
+                    rfn::ACOS => math::acos(x),
+                    rfn::ATAN => math::atan(x),
+                    rfn::TRUNC => math::trunc(x),
+                    _ => return Err(Fault::BadCode(at)),
+                };
+                s.push(if opcode == op::RFN {
+                    r.to_bits()
+                } else {
+                    of_f32(r as f32)
+                })?;
+            }
+            op::ATAN2_F64..=op::EXPTI_F32 => {
+                let (a, b) = s.pop2()?;
+                let wide = matches!(opcode, op::ATAN2_F64 | op::EXPT_F64 | op::EXPTI_F64);
+                let real = |v: u64| {
+                    if wide {
+                        f64::from_bits(v)
+                    } else {
+                        f32_of(v) as f64
+                    }
+                };
+                let r = match opcode {
+                    op::ATAN2_F64 | op::ATAN2_F32 => math::atan2(real(a), real(b)),
+                    op::EXPT_F64 | op::EXPT_F32 => math::pow(real(a), real(b)),
+                    _ => math::pow(real(a), b as i64 as f64),
+                };
+                s.push(if wide { r.to_bits() } else { of_f32(r as f32) })?;
+            }
+            op::ABS_I32 => {
+                let a = i32_of(s.pop()?);
+                s.push(of_i32(a.wrapping_abs()))?;
+            }
+            op::ABS_I64 => {
+                let a = s.pop()? as i64;
+                s.push(a.wrapping_abs() as u64)?;
+            }
+            op::ABS_F32 => {
+                let a = s.pop()?;
+                s.push(a & 0x7FFF_FFFF)?;
+            }
+            op::ABS_F64 => {
+                let a = s.pop()?;
+                s.push(a & !(1 << 63))?;
+            }
+            op::CHKSEL => {
+                let k = s.pop()? as i64;
+                if k < 0 || k >= operand() as i64 {
+                    return Err(Fault::SelectorOutOfRange(at));
+                }
             }
             x if string_shape(x).is_some() => {
                 let (operands, ints) = string_shape(x).unwrap_or((0, 0));

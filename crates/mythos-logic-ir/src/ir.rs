@@ -276,10 +276,42 @@ pub enum StdFn {
     Replace,
     /// `FIND(IN1, IN2)`: an INT.
     Find,
+    // Table 28: of one number, the result of its type. ABS of any number; the others of a
+    // REAL or an LREAL.
+    Abs,
+    Sqrt,
+    Ln,
+    Log,
+    Exp,
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    /// `ATAN2(Y, X)`, of one real type.
+    Atan2,
+    /// `EXPT(IN1, IN2)` (Table 29): IN1 a real, the result of its type; IN2 a real of that
+    /// type, or a LINT.
+    Expt,
+    /// `TRUNC_<int>(IN)` (Table 22 feature 2c): a real toward zero, as the expression's
+    /// integer type.
+    Trunc,
+    // Table 32: of one elementary type, the result of it.
+    /// `SEL(G, IN0, IN1)`: G a BOOL.
+    Sel,
+    /// `MAX(IN1, IN2, …)`: two or more.
+    Max,
+    /// `MIN(IN1, IN2, …)`: two or more.
+    Min,
+    /// `LIMIT(MN, IN, MX)`: `MIN(MAX(IN, MN), MX)`.
+    Limit,
+    /// `MUX(K, IN0, IN1, …)`: K a LINT; two or more inputs.
+    Mux,
 }
 
 impl StdFn {
-    pub const ALL: [StdFn; 9] = [
+    pub const ALL: [StdFn; 28] = [
         StdFn::Len,
         StdFn::Left,
         StdFn::Right,
@@ -289,6 +321,25 @@ impl StdFn {
         StdFn::Delete,
         StdFn::Replace,
         StdFn::Find,
+        StdFn::Abs,
+        StdFn::Sqrt,
+        StdFn::Ln,
+        StdFn::Log,
+        StdFn::Exp,
+        StdFn::Sin,
+        StdFn::Cos,
+        StdFn::Tan,
+        StdFn::Asin,
+        StdFn::Acos,
+        StdFn::Atan,
+        StdFn::Atan2,
+        StdFn::Expt,
+        StdFn::Trunc,
+        StdFn::Sel,
+        StdFn::Max,
+        StdFn::Min,
+        StdFn::Limit,
+        StdFn::Mux,
     ];
 
     pub fn name(self) -> &'static str {
@@ -302,7 +353,47 @@ impl StdFn {
             StdFn::Delete => "DELETE",
             StdFn::Replace => "REPLACE",
             StdFn::Find => "FIND",
+            StdFn::Abs => "ABS",
+            StdFn::Sqrt => "SQRT",
+            StdFn::Ln => "LN",
+            StdFn::Log => "LOG",
+            StdFn::Exp => "EXP",
+            StdFn::Sin => "SIN",
+            StdFn::Cos => "COS",
+            StdFn::Tan => "TAN",
+            StdFn::Asin => "ASIN",
+            StdFn::Acos => "ACOS",
+            StdFn::Atan => "ATAN",
+            StdFn::Atan2 => "ATAN2",
+            StdFn::Expt => "EXPT",
+            StdFn::Trunc => "TRUNC",
+            StdFn::Sel => "SEL",
+            StdFn::Max => "MAX",
+            StdFn::Min => "MIN",
+            StdFn::Limit => "LIMIT",
+            StdFn::Mux => "MUX",
         }
+    }
+
+    /// One of Table 34, on strings.
+    pub fn is_string_function(self) -> bool {
+        matches!(
+            self,
+            StdFn::Len
+                | StdFn::Left
+                | StdFn::Right
+                | StdFn::Mid
+                | StdFn::Concat
+                | StdFn::Insert
+                | StdFn::Delete
+                | StdFn::Replace
+                | StdFn::Find
+        )
+    }
+
+    /// Takes as many inputs as it is given, two or more (CONCAT, MAX, MIN; MUX's after K).
+    pub fn is_extensible(self) -> bool {
+        matches!(self, StdFn::Concat | StdFn::Max | StdFn::Min | StdFn::Mux)
     }
 
     /// The names of its inputs, in order (Table 34). CONCAT's are IN1, IN2, … however many.
@@ -315,11 +406,31 @@ impl StdFn {
             StdFn::Insert => &["IN1", "IN2", "P"],
             StdFn::Replace => &["IN1", "IN2", "L", "P"],
             StdFn::Find => &["IN1", "IN2"],
+            StdFn::Abs
+            | StdFn::Sqrt
+            | StdFn::Ln
+            | StdFn::Log
+            | StdFn::Exp
+            | StdFn::Sin
+            | StdFn::Cos
+            | StdFn::Tan
+            | StdFn::Asin
+            | StdFn::Acos
+            | StdFn::Atan
+            | StdFn::Trunc => &["IN"],
+            StdFn::Atan2 => &["Y", "X"],
+            StdFn::Expt | StdFn::Max | StdFn::Min => &["IN1", "IN2"],
+            StdFn::Sel => &["G", "IN0", "IN1"],
+            StdFn::Limit => &["MN", "IN", "MX"],
+            StdFn::Mux => &["K", "IN0", "IN1"],
         }
     }
 
+    /// By its name; TRUNC is named only with its result type (`TRUNC_INT`), not alone.
     pub fn by_name(upper: &str) -> Option<StdFn> {
-        StdFn::ALL.into_iter().find(|f| f.name() == upper)
+        StdFn::ALL
+            .into_iter()
+            .find(|f| f.name() == upper && *f != StdFn::Trunc)
     }
 }
 

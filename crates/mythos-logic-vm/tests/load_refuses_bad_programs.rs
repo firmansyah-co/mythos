@@ -168,7 +168,7 @@ fn a_format_newer_than_this_vm_is_refused_not_guessed_at() {
 fn every_format_this_vm_extends_is_read_and_runs_alike() {
     // The literal pins what this VM reads: a change of either constant is a decision, not a
     // side effect (ADR-013, "Format versions").
-    assert_eq!((OLDEST_FORMAT_VERSION, FORMAT_VERSION), (1, 2));
+    assert_eq!((OLDEST_FORMAT_VERSION, FORMAT_VERSION), (1, 3));
     // mem[0] := mem[4] + 1, in instructions every format has.
     let mut code = with_addr(op::LD_I32, 4);
     code.extend(with_addr(op::PUSH32, 1));
@@ -189,11 +189,14 @@ fn every_format_this_vm_extends_is_read_and_runs_alike() {
 
 #[test]
 fn the_format_each_instruction_came_in_is_pinned() {
-    // Format 2 added the instructions on strings and nothing else; every other opcode this
-    // VM knows is format 1's. A literal, so that moving an opcode between formats is seen.
+    // Format 2 added the instructions on strings, format 3 the numeric functions, and
+    // nothing else; every other opcode this VM knows is format 1's. A literal, so that moving
+    // an opcode between formats is seen.
     for opcode in 0..=u8::MAX {
         let expected = if (op::SMOVE..=op::STOI).contains(&opcode) {
             Some(2)
+        } else if (op::RFN..=op::CHKSEL).contains(&opcode) {
+            Some(3)
         } else if instruction_len(opcode).is_some() {
             Some(1)
         } else {
@@ -202,42 +205,55 @@ fn the_format_each_instruction_came_in_is_pinned() {
         assert_eq!(introduced_in(opcode), expected, "opcode {opcode:#04x}");
     }
     assert_eq!((op::SMOVE, op::STOI), (0xD0, 0xDC));
+    assert_eq!((op::RFN, op::CHKSEL), (0xE0, 0xEC));
 }
 
 #[test]
 fn an_instruction_newer_than_the_programs_format_is_refused_at_load() {
-    // mem[0] := 1 (10 bytes, format 1), then one instruction on strings, then END. Each of
-    // its string operands names the STRING[4] at 2 (6 bytes).
+    // mem[0] := 1 (10 bytes, format 1), then one instruction a later format brought in, then
+    // END. Each string operand names the STRING[4] at 2 (6 bytes); any other operand is
+    // zeros (RFN's SQRT, CHKSEL's count 0: the loader takes both).
     let memory = [0u8; 8];
     let s = text(4, &place(ABSOLUTE, 2, 6));
+    let mut seen = 0;
     for opcode in 0..=u8::MAX {
-        if introduced_in(opcode) != Some(2) {
+        let Some(since) = introduced_in(opcode).filter(|&v| v > 1) else {
             continue;
-        }
+        };
+        seen += 1;
         let len = instruction_len(opcode).unwrap();
         let mut code = with_addr(op::PUSH32, 1);
         code.extend(with_addr(op::ST_BOOL, 0));
         code.push(opcode);
-        if opcode == op::SCMP {
-            code.push(0);
-        }
-        while code.len() < 10 + len {
-            code.extend_from_slice(&s);
+        if since == 2 {
+            if opcode == op::SCMP {
+                code.push(0);
+            }
+            while code.len() < 10 + len {
+                code.extend_from_slice(&s);
+            }
+        } else {
+            code.resize(10 + len, 0);
         }
         assert_eq!(code.len(), 10 + len, "opcode {opcode:#04x}");
         code.push(op::END);
-        // In the format that has it, it loads; written as format 1, it is refused where it is.
-        assert_eq!(
-            refused(&build(2, 4, &memory, &code)),
-            None,
-            "opcode {opcode:#04x}"
-        );
-        assert_eq!(
-            refused(&build(1, 4, &memory, &code)),
-            Some(LoadError::NotInFormat(10)),
-            "opcode {opcode:#04x}"
-        );
+        // In the format that brought it and every later one, it loads; written as any
+        // earlier format, it is refused where it is.
+        for version in OLDEST_FORMAT_VERSION..=FORMAT_VERSION {
+            let expected = if version < since {
+                Some(LoadError::NotInFormat(10))
+            } else {
+                None
+            };
+            assert_eq!(
+                refused(&build(version, 4, &memory, &code)),
+                expected,
+                "opcode {opcode:#04x} in format {version}"
+            );
+        }
     }
+    // The thirteen on strings and the thirteen numeric ones.
+    assert_eq!(seen, 26);
 }
 
 #[test]
@@ -1229,5 +1245,39 @@ fn an_indexed_string_operand_pops_its_offset_and_stays_in_its_region() {
         if want.is_ok() {
             assert_eq!(&mem[8..12], &[2, 0, b'h', b'i']);
         }
+    }
+}
+
+#[test]
+fn a_function_of_one_real_names_one_the_vm_has() {
+    use mythos_logic_vm::format::rfn;
+    for which in 0..=rfn::LAST + 1 {
+        let mut code = ins(op::PUSH64, &[&2.0f64.to_bits().to_le_bytes()]);
+        code.extend(ins(op::RFN, &[&[which]]));
+        code.extend(with_addr(op::ST_64, 0));
+        code.push(op::END);
+        let loaded = refused(&build(FORMAT_VERSION, 1, &[0; 8], &code));
+        if which <= rfn::LAST {
+            assert_eq!(loaded, None, "{which}");
+        } else {
+            assert_eq!(loaded, Some(LoadError::BadOperand(9)));
+        }
+    }
+}
+
+#[test]
+fn a_selector_outside_its_inputs_stops_the_scan() {
+    // MUX's K (IEC 61131-3 ed. 3 Table 32 footnote e): 0 to count-1 passes, else a fault.
+    for (k, want) in [
+        (0i64, Ok(())),
+        (2, Ok(())),
+        (3, Err(Fault::SelectorOutOfRange(9))),
+        (-1, Err(Fault::SelectorOutOfRange(9))),
+    ] {
+        let mut code = ins(op::PUSH64, &[&k.to_le_bytes()]);
+        code.extend(with_addr(op::CHKSEL, 3));
+        code.push(op::END);
+        let (r, _) = run(&build(FORMAT_VERSION, 1, &[], &code));
+        assert_eq!(r, want, "K = {k}");
     }
 }

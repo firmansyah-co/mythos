@@ -494,6 +494,9 @@ fn describe(fault: Fault) -> String {
         Fault::BadNumber(at) => {
             format!("a string converted to an integer does not write one (code offset {at})")
         }
+        Fault::SelectorOutOfRange(at) => {
+            format!("MUX was given a K with no input to choose (code offset {at})")
+        }
     }
 }
 
@@ -1015,22 +1018,41 @@ mod tests {
 
     #[test]
     fn a_program_built_before_an_update_of_the_vm_is_still_taken() {
-        // Bytes the format-1 compiler made, as a project's runtimes.json holds them from
-        // before format 2: the module takes them as it took them then (ADR-013 §2.3,
-        // "Format versions"), rather than leave the program stopped until it is built again.
-        let bytes = include_bytes!(
-            "../../../crates/mythos-logic-compiler/tests/fixtures/format1/integers_and_control.mlbc"
-        );
-        assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 1);
-        let config = json!({ "program": {
-            "name": "integers_and_control",
-            "version": "format-1",
-            "interval_ms": 10,
-            "code": hex::encode(bytes),
-            "symbols": [],
-        }});
-        let taken = plan(&config);
-        assert!(taken.is_ok(), "{:?}", taken.err().map(|e| e.to_string()));
+        // Bytes the format-1 and the format-2 compiler made, as a project's runtimes.json
+        // holds them from before an update: the module takes them as it took them then
+        // (ADR-013 §2.3, "Format versions"), rather than leave the program stopped until it
+        // is built again.
+        let older: [(u16, &[u8]); 2] = [
+            (
+                1,
+                include_bytes!(
+                    "../../../crates/mythos-logic-compiler/tests/fixtures/format1/integers_and_control.mlbc"
+                ),
+            ),
+            (
+                2,
+                include_bytes!(
+                    "../../../crates/mythos-logic-compiler/tests/fixtures/format2/strings.mlbc"
+                ),
+            ),
+        ];
+        for (format, bytes) in older {
+            assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), format);
+            let config = json!({ "program": {
+                "name": "older",
+                "version": format!("format-{format}"),
+                "interval_ms": 10,
+                "code": hex::encode(bytes),
+                "symbols": [],
+            }});
+            let taken = plan(&config);
+            assert!(
+                taken.is_ok(),
+                "format {format}: {:?}",
+                taken.err().map(|e| e.to_string())
+            );
+        }
+        let bytes = older[0].1;
         // A version newer than this VM's is refused, and the reason says so.
         let mut newer = bytes.to_vec();
         newer[4..6].copy_from_slice(&(mythos_logic_vm::FORMAT_VERSION + 1).to_le_bytes());

@@ -206,6 +206,8 @@ pub enum BinOp {
     Mul,
     Div,
     Mod,
+    /// `**`: EXPT (IEC 61131-3 ed. 3 Table 71 footnote b).
+    Pow,
 }
 
 #[derive(Debug, Clone)]

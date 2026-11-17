@@ -13,7 +13,7 @@ fn profile(json: &str) -> TargetProfile {
 /// A profile as a runtime module would declare it, with these depths.
 fn with_depths(name: &str, stack: Option<u16>, calls: Option<u16>) -> TargetProfile {
     let mut json =
-        format!(r#"{{"name":"{name}","format_version":2,"max_memory":65536,"max_code":65536"#);
+        format!(r#"{{"name":"{name}","format_version":3,"max_memory":65536,"max_code":65536"#);
     if let Some(stack) = stack {
         json.push_str(&format!(r#","max_stack_depth":{stack}"#));
     }
@@ -97,7 +97,7 @@ fn a_program_whose_calls_nest_deeper_than_the_target_allows_is_refused_at_compil
 #[test]
 fn a_profile_without_the_depths_states_no_limit_and_zero_is_a_limit() {
     // A profile written before the depths existed: it still loads, and it limits neither.
-    let old = profile(r#"{"name":"old","format_version":2,"max_memory":65536,"max_code":65536}"#);
+    let old = profile(r#"{"name":"old","format_version":3,"max_memory":65536,"max_code":65536}"#);
     assert_eq!((old.max_stack_depth, old.max_call_depth), (None, None));
     assert!(compile(DEEP, &old).is_ok());
     assert!(compile(NESTED, &old).is_ok());

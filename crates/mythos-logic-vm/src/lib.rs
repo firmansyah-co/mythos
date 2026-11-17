@@ -19,6 +19,7 @@
 
 pub mod fb;
 pub mod format;
+pub mod math;
 mod strings;
 mod vm;
 
