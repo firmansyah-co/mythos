@@ -629,9 +629,10 @@ Evidence of the spike (2026-11-17):
   optimised. Windows and macOS: not measured.
 - **Microcontrollers** (`scripts/logic-vm-footprint.sh`, CI job `logic-vm-bare-metal`): the VM
   with its loader and scan loop, `opt-level=s`, LTO, linked with `core` alone: **RP2040**
-  (thumbv6m-none-eabi) 19,304 bytes of code (19,200 before L2b, 15,884 before format 1);
-  **ESP32-C3** (riscv32imc-unknown-none-elf) 22,812 bytes (22,908 before L2b, 19,146 before
-  format 1). The L2b figures and the ones before it were both measured with rustc 1.99.1; the
+  (thumbv6m-none-eabi) 23,216 bytes of code with strings (L2c-1; 19,304 before, 19,200 before
+  L2b, 15,884 before format 1);
+  **ESP32-C3** (riscv32imc-unknown-none-elf) 27,204 bytes (L2c-1; 22,812 before, 22,908 before
+  L2b, 19,146 before format 1). The L2b figures and the ones before it were both measured with rustc 1.99.1; the
   RISC-V build came out smaller with more in it, which is the compiler's doing and was not
   looked into. Run on a real board: not yet (none attached). The original ESP32 and the S3 are
   Xtensa, which needs Espressif's Rust toolchain: not built.
@@ -648,3 +649,18 @@ Evidence of the spike (2026-11-17):
   1,555,011 bytes in 42.5 ms (20.3 ms before). With three of the four proved targets kept (not
   the head of the loop before a nest), the first took 152 ms: the walks to the heads of nested
   loops started at the top of the body. Load time on a microcontroller: NOT MEASURED.
+- **L2c-1** (strings): 21 tests added to the five logic crates (179, from 158), among them
+  `strings_run_on_the_vm.rs` (14: every example of Table 34, the edges, every error of
+  §6.6.2.5.11 as its fault, strings through functions, blocks, arrays and structures, an element
+  read where it is with the stack it needs pinned) and four loader tests for string operands;
+  `runtime_vm.rs` watches a STRING and an element of an array of them through the real module
+  process; the editor's tests show one. `strings.st` joins the corpus: the oracle compares
+  1,380 more values (7,500 in all; the 120 that differ are INSERT's position and a based
+  literal, §2.13), the emulators run it on both instruction sets (all 14 runs equal), and the
+  fuzz damages it: 20,733 damaged sources, and of 4,000 damaged copies of its bytecode 1,557
+  pass the loader and are scanned (the test now requires one in twenty of each program's).
+  Mutation-checked with 21 mutations, each in a copy of the tree: every one turned named tests
+  red. One survived at first (copying an array element to scratch before a string instruction
+  reads it): the copy was redundant, as the VM pops an operand's offset itself, and was
+  removed; the two mutations of the stack accounting that replaced it then went red once the
+  test put a comparison of elements before its deepest statement.
