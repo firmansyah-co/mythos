@@ -82,6 +82,8 @@ pub enum TypeSpecKind {
     Named(String),
     /// `ARRAY [lo..hi, …] OF element`
     Array(Vec<(i128, i128)>, Box<TypeSpec>),
+    /// `STRING`, or `STRING[n]` with the length as written and where it is.
+    String(Option<(i128, Span)>),
 }
 
 /// What a declaration starts its variable with.
@@ -218,6 +220,8 @@ pub enum ExprKind {
     Real(f64),
     Bool(bool),
     Time(i64),
+    /// A character string: its characters, one byte each.
+    Str(Vec<u8>),
     Var(Place),
     Neg(Box<Expr>),
     Not(Box<Expr>),

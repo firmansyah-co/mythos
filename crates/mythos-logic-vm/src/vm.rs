@@ -2,9 +2,10 @@
 
 use crate::fb::{self, FbKind};
 use crate::format::{
-    access, op, place_at, u32_at, Cell, ElemType, Place, Program, Reach, PLACE_INDEXED, PLACE_LEN,
-    PLACE_RELATIVE,
+    access, op, place_at, string_operand_at, string_shape, string_size, u32_at, Cell, ElemType,
+    Place, Program, Reach, PLACE_INDEXED, PLACE_LEN, PLACE_RELATIVE, SOP_LEN,
 };
+use crate::strings::{self, Str};
 
 /// Why a scan stopped before its end. The host then treats the program as stopped: its outputs
 /// go to their safe values (ADR-013).
@@ -28,6 +29,19 @@ pub enum Fault {
     IndexOutOfRange(u32),
     /// Calls nested deeper than the program declares, at this code offset.
     CallDepthExceeded(u32),
+    /// A string function would give a string longer than the one it is written to holds, at
+    /// this code offset (IEC 61131-3 ed. 3 §6.6.2.5.11: producing a string longer than the
+    /// maximum is an error).
+    StringTooLong(u32),
+    /// A string function was given a length or position below zero, or a position its string
+    /// does not have, at this code offset (§6.6.2.5.11: both are errors).
+    StringArgument(u32),
+    /// A string whose stored length is greater than its declared length, at this code
+    /// offset: its bytes were not written by the program's own instructions.
+    BadString(u32),
+    /// A string converted to an integer does not write one in the form of an integer literal,
+    /// or writes one beyond 64 bits, at this code offset.
+    BadNumber(u32),
 }
 
 /// One call in progress: where to go back to, and the base to give back. The host supplies
@@ -98,6 +112,18 @@ pub fn read(memory: &[u8], addr: u32, ty: ElemType) -> Option<Value> {
         ElemType::Lreal => Value::Lreal(f64::from_le_bytes(x)),
         ElemType::Time => Value::Time(i64::from_le_bytes(x)),
     })
+}
+
+/// The characters of the `STRING[cap]` at `addr`; `None` when it lies outside `memory` or
+/// holds a length greater than `cap`, which the program's own instructions never write.
+pub fn read_string(memory: &[u8], addr: u32, cap: u16) -> Option<&[u8]> {
+    let a = addr as usize;
+    let head = memory.get(a..a.checked_add(2)?)?;
+    let n = u16::from_le_bytes([head[0], head[1]]);
+    if n > cap {
+        return None;
+    }
+    memory.get(a + 2..a + 2 + n as usize)
 }
 
 /// Write `value` at `addr`. Returns `false`, writing nothing, when it lies outside `memory`.
@@ -232,7 +258,7 @@ fn resolve(p: Place, len: usize, base: u32, s: &mut Stack) -> Result<u32, Fault>
 /// Copy the bytes at `src` to `dst`, two ranges of one length inside `memory`, which may
 /// overlap. `None`, copying nothing, when they are not. (`copy_within` would do it, at the
 /// price of `memmove` in a microcontroller's flash: 1.3 KB on a Cortex-M0.)
-fn copy(
+pub(crate) fn copy(
     memory: &mut [u8],
     src: core::ops::Range<usize>,
     dst: core::ops::Range<usize>,
@@ -644,6 +670,43 @@ pub fn scan(
                 let r = range(start, n, memory.len()).ok_or(Fault::BadCode(at))?;
                 let x = memory.get_mut(r).ok_or(Fault::BadCode(at))?;
                 fb::run(kind, x, now);
+            }
+            x if string_shape(x).is_some() => {
+                let (operands, ints) = string_shape(x).unwrap_or((0, 0));
+                // The integers are on top, the last pushed first popped.
+                let mut n = [0i64; 2];
+                for k in (0..ints).rev() {
+                    n[k] = s.pop()? as i64;
+                }
+                let first = pc + 1 + (x == op::SCMP) as usize;
+                let mut o = [Str { cap: 0, at: 0 }; 3];
+                for k in (0..operands).rev() {
+                    let (cap, p) = string_operand_at(code, first + k * SOP_LEN);
+                    let size = string_size(cap) as usize;
+                    let start = resolve(p, size, base, &mut s)?;
+                    range(start, size, memory.len()).ok_or(Fault::BadCode(at))?;
+                    o[k] = Str { cap, at: start };
+                }
+                match x {
+                    op::SMOVE => strings::assign(memory, o[0], o[1], at)?,
+                    op::SCMP => {
+                        let order = strings::compare(memory, o[0], o[1], at)?;
+                        s.push(cmp(code[pc + 1], order, 0))?;
+                    }
+                    op::SLEN => s.push(of_i32(strings::length(memory, o[0], at)?))?,
+                    op::SCAT => strings::concat(memory, o[0], o[1], o[2], at)?,
+                    op::SLEFT | op::SRIGHT => {
+                        strings::side(memory, o[0], o[1], n[0], x == op::SLEFT, at)?
+                    }
+                    op::SMID => strings::mid(memory, o[0], o[1], n[0], n[1], at)?,
+                    op::SDELETE => strings::delete(memory, o[0], o[1], n[0], n[1], at)?,
+                    op::SINSERT => strings::insert(memory, o[0], o[1], o[2], n[0], at)?,
+                    op::SREPLACE => strings::replace(memory, o[0], o[1], o[2], n[0], n[1], at)?,
+                    op::SFIND => s.push(of_i32(strings::find(memory, o[0], o[1], at)?))?,
+                    op::ITOS => strings::from_int(memory, o[0], n[0], at)?,
+                    op::STOI => s.push(strings::to_int(memory, o[0], at)? as u64)?,
+                    _ => return Err(Fault::BadCode(at)),
+                }
             }
             // Loads and stores relative to the base, or through a place.
             _ => {

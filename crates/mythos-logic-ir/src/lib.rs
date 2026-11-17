@@ -21,9 +21,22 @@ pub use keywords::{is_keyword, KEYWORDS, TYPE_KEYWORDS};
 
 /// The version of the IR's shape. A backend given another version refuses it.
 ///
+/// 2: STRING, string literals, and the functions of the standard library ([`StdFn`]).
 /// 1: a unit of several program organization units (functions, function block types, one
 /// program), structures and arrays; places with a path. 0 was one program of scalar variables.
-pub const IR_VERSION: u32 = 1;
+pub const IR_VERSION: u32 = 2;
+
+/// The length of a STRING declared without one. IEC 61131-3 ed. 3 gives no default:
+/// Table 10 footnote k and §6.4.2.2 leave the maximum length to the implementer, and the
+/// declaration may state one (`STRING[10]`). 254 is what STruC++ (the differential oracle,
+/// ADR-013 §2.12) and most implementations take, so a program moved between them keeps it.
+pub const DEFAULT_STRING_LENGTH: u16 = 254;
+
+/// The longest STRING there may be: what a declaration may state, and the longest value a
+/// string function may give (IEC 61131-3 ed. 3 §6.6.2.5.11: producing a longer one is an
+/// error). Implementer specific (Table 10 footnote k); chosen so that `LEN`, which gives an
+/// INT, can always say the length.
+pub const MAX_STRING_LENGTH: u16 = i16::MAX as u16;
 
 /// How deep a front-end lets constructs of a body nest within one another: statements within
 /// statements, and within one statement, operations, calls, subscripts and parentheses. An

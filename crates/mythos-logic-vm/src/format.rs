@@ -36,13 +36,34 @@
 //!   (the array's own bytes): the access must lie inside it, whatever the offset.
 //!
 //! An offset is made by `IDX`, which is what checks a subscript against its declared bounds.
+//!
+//! **Strings** (format 2). A `STRING[n]` is `2 + n` bytes: its length now (u16), then room
+//! for `n` characters of one byte each. It never moves to the stack: an instruction on strings
+//! names each string by a *string operand*, `cap:u16 place` (11 bytes), the place reaching
+//! the `2 + cap` bytes of a string of length `cap`. A stored length greater than `cap` is
+//! never followed: the scan stops with `Fault::BadString`. Integer arguments (a length, a
+//! position) are i64 on the stack, above the offsets of any operands that take one; an
+//! instruction pops its integers first, then the offsets from its last operand to its first.
 
 use crate::fb::FbKind;
 
 /// The first four bytes of every program.
 pub const MAGIC: [u8; 4] = *b"MLBC";
-/// The format this VM reads. A program of another version is refused, never guessed at.
-pub const FORMAT_VERSION: u16 = 1;
+/// The format this VM's compiler makes, and the newest this VM reads.
+///
+/// 2: strings (`STRING[n]` and the instructions on them). 1: functions, function blocks,
+/// arrays and structures.
+///
+/// A VM reads every format it extends (ADR-013, "Format versions"): each format from
+/// [`OLDEST_FORMAT_VERSION`] to this one only adds instructions to the one before, and
+/// changes no header field, no operand layout and no instruction's meaning, so a program
+/// of an older version is read exactly as it was written. A format that changed what an
+/// older program means would start a new line, and this VM would refuse what came before
+/// it. A version outside the range is refused, never guessed at.
+pub const FORMAT_VERSION: u16 = 2;
+/// The oldest format this VM reads. Format 0, the spike's, had a 16-byte header without a
+/// call depth or a table of bodies: this VM does not extend it.
+pub const OLDEST_FORMAT_VERSION: u16 = 1;
 const HEADER: usize = 20;
 /// Bytes of one entry of the table of bodies.
 const BODY: usize = 8;
@@ -208,6 +229,68 @@ pub mod op {
     pub const STP_16: u8 = 0xCA;
     pub const STP_32: u8 = 0xCB;
     pub const STP_64: u8 = 0xCC;
+
+    // Strings: each `s` below is a string operand, `cap:u16 place`. A string a function
+    // gives is written to its `dst`; one longer than `dst`'s length stops the scan with
+    // `StringTooLong`. IEC 61131-3 ed. 3 §6.6.2.5.11: an integer argument less than zero, or
+    // one naming a character position the string does not have, stops it with
+    // `StringArgument`.
+    /// `SMOVE dst:s src:s`: assignment, cut to `dst`'s length (§6.6.1.2.2 leaves a longer
+    /// source to the implementer).
+    pub const SMOVE: u8 = 0xD0;
+    /// `SCMP which:u8 a:s b:s`: push a BOOL, as `CMP_*` (0 EQ … 5 GE). The shorter string is
+    /// taken as extended with characters of code zero; characters compare by their codes.
+    pub const SCMP: u8 = 0xD1;
+    /// `SLEN a:s`: push the length (an i32).
+    pub const SLEN: u8 = 0xD2;
+    /// `SCAT dst:s a:s b:s`: `a` then `b`.
+    pub const SCAT: u8 = 0xD3;
+    /// `SLEFT dst:s a:s`, pops L: the first L characters.
+    pub const SLEFT: u8 = 0xD4;
+    /// `SRIGHT dst:s a:s`, pops L: the last L characters.
+    pub const SRIGHT: u8 = 0xD5;
+    /// `SMID dst:s a:s`, pops P then L: L characters from position P (the first is 1).
+    pub const SMID: u8 = 0xD6;
+    /// `SDELETE dst:s a:s`, pops P then L: `a` without L characters from position P.
+    pub const SDELETE: u8 = 0xD7;
+    /// `SINSERT dst:s a:s b:s`, pops P: `b` put in `a` after its P-th character (0: first).
+    pub const SINSERT: u8 = 0xD8;
+    /// `SREPLACE dst:s a:s b:s`, pops P then L: L characters of `a` from position P made `b`.
+    pub const SREPLACE: u8 = 0xD9;
+    /// `SFIND a:s b:s`: push (an i32) the position where `b` first occurs in `a`, 0 if it
+    /// does not.
+    pub const SFIND: u8 = 0xDA;
+    /// `ITOS dst:s`, pops an i64: its decimal text.
+    pub const ITOS: u8 = 0xDB;
+    /// `STOI a:s`: push (an i64) the integer `a` writes, in the form of an integer literal
+    /// (§6.3.2): a sign, decimal digits, or `2#`, `8#`, `16#` and digits of that base, with
+    /// single underscores between digits. Anything else, or a value beyond 64 bits, stops the
+    /// scan with `BadNumber`.
+    pub const STOI: u8 = 0xDC;
+}
+
+/// Bytes of a string operand: `cap:u16 place`.
+pub const SOP_LEN: usize = 2 + PLACE_LEN;
+/// The bytes a string of length `cap` takes: its length, then its characters.
+pub const fn string_size(cap: u16) -> u32 {
+    2 + cap as u32
+}
+
+/// An instruction on strings: how many string operands follow its opcode (after `SCMP`'s
+/// `which`), and how many integers it pops.
+pub(crate) fn string_shape(opcode: u8) -> Option<(usize, usize)> {
+    use op::*;
+    Some(match opcode {
+        SLEN | STOI => (1, 0),
+        ITOS => (1, 1),
+        SMOVE | SCMP | SFIND => (2, 0),
+        SLEFT | SRIGHT => (2, 1),
+        SMID | SDELETE => (2, 2),
+        SCAT => (3, 0),
+        SINSERT => (3, 1),
+        SREPLACE => (3, 2),
+        _ => return None,
+    })
 }
 
 /// Bytes of a place operand: `mode:u8 addr:u32 span:u32`.
@@ -223,6 +306,11 @@ pub(crate) struct Place {
     pub mode: u8,
     pub addr: u32,
     pub span: u32,
+}
+
+/// The string operand at `at`: the string's length and its place.
+pub(crate) fn string_operand_at(code: &[u8], at: usize) -> (u16, Place) {
+    (u16_at(code, at), place_at(code, at + 2))
 }
 
 /// The place operand at `at`. The caller has checked the instruction lies inside the code.
@@ -282,6 +370,13 @@ pub(crate) fn access(opcode: u8) -> Option<(bool, Cell, Reach)> {
     })
 }
 
+/// The format that brought `opcode` in, or `None` for an unknown opcode. A program of an
+/// older format that holds it is refused: whatever wrote it did not write that format.
+pub fn introduced_in(opcode: u8) -> Option<u16> {
+    instruction_len(opcode)?;
+    Some(if string_shape(opcode).is_some() { 2 } else { 1 })
+}
+
 /// Bytes an instruction takes, opcode included, or `None` for an unknown opcode.
 pub fn instruction_len(opcode: u8) -> Option<usize> {
     use op::*;
@@ -311,6 +406,10 @@ pub fn instruction_len(opcode: u8) -> Option<usize> {
         }
         I32_TO_I64..=I64_TO_BOOL => 1,
         FB => 6,
+        SCMP => 2 + 2 * SOP_LEN,
+        x if string_shape(x).is_some() => {
+            1 + string_shape(x).map_or(0, |(operands, _)| operands) * SOP_LEN
+        }
         _ => return None,
     })
 }
@@ -321,12 +420,16 @@ pub enum LoadError {
     /// Shorter than its header says it is, or longer.
     WrongLength,
     NotAProgram,
-    /// Written for another format version.
+    /// Written for a format version this VM does not read: one newer than
+    /// [`FORMAT_VERSION`], or one older than [`OLDEST_FORMAT_VERSION`].
     UnsupportedVersion(u16),
     /// The checksum does not match: the bytes were damaged.
     Corrupt,
     /// An opcode this VM does not know, at this code offset.
     UnknownInstruction(u32),
+    /// An instruction the format version the program declares does not have, at this code
+    /// offset: a later format brought it in ([`introduced_in`]).
+    NotInFormat(u32),
     /// An instruction whose operands run past the end of the code.
     Truncated(u32),
     /// A load, store, copy, function block instance or array region outside the program's
@@ -376,11 +479,12 @@ pub struct Program<'a> {
     pub(crate) code: &'a [u8],
     /// The table of bodies, 8 bytes each.
     bodies: &'a [u8],
+    version: u16,
     stack_depth: u16,
     call_depth: u16,
 }
 
-fn u16_at(b: &[u8], at: usize) -> u16 {
+pub(crate) fn u16_at(b: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([b[at], b[at + 1]])
 }
 pub(crate) fn u32_at(b: &[u8], at: usize) -> u32 {
@@ -401,9 +505,9 @@ impl<'a> Program<'a> {
             return Err(LoadError::WrongLength);
         }
         // The version comes before anything else is believed: another format may lay its
-        // header out differently.
+        // header out differently. Every version this VM reads lays it out as format 1 does.
         let version = u16_at(bytes, 4);
-        if version != FORMAT_VERSION {
+        if !(OLDEST_FORMAT_VERSION..=FORMAT_VERSION).contains(&version) {
             return Err(LoadError::UnsupportedVersion(version));
         }
         if bytes.len() < HEADER + 4 {
@@ -428,11 +532,12 @@ impl<'a> Program<'a> {
         let bodies = &bytes[HEADER..HEADER + table];
         let init = &bytes[HEADER + table..HEADER + table + memory];
         let code = &bytes[HEADER + table + memory..crc_at];
-        verify(code, bodies, memory as u32)?;
+        verify(code, bodies, memory as u32, version)?;
         Ok(Program {
             init,
             code,
             bodies,
+            version,
             stack_depth,
             call_depth,
         })
@@ -452,6 +557,11 @@ impl<'a> Program<'a> {
             return Err(LoadError::CallsTooDeep(program.call_depth));
         }
         Ok(program)
+    }
+
+    /// The format version it was written in.
+    pub fn format_version(&self) -> u16 {
+        self.version
     }
 
     /// Bytes of memory the host must give it.
@@ -495,12 +605,12 @@ fn inside(addr: u32, len: u32, limit: u32) -> bool {
     addr.checked_add(len).is_some_and(|end| end <= limit)
 }
 
-/// Walk the table of bodies and then every body: every opcode known, every operand inside the
-/// code, every address inside memory (or, relative to the base, inside the instance the body
-/// runs on), every jump to the start of an instruction of its own body, every call to an
-/// earlier body. (A call goes to the start of a body, which is where its first instruction
+/// Walk the table of bodies and then every body: every opcode known and in the program's
+/// format `version`, every operand inside the code, every address inside memory (or,
+/// relative to the base, inside the instance the body runs on), every jump to the start of
+/// an instruction of its own body, every call to an earlier body. (A call goes to the start of a body, which is where its first instruction
 /// starts: each body is decoded from its own start.)
-fn verify(code: &[u8], bodies: &[u8], memory: u32) -> Result<(), LoadError> {
+fn verify(code: &[u8], bodies: &[u8], memory: u32, version: u16) -> Result<(), LoadError> {
     let count = bodies.len() / BODY;
     if count == 0 {
         return Err(LoadError::BadBodies);
@@ -523,20 +633,21 @@ fn verify(code: &[u8], bodies: &[u8], memory: u32) -> Result<(), LoadError> {
         } else {
             code.len()
         };
-        verify_body(code, start_of(k), end, k, count, &size_of, memory)?;
+        verify_body(code, start_of(k)..end, k, count, &size_of, memory, version)?;
     }
     Ok(())
 }
 
 fn verify_body(
     code: &[u8],
-    start: usize,
-    end: usize,
+    body: core::ops::Range<usize>,
     this: usize,
     count: usize,
     size_of: &dyn Fn(usize) -> u32,
     memory: u32,
+    version: u16,
 ) -> Result<(), LoadError> {
+    let (start, end) = (body.start, body.end);
     let is_program = this + 1 == count;
     let instance = size_of(this);
     // A place of `len` bytes: a known mode, its region inside the memory or the instance, and
@@ -569,6 +680,9 @@ fn verify_body(
         let at = pc as u32;
         let opcode = code[pc];
         let len = instruction_len(opcode).ok_or(LoadError::UnknownInstruction(at))?;
+        if introduced_in(opcode).is_some_and(|since| since > version) {
+            return Err(LoadError::NotInFormat(at));
+        }
         if pc + len > end {
             return Err(LoadError::Truncated(at));
         }
@@ -633,6 +747,20 @@ fn verify_body(
                 let kind =
                     FbKind::from_code(code[pc + 1]).ok_or(LoadError::UnknownFunctionBlock(at))?;
                 place(place_at(code, pc + 2), kind.size(), at)?;
+            }
+            x if string_shape(x).is_some() => {
+                let (operands, _) = string_shape(x).unwrap_or((0, 0));
+                let mut from = pc + 1;
+                if x == op::SCMP {
+                    if code[from] > 5 {
+                        return Err(LoadError::BadOperand(at));
+                    }
+                    from += 1;
+                }
+                for k in 0..operands {
+                    let (cap, p) = string_operand_at(code, from + k * SOP_LEN);
+                    place(p, string_size(cap), at)?;
+                }
             }
             _ => {}
         }

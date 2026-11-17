@@ -14,7 +14,7 @@
 
 use mythos_logic_compiler::{compile, TargetProfile};
 use mythos_logic_st::lexer::{lex, Tok};
-use mythos_logic_vm::{cold_start, read, scan, ElemType, Frame, Program, Value};
+use mythos_logic_vm::{cold_start, read, read_string, scan, ElemType, Frame, Program, Value};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -45,6 +45,18 @@ const DELIBERATE: &[(&str, &str, &str)] = &[
     ("reals_and_conversions.st", "R2", HALF_TO_EVEN),
     ("reals_and_conversions.st", "R3", HALF_TO_EVEN),
     ("reals_and_conversions.st", "D2", HALF_TO_EVEN),
+    (
+        "strings.st",
+        "GROWN",
+        "INSERT puts IN2 after the P-th character (Table 34 feature 6: INSERT('ABC', 'XY', 2) \
+         is 'ABXYC'); STruC++ puts it before (it gives 'AXYBC')",
+    ),
+    (
+        "strings.st",
+        "HEX",
+        "STRING_TO_DINT reads the external representation of the value (Table 22 footnote e), \
+         which includes a based literal: '16#7F' is 127; STruC++ stops at the # and gives 16",
+    ),
 ];
 const CYCLE_NS: i64 = 20_000_000;
 
@@ -62,11 +74,13 @@ fn elem(ty: &str) -> ElemType {
     }
 }
 
-/// A value as both sides can be compared: integers and times exactly, reals as f64.
+/// A value as both sides can be compared: integers and times exactly, reals as f64,
+/// strings character by character.
 #[derive(Debug, Clone, PartialEq)]
 enum V {
     Int(i128),
     Real(f64),
+    Text(String),
 }
 
 fn ours(v: Value) -> V {
@@ -83,6 +97,14 @@ fn ours(v: Value) -> V {
 
 fn theirs(ty: &str, text: &str) -> V {
     match ty {
+        // Printed between quotes, as it is: the corpus writes no character that would need
+        // a $ combination.
+        "STRING" => V::Text(
+            text.strip_prefix('\'')
+                .and_then(|t| t.strip_suffix('\''))
+                .unwrap_or_else(|| panic!("{text}"))
+                .to_string(),
+        ),
         "BOOL" => V::Int((text == "TRUE") as i128),
         "REAL" | "LREAL" => V::Real(text.parse().unwrap_or_else(|_| panic!("{text}"))),
         "TIME" => match lex(text).unwrap()[0].tok {
@@ -216,7 +238,14 @@ fn every_variable_agrees_with_strucpp_after_every_cycle() {
                 if sym.array.is_some() {
                     continue;
                 }
-                let mine = ours(read(&mem, sym.offset, elem(&sym.ty)).unwrap());
+                let mine = match sym.ty.strip_prefix("STRING[") {
+                    Some(n) => {
+                        let n: u16 = n.trim_end_matches(']').parse().unwrap();
+                        let bytes = read_string(&mem, sym.offset, n).unwrap();
+                        V::Text(bytes.iter().map(|b| *b as char).collect())
+                    }
+                    None => ours(read(&mem, sym.offset, elem(&sym.ty)).unwrap()),
+                };
                 let want = theirs(ty, text);
                 compared += 1;
                 if !agree(&mine, &want) {

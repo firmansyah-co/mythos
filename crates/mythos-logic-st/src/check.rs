@@ -165,6 +165,13 @@ fn fits(ty: Ty, v: i128) -> bool {
     ty.int_range().is_some_and(|(lo, hi)| v >= lo && v <= hi)
 }
 
+/// The most characters the decimal text of a value of the integer type `ty` takes, its sign
+/// included: what `<int>_TO_STRING` gives.
+fn decimal_width(ty: Ty) -> u16 {
+    let (lo, hi) = ty.int_range().unwrap_or((0, 0));
+    lo.to_string().len().max(hi.to_string().len()) as u16
+}
+
 /// `A calls B, which calls A`, from the names round a cycle.
 fn chain(names: &[String], verb: &str) -> String {
     let Some((first, rest)) = names.split_first() else {
@@ -248,7 +255,7 @@ impl Checker {
             let conversion = upper
                 .split_once("_TO_")
                 .is_some_and(|(a, b)| Ty::from_name(a).is_some() && Ty::from_name(b).is_some());
-            if Ty::from_name(&upper).is_some() || conversion {
+            if Ty::from_name(&upper).is_some() || conversion || StdFn::by_name(&upper).is_some() {
                 // A keyword as a name is told by the parser, once.
                 if !is_keyword(&upper) {
                     c.err(
@@ -397,13 +404,13 @@ impl Checker {
                 // type is not known (the parser or this has said why), the variable stands
                 // in with a type nothing reads: no call of the function is typed.
                 let ty = match p.result.as_ref().map(|spec| (spec, self.resolve(spec))) {
-                    Some((_, Some(t))) if t.is_elementary() => Some(t),
+                    Some((_, Some(t))) if t.is_elementary() || t.is_string() => Some(t),
                     Some((spec, Some(t))) => {
                         let what = self.n(t);
                         self.err(
                             spec.span,
                             format!(
-                                "a function returning a {what} is not supported yet; a result is of an elementary type"
+                                "a function returning a {what} is not supported yet; a result is of an elementary type or a STRING"
                             ),
                         );
                         None
@@ -523,6 +530,20 @@ impl Checker {
                     }
                 }
             }
+            ast::TypeSpecKind::String(length) => {
+                let Some((n, at)) = length else {
+                    return Some(Ty::String(DEFAULT_STRING_LENGTH));
+                };
+                // Table 10 footnote k: the longest a STRING may be is the implementer's.
+                if *n < 1 || *n > MAX_STRING_LENGTH as i128 {
+                    self.err(
+                        *at,
+                        format!("a STRING holds 1 to {MAX_STRING_LENGTH} characters, not {n}"),
+                    );
+                    return None;
+                }
+                Some(Ty::String(*n as u16))
+            }
             ast::TypeSpecKind::Array(dims, elem) => {
                 let elem = self.resolve(elem);
                 let mut ok = true;
@@ -605,6 +626,25 @@ impl Checker {
     /// An initial value for a variable or a member of type `ty`.
     fn init(&mut self, init: &ast::Init, ty: Ty) -> Option<Init> {
         match (init, ty) {
+            (ast::Init::Value(e), Ty::String(n)) => {
+                let A::Str(text) = &e.kind else {
+                    self.err(e.span, "an initial value must be a literal");
+                    return None;
+                };
+                // Cutting it, as an assignment would, would hide a mistake there is no
+                // warning to tell.
+                if text.len() > n as usize {
+                    self.err(
+                        e.span,
+                        format!(
+                            "the initial value has {} characters; a STRING[{n}] holds {n}",
+                            text.len()
+                        ),
+                    );
+                    return None;
+                }
+                Some(Init::Str(text.clone()))
+            }
             (ast::Init::Value(e), ty) if ty.is_elementary() => {
                 self.constant(e, ty).map(Init::Value)
             }
@@ -631,6 +671,28 @@ impl Checker {
             }
             (ast::Init::Array(items, span), Ty::Array(a)) => {
                 let (elem, len) = (self.unit.arrays[a].elem, self.unit.arrays[a].len());
+                if elem.is_string() {
+                    let mut values: Vec<Vec<u8>> = Vec::new();
+                    let mut text = |c: &mut Checker, e: &ast::Expr| match c
+                        .init(&ast::Init::Value(e.clone()), elem)
+                    {
+                        Some(Init::Str(t)) => Some(t),
+                        _ => None,
+                    };
+                    if !self.elements(items, len, &mut values, &mut text) {
+                        return None;
+                    }
+                    if values.len() as u64 > len {
+                        self.err(
+                            *span,
+                            format!(
+                                "the list has more initial values than the array's {len} elements"
+                            ),
+                        );
+                        return None;
+                    }
+                    return Some(Init::Texts(values));
+                }
                 if !elem.is_elementary() {
                     let what = self.n(elem);
                     self.err(
@@ -642,7 +704,8 @@ impl Checker {
                     return None;
                 }
                 let mut values = Vec::new();
-                if !self.elements(items, elem, len, &mut values) {
+                let mut constant = |c: &mut Checker, e: &ast::Expr| c.constant(e, elem);
+                if !self.elements(items, len, &mut values, &mut constant) {
                     return None;
                 }
                 // IEC 61131-3 ed. 3 §6.4.4.5.2 has values beyond the array ignored with a
@@ -669,16 +732,16 @@ impl Checker {
 
     /// The values of an array initialiser, repetitions written out. Stops with `false` at a
     /// mistake; stops adding once there is one value more than the array holds.
-    fn elements(
+    fn elements<T: Clone>(
         &mut self,
         items: &[ast::ArrayInit],
-        elem: Ty,
         len: u64,
-        out: &mut Vec<Const>,
+        out: &mut Vec<T>,
+        value: &mut dyn FnMut(&mut Checker, &ast::Expr) -> Option<T>,
     ) -> bool {
         for item in items {
             match item {
-                ast::ArrayInit::Value(e) => match self.constant(e, elem) {
+                ast::ArrayInit::Value(e) => match value(self, e) {
                     Some(k) => {
                         if out.len() as u64 <= len {
                             out.push(k);
@@ -692,7 +755,7 @@ impl Checker {
                         return false;
                     }
                     let mut once = Vec::new();
-                    if !self.elements(inner, elem, len, &mut once) {
+                    if !self.elements(inner, len, &mut once, value) {
                         return false;
                     }
                     if once.is_empty() {
@@ -703,7 +766,7 @@ impl Checker {
                         if out.len() as u64 > len {
                             break;
                         }
-                        out.extend(once.iter().copied());
+                        out.extend(once.iter().cloned());
                     }
                 }
             }
@@ -713,7 +776,10 @@ impl Checker {
 
     /// An initial value: a literal of the variable's type.
     fn constant(&mut self, e: &ast::Expr, ty: Ty) -> Option<Const> {
-        if !matches!(e.kind, A::Int(_) | A::Real(_) | A::Bool(_) | A::Time(_)) {
+        if !matches!(
+            e.kind,
+            A::Int(_) | A::Real(_) | A::Bool(_) | A::Time(_) | A::Str(_)
+        ) {
             self.err(e.span, "an initial value must be a literal");
             return None;
         }
@@ -1129,7 +1195,9 @@ impl Checker {
 
     /// `value` where `want` is needed: as is, widened, or a diagnostic.
     fn coerce(&mut self, value: Expr, want: Ty, span: Span) -> Option<Expr> {
-        if value.ty == want {
+        // §6.6.1.2.2: a STRING goes where any STRING is wanted; where it is stored, it is cut
+        // to the length there. It keeps its own type, which says how long it may be.
+        if value.ty == want || (value.ty.is_string() && want.is_string()) {
             return Some(value);
         }
         if value.ty.widens_to(want) {
@@ -1148,11 +1216,15 @@ impl Checker {
             });
         }
         let (from, to) = (self.n(value.ty), self.n(want));
-        if value.ty.is_elementary() && want.is_elementary() {
+        let single = |t: Ty| t.is_elementary() || t.is_string();
+        if single(value.ty) && single(want) {
+            // A conversion is named by the types' names, without a STRING's length.
+            let name = |t: Ty| t.builtin_name().unwrap_or("?");
+            let (f, t) = (name(value.ty), name(want));
             self.err(
                 span,
                 format!(
-                    "a {from} cannot be used as a {to} without a conversion: write {from}_TO_{to}(…)"
+                    "a {from} cannot be used as a {to} without a conversion: write {f}_TO_{t}(…)"
                 ),
             );
         } else {
@@ -1266,7 +1338,8 @@ impl Checker {
             if self.is_refused(name) {
                 return None;
             }
-            let msg = if self.function(name).is_some() {
+            let standard = StdFn::by_name(&name.to_ascii_uppercase()).is_some();
+            let msg = if self.function(name).is_some() || standard {
                 // Table 72 lets a function be called as a statement, its result
                 // discarded; a function here has no other effect, so that is refused.
                 format!("{name} is a function: use its result, as in x := {name}(…);")
@@ -1558,6 +1631,10 @@ impl Checker {
         let span = e.span;
         match &e.kind {
             A::Int(_) | A::Real(_) | A::Bool(_) | A::Time(_) => self.literal(e, want),
+            A::Str(text) => Some(Expr {
+                ty: Ty::String(text.len() as u16),
+                kind: ExprKind::Str(text.clone()),
+            }),
             A::Var(p) => self.load(p, span),
             A::Not(inner) => {
                 let x = self.expr(inner, Some(Ty::Bool))?;
@@ -1776,6 +1853,9 @@ impl Checker {
                 kind: ExprKind::Arith(aop, Box::new(a), Box::new(b)),
             });
         }
+        if a.ty.is_string() || b.ty.is_string() {
+            return self.string_operation(op, a, b, comparison, span);
+        }
         // widens_to is reflexive, so this also covers equal types.
         let common = if b.ty.widens_to(a.ty) {
             a.ty
@@ -1849,11 +1929,56 @@ impl Checker {
         })
     }
 
-    /// A function call in an expression: a function of the source, or one of the type
-    /// conversions `<A>_TO_<B>` between the elementary numeric types and BOOL.
+    /// An operation with a STRING on one side: only a comparison (§6.6.2.5.11), of two
+    /// strings.
+    fn string_operation(
+        &mut self,
+        op: BinOp,
+        a: Expr,
+        b: Expr,
+        comparison: bool,
+        span: Span,
+    ) -> Option<Expr> {
+        let (x, y) = (self.n(a.ty), self.n(b.ty));
+        if !(a.ty.is_string() && b.ty.is_string()) {
+            self.err(
+                span,
+                format!("a {x} and a {y} cannot be combined without a conversion"),
+            );
+            return None;
+        }
+        if !comparison {
+            let hint = if op == BinOp::Add {
+                "; join strings with CONCAT(…)"
+            } else {
+                ""
+            };
+            self.err(span, format!("a STRING is not a number{hint}"));
+            return None;
+        }
+        let c = match op {
+            BinOp::Eq => Cmp::Eq,
+            BinOp::Ne => Cmp::Ne,
+            BinOp::Lt => Cmp::Lt,
+            BinOp::Le => Cmp::Le,
+            BinOp::Gt => Cmp::Gt,
+            _ => Cmp::Ge,
+        };
+        Some(Expr {
+            ty: Ty::Bool,
+            kind: ExprKind::Cmp(c, Box::new(a), Box::new(b)),
+        })
+    }
+
+    /// A function call in an expression: a function of the source, a function of the
+    /// standard library, or one of the type conversions `<A>_TO_<B>` between the elementary
+    /// numeric types and BOOL, and between the integer types and STRING.
     fn call(&mut self, name: &str, args: &[ast::CallArg], span: Span) -> Option<Expr> {
         if let Some(f) = self.function(name) {
             return self.call_function(f, args, span);
+        }
+        if let Some(f) = StdFn::by_name(&name.to_ascii_uppercase()) {
+            return self.call_std(f, args, span);
         }
         let (from, to) = self.conversion(name, args, span)?;
         let x = self.expr(&args[0].value, Some(from))?;
@@ -1861,9 +1986,160 @@ impl Checker {
         if from == to {
             return Some(x);
         }
+        // §6.6.2.5.2, Table 22 footnote e: an integer as a STRING is its decimal text, as
+        // long as the widest value of its type writes it.
+        let to = match to {
+            Ty::String(_) => Ty::String(decimal_width(from)),
+            to => to,
+        };
         Some(Expr {
             ty: to,
             kind: ExprKind::Convert(Box::new(x)),
+        })
+    }
+
+    /// The arguments of a call of the standard function `f`, each set against the input it
+    /// gives (by position, or all by name), in the order of `f`'s inputs; `None` when what
+    /// is wrong has been told.
+    fn std_args<'a>(
+        &mut self,
+        f: StdFn,
+        args: &'a [ast::CallArg],
+        span: Span,
+    ) -> Option<Vec<&'a ast::Expr>> {
+        let name = f.name();
+        let named = args.iter().filter(|a| a.name.is_some()).count();
+        if named != 0 && named != args.len() {
+            self.err(
+                span,
+                format!("the arguments of {name} are either all named or all by position"),
+            );
+            return None;
+        }
+        // CONCAT takes two or more: IN1, IN2, … INn (Table 34 feature 5).
+        let inputs: Vec<String> = if f == StdFn::Concat {
+            if args.len() < 2 {
+                self.err(span, "CONCAT takes two or more strings");
+                return None;
+            }
+            (1..=args.len()).map(|k| format!("IN{k}")).collect()
+        } else {
+            f.inputs().iter().map(|s| s.to_string()).collect()
+        };
+        if named == 0 {
+            if args.len() != inputs.len() {
+                self.err(
+                    span,
+                    format!(
+                        "{name} takes {} argument(s), {}; {} given",
+                        inputs.len(),
+                        inputs.join(", "),
+                        args.len()
+                    ),
+                );
+                return None;
+            }
+            return Some(args.iter().map(|a| &a.value).collect());
+        }
+        let mut given: Vec<Option<&ast::Expr>> = vec![None; inputs.len()];
+        let mut ok = true;
+        for a in args {
+            let Some((pname, pspan)) = &a.name else {
+                continue;
+            };
+            match inputs.iter().position(|i| i.eq_ignore_ascii_case(pname)) {
+                None => {
+                    self.err(*pspan, format!("{name} has no input {pname}"));
+                    ok = false;
+                }
+                Some(k) if given[k].is_some() => {
+                    self.err(*pspan, format!("{pname} is given twice"));
+                    ok = false;
+                }
+                Some(k) => given[k] = Some(&a.value),
+            }
+        }
+        if !ok {
+            return None;
+        }
+        // A standard function's inputs have no initial value to fall back on.
+        let missing: Vec<&str> = inputs
+            .iter()
+            .zip(&given)
+            .filter(|(_, g)| g.is_none())
+            .map(|(i, _)| i.as_str())
+            .collect();
+        if !missing.is_empty() {
+            self.err(span, format!("{name} needs {} as well", missing.join(", ")));
+            return None;
+        }
+        Some(given.into_iter().flatten().collect())
+    }
+
+    /// A call of a function of IEC 61131-3 ed. 3 Table 34.
+    fn call_std(&mut self, f: StdFn, args: &[ast::CallArg], span: Span) -> Option<Expr> {
+        let values = self.std_args(f, args, span)?;
+        let name = f.name();
+        // Which inputs are strings (ANY_STRING, ANY_CHARS); the others are ANY_INT.
+        let is_text = |k: usize| match f {
+            StdFn::Concat | StdFn::Len | StdFn::Find => true,
+            StdFn::Left | StdFn::Right | StdFn::Mid | StdFn::Delete => k == 0,
+            StdFn::Insert | StdFn::Replace => k < 2,
+        };
+        let inputs = f.inputs();
+        let mut lowered = Vec::with_capacity(values.len());
+        let mut ok = true;
+        for (k, e) in values.iter().enumerate() {
+            let input = inputs.get(k).copied().unwrap_or("IN");
+            let Some(x) = self.expr(e, if is_text(k) { None } else { Some(Ty::Dint) }) else {
+                ok = false;
+                continue;
+            };
+            let what = self.n(x.ty);
+            if is_text(k) && !x.ty.is_string() {
+                self.err(
+                    e.span,
+                    format!("{input} of {name} is a STRING; this is a {what}"),
+                );
+                ok = false;
+            } else if !is_text(k) && !x.ty.is_int() {
+                self.err(
+                    e.span,
+                    format!("{input} of {name} is an integer; this is a {what}"),
+                );
+                ok = false;
+            } else if let ExprKind::Const(Const::Int(v)) = x.kind {
+                // §6.6.2.5.11: an integer input below zero is an error; a literal one is
+                // found here.
+                if v < 0 {
+                    self.err(e.span, format!("{input} of {name} may not be below zero"));
+                    ok = false;
+                }
+            }
+            lowered.push(x);
+        }
+        if !ok {
+            return None;
+        }
+        let len = |k: usize| match lowered[k].ty {
+            Ty::String(n) => n as u32,
+            _ => 0,
+        };
+        // As long as any result its arguments can give, up to the longest a STRING may be:
+        // past that, a result is an error found when it is made.
+        let longest = match f {
+            StdFn::Len | StdFn::Find => None,
+            StdFn::Left | StdFn::Right | StdFn::Mid | StdFn::Delete => Some(len(0)),
+            StdFn::Insert | StdFn::Replace => Some(len(0) + len(1)),
+            StdFn::Concat => Some((0..lowered.len()).map(len).sum()),
+        };
+        let ty = match longest {
+            None => Ty::Int,
+            Some(n) => Ty::String(n.min(MAX_STRING_LENGTH as u32) as u16),
+        };
+        Some(Expr {
+            ty,
+            kind: ExprKind::Std(f, lowered),
         })
     }
 
@@ -1907,13 +2183,14 @@ impl Checker {
             self.err(
                 span,
                 format!(
-                    "{name} is not a function this compiler knows yet (the *_TO_* conversions are, and the functions of this source)"
+                    "{name} is not a function this compiler knows yet (the *_TO_* conversions are, the string functions of the standard, and the functions of this source)"
                 ),
             );
             return None;
         };
         let numeric = |t: Ty| t.is_int() || t.is_real() || t == Ty::Bool;
-        if !numeric(from) || !numeric(to) {
+        let text = (from.is_int() && to.is_string()) || (from.is_string() && to.is_int());
+        if !text && (!numeric(from) || !numeric(to)) {
             self.err(span, format!("{upper} is not supported yet"));
             return None;
         }

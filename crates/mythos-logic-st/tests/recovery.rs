@@ -29,11 +29,11 @@ fn one_compile_tells_every_independent_mistake_once() {
 VAR
   a, b : INT;
   at : INT;
-  s : STRING;
+  s : WSTRING;
   c : BOOL
   d : DINT;
 END_VAR
-  a := 'text';
+  a := \"text\";
   IF a > THEN
     b := ;
     d := 5 +* 2;
@@ -52,10 +52,10 @@ END_FUNCTION";
         vec![
             // A keyword as a name; a type not supported; a `;` left out of a declaration.
             "4:3-4:5 at is a keyword of IEC 61131-3 and cannot be used as a name",
-            "5:7-5:13 'STRING' is not supported yet",
+            "5:7-5:14 'WSTRING' is not supported yet",
             "7:3-7:4 expected ';', found 'd'",
             // What the lexer cannot read.
-            "9:8-9:14 strings are not supported yet",
+            "9:8-9:14 a double-byte string (\"…\", WSTRING) is not supported yet",
             // A head that cannot be read, and two statements under it.
             "10:10-10:14 expected a value, found 'THEN'",
             "11:10-11:11 expected a value, found ';'",
@@ -397,14 +397,14 @@ fn text_the_lexer_cannot_read_is_told_by_the_lexer_and_by_nothing_else() {
     assert_eq!(
         told(
             "PROGRAM P VAR a : INT; END_VAR
-  a := 'text';
+  a := \"text\";
   a := INT#5 + 1;
   a := 3 § 4;
   a := ;
 END_PROGRAM"
         ),
         vec![
-            "2:8-2:14 strings are not supported yet",
+            "2:8-2:14 a double-byte string (\"…\", WSTRING) is not supported yet",
             "3:8-3:13 the typed literal INT#… is not supported yet; only T# and TIME#",
             "4:10-4:11 '§' is not part of Structured Text",
             "5:8-5:9 expected a value, found ';'",
@@ -442,14 +442,14 @@ fn the_use_of_what_a_refused_declaration_declared_is_not_a_second_mistake() {
     // second may be the one not read. A member that is there is still checked.
     assert_eq!(
         told(
-            "TYPE Thing : (A, B); Other : STRUCT x : INT; y : 'no'; END_STRUCT; END_TYPE
+            "TYPE Thing : (A, B); Other : STRUCT x : INT; y : \"no\"; END_STRUCT; END_TYPE
 PROGRAM P VAR a : Thing; o : Other; b : BOOL; END_VAR
   b := a; b := o.y; b := o.z; b := o.x;
 END_PROGRAM"
         ),
         vec![
             "1:14-1:15 an enumeration is not supported yet",
-            "1:50-1:54 strings are not supported yet",
+            "1:50-1:54 a double-byte string (\"…\", WSTRING) is not supported yet",
             "3:36-3:39 a INT cannot be used as a BOOL without a conversion: write INT_TO_BOOL(…)",
         ]
     );
@@ -508,7 +508,7 @@ PROGRAM P VAR a : Thing; b : INT; END_VAR b := a.x; b := G(1); END_PROGRAM"
         vec![
             "0:0-0:0 the source has no PROGRAM; it needs one, where a scan starts",
             "1:64-1:69 Thing is not a type this compiler knows",
-            "1:93-1:97 G is not a function this compiler knows yet (the *_TO_* conversions are, and the functions of this source)",
+            "1:93-1:97 G is not a function this compiler knows yet (the *_TO_* conversions are, the string functions of the standard, and the functions of this source)",
         ]
     );
 }
@@ -541,7 +541,7 @@ END_PROGRAM"
             // NOT and what it is applied to.
             "5:8-5:13 NOT on a INT (bit operations on integers are not supported yet)",
             // A call, to its `)`: on the next line here.
-            "6:8-7:15 Nope is not a function this compiler knows yet (the *_TO_* conversions are, and the functions of this source)",
+            "6:8-7:15 Nope is not a function this compiler knows yet (the *_TO_* conversions are, the string functions of the standard, and the functions of this source)",
             // One subscript.
             "8:7-8:8 the subscript 9 is outside 1..3",
             // A member of an instance: the whole path.
@@ -561,7 +561,7 @@ END_PROGRAM"
     // A column counts characters, not bytes: `é` is one.
     assert_eq!(
         told("PROGRAM P VAR a : INT; END_VAR (* é *) a := 'é' + b; END_PROGRAM"),
-        vec!["1:45-1:48 strings are not supported yet"]
+        vec!["1:45-1:48 the character 'é' is written $E9 in a string"]
     );
 }
 

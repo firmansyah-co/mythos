@@ -273,6 +273,7 @@ impl Parser {
             Tok::Int(v) => format!("the number {v}"),
             Tok::Real(v) => format!("the number {v}"),
             Tok::Time(_) => "a duration".into(),
+            Tok::Str(_) => "a string".into(),
             Tok::Sym(s) => format!("'{s}'"),
             Tok::Error => "text that cannot be read".into(),
             Tok::Eof => "the end of the source".into(),
@@ -489,13 +490,13 @@ impl Parser {
             let mut fields = Vec::new();
             self.decls("END_STRUCT", Section::Var, &mut fields)?;
             TypeDeclKind::Struct(fields)
-        } else if self.is_kw("ARRAY") {
+        } else if self.is_kw("ARRAY") || self.is_kw("STRING") {
             TypeDeclKind::Alias(self.type_spec()?)
         } else if self.is_sym("(") {
             return self.not_yet("an enumeration");
         } else {
             return self.refuse(format!(
-                "a type derived from {} is not supported yet; TYPE takes STRUCT and ARRAY",
+                "a type derived from {} is not supported yet; TYPE takes STRUCT, ARRAY and STRING",
                 self.describe()
             ));
         };
@@ -772,11 +773,10 @@ impl Parser {
                 "a STRUCT without a name is not supported yet: declare it in TYPE … END_TYPE and use its name".into(),
             );
         }
-        if self.is_kw("STRING")
-            || self.is_kw("WSTRING")
-            || self.is_kw("POINTER")
-            || self.is_kw("REF_TO")
-        {
+        if self.is_kw("STRING") {
+            return self.string_spec();
+        }
+        if self.is_kw("WSTRING") || self.is_kw("POINTER") || self.is_kw("REF_TO") {
             return self.not_yet(self.describe());
         }
         let (name, _) = self.type_name()?;
@@ -786,6 +786,42 @@ impl Parser {
         Ok(TypeSpec {
             span,
             kind: TypeSpecKind::Named(name),
+        })
+    }
+
+    /// `STRING`, `STRING[n]` (Annex A, `S_Byte_Str_Spec`) or `STRING(n)` (§6.4.2.2 calls the
+    /// length "parenthesized").
+    fn string_spec(&mut self) -> R<TypeSpec> {
+        let span = self.span();
+        self.bump();
+        let close = if self.is_sym("[") {
+            "]"
+        } else if self.is_sym("(") {
+            ")"
+        } else {
+            return Ok(TypeSpec {
+                span,
+                kind: TypeSpecKind::String(None),
+            });
+        };
+        self.bump();
+        let at = self.span();
+        let length = match self.peek().clone() {
+            Tok::Int(v) => {
+                self.bump();
+                v
+            }
+            _ => {
+                return self.refuse(format!(
+                    "the length of a STRING is an integer literal, found {}",
+                    self.describe()
+                ))
+            }
+        };
+        self.expect_sym(close)?;
+        Ok(TypeSpec {
+            span: self.since(span),
+            kind: TypeSpecKind::String(Some((length, at))),
         })
     }
 
@@ -1464,6 +1500,7 @@ impl Parser {
             Tok::Int(v) => ExprKind::Int(*v),
             Tok::Real(v) => ExprKind::Real(*v),
             Tok::Time(v) => ExprKind::Time(*v),
+            Tok::Str(text) => ExprKind::Str(text.clone()),
             Tok::Word(u, _) if u == "TRUE" || u == "FALSE" => ExprKind::Bool(u == "TRUE"),
             Tok::Sym("(") => {
                 self.bump();

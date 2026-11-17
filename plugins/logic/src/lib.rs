@@ -188,8 +188,9 @@ fn check_entry(entry: &ProgramEntry) -> Result<(), String> {
 }
 
 /// A variable a tag can be bound to: a BOOL, an integer or a real. It is decided by the type's
-/// name, as the runtime module decides it: an array, a structure, an instance and a TIME each
-/// have another.
+/// name, as the runtime module decides it: an array, a structure, an instance, a TIME and a
+/// STRING each have another. A STRING is not bindable because a tag holds no text
+/// (`mythos_plugin_sdk::SampleValue` is a BOOL or a number, and so is a tag's slot).
 fn bindable(symbol: &Symbol) -> bool {
     matches!(
         symbol.ty.as_str(),
@@ -212,8 +213,15 @@ fn check_bindings(entry: &ProgramEntry, symbols: &[Symbol]) -> Vec<String> {
                 None
             }
             Some(s) if !bindable(s) => {
+                // The tag bus carries numbers and BOOLs (`SampleValue`): a STRING has no tag
+                // to be bound to, as an array or a structure has none.
+                let text = if s.ty.starts_with("STRING[") {
+                    " (a tag carries a number, never text)"
+                } else {
+                    ""
+                };
                 problems.push(format!(
-                    "{kind} {tag}: {variable} is of type {}; only BOOL, integer and real variables can be bound to a tag",
+                    "{kind} {tag}: {variable} is of type {}; only BOOL, integer and real variables can be bound to a tag{text}",
                     s.ty
                 ));
                 None
@@ -719,7 +727,7 @@ mod tests {
     const TANK: &str = "PROGRAM Tank
         VAR_INPUT level : INT; level_ok : BOOL; setpoint : INT := 50; END_VAR
         VAR_OUTPUT speed : INT; END_VAR
-        VAR t : TON; hist : ARRAY [1..4] OF INT; END_VAR
+        VAR t : TON; hist : ARRAY [1..4] OF INT; note : STRING[8]; END_VAR
         IF level_ok AND (level < setpoint) THEN speed := (setpoint - level) * 10; ELSE speed := 0; END_IF;
         END_PROGRAM";
 
@@ -808,6 +816,12 @@ mod tests {
             "an array is not bound to one tag"
         );
         assert_eq!(var("t.ET")["bindable"], false, "nor a TIME");
+        assert_eq!(var("note")["type"], "STRING[8]");
+        assert_eq!(
+            var("note")["bindable"],
+            false,
+            "nor a STRING: a tag holds no text"
+        );
 
         let mut e = entry();
         e.inputs[0].variable = "flow".into();
@@ -822,6 +836,14 @@ mod tests {
                 "output external.P.P1.speed: hist is of type ARRAY [1..4] OF INT; only BOOL, integer and real variables can be bound to a tag",
                 "input external.P.LT1.level: level takes whether the tag is GOOD, so it must be a BOOL",
                 "published internal.P.Tank.setpoint: two variables are published as it"
+            ])
+        );
+        let mut e = entry();
+        e.outputs[0].variable = "note".into();
+        assert_eq!(
+            check(&e, TANK)["binding_problems"],
+            json!([
+                "output external.P.P1.speed: note is of type STRING[8]; only BOOL, integer and real variables can be bound to a tag (a tag carries a number, never text)"
             ])
         );
     }

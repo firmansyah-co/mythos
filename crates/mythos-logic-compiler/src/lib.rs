@@ -10,6 +10,7 @@
 pub mod profile;
 
 pub use mythos_logic_backend_vm::{ArrayInfo, MemberLayout, Symbol, TypeLayout};
+use mythos_logic_ir::Ty;
 pub use mythos_logic_ir::{Diagnostic, Span};
 pub use profile::TargetProfile;
 
@@ -75,10 +76,14 @@ pub fn compile_in(
         )));
     }
     for t in unit.types_used() {
-        if target.refuses.contains(&t) {
+        if target.refuses.iter().any(|r| r.same_kind(t)) {
+            // A kind of type: every length of a STRING is refused with it.
+            let what = match t {
+                Ty::String(_) => "STRING".to_string(),
+                t => unit.ty_name(t),
+            };
             diags.push(Diagnostic::whole(format!(
-                "{} is not supported on the target {}",
-                unit.ty_name(t),
+                "{what} is not supported on the target {}",
                 target.name
             )));
         }

@@ -98,8 +98,9 @@ test holds equal.
 
 - **`no_std`, no allocation, no `unsafe`.** The host gives it the program's bytes, a memory and
   a stack of the sizes the program declares. Clock, I/O and communication belong to the host.
-- **A portable format.** Little-endian on every target, versioned (a program of another version
-  is refused, not guessed at), CRC-32 checked. Variables are packed bytes with no alignment.
+- **A portable format.** Little-endian on every target, versioned (a program of a version this
+  VM does not read is refused, not guessed at; see *Format versions* below), CRC-32 checked.
+  Variables are packed bytes with no alignment.
 - **Checked twice.** At load, every instruction is decoded and every address, jump and function
   block instance checked. At run time, every memory and stack access is checked again; a program
   that would go outside them stops with a fault.
@@ -112,8 +113,31 @@ test holds equal.
   calls than the host has is refused when it is loaded, naming what it declares.
 - **A bounded scan.** An instruction budget stops an endless loop with `BudgetExceeded`.
   Division by zero is a fault, not a value.
-- **Format 1** (functions, user function blocks, arrays, structures). Format 0 is refused by
-  its version.
+- **Format versions: a VM reads every format it extends.** A new format may only add
+  instructions to the one before it: the header, every operand layout and the meaning of
+  every instruction stay as they were, so a VM reads a program of any version it extends
+  exactly as it was written, and the loader is told nothing new to read it. The loader takes
+  the version from the header before it believes anything else, refuses one newer than its
+  own (`UnsupportedVersion`), and checks each instruction against the version the program
+  declares: an instruction a later format brought in, in a program of an earlier one, is
+  refused where it is (`NotInFormat`), since whatever wrote it did not write that format. A
+  format that changes an instruction's meaning, an operand's layout or the header is a new
+  major: it starts a new line, and a VM of that line refuses every version before it.
+  - *What it means for an update.* A controller keeps the bytecode it was given (a project's
+    `runtimes.json`) across an update of its VM. A VM that extends that bytecode's format
+    loads it and runs it scan for scan as before: the program does not stop and is not built
+    again. Only a new major stops the programs of the line before until they are built again;
+    such a format says so where it is introduced. The compiler makes the newest format only.
+  - *Today.* This VM reads formats 1 and 2 (`OLDEST_FORMAT_VERSION`, `FORMAT_VERSION`). Format
+    2 added the thirteen instructions on strings (`0xD0`–`0xDC`, opcodes no format-1
+    instruction had) and changed nothing of format 1: the six programs of the corpus compiled
+    by the format-1 and the format-2 compiler differ only in the version field and the
+    checksum. Format 0, the spike's, had a 16-byte header with no call depth and no table of
+    bodies; format 1 did not extend it, so it is refused. `older_formats_run_alike.rs` runs
+    the corpus as the format-1 compiler made it (committed bytes, never regenerated) against
+    the same sources compiled now, 200 scans each with the same inputs, memory equal after
+    every scan.
+- **Format 2** (format 1 with strings; L2c).
   - *Header*: magic, version, stack depth, memory size, code length, call depth, number of
     bodies, then a table of bodies (code offset, instance size), the initial memory image, the
     code, CRC-32.
@@ -150,6 +174,21 @@ test holds equal.
     run-time checks hold as before. `damaged_programs_never_panic.rs` damages every compiled
     program of the corpus at random, thousands of times, and requires each to be refused or to
     fault, never to panic.
+  - *Strings* (format 2). A `STRING[n]` is `2 + n` bytes: its length now (u16), then room
+    for `n` characters of one byte each. A string never goes on the stack: an instruction on
+    strings names each one by a *string operand*, its length `n` and a place of `2 + n`
+    bytes, which the loader checks as it checks any place. Thirteen instructions: assignment
+    (`SMOVE`, which cuts to the target's length), comparison, `LEN`, `FIND`, the six
+    functions of Table 34 that give a string, CONCAT two at a time, and an integer to and
+    from its text. A string a function gives is written to scratch the compiler sized for
+    any result of its arguments; one longer than that (which can only be past the longest
+    STRING, 32,767 characters) stops the scan with `StringTooLong`. A length or position
+    below zero, or one naming a character the string does not have, stops it with
+    `StringArgument` (§6.6.2.5.11 calls both an error). A stored length greater than the
+    string's own is never followed: `BadString` (the program's instructions never write
+    one; the host or damage did). Text that does not write an integer, converted to one:
+    `BadNumber`. A literal is a string in the memory image, one for each distinct text, never
+    written.
 
 ### 2.4 A third module kind: `runtime`
 
@@ -226,8 +265,10 @@ runtime whatever it executes:
 - The write path to field devices, the safe values and the write authority of §2.4.
 - **Watching.** `POST /api/v1/runtimes/<id>/watch` (any signed-in role; MCP `watch_runtime`)
   gives the values of a program's variables as its last scan left them: any variable with one
-  value (BOOL, the integers, REAL, LREAL, TIME), bound to a tag or not, and one element of an
-  array of those. The protocol call is `Call::Watch`; the VM module reads them under the lock
+  value (BOOL, the integers, REAL, LREAL, TIME, STRING), bound to a tag or not, and one
+  element of an array of those. A STRING is sent as its characters, each byte the character
+  of that code (Table 10 footnote l: ISO/IEC 10646, whose first 256 codes a single-byte
+  string writes); one whose stored length is past its own has an error in place of a value. The protocol call is `Call::Watch`; the VM module reads them under the lock
   its scan thread holds for a whole scan, so every value of an answer is of one scan. The core
   asks at the runtime's exchange while somebody watches (a watch nobody renews for five
   seconds stops), and an answer carries the program's state and its age. Reading changes
@@ -253,7 +294,9 @@ As built (C3):
 - `check` compiles the saved source, or a text sent with the request and not saved, and answers
   with the diagnostics (each with the range it is about, §2.8), or with the variables and every
   binding that names a variable the program does not have or one that cannot be bound (an
-  array, a TIME).
+  array, a TIME, a STRING). A STRING cannot be bound because a tag holds no text: a tag's
+  value is a BOOL or a number (`mythos_plugin_sdk::SampleValue`, and the tag bus's slot);
+  it is watched instead.
 - `build` compiles the saved source and answers with the runtime instance of §2.4, its version
   a hash of the code, the interval and the bindings. **A module cannot call the core**
   (ADR-011 §2.6), so the module does not load what it builds: the workbench, or an agent, saves
@@ -280,7 +323,9 @@ Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (A
   unanswered: it is the safe direction. Run asks first, as on Settings → Runtimes. Scan times are NOT MEASURED until a scan has run. A new output
   binding has no safe value, and none is written for it, until one is given.
 - While a runtime runs the program, the variables table shows each variable's value in it,
-  read twice a second by name with `watch` (§2.5). A variable the running version does not
+  read twice a second by name with `watch` (§2.5); a STRING as Structured Text writes it,
+  quoted, with `$` combinations for `$`, `'` and what is not printable. A STRING has no "Bind…"
+  and says why. A variable the running version does not
   have says so; a value read from a program that is not in RUN is marked as what it stopped
   with; when the values cannot be read the cell says UNKNOWN and shows none read before.
 - Not built: forcing a variable (C5); watching an element of an array from the table; an
@@ -385,9 +430,13 @@ No SIL claim is made.
 STruC++ is not used to build or run anything. A differential test (by hand; it needs Node, g++
 and STruC++) runs each program in `crates/mythos-logic-compiler/tests/differential/` on STruC++
 and on our VM for 60 cycles and compares every variable after every cycle. STruC++ is GPL-3.0;
-it is run as a separate program and none of its code is copied. Its limits: six programs so
-far, reals compared at the precision its REPL prints, only scalar variables of the program
-compared, and STruC++ can itself be wrong.
+it is run as a separate program and none of its code is copied. Its limits: seven programs so
+far, reals compared at the precision its REPL prints, strings character by character as it
+prints them (so the corpus writes none that would need a `$` combination), only scalar
+variables of the program compared, and STruC++ can itself be wrong. It takes a STRING's
+length only as `STRING(n)`, not as `STRING[n]` (Annex A), a function's result only as a
+plain `STRING`, and neither CONCAT of three strings of different lengths nor `<` against a
+literal: the corpus is written around those.
 
 ### 2.13 Semantics settled against the standard
 
@@ -417,6 +466,16 @@ Adrian, 2026-11-17: where an implementation and the standard differ, follow the 
 | Reading an instance's input from outside | Figure 13 rule 1b: not allowed | refused | not compared |
 | Writing an output, or anything inside an instance, from outside | Figure 13 rule 4b; §6.6.3.2 rule 11 (VAR is private) | refused; an internal variable cannot be read from outside either, except to look into an instance held there (`a.b.q`) | not compared |
 | A keyword as a name | §6.1.3: keywords "shall not be used for any other purpose, for example, variable names" | refused where it is declared (a variable, a member, a type, a POU), naming the word: 127 keywords | not compared |
+| A STRING declared without a length | Table 10 footnote k, §6.4.2.2: the maximum length is the implementer's; ed. 3 gives no default | 254 characters; a declared length is 1 to 32,767 (so `LEN`, an INT, can always say it) | 254 (its source says "per IEC standard"; ed. 3 says no such thing) |
+| `STRING[n]` and `STRING(n)` | Annex A `S_Byte_Str_Spec` writes `[n]`; §6.4.2.2 calls the length "parenthesized" | both | `(n)` only |
+| A string literal | §6.3.3, Table 6, Table 7, Annex A `S_Byte_Char_Value`: printable characters but `$`, `'`; `$` and two hexadecimal digits; `$$ $' $L $N $P $R $T`; `$"` only in a double-byte string (Table 7 note 3) | as the clauses; any other character, and `$"`, refused with what to write instead; `$N` (the newline, the implementer's) is a line feed, `$0A`; `STRING#'…'` | `$N` a line feed; also takes `''` for a quote (not in Annex A) |
+| Assigning a longer STRING | §6.6.1.2.2: "the result is Implementer specific" | cut to the target's length, the first characters kept; the same for an argument to a shorter input. An initial value longer than its variable is refused (there is no warning channel) | cut |
+| Comparing strings | §6.6.2.5.11: the shorter extended on the right with characters of value zero; by character codes | as the clause: `'Z' > 'AZ'`, `'AZ' > 'ABC'`, `'A' = 'A$00'` | agrees on what was compared |
+| An error of a string function | §6.6.2.5.11: an ANY_INT input below zero, a non-existent character position, a result longer than the maximum, are each an error | the scan stops with `StringArgument` or `StringTooLong`; a literal below zero is refused at compile time. A position is from 1; `MID`, `DELETE`, `REPLACE` take `P` + `L` − 1 ≤ `LEN`, so with `L` 0 `P` may be one past the end | clamps, or returns '' (not compared) |
+| INSERT's position | Table 34 feature 6: "Insert IN2 into IN1 after the P-th character position"; `INSERT('ABC', 'XY', 2)` is `'ABXYC'` | after the P-th; P from 0 (first) to `LEN(IN1)` (last) | before the P-th: `'AXYBC'` (deliberate difference) |
+| FIND of an empty string | Table 34 feature 9: the position where IN2 first begins, 0 if none | 1: an empty string stands at position 1 | not compared |
+| CONCAT's result | Table 34 feature 5, §6.6.2.5.11 | as long as all its inputs together, up to 32,767; longer stops the scan | as long as its longest input |
+| An integer to and from STRING | Table 22 footnote e: the "external representation" of the value | `INT_TO_STRING(-5)` is `'-5'`; `STRING_TO_DINT` reads an integer literal: a sign and decimal digits, or `2#`, `8#`, `16#` digits, single underscores between digits. Nothing else (no space, no type prefix): `BadNumber`. A value its type cannot hold wraps, as narrowing does | stops at the first character that is not a digit: `'16#7F'` is 16 (deliberate difference) |
 
 Three places where the standard leaves a choice or we go beyond it:
 
@@ -456,8 +515,13 @@ profile carries a stack depth and a call depth (§2.2, §2.3). Found while readi
 not built: an identifier
 with two underscores together, or one at its end, is accepted (the standard forbids both).
 
-The differential test lists the first three rows as deliberate differences from STruC++
-(167 of 6,120 values); a rounding difference must be exactly one apart to count as one.
+The differential test lists the first three rows, INSERT's position and the integer read
+from a based literal as deliberate differences from STruC++ (287 of 7,500 values); a rounding
+difference must be exactly one apart to count as one.
+
+Not built in L2c (each refused by name): WSTRING, CHAR and WCHAR, and so a string's character
+by subscript (`s[2]`, §6.4.2.2); an initial value on a TYPE; conversions between STRING and
+BOOL, REAL, LREAL or TIME; STRING in SEL, MAX, MIN, LIMIT, MUX.
 
 ## 3. Order of work
 
@@ -495,8 +559,10 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
 - L2. In three parts. **L2a** (done): a parser that recovers from errors and gives ranges, for
   the editor (§2.8); a keyword is refused as a name (§2.13). **L2b** (done): the limits the VM
   and the profiles enforce: the stack stops at the declared depth, profiles carry a stack
-  depth and a call depth, a jump into the middle of an instruction is refused at load. **L2c**: more of the standard library;
-  strings.
+  depth and a call depth, a jump into the middle of an instruction is refused at load. **L2c**, in two:
+  **L2c-1** (done): STRING, its literals, assignment, comparison, the functions of Table 34
+  and integer conversions; bytecode format 2 (§2.3, §2.13). **L2c-2**: more of the standard
+  library (numeric, selection, the functions of operators).
 - L3. **LD, FBD, SFC** (not IL, §2.1), each a front-end crate and an editor kind.
 
 **Later:** ESP32 and RP2040 firmware as runtime modules on real boards; a C backend; a Linux
@@ -510,7 +576,7 @@ Each step leaves `dev` working.
   and part of the logic module.
 - A controller runs bytecode, not native code: slower than STruC++'s native output (§5), and the
   price of memory safety, one format for every target, and variables enumerable by name.
-- The language coverage is ours to build. STruC++ covers far more today (OOP, pointers, strings,
+- The language coverage is ours to build. STruC++ covers far more today (OOP, pointers, WSTRING,
   80+ functions). Until §3 step 8 is far along, a program using those is refused by name.
 - Integer and real semantics are pinned by our tests against the standard's text (§2.13), and
   compared with the oracle. A program moved from OpenPLC that relies on a counter stopping at
@@ -523,16 +589,16 @@ Each step leaves `dev` working.
 | Part | Built |
 | :--- | :--- |
 | 2.1 Crates and layers | `mythos-logic-ir`, `-st`, `-vm`, `-backend-vm`, `-compiler`; `layers.rs` guards them |
-| 2.1 ST front-end | Several POUs in any order: TYPE (STRUCT, named ARRAY), FUNCTION (VAR_INPUT, VAR; positional and formal calls), FUNCTION_BLOCK (VAR_INPUT, VAR_OUTPUT, VAR; nesting; arrays of instances), one PROGRAM; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME; arrays of any dimensions with initial value lists; whole-structure and whole-array assignment; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between the elementary types; implicit widening per Figure 11; recursion refused naming the cycle; a keyword of the standard refused as a name; diagnostics for everything else (enumerations, subranges, strings, VAR_IN_OUT, methods, and more: each refused by name); every independent mistake of a source in one pass, each once, with the range it is about (§2.8); a body or a type nested more than 100 deep refused, a structure that contains itself told before anything follows it (§2.8) |
+| 2.1 ST front-end | Several POUs in any order: TYPE (STRUCT, named ARRAY), FUNCTION (VAR_INPUT, VAR; positional and formal calls), FUNCTION_BLOCK (VAR_INPUT, VAR_OUTPUT, VAR; nesting; arrays of instances), one PROGRAM; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME, STRING (`STRING[n]`, `STRING(n)`, 254 by default; literals with `$` combinations; assignment that cuts; comparison; LEN, LEFT, RIGHT, MID, CONCAT, INSERT, DELETE, REPLACE, FIND; integer to and from STRING; in functions, function blocks, arrays, structures and a TYPE name); arrays of any dimensions with initial value lists; whole-structure and whole-array assignment; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between the elementary types; implicit widening per Figure 11; recursion refused naming the cycle; a keyword of the standard refused as a name; diagnostics for everything else (enumerations, subranges, WSTRING, CHAR, VAR_IN_OUT, methods, and more: each refused by name); every independent mistake of a source in one pass, each once, with the range it is about (§2.8); a body or a type nested more than 100 deep refused, a structure that contains itself told before anything follows it (§2.8) |
 | 2.2 Profiles | `serde` data with a format version; `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format, stack depth, call depth) proven with profiles read from JSON; a profile written before the depths existed still loads and states no limit |
-| 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 1 (unchanged by L2b): bodies, call frames, instance-relative and region-confined addressing; loader checks, with every jump landing on an instruction of its body, and `load_within` a host's limits; run-time checks, budget; the stack and the calls stop at the depths the program declares; faults, with `IndexOutOfRange`, `CallDepthExceeded` and `StackOverflow` |
+| 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 2 (L2c: format 1 with strings, §2.3), and format 1 read as it was written (a VM reads every format it extends; an instruction newer than a program's format refused at load): bodies, call frames, instance-relative and region-confined addressing; loader checks, with every jump landing on an instruction of its body, and `load_within` a host's limits; run-time checks, budget; the stack and the calls stop at the depths the program declares; faults, with `IndexOutOfRange`, `CallDepthExceeded`, `StackOverflow`, and for strings `StringTooLong`, `StringArgument`, `BadString`, `BadNumber` |
 | 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
 | 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Not built: forcing variables, state carried across a replacement, a watchdog on the scan thread, RETAIN |
 | 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run`, `/stop` and `/watch`, `GET`/`PUT /api/v1/projects/:id/runtimes`, each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
 | 2.6 The logic module | Built: `plugins/logic` (programs, bindings, check, build; eight MCP tools), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes; its workbench UI `frontend/packages/logic-ui` (tree section, program editor, load, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus. Not built: unit tests in ST, programs in a device's slice |
 | 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); editors for LD, FBD, SFC are not built. 2.10: not built |
-| 2.9 Emulators | Built: six programs, 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else |
-| 2.12 Oracle | `differential_strucpp.rs`: 6 programs, 60 cycles, 6,120 values, all agree except the three deliberate rows of §2.13 (167 values). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
+| 2.9 Emulators | Built: seven programs (`strings.st` since L2c-1), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else |
+| 2.12 Oracle | `differential_strucpp.rs`: 7 programs, 60 cycles, 7,500 values, all agree except the five deliberate rows of §2.13 (287 values: 167 of the first three, 60 each of INSERT's position and a based literal read as an integer). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
 
 Evidence of the spike (2026-11-17):
 
@@ -587,9 +653,10 @@ Evidence of the spike (2026-11-17):
   optimised. Windows and macOS: not measured.
 - **Microcontrollers** (`scripts/logic-vm-footprint.sh`, CI job `logic-vm-bare-metal`): the VM
   with its loader and scan loop, `opt-level=s`, LTO, linked with `core` alone: **RP2040**
-  (thumbv6m-none-eabi) 19,304 bytes of code (19,200 before L2b, 15,884 before format 1);
-  **ESP32-C3** (riscv32imc-unknown-none-elf) 22,812 bytes (22,908 before L2b, 19,146 before
-  format 1). The L2b figures and the ones before it were both measured with rustc 1.99.1; the
+  (thumbv6m-none-eabi) 23,272 bytes of code with strings and format 1 read as well (23,216
+  with strings, L2c-1; 19,304 before, 19,200 before L2b, 15,884 before format 1);
+  **ESP32-C3** (riscv32imc-unknown-none-elf) 27,254 bytes (27,204 with strings; 22,812 before,
+  22,908 before L2b, 19,146 before format 1). The L2b figures and the ones before it were both measured with rustc 1.99.1; the
   RISC-V build came out smaller with more in it, which is the compiler's doing and was not
   looked into. Run on a real board: not yet (none attached). The original ESP32 and the S3 are
   Xtensa, which needs Espressif's Rust toolchain: not built.
@@ -606,3 +673,38 @@ Evidence of the spike (2026-11-17):
   1,555,011 bytes in 42.5 ms (20.3 ms before). With three of the four proved targets kept (not
   the head of the loop before a nest), the first took 152 ms: the walks to the heads of nested
   loops started at the top of the body. Load time on a microcontroller: NOT MEASURED.
+- **L2c-1** (strings): 21 tests added to the five logic crates (179, from 158), among them
+  `strings_run_on_the_vm.rs` (14: every example of Table 34, the edges, every error of
+  §6.6.2.5.11 as its fault, strings through functions, blocks, arrays and structures, an element
+  read where it is with the stack it needs pinned) and four loader tests for string operands;
+  `runtime_vm.rs` watches a STRING and an element of an array of them through the real module
+  process; the editor's tests show one. `strings.st` joins the corpus: the oracle compares
+  1,380 more values (7,500 in all; the 120 that differ are INSERT's position and a based
+  literal, §2.13), the emulators run it on both instruction sets (all 14 runs equal), and the
+  fuzz damages it: 20,733 damaged sources, and of 4,000 damaged copies of its bytecode 1,557
+  pass the loader and are scanned (the test now requires one in twenty of each program's).
+  Mutation-checked with 21 mutations, each in a copy of the tree: every one turned named tests
+  red. One survived at first (copying an array element to scratch before a string instruction
+  reads it): the copy was redundant, as the VM pops an operand's offset itself, and was
+  removed; the two mutations of the stack accounting that replaced it then went red once the
+  test put a comparison of elements before its deepest statement.
+- **Format versions** (review of L2c-1: the loader refused format 1, which every controller
+  running a program held). The six corpus programs compiled by the format-1 and the format-2
+  compiler, each tree extracted with its own target directory, differ only in the version
+  field and the checksum (the reviewer's comparison); the diff of the VM changes no format-1
+  opcode, operand layout, loader check or run-time step. 5 tests added to the five logic
+  crates (184, from 179), and one to the runtime module, which takes a format-1 program
+  through its own configuration and refuses a newer one. `older_formats_run_alike.rs`: the
+  six format-1 fixtures (made once by `dev`'s compiler at `f4637cd`, committed with their
+  hashes) run 200 scans each beside the same source compiled now, the same inputs written
+  before every scan, memory equal after every scan and changed by more than half of them.
+  Mutation-checked, each in a copy of the tree: reading only the current version turns
+  `every_format_this_vm_extends_is_read_and_runs_alike`,
+  `an_instruction_newer_than_the_programs_format_is_refused_at_load`,
+  `format_1_bytecode_runs_to_the_same_scans_as_its_source_compiled_now` and the runtime
+  module's `a_program_built_before_an_update_of_the_vm_is_still_taken` red; reading any
+  version turns `a_format_newer_than_this_vm_is_refused_not_guessed_at`,
+  `a_program_of_the_format_before_this_one_is_refused_by_its_version` and the runtime
+  module's test red; skipping the check of each instruction against the program's version
+  turns `an_instruction_newer_than_the_programs_format_is_refused_at_load` red. The oracle
+  and the emulators are unchanged (7,500 values, 287 deliberate; all 14 runs equal).

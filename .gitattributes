@@ -2,3 +2,6 @@
 # them from a fixed seed (damaged_sources_never_panic.rs) damages the same text everywhere:
 # what it finds on Windows is reproducible on Linux. That test damages CRLF forms on purpose.
 *.st text eol=lf
+
+# Committed bytecode (tests/fixtures/): bytes, never converted.
+*.mlbc binary
