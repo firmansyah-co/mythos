@@ -14,12 +14,19 @@
 //! IEC 60559 values are given where a result is not a real number (SQRT(-1) and LN(-1) are
 //! NaN, LN(0) is -infinity, EXP(1000) is +infinity), as for REAL division.
 
+// The coefficients are written as fdlibm publishes them, digit for digit, so they can be
+// checked against it; the compiler rounds each to the nearest double, which is the value
+// fdlibm uses. Where a constant is one of `core`'s, `core`'s is used.
+#![allow(clippy::excessive_precision)]
+
+use core::f64::consts::{FRAC_2_PI, FRAC_PI_2, FRAC_PI_4, LOG2_E};
+
 const LN2_HI: f64 = 6.931_471_803_691_238_164_90e-01;
 const LN2_LO: f64 = 1.908_214_929_270_587_700_02e-10;
-const INV_LN2: f64 = 1.442_695_040_888_963_387_00e+00;
-const PI: f64 = 3.141_592_653_589_793_116_00e+00;
+const INV_LN2: f64 = LOG2_E;
+const PI: f64 = core::f64::consts::PI;
 const PI_LO: f64 = 1.224_646_799_147_353_207_2e-16;
-const PIO2_HI: f64 = 1.570_796_326_794_896_558_00e+00;
+const PIO2_HI: f64 = FRAC_PI_2;
 const PIO2_LO: f64 = 6.123_233_995_736_766_035_87e-17;
 
 fn bits(x: f64) -> u64 {
@@ -235,7 +242,7 @@ pub fn log10(x: f64) -> f64 {
 
 /// x mod π/2: (n mod 4, y0 + y1) with x = n·π/2 + y0 + y1, |y0| <= π/4 about.
 fn rem_pio2(x: f64) -> (i32, f64, f64) {
-    const INV_PIO2: f64 = 6.366_197_723_675_813_824_33e-01;
+    const INV_PIO2: f64 = FRAC_2_PI;
     const PIO2_1: f64 = 1.570_796_326_734_125_614_17e+00;
     const PIO2_1T: f64 = 6.077_100_506_506_192_249_32e-11;
     const PIO2_2: f64 = 6.077_100_506_303_965_976_60e-11;
@@ -243,7 +250,7 @@ fn rem_pio2(x: f64) -> (i32, f64, f64) {
     const PIO2_3: f64 = 2.022_266_248_711_166_455_80e-21;
     const PIO2_3T: f64 = 8.478_427_660_368_899_569_97e-32;
     let ax = abs(x);
-    if ax <= core::f64::consts::FRAC_PI_4 {
+    if ax <= FRAC_PI_4 {
         return (0, x, 0.0);
     }
     if ax < 1_647_099.0 {
@@ -289,7 +296,7 @@ const TWO_OVER_PI: [u32; 40] = [
 
 /// Bit `i` of 2/π after the point, counting the first as 1; 0 past the table.
 fn two_over_pi_bit(i: i32) -> u64 {
-    if i < 1 || i > 1280 {
+    if !(1..=1280).contains(&i) {
         return 0;
     }
     let i = (i - 1) as usize;
@@ -443,9 +450,9 @@ pub fn tan(x: f64) -> f64 {
 pub fn atan(x: f64) -> f64 {
     const HI: [f64; 4] = [
         4.636_476_090_008_060_935_15e-01,
-        7.853_981_633_974_482_789_99e-01,
+        FRAC_PI_4,
         9.827_937_232_473_290_540_82e-01,
-        1.570_796_326_794_896_558_00e+00,
+        FRAC_PI_2,
     ];
     const LO: [f64; 4] = [
         2.269_877_745_296_168_709_24e-17,
@@ -518,11 +525,7 @@ pub fn atan2(y: f64, x: f64) -> f64 {
     let (ax, ay) = (abs(x), abs(y));
     if ax == f64::INFINITY {
         return if ay == f64::INFINITY {
-            signed(if neg_x {
-                3.0 * core::f64::consts::FRAC_PI_4
-            } else {
-                core::f64::consts::FRAC_PI_4
-            })
+            signed(if neg_x { 3.0 * FRAC_PI_4 } else { FRAC_PI_4 })
         } else if neg_x {
             signed(PI + PI_LO)
         } else {
@@ -572,7 +575,7 @@ pub fn acos(x: f64) -> f64 {
 /// x rounded toward zero (TRUNC, IEC 61131-3 ed. 3 Table 22 footnote c).
 pub fn trunc(x: f64) -> f64 {
     // From 2^52 on every double is an integer; NaN and the infinities are themselves.
-    if !(abs(x) < 4_503_599_627_370_496.0) {
+    if is_nan(x) || abs(x) >= 4_503_599_627_370_496.0 {
         return x;
     }
     let t = x as i64 as f64;
