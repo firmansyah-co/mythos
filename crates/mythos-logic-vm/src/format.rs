@@ -49,11 +49,21 @@ use crate::fb::FbKind;
 
 /// The first four bytes of every program.
 pub const MAGIC: [u8; 4] = *b"MLBC";
-/// The format this VM reads. A program of another version is refused, never guessed at.
+/// The format this VM's compiler makes, and the newest this VM reads.
 ///
 /// 2: strings (`STRING[n]` and the instructions on them). 1: functions, function blocks,
 /// arrays and structures.
+///
+/// A VM reads every format it extends (ADR-013, "Format versions"): each format from
+/// [`OLDEST_FORMAT_VERSION`] to this one only adds instructions to the one before, and
+/// changes no header field, no operand layout and no instruction's meaning, so a program
+/// of an older version is read exactly as it was written. A format that changed what an
+/// older program means would start a new line, and this VM would refuse what came before
+/// it. A version outside the range is refused, never guessed at.
 pub const FORMAT_VERSION: u16 = 2;
+/// The oldest format this VM reads. Format 0, the spike's, had a 16-byte header without a
+/// call depth or a table of bodies: this VM does not extend it.
+pub const OLDEST_FORMAT_VERSION: u16 = 1;
 const HEADER: usize = 20;
 /// Bytes of one entry of the table of bodies.
 const BODY: usize = 8;
@@ -360,6 +370,13 @@ pub(crate) fn access(opcode: u8) -> Option<(bool, Cell, Reach)> {
     })
 }
 
+/// The format that brought `opcode` in, or `None` for an unknown opcode. A program of an
+/// older format that holds it is refused: whatever wrote it did not write that format.
+pub fn introduced_in(opcode: u8) -> Option<u16> {
+    instruction_len(opcode)?;
+    Some(if string_shape(opcode).is_some() { 2 } else { 1 })
+}
+
 /// Bytes an instruction takes, opcode included, or `None` for an unknown opcode.
 pub fn instruction_len(opcode: u8) -> Option<usize> {
     use op::*;
@@ -403,12 +420,16 @@ pub enum LoadError {
     /// Shorter than its header says it is, or longer.
     WrongLength,
     NotAProgram,
-    /// Written for another format version.
+    /// Written for a format version this VM does not read: one newer than
+    /// [`FORMAT_VERSION`], or one older than [`OLDEST_FORMAT_VERSION`].
     UnsupportedVersion(u16),
     /// The checksum does not match: the bytes were damaged.
     Corrupt,
     /// An opcode this VM does not know, at this code offset.
     UnknownInstruction(u32),
+    /// An instruction the format version the program declares does not have, at this code
+    /// offset: a later format brought it in ([`introduced_in`]).
+    NotInFormat(u32),
     /// An instruction whose operands run past the end of the code.
     Truncated(u32),
     /// A load, store, copy, function block instance or array region outside the program's
@@ -458,6 +479,7 @@ pub struct Program<'a> {
     pub(crate) code: &'a [u8],
     /// The table of bodies, 8 bytes each.
     bodies: &'a [u8],
+    version: u16,
     stack_depth: u16,
     call_depth: u16,
 }
@@ -483,9 +505,9 @@ impl<'a> Program<'a> {
             return Err(LoadError::WrongLength);
         }
         // The version comes before anything else is believed: another format may lay its
-        // header out differently.
+        // header out differently. Every version this VM reads lays it out as format 1 does.
         let version = u16_at(bytes, 4);
-        if version != FORMAT_VERSION {
+        if !(OLDEST_FORMAT_VERSION..=FORMAT_VERSION).contains(&version) {
             return Err(LoadError::UnsupportedVersion(version));
         }
         if bytes.len() < HEADER + 4 {
@@ -510,11 +532,12 @@ impl<'a> Program<'a> {
         let bodies = &bytes[HEADER..HEADER + table];
         let init = &bytes[HEADER + table..HEADER + table + memory];
         let code = &bytes[HEADER + table + memory..crc_at];
-        verify(code, bodies, memory as u32)?;
+        verify(code, bodies, memory as u32, version)?;
         Ok(Program {
             init,
             code,
             bodies,
+            version,
             stack_depth,
             call_depth,
         })
@@ -534,6 +557,11 @@ impl<'a> Program<'a> {
             return Err(LoadError::CallsTooDeep(program.call_depth));
         }
         Ok(program)
+    }
+
+    /// The format version it was written in.
+    pub fn format_version(&self) -> u16 {
+        self.version
     }
 
     /// Bytes of memory the host must give it.
@@ -577,12 +605,12 @@ fn inside(addr: u32, len: u32, limit: u32) -> bool {
     addr.checked_add(len).is_some_and(|end| end <= limit)
 }
 
-/// Walk the table of bodies and then every body: every opcode known, every operand inside the
-/// code, every address inside memory (or, relative to the base, inside the instance the body
-/// runs on), every jump to the start of an instruction of its own body, every call to an
-/// earlier body. (A call goes to the start of a body, which is where its first instruction
+/// Walk the table of bodies and then every body: every opcode known and in the program's
+/// format `version`, every operand inside the code, every address inside memory (or,
+/// relative to the base, inside the instance the body runs on), every jump to the start of
+/// an instruction of its own body, every call to an earlier body. (A call goes to the start of a body, which is where its first instruction
 /// starts: each body is decoded from its own start.)
-fn verify(code: &[u8], bodies: &[u8], memory: u32) -> Result<(), LoadError> {
+fn verify(code: &[u8], bodies: &[u8], memory: u32, version: u16) -> Result<(), LoadError> {
     let count = bodies.len() / BODY;
     if count == 0 {
         return Err(LoadError::BadBodies);
@@ -605,20 +633,21 @@ fn verify(code: &[u8], bodies: &[u8], memory: u32) -> Result<(), LoadError> {
         } else {
             code.len()
         };
-        verify_body(code, start_of(k), end, k, count, &size_of, memory)?;
+        verify_body(code, start_of(k)..end, k, count, &size_of, memory, version)?;
     }
     Ok(())
 }
 
 fn verify_body(
     code: &[u8],
-    start: usize,
-    end: usize,
+    body: core::ops::Range<usize>,
     this: usize,
     count: usize,
     size_of: &dyn Fn(usize) -> u32,
     memory: u32,
+    version: u16,
 ) -> Result<(), LoadError> {
+    let (start, end) = (body.start, body.end);
     let is_program = this + 1 == count;
     let instance = size_of(this);
     // A place of `len` bytes: a known mode, its region inside the memory or the instance, and
@@ -651,6 +680,9 @@ fn verify_body(
         let at = pc as u32;
         let opcode = code[pc];
         let len = instruction_len(opcode).ok_or(LoadError::UnknownInstruction(at))?;
+        if introduced_in(opcode).is_some_and(|since| since > version) {
+            return Err(LoadError::NotInFormat(at));
+        }
         if pc + len > end {
             return Err(LoadError::Truncated(at));
         }

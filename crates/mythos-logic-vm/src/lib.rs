@@ -22,5 +22,8 @@ pub mod format;
 mod strings;
 mod vm;
 
-pub use format::{crc32, string_size, ElemType, Limits, LoadError, Program, FORMAT_VERSION, MAGIC};
+pub use format::{
+    crc32, string_size, ElemType, Limits, LoadError, Program, FORMAT_VERSION, MAGIC,
+    OLDEST_FORMAT_VERSION,
+};
 pub use vm::{cold_start, read, read_string, scan, write, Fault, Frame, ScanReport, Value};

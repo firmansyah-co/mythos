@@ -1,9 +1,10 @@
 //! A program the VM is given may have been damaged on the way, or made by something other than
 //! our compiler. Every way it can be wrong is refused at load, before a scan.
 
-use mythos_logic_vm::format::{op, PLACE_INDEXED, PLACE_RELATIVE};
+use mythos_logic_vm::format::{instruction_len, introduced_in, op, PLACE_INDEXED, PLACE_RELATIVE};
 use mythos_logic_vm::{
     cold_start, crc32, scan, Fault, Frame, Limits, LoadError, Program, FORMAT_VERSION, MAGIC,
+    OLDEST_FORMAT_VERSION,
 };
 
 /// A program from its parts, with a correct checksum. `bodies` are each body's code and the
@@ -153,12 +154,90 @@ fn a_damaged_byte_is_found_by_the_checksum() {
 }
 
 #[test]
-fn another_format_version_is_refused_not_guessed_at() {
-    let bytes = build(FORMAT_VERSION + 1, 1, &[], &[op::END]);
-    assert_eq!(
-        Program::load(&bytes).err(),
-        Some(LoadError::UnsupportedVersion(FORMAT_VERSION + 1))
-    );
+fn a_format_newer_than_this_vm_is_refused_not_guessed_at() {
+    for version in [FORMAT_VERSION + 1, FORMAT_VERSION + 2, u16::MAX] {
+        let bytes = build(version, 1, &[], &[op::END]);
+        assert_eq!(
+            Program::load(&bytes).err(),
+            Some(LoadError::UnsupportedVersion(version))
+        );
+    }
+}
+
+#[test]
+fn every_format_this_vm_extends_is_read_and_runs_alike() {
+    // The literal pins what this VM reads: a change of either constant is a decision, not a
+    // side effect (ADR-013, "Format versions").
+    assert_eq!((OLDEST_FORMAT_VERSION, FORMAT_VERSION), (1, 2));
+    // mem[0] := mem[4] + 1, in instructions every format has.
+    let mut code = with_addr(op::LD_I32, 4);
+    code.extend(with_addr(op::PUSH32, 1));
+    code.push(op::ADD_I32);
+    code.extend(with_addr(op::ST_32, 0));
+    code.push(op::END);
+    let mut init = [0u8; 8];
+    init[4..8].copy_from_slice(&41i32.to_le_bytes());
+    for version in OLDEST_FORMAT_VERSION..=FORMAT_VERSION {
+        let bytes = build(version, 2, &init, &code);
+        let p = Program::load(&bytes).expect("a format this VM extends loads");
+        assert_eq!(p.format_version(), version);
+        let (r, mem) = run(&bytes);
+        assert_eq!(r, Ok(()), "format {version}");
+        assert_eq!(&mem[0..4], &42i32.to_le_bytes(), "format {version}");
+    }
+}
+
+#[test]
+fn the_format_each_instruction_came_in_is_pinned() {
+    // Format 2 added the instructions on strings and nothing else; every other opcode this
+    // VM knows is format 1's. A literal, so that moving an opcode between formats is seen.
+    for opcode in 0..=u8::MAX {
+        let expected = if (op::SMOVE..=op::STOI).contains(&opcode) {
+            Some(2)
+        } else if instruction_len(opcode).is_some() {
+            Some(1)
+        } else {
+            None
+        };
+        assert_eq!(introduced_in(opcode), expected, "opcode {opcode:#04x}");
+    }
+    assert_eq!((op::SMOVE, op::STOI), (0xD0, 0xDC));
+}
+
+#[test]
+fn an_instruction_newer_than_the_programs_format_is_refused_at_load() {
+    // mem[0] := 1 (10 bytes, format 1), then one instruction on strings, then END. Each of
+    // its string operands names the STRING[4] at 2 (6 bytes).
+    let memory = [0u8; 8];
+    let s = text(4, &place(ABSOLUTE, 2, 6));
+    for opcode in 0..=u8::MAX {
+        if introduced_in(opcode) != Some(2) {
+            continue;
+        }
+        let len = instruction_len(opcode).unwrap();
+        let mut code = with_addr(op::PUSH32, 1);
+        code.extend(with_addr(op::ST_BOOL, 0));
+        code.push(opcode);
+        if opcode == op::SCMP {
+            code.push(0);
+        }
+        while code.len() < 10 + len {
+            code.extend_from_slice(&s);
+        }
+        assert_eq!(code.len(), 10 + len, "opcode {opcode:#04x}");
+        code.push(op::END);
+        // In the format that has it, it loads; written as format 1, it is refused where it is.
+        assert_eq!(
+            refused(&build(2, 4, &memory, &code)),
+            None,
+            "opcode {opcode:#04x}"
+        );
+        assert_eq!(
+            refused(&build(1, 4, &memory, &code)),
+            Some(LoadError::NotInFormat(10)),
+            "opcode {opcode:#04x}"
+        );
+    }
 }
 
 #[test]
