@@ -82,7 +82,7 @@ intent and may describe things that do not exist.
 | `crates/mythos-module-tests` | Modules tested as real processes. |
 | `crates/mythos-cli` | The `mythos` command-line tool. |
 | `crates/mythos-logic-ir` | The intermediate representation of control logic: what every language produces and every target consumes (ADR-013). |
-| `crates/mythos-logic-st` | The Structured Text front-end (a subset so far): ST to the IR. |
+| `crates/mythos-logic-st` | The Structured Text front-end (a subset so far): ST to the IR, or every independent mistake of the source, each with the range it is about. |
 | `crates/mythos-logic-backend-vm` | The VM backend: the IR to bytecode. |
 | `crates/mythos-logic-vm` | The VM that runs compiled logic: `no_std`, no allocation, for the PC runner and microcontrollers. |
 | `crates/mythos-logic-compiler` | Joins a front-end, a target profile and a backend. |

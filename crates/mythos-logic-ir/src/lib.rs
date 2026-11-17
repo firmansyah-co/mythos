@@ -13,9 +13,11 @@
 
 mod fb;
 mod ir;
+mod keywords;
 
 pub use fb::{Direction, FbMember, StdFb};
 pub use ir::*;
+pub use keywords::{is_keyword, KEYWORDS, TYPE_KEYWORDS};
 
 /// The version of the IR's shape. A backend given another version refuses it.
 ///
@@ -23,18 +25,59 @@ pub use ir::*;
 /// program), structures and arrays; places with a path. 0 was one program of scalar variables.
 pub const IR_VERSION: u32 = 1;
 
-/// A place in a source text.
+/// How deep a front-end lets constructs of a body nest within one another: statements within
+/// statements, and within one statement, operations, calls, subscripts and parentheses. An
+/// operation counts once for each operator of a chain (`a + b + c` is two deep), because the
+/// tree a chain makes is that deep. A source nested deeper is refused with a diagnostic.
+///
+/// Every pass over a unit (checking, lowering, a backend's walk) is recursive, and a compiler
+/// runs inside the logic module's service process: a source must never be able to exhaust
+/// the stack it is compiled on. The smallest one is 2 MiB (a tokio worker thread, a Rust test
+/// thread). `deep_sources_are_refused.rs` compiles the deepest source of each kind allowed on
+/// a thread of half that, in a debug build, where frames are largest.
+pub const MAX_NESTING: usize = 100;
+
+/// How deep a front-end lets types contain one another: a structure, an array or a function
+/// block instance within another. A type nested deeper is refused with a diagnostic, for the
+/// same reason as [`MAX_NESTING`].
+pub const MAX_TYPE_NESTING: usize = 100;
+
+/// A stretch of a source text: from `line`:`col`, where it starts, up to `end_line`:`end_col`,
+/// the first position after it. Lines and columns count from 1; a column counts characters
+/// (Unicode scalar values), not bytes, and a tab is one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Span {
     pub line: u32,
     pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
 }
 
-/// A message about the source, at a line and column (0:0 when it is about the whole program).
+impl Span {
+    /// From where this one starts to where `last` ends.
+    pub fn to(self, last: Span) -> Span {
+        Span {
+            end_line: last.end_line,
+            end_col: last.end_col,
+            ..self
+        }
+    }
+}
+
+/// A message about the source, and the stretch of it the message is about.
+///
+/// `line` and `col` say where that stretch starts, `end_line` and `end_col` where it ends:
+/// all four count from 1, and the end is exclusive, so `3:8` to `3:9` is the one character at
+/// line 3, column 8 (an editor underlines from the start up to, not including, the end). A
+/// column counts characters, not bytes. The end equals the start when the message is about a
+/// point with nothing to underline, such as the end of the source. All four are 0 when the
+/// message is about the whole program and no place in it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Diagnostic {
     pub line: u32,
     pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
     pub message: String,
 }
 
@@ -43,6 +86,8 @@ impl Diagnostic {
         Diagnostic {
             line: span.line,
             col: span.col,
+            end_line: span.end_line,
+            end_col: span.end_col,
             message: message.into(),
         }
     }
@@ -52,6 +97,8 @@ impl Diagnostic {
         Diagnostic {
             line: 0,
             col: 0,
+            end_line: 0,
+            end_col: 0,
             message: message.into(),
         }
     }

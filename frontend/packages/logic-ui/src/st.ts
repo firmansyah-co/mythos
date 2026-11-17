@@ -102,7 +102,11 @@ export function tokenize(source: string): Token[] {
   return tokens;
 }
 
-/** The offset of a 1-based line and column, or `null` when the source has no such place. */
+/**
+ * The offset in `source` (as JavaScript counts, in UTF-16 units) of a 1-based line and column,
+ * the column counted in characters as the compiler counts it; `null` when the source has no
+ * such place. One past the last character of a line is a place.
+ */
 export function offsetOf(source: string, line: number, col: number): number | null {
   if (line < 1 || col < 1) return null;
   let start = 0;
@@ -111,7 +115,30 @@ export function offsetOf(source: string, line: number, col: number): number | nu
     if (next < 0) return null;
     start = next + 1;
   }
-  const end = source.indexOf('\n', start);
-  const length = (end < 0 ? source.length : end) - start;
-  return col - 1 <= length ? start + col - 1 : null;
+  const newline = source.indexOf('\n', start);
+  const end = newline < 0 ? source.length : newline;
+  let at = start;
+  for (let current = 1; current < col; current += 1) {
+    if (at >= end) return null;
+    at += (source.codePointAt(at) ?? 0) > 0xffff ? 2 : 1;
+  }
+  return at;
+}
+
+/**
+ * The stretch of `source` a diagnostic is about, as offsets from `from` up to `to`: its range
+ * when it has one; at a point, the word there (or the one character), so that it can be seen.
+ * `null` when it is about no place of this text, or about its very end.
+ */
+export function rangeOf(
+  source: string,
+  at: { line: number; col: number; end_line: number; end_col: number }
+): { from: number; to: number } | null {
+  const from = offsetOf(source, at.line, at.col);
+  if (from === null) return null;
+  const to = offsetOf(source, at.end_line, at.end_col);
+  if (to !== null && to > from) return { from, to };
+  if (from >= source.length) return null;
+  const word = /^[A-Za-z0-9_]+|^[^\s]/.exec(source.slice(from))?.[0] ?? source.slice(from, from + 1);
+  return { from, to: from + word.length };
 }

@@ -3,7 +3,8 @@
 //! A project's programs live in the module's data directory (`<project>/logic/`): the list
 //! with each program's settings and its bindings to tags in `programs.json`, and each
 //! program's source in `programs/<name>.st`. The module checks a program (the compiler's
-//! diagnostics, with line and column, and its variables for the binding table) and builds it:
+//! diagnostics, each with the range of the source it is about, and its variables for the
+//! binding table) and builds it:
 //! compiled for its target, bindings checked against its variables, packed as the runtime
 //! instance the core loads (`PUT /api/v1/projects/:id/runtimes`).
 //!
@@ -12,7 +13,7 @@
 //! project's runtimes.
 
 use async_trait::async_trait;
-use mythos_logic_compiler::{compile, Symbol, TargetProfile};
+use mythos_logic_compiler::{compile, Diagnostic, Symbol, TargetProfile};
 use mythos_module::protocol::{
     HttpCall, HttpReply, InputBinding, InputOf, ModuleKind, ModuleManifest, OutputBinding,
     PublishedBinding, RouteDecl, RouteScope, RuntimeProgram, PROTOCOL_VERSION,
@@ -277,11 +278,15 @@ fn check(entry: &ProgramEntry, source: &str) -> Value {
     let target = match TargetProfile::by_name(&entry.target) {
         Some(target) => target,
         None => {
+            // Not about a place in the source: in the shape of the compiler's own, so
+            // whatever reads diagnostics reads one kind.
             return json!({
                 "ok": false,
-                "diagnostics": [{"line": 0, "col": 0,
-                    "message": format!("'{}' is not a target profile", entry.target)}],
-            })
+                "diagnostics": [Diagnostic::whole(format!(
+                    "'{}' is not a target profile",
+                    entry.target
+                ))],
+            });
         }
     };
     match compile(source, &target) {
@@ -488,7 +493,7 @@ pub fn manifest() -> ModuleManifest {
                 "Remove a program and its source from a project. A runtime that already runs it is not touched.",
                 None, &[]),
             route("POST", "/programs/:program/check", "viewer", "check_logic_program",
-                "Compile a program without building it: its diagnostics with line and column, or its variables and what its bindings get wrong. With 'source' it checks that text instead of the saved one.",
+                "Compile a program without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program), or its variables and what its bindings get wrong. With 'source' it checks that text instead of the saved one.",
                 Some(json!({
                     "type": "object",
                     "properties": { "source": { "type": "string" } }
@@ -770,9 +775,19 @@ mod tests {
             "PROGRAM Tank\nVAR a : INT; END_VAR\n  a := b;\nEND_PROGRAM",
         );
         assert_eq!(bad["ok"], false);
+        // The whole list: one mistake, with where it starts and where it ends.
         assert_eq!(
-            bad["diagnostics"][0],
-            json!({"line": 3, "col": 8, "message": "b is not declared"})
+            bad["diagnostics"],
+            json!([{"line": 3, "col": 8, "end_line": 3, "end_col": 9,
+                "message": "b is not declared"}])
+        );
+        // A target that does not exist is told in the same shape, about no place.
+        let mut nowhere = entry();
+        nowhere.target = "plc-9000".into();
+        assert_eq!(
+            check(&nowhere, TANK)["diagnostics"],
+            json!([{"line": 0, "col": 0, "end_line": 0, "end_col": 0,
+                "message": "'plc-9000' is not a target profile"}])
         );
 
         let good = check(&entry(), TANK);

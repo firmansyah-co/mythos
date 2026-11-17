@@ -266,7 +266,8 @@ async fn a_program_is_written_checked_built_loaded_and_runs_the_plant() {
     assert_eq!(checked["ok"], true, "{checked}");
     assert_eq!(checked["variables"], json!([]), "{checked}");
 
-    // A text is checked without being saved: the diagnostics have a line and a column.
+    // A text is checked without being saved: a diagnostic says where what it is about starts
+    // and ends (the end exclusive), so an editor can underline `b`.
     let wrong = "PROGRAM Tank\nVAR a : INT; END_VAR\n  a := b;\nEND_PROGRAM";
     let checked = rig
         .eng(
@@ -279,7 +280,7 @@ async fn a_program_is_written_checked_built_loaded_and_runs_the_plant() {
     assert_eq!(checked["ok"], false, "{checked}");
     assert_eq!(
         checked["diagnostics"],
-        json!([{"line": 3, "col": 8, "message": "b is not declared"}]),
+        json!([{"line": 3, "col": 8, "end_line": 3, "end_col": 9, "message": "b is not declared"}]),
     );
     let read = rig.eng("GET", &tank, None, 200).await;
     assert_eq!(read["source"], created["source"], "the check saved nothing");
@@ -422,6 +423,63 @@ async fn a_program_is_written_checked_built_loaded_and_runs_the_plant() {
     assert_eq!(rig.tank().await["mode"], "run");
     assert_eq!(rig.sim.holding(1).await, Some(600));
 
+    rig.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_source_made_to_exhaust_the_stack_is_refused_and_the_module_answers_on() {
+    // The compiler runs on a thread of the module's runtime. Nested thousands deep, or with a
+    // structure that holds itself, a source once overflowed that thread's stack and killed
+    // the module: here it is told, and the same process answers the next request.
+    let rig = rig().await;
+    let deep = format!("{PROGRAMS}/Deep");
+    rig.eng("POST", PROGRAMS, Some(json!({"name": "Deep"})), 201)
+        .await;
+    let nested = |body: String| {
+        format!("PROGRAM Deep\nVAR x : INT; b : BOOL; END_VAR\n{body}\nEND_PROGRAM\n")
+    };
+    let sources = [
+        nested(format!("x := {}x{};", "(".repeat(5_000), ")".repeat(5_000))),
+        nested(format!("x := x{};", " + x".repeat(5_000))),
+        nested(format!("{} x := 1; {}", "IF b THEN ".repeat(5_000), "END_IF; ".repeat(5_000))),
+        "TYPE L : STRUCT a : INT; r : L; END_STRUCT; END_TYPE\nPROGRAM Deep\nVAR x : L; END_VAR\nx.a := 1;\nEND_PROGRAM\n".to_string(),
+    ];
+    for source in sources {
+        let checked = rig
+            .eng(
+                "POST",
+                &format!("{deep}/check"),
+                Some(json!({"source": source})),
+                200,
+            )
+            .await;
+        assert_eq!(checked["ok"], false, "{checked}");
+        let told = checked["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            told.contains("nested more than") || told.contains("contains itself"),
+            "{checked}"
+        );
+        rig.eng(
+            "PUT",
+            &format!("{deep}/source"),
+            Some(json!({"source": source})),
+            200,
+        )
+        .await;
+        let refused = rig.eng("POST", &format!("{deep}/build"), None, 400).await;
+        assert_eq!(refused["diagnostics"][0]["message"], told, "{refused}");
+    }
+    rig.eng(
+        "PUT",
+        &format!("{deep}/source"),
+        Some(json!({"source": TANK.replace("Tank", "Deep")})),
+        200,
+    )
+    .await;
+    let checked = rig.eng("POST", &format!("{deep}/check"), None, 200).await;
+    assert_eq!(checked["ok"], true, "the module still answers: {checked}");
     rig.close().await;
 }
 
