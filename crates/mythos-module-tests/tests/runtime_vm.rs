@@ -12,6 +12,7 @@ use mythos_core::runtimes::{
 };
 use mythos_core::tag::TagCatalog;
 use mythos_logic_compiler::{compile, TargetProfile};
+use mythos_module::protocol::{RuntimeMode, WatchReply, WatchedValue};
 use mythos_pal::DefaultShm;
 use mythos_shm::ShmWriterHandle;
 use serde_json::{json, Value};
@@ -71,6 +72,32 @@ VAR scans : DINT; END_VAR
   IF level_ok THEN
     pump := TRUE;
     speed := 1000 / level;
+  END_IF;
+END_PROGRAM
+";
+
+/// As TANK, with what watching reaches beyond a variable bound to a tag: locals, arrays, a
+/// timer's members, a REAL.
+const WATCHED: &str = "
+PROGRAM Tank
+VAR_INPUT level : INT; level_ok : BOOL; setpoint : INT := 50; END_VAR
+VAR_OUTPUT pump : BOOL; speed : INT; END_VAR
+VAR
+  scans : DINT;
+  hist : ARRAY [1..3] OF INT := [10, 20, 30];
+  grid : ARRAY [0..1, 1..2] OF INT := [1, 2, 3, 4];
+  t : TON;
+  half : REAL;
+END_VAR
+  scans := scans + 1;
+  t(IN := TRUE, PT := T#1h);
+  hist[2] := level;
+  half := INT_TO_REAL(level) / 2.0;
+  pump := level_ok AND (level < setpoint);
+  IF pump THEN
+    speed := (setpoint - level) * 10;
+  ELSE
+    speed := 0;
   END_IF;
 END_PROGRAM
 ";
@@ -290,6 +317,41 @@ impl Plant {
             if Instant::now() > deadline {
                 panic!("never: {what}\n  {seen:?}");
             }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// What the runtime's module says of `variables`: asked until it has answered for exactly
+    /// these, as the API asks.
+    async fn watched(&self, variables: &[&str]) -> Result<WatchReply, String> {
+        let variables: Vec<String> = variables.iter().map(|v| (*v).to_string()).collect();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            assert!(self.states.watch("tank", &variables), "'tank' is loaded");
+            if let Some((age, answer)) = self.states.watched("tank", &variables) {
+                if age < Duration::from_millis(200) {
+                    return answer;
+                }
+            }
+            assert!(Instant::now() < deadline, "no answer for {variables:?}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Wait until the watched variables are as `holds` says, or panic with what they were.
+    async fn watched_until(
+        &self,
+        what: &str,
+        variables: &[&str],
+        holds: impl Fn(&WatchReply) -> bool,
+    ) -> WatchReply {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let reply = self.watched(variables).await.expect("the module answers");
+            if holds(&reply) {
+                return reply;
+            }
+            assert!(Instant::now() < deadline, "never: {what}\n  {reply:?}");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
@@ -751,5 +813,165 @@ async fn a_program_bound_to_nothing_at_all_still_scans() {
     .await;
     // It was given no output, so it wrote none: the drive is as the test left it.
     assert_eq!(p.drive.holding(1).await, Some(999));
+    p.runtime.shutdown().await;
+}
+
+/// One watched variable of a reply, by the name it was asked with.
+fn value<'a>(reply: &'a WatchReply, variable: &str) -> &'a WatchedValue {
+    reply
+        .values
+        .iter()
+        .find(|v| v.variable == variable)
+        .unwrap_or_else(|| panic!("{variable} is not in {reply:?}"))
+}
+
+#[tokio::test]
+async fn any_variable_is_read_as_the_last_scan_left_it_bound_to_a_tag_or_not() {
+    let p = plant(WATCHED, 20, true).await;
+    p.drive_is("the pump runs at 300", 1, 300).await;
+
+    let names = [
+        "level",
+        "pump",
+        "scans",
+        "half",
+        "hist[2]",
+        "HIST[1]",
+        "grid[1, 2]",
+        "grid[0,2]",
+        "t.Q",
+        "t.ET", // what has a value
+        "flow",
+        "hist",
+        "hist[4]",
+        "hist[x]",
+        "hist[2",
+        "level[1]",
+        "grid[1]",
+        "t", // what has none
+    ];
+    let reply = p
+        .watched_until("the level reached the program", &names, |r| {
+            value(r, "hist[2]").value == Some(json!(20))
+        })
+        .await;
+    assert_eq!(reply.state.mode, RuntimeMode::Run);
+    assert_eq!(reply.state.program, "Tank");
+    assert_eq!(reply.state.version, "test-1");
+    assert_eq!(
+        reply
+            .values
+            .iter()
+            .map(|v| v.variable.as_str())
+            .collect::<Vec<_>>(),
+        names,
+        "one answer per name, in the order asked, under the name asked"
+    );
+
+    let has = |variable: &str, ty: &str, expected: Value| {
+        let v = value(&reply, variable);
+        assert_eq!(
+            (v.ty.as_deref(), &v.value, &v.error),
+            (Some(ty), &Some(expected), &None),
+            "{variable}"
+        );
+    };
+    has("level", "INT", json!(20));
+    has("pump", "BOOL", json!(true));
+    has("half", "REAL", json!(10.0));
+    has("hist[2]", "INT", json!(20));
+    // Names do not differ by case, and an untouched element keeps its initial value.
+    has("HIST[1]", "INT", json!(10));
+    // The rightmost subscript varies fastest: [0,1] [0,2] [1,1] [1,2] hold 1 2 3 4.
+    has("grid[1, 2]", "INT", json!(4));
+    has("grid[0,2]", "INT", json!(2));
+    has("t.Q", "BOOL", json!(false));
+    let scans = value(&reply, "scans");
+    assert!(
+        scans.value.as_ref().and_then(Value::as_i64).unwrap() > 0,
+        "{scans:?}"
+    );
+    let elapsed = value(&reply, "t.ET");
+    assert_eq!(elapsed.ty.as_deref(), Some("TIME"), "{elapsed:?}");
+    assert!(
+        elapsed.value.as_ref().and_then(Value::as_i64).unwrap() > 0,
+        "a TIME is its nanoseconds: {elapsed:?}"
+    );
+
+    let lacks = |variable: &str, why: &str| {
+        let v = value(&reply, variable);
+        assert_eq!(v.value, None, "{variable} has no value: {v:?}");
+        assert!(
+            v.error.as_deref().unwrap_or("").contains(why),
+            "{variable}: {v:?}"
+        );
+    };
+    lacks("flow", "the program has no variable flow");
+    lacks("hist", "name one element");
+    lacks("hist[4]", "subscript 4 of hist is outside 1..3");
+    lacks("hist[x]", "are not whole numbers");
+    lacks("hist[2", "is not a variable or an element of an array");
+    lacks("level[1]", "level is a INT, not an array");
+    lacks("grid[1]", "grid has 2 subscripts, not 1");
+    assert!(
+        value(&reply, "t").error.is_some(),
+        "an instance has no single value"
+    );
+
+    // The values follow the program, and watching it changes nothing it does.
+    p.sensors.set_input(0, 30).await;
+    p.watched_until("the new level is seen", &["level", "half"], |r| {
+        value(r, "level").value == Some(json!(30)) && value(r, "half").value == Some(json!(15.0))
+    })
+    .await;
+    p.drive_is("the pump follows the level as before", 1, 200)
+        .await;
+
+    // A stopped program is still read: what it stopped with, and that it is stopped.
+    assert!(p.states.command("tank", false));
+    let stopped = p
+        .watched_until("it says it is stopped", &["level", "scans"], |r| {
+            r.state.mode == RuntimeMode::Stop
+        })
+        .await;
+    assert_eq!(value(&stopped, "level").value, Some(json!(30)));
+    let frozen = value(&stopped, "scans").value.clone();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let later = p.watched(&["level", "scans"]).await.unwrap();
+    assert_eq!(value(&later, "scans").value, frozen, "no scan runs in STOP");
+
+    assert!(
+        !p.states.watch("nobody", &["level".to_string()]),
+        "an unknown runtime is not watched"
+    );
+    p.runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_runtime_module_that_gives_no_values_says_so_and_runs_on() {
+    // The stubborn module is a runtime module with no `watch` of its own.
+    let stubborn: RuntimesConfig = serde_json::from_value(json!({"instances": [{
+        "id": "tank", "module": "stubborn", "run": true,
+        "program": {
+            "name": "stubborn", "version": "1", "interval_ms": 20, "code": "",
+            "outputs": [{"variable": "x", "tag": SPEED, "safe": SAFE_SPEED}],
+            "published": [{"variable": "x", "tag": T_SCANS}]
+        }
+    }]}))
+    .unwrap();
+    let p = plant_running(stubborn, 20).await;
+    p.until("it commands 300", |s| s.speed == Some(300)).await;
+
+    let answer = p.watched(&["x"]).await;
+    assert!(
+        answer
+            .as_ref()
+            .is_err_and(|why| why.contains("does not give the values of its variables")),
+        "{answer:?}"
+    );
+    // Being asked did it no harm.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(p.tank().mode, "run");
+    assert_eq!(p.drive.holding(1).await, Some(300));
     p.runtime.shutdown().await;
 }

@@ -26,7 +26,7 @@ use mythos_logic_vm::{
 };
 use mythos_module::protocol::{
     ExchangeReply, InputOf, ModuleKind, ModuleManifest, RuntimeMode, RuntimeProgram, RuntimeState,
-    WireInput, WireOutput, WireSample, PROTOCOL_VERSION,
+    WatchReply, WatchedValue, WireInput, WireOutput, WireSample, PROTOCOL_VERSION,
 };
 use mythos_module::RuntimeEngine;
 use mythos_plugin_sdk::{
@@ -88,13 +88,24 @@ struct StartConfig {
     run: bool,
 }
 
-/// One entry of the compiler's symbol table; only what binding needs.
-#[derive(Deserialize)]
+/// One entry of the compiler's symbol table; only what binding and watching need.
+#[derive(Deserialize, Clone)]
 struct SymbolEntry {
     path: String,
     #[serde(rename = "type")]
     ty: String,
     offset: u32,
+    #[serde(default)]
+    array: Option<ArrayEntry>,
+}
+
+/// What an array symbol holds: enough to find one element.
+#[derive(Deserialize, Clone)]
+struct ArrayEntry {
+    element_type: String,
+    element_size: u32,
+    /// Each subscript's range, inclusive.
+    bounds: Vec<(i64, i64)>,
 }
 
 #[derive(Clone, Copy)]
@@ -110,6 +121,8 @@ struct Plan {
     inputs: Vec<(Var, String, InputOf)>,
     outputs: Vec<(Var, String)>,
     published: Vec<(Var, String, bool)>,
+    /// Every symbol of the program, by its path in lower case: what can be watched.
+    symbols: HashMap<String, SymbolEntry>,
 }
 
 fn invalid(message: impl Into<String>) -> PluginError {
@@ -127,6 +140,83 @@ fn elem_of(name: &str) -> Option<ElemType> {
         "LREAL" => ElemType::Lreal,
         _ => return None,
     })
+}
+
+/// A type whose value can be read and shown: what can be bound, and TIME.
+fn watchable(name: &str) -> Option<ElemType> {
+    match name {
+        "TIME" => Some(ElemType::Time),
+        other => elem_of(other),
+    }
+}
+
+/// `name[2]` or `name[1, 3]` as the name and its subscripts; a plain name has none.
+fn subscripts(variable: &str) -> Result<(&str, Vec<i64>), String> {
+    let Some(open) = variable.find('[') else {
+        return Ok((variable, Vec::new()));
+    };
+    let inner = variable[open + 1..]
+        .strip_suffix(']')
+        .ok_or_else(|| format!("{variable} is not a variable or an element of an array"))?;
+    let indices = inner
+        .split(',')
+        .map(|part| part.trim().parse::<i64>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| format!("the subscripts of {variable} are not whole numbers"))?;
+    Ok((&variable[..open], indices))
+}
+
+/// Where a watched variable is and what it is, or why it cannot be read.
+fn locate(plan: &Plan, variable: &str) -> Result<(Var, String), String> {
+    let (name, indices) = subscripts(variable)?;
+    let entry = plan
+        .symbols
+        .get(&name.trim().to_ascii_lowercase())
+        .ok_or_else(|| format!("the program has no variable {name}"))?;
+    let (type_name, offset) = match (&entry.array, indices.is_empty()) {
+        (None, true) => (entry.ty.clone(), u64::from(entry.offset)),
+        (None, false) => return Err(format!("{name} is a {}, not an array", entry.ty)),
+        (Some(_), true) => {
+            return Err(format!(
+                "{name} is an {}; name one element, as in {name}[…]",
+                entry.ty
+            ))
+        }
+        (Some(array), false) => {
+            if indices.len() != array.bounds.len() {
+                return Err(format!(
+                    "{name} has {} subscripts, not {}",
+                    array.bounds.len(),
+                    indices.len()
+                ));
+            }
+            // The rightmost subscript varies fastest.
+            let mut at: u64 = 0;
+            for (index, (lo, hi)) in indices.iter().zip(&array.bounds) {
+                if index < lo || index > hi {
+                    return Err(format!("subscript {index} of {name} is outside {lo}..{hi}"));
+                }
+                at = at * (hi - lo + 1) as u64 + (index - lo) as u64;
+            }
+            (
+                array.element_type.clone(),
+                u64::from(entry.offset) + at * u64::from(array.element_size),
+            )
+        }
+    };
+    let ty = watchable(&type_name).ok_or_else(|| {
+        format!("{variable} is a {type_name}; only a BOOL, a number or a TIME has a value to show")
+    })?;
+    if offset + u64::from(ty.size()) > plan.memory_size as u64 {
+        return Err(format!("{variable} lies outside the program's memory"));
+    }
+    Ok((
+        Var {
+            offset: offset as u32,
+            ty,
+        },
+        type_name,
+    ))
 }
 
 /// Check a configuration and work out where everything is. Starts nothing.
@@ -207,6 +297,10 @@ fn plan(config: &Value) -> Result<(Plan, bool), PluginError> {
             inputs,
             outputs,
             published,
+            symbols: entries
+                .iter()
+                .map(|s| (s.path.to_ascii_lowercase(), s.clone()))
+                .collect(),
         },
         run,
     ))
@@ -284,6 +378,25 @@ fn to_json(value: VmValue) -> Value {
         VmValue::Lint(v) | VmValue::Time(v) => json!(v),
         VmValue::Real(v) => json!(v),
         VmValue::Lreal(v) => json!(v),
+    }
+}
+
+/// A watched variable as it is sent: its value, or why there is none to send.
+fn watched(read: Option<VmValue>) -> (Option<Value>, Option<String>) {
+    match read {
+        // JSON has no NaN and no infinity, and `json!` turns them into null: such a value is
+        // said, not sent as if the variable had none.
+        Some(VmValue::Real(v)) if !v.is_finite() => {
+            (None, Some(format!("it is {v}, not a finite number")))
+        }
+        Some(VmValue::Lreal(v)) if !v.is_finite() => {
+            (None, Some(format!("it is {v}, not a finite number")))
+        }
+        Some(v) => (Some(to_json(v)), None),
+        None => (
+            None,
+            Some("it lies outside the program's memory".to_string()),
+        ),
     }
 }
 
@@ -699,6 +812,41 @@ impl RuntimeEngine for VmEngine {
         }
         Ok(l.state(&running.plan))
     }
+
+    async fn watch(
+        &mut self,
+        _ctx: &PluginContext,
+        variables: Vec<String>,
+    ) -> Result<WatchReply, PluginError> {
+        let running = self.running()?;
+        let plan = &running.plan;
+        // Under the lock the scan thread takes for a whole scan: every value is of one scan.
+        let l = lock(&running.live);
+        let values = variables
+            .into_iter()
+            .map(|variable| match locate(plan, &variable) {
+                Err(why) => WatchedValue {
+                    variable,
+                    ty: None,
+                    value: None,
+                    error: Some(why),
+                },
+                Ok((var, ty)) => {
+                    let (value, error) = watched(read(&l.memory, var.offset, var.ty));
+                    WatchedValue {
+                        variable,
+                        ty: Some(ty),
+                        value,
+                        error,
+                    }
+                }
+            })
+            .collect();
+        Ok(WatchReply {
+            state: l.state(plan),
+            values,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -725,6 +873,41 @@ mod tests {
         );
         assert_eq!(to_vm(ElemType::Sint, &json!(-129)), None);
         assert_eq!(to_vm(ElemType::Time, &json!(1)), None);
+    }
+
+    #[test]
+    fn a_watched_value_that_json_cannot_carry_is_said_not_sent_as_null() {
+        assert_eq!(watched(Some(VmValue::Real(1.5))), (Some(json!(1.5)), None));
+        assert_eq!(
+            watched(Some(VmValue::Bool(false))),
+            (Some(json!(false)), None)
+        );
+        for (value, word) in [
+            (VmValue::Real(f32::NAN), "NaN"),
+            (VmValue::Real(f32::INFINITY), "inf"),
+            (VmValue::Lreal(f64::NEG_INFINITY), "-inf"),
+        ] {
+            let (sent, why) = watched(Some(value));
+            assert_eq!(sent, None, "{word}");
+            assert_eq!(
+                why.as_deref(),
+                Some(format!("it is {word}, not a finite number").as_str())
+            );
+        }
+        let (sent, why) = watched(None);
+        assert_eq!(sent, None);
+        assert!(why.unwrap().contains("outside the program's memory"));
+    }
+
+    #[test]
+    fn a_name_with_subscripts_is_the_name_and_whole_numbers() {
+        assert_eq!(subscripts("level"), Ok(("level", vec![])));
+        assert_eq!(subscripts("hist[2]"), Ok(("hist", vec![2])));
+        assert_eq!(subscripts("grid[ -1 , 3 ]"), Ok(("grid", vec![-1, 3])));
+        assert!(subscripts("hist[2").is_err());
+        assert!(subscripts("hist[]").is_err());
+        assert!(subscripts("hist[1.5]").is_err());
+        assert!(subscripts("hist[2]x").is_err());
     }
 
     #[test]

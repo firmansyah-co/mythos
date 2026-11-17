@@ -24,7 +24,7 @@
 use crate::io::{ConnectionConfig, IoStatusHandle, WriteError};
 use crate::tag::TagCatalog;
 use mythos_module::protocol::{
-    Call, ExchangeReply, RuntimeMode, RuntimeProgram, RuntimeState, WireInput,
+    Call, ExchangeReply, RuntimeMode, RuntimeProgram, RuntimeState, WatchReply, WireInput,
 };
 use mythos_module::{ModuleBinary, ProcessDriver};
 use mythos_pal::PlatformShm;
@@ -38,8 +38,8 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock as StdRwLock};
-use std::time::Duration;
-use tokio::sync::{Mutex, RwLock};
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, Notify, RwLock};
 
 /// The project file that says which runtimes run, beside `io.json`.
 pub const RUNTIMES_FILE: &str = "runtimes.json";
@@ -50,6 +50,11 @@ pub const CONNECTION_PREFIX: &str = "runtime:";
 /// be not running and its outputs are made safe. Well inside the connection's cycle deadline,
 /// so that making them safe happens in this cycle and is not cancelled with it.
 const EXCHANGE_DEADLINE: Duration = Duration::from_millis(1_000);
+/// How long a runtime goes on being asked for the variables somebody watched, after the last
+/// time they were asked for. A watch nobody renews costs the runtime nothing.
+pub const WATCH_KEPT: Duration = Duration::from_secs(5);
+/// The most variables one watch may name.
+pub const WATCH_LIMIT: usize = 256;
 /// The connection's cycle deadline: one exchange and the writes it leads to.
 const CYCLE_TIMEOUT_MS: u64 = 10_000;
 
@@ -302,6 +307,15 @@ pub struct RuntimeStatus {
     pub restarts: u64,
 }
 
+/// The variables being watched of one instance, and what its module last said of them.
+struct Watch {
+    variables: Vec<String>,
+    /// When they were last asked for.
+    asked: Instant,
+    /// The module's answer for exactly these variables, or why it gave none, and when.
+    answer: Option<(Instant, Result<WatchReply, String>)>,
+}
+
 #[derive(Default)]
 struct StatesInner {
     /// By instance id, with the generation of the driver that reports it.
@@ -310,6 +324,10 @@ struct StatesInner {
     wanted: HashMap<String, bool>,
     /// Why the project's runtimes are not as configured, when they are not.
     problem: Option<String>,
+    /// What is being watched, by instance id.
+    watches: HashMap<String, Watch>,
+    /// Woken whenever a watch is answered.
+    answered: Arc<Notify>,
 }
 
 /// Shared view of the runtimes of this server, and the way to command them.
@@ -345,6 +363,74 @@ impl RuntimeStates {
         true
     }
 
+    /// Ask a loaded instance for these variables at its coming exchanges, for [`WATCH_KEPT`]
+    /// from now. `false` when there is no such instance. Asking for other variables than the
+    /// last time drops what was answered for those.
+    pub fn watch(&self, id: &str, variables: &[String]) -> bool {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        if !inner.statuses.contains_key(id) {
+            return false;
+        }
+        let now = Instant::now();
+        match inner.watches.get_mut(id) {
+            Some(watch) if watch.variables == variables => watch.asked = now,
+            _ => {
+                inner.watches.insert(
+                    id.to_string(),
+                    Watch {
+                        variables: variables.to_vec(),
+                        asked: now,
+                        answer: None,
+                    },
+                );
+            }
+        }
+        true
+    }
+
+    /// What the instance's module last said of exactly these variables, and how long ago.
+    /// `None`: nothing yet, or the instance is gone.
+    pub fn watched(
+        &self,
+        id: &str,
+        variables: &[String],
+    ) -> Option<(Duration, Result<WatchReply, String>)> {
+        let inner = self.0.read().unwrap_or_else(|e| e.into_inner());
+        let watch = inner.watches.get(id)?;
+        if watch.variables != variables {
+            return None;
+        }
+        let (at, answer) = watch.answer.as_ref()?;
+        Some((at.elapsed(), answer.clone()))
+    }
+
+    /// Woken whenever a watch is answered: wait on it, then read [`RuntimeStates::watched`].
+    pub fn answered(&self) -> Arc<Notify> {
+        Arc::clone(&self.0.read().unwrap_or_else(|e| e.into_inner()).answered)
+    }
+
+    /// The variables to ask the instance's module for now, if anybody still watches.
+    fn watch_wanted(&self, id: &str) -> Option<Vec<String>> {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        let watch = inner.watches.get(id)?;
+        if watch.asked.elapsed() > WATCH_KEPT {
+            inner.watches.remove(id);
+            return None;
+        }
+        Some(watch.variables.clone())
+    }
+
+    /// The module's answer for `variables`. Dropped when something else is watched by now.
+    fn watch_answer(&self, id: &str, variables: &[String], answer: Result<WatchReply, String>) {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(watch) = inner.watches.get_mut(id) {
+            if watch.variables == variables {
+                watch.answer = Some((Instant::now(), answer));
+            }
+        }
+        inner.answered.notify_waiters();
+    }
+
     fn wanted(&self, id: &str) -> Option<bool> {
         let inner = self.0.read().unwrap_or_else(|e| e.into_inner());
         inner.wanted.get(id).copied()
@@ -367,6 +453,9 @@ impl RuntimeStates {
         {
             inner.statuses.remove(id);
             inner.wanted.remove(id);
+            inner.watches.remove(id);
+            // Whoever waits for its values is told now, not at their deadline.
+            inner.answered.notify_waiters();
         }
     }
 }
@@ -662,6 +751,13 @@ impl ProtocolDriver for RuntimeDriver {
                 self.last = None;
                 self.make_safe().await;
                 self.report("unreachable", Some(e.to_string()));
+                if let Some(variables) = self.env.states.watch_wanted(&id) {
+                    self.env.states.watch_answer(
+                        &id,
+                        &variables,
+                        Err(format!("the runtime's module does not answer: {e}")),
+                    );
+                }
                 return Err(e);
             }
         };
@@ -697,6 +793,29 @@ impl ProtocolDriver for RuntimeDriver {
                     Err(e) => tracing::warn!("{}: mode change not taken: {e}", Self::owner(&id)),
                 }
             }
+        }
+
+        // The variables somebody watches, as this scan left them. Reading changes nothing in
+        // the program, and a module that cannot be watched says so.
+        if let Some(variables) = self.env.states.watch_wanted(&id) {
+            let answer = self
+                .process
+                .call(
+                    Call::Watch {
+                        variables: variables.clone(),
+                    },
+                    EXCHANGE_DEADLINE,
+                )
+                .await
+                .and_then(|v| {
+                    serde_json::from_value::<WatchReply>(v).map_err(|e| {
+                        PluginError::CommunicationError(format!(
+                            "the module answered a watch with something else: {e}"
+                        ))
+                    })
+                })
+                .map_err(|e| e.to_string());
+            self.env.states.watch_answer(&id, &variables, answer);
         }
 
         Ok(reply.samples.into_iter().map(Into::into).collect())
@@ -789,6 +908,96 @@ mod tests {
         assert!(check(vec![instance("a"), b])
             .unwrap_err()
             .contains("is published by both 'a' and 'b'"));
+    }
+
+    fn loaded(states: &RuntimeStates, id: &str, generation: u64) {
+        states.report(
+            generation,
+            RuntimeStatus {
+                id: id.to_string(),
+                module: "vm".into(),
+                program: "P".into(),
+                version: "1".into(),
+                interval_ms: 20,
+                mode: "run".into(),
+                reason: None,
+                scans: 1,
+                last_scan_us: 1,
+                max_scan_us: 1,
+                overruns: 0,
+                outputs_safe: false,
+                outputs: Vec::new(),
+                pid: None,
+                restarts: 0,
+            },
+        );
+    }
+
+    fn reply(variable: &str) -> WatchReply {
+        serde_json::from_value(json!({
+            "state": {"mode": "run", "program": "P", "version": "1", "scans": 1,
+                      "last_scan_us": 1, "max_scan_us": 1, "overruns": 0},
+            "values": [{"variable": variable, "type": "INT", "value": 1}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_watch_is_of_a_loaded_instance_and_its_answer_is_of_the_variables_asked() {
+        let states = RuntimeStates::default();
+        let (a, b) = (vec!["a".to_string()], vec!["b".to_string()]);
+        assert!(!states.watch("tank", &a), "nothing is loaded");
+        assert_eq!(states.watch_wanted("tank"), None);
+
+        loaded(&states, "tank", 1);
+        assert!(states.watch("tank", &a));
+        assert_eq!(states.watch_wanted("tank"), Some(a.clone()));
+        assert!(states.watched("tank", &a).is_none(), "asked, not answered");
+
+        states.watch_answer("tank", &a, Ok(reply("a")));
+        let (_, answer) = states.watched("tank", &a).expect("answered");
+        assert_eq!(answer.unwrap().values[0].variable, "a");
+        assert!(states.watched("tank", &b).is_none(), "not an answer for b");
+
+        // Other variables are asked for: what was answered for the first is dropped, and an
+        // answer for the first that arrives now is not taken for one of the second.
+        assert!(states.watch("tank", &b));
+        assert!(states.watched("tank", &b).is_none());
+        states.watch_answer("tank", &a, Ok(reply("a")));
+        assert!(states.watched("tank", &b).is_none());
+        assert!(states.watched("tank", &a).is_none());
+        states.watch_answer("tank", &b, Err("the module does not answer".into()));
+        let (_, answer) = states.watched("tank", &b).expect("answered");
+        assert_eq!(answer.unwrap_err(), "the module does not answer");
+    }
+
+    #[test]
+    fn a_watch_nobody_renews_stops_and_one_of_an_unloaded_instance_is_forgotten() {
+        let states = RuntimeStates::default();
+        let a = vec!["a".to_string()];
+        loaded(&states, "tank", 1);
+        assert!(states.watch("tank", &a));
+        // As if it was last asked for longer ago than a watch is kept.
+        let long_ago = Instant::now()
+            .checked_sub(WATCH_KEPT + Duration::from_secs(1))
+            .expect("the clock has run that long");
+        states
+            .0
+            .write()
+            .unwrap()
+            .watches
+            .get_mut("tank")
+            .unwrap()
+            .asked = long_ago;
+        assert_eq!(states.watch_wanted("tank"), None, "nobody watches any more");
+        assert!(states.watched("tank", &a).is_none(), "and it is gone");
+
+        // Renewed, it is asked for again; unloaded, it is forgotten with the instance.
+        assert!(states.watch("tank", &a));
+        assert_eq!(states.watch_wanted("tank"), Some(a.clone()));
+        states.forget("tank", 1);
+        assert_eq!(states.watch_wanted("tank"), None);
+        assert!(!states.watch("tank", &a));
     }
 
     #[test]

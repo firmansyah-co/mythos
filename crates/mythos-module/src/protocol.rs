@@ -257,6 +257,9 @@ pub enum Call {
     /// Put a runtime module's program in RUN (from STOP or FAULT: from a cold start) or in
     /// STOP. Answers with its [`RuntimeState`].
     Mode { run: bool },
+    /// Read variables of a runtime module's program as its last scan left them. It changes
+    /// nothing. Answers with a [`WatchReply`].
+    Watch { variables: Vec<String> },
 }
 
 // -----------------------------------------------------------------------------
@@ -379,6 +382,30 @@ pub struct ExchangeReply {
     pub samples: Vec<WireSample>,
     /// The outputs as the last scan left them. Empty unless the program is running.
     pub outputs: Vec<WireOutput>,
+}
+
+/// One variable of a [`WatchReply`]: its value, or why it has none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchedValue {
+    /// The name as it was asked for.
+    pub variable: String,
+    /// Its type as the program declares it, when the program has it.
+    #[serde(default, rename = "type")]
+    pub ty: Option<String>,
+    /// `None`: there is no value to give, and `error` says why.
+    #[serde(default)]
+    pub value: Option<Value>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// A runtime module's answer to [`Call::Watch`]: the variables as the last scan left them,
+/// and the state they were read in. A value read while the program is not in RUN is what it
+/// was when it stopped, or its initial value: `state` says which program and whether it runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchReply {
+    pub state: RuntimeState,
+    pub values: Vec<WatchedValue>,
 }
 
 /// The module's answer to one request: `result` or `error`, never both.

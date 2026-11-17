@@ -148,6 +148,23 @@ export interface RuntimesAnswer {
   problem: string | null;
 }
 
+/** One variable of a watch: its value, or why it has none. */
+export interface WatchedValue {
+  variable: string;
+  type: string | null;
+  value: unknown;
+  error: string | null;
+}
+
+/** A program's variables as its last scan left them (`POST /api/v1/runtimes/<id>/watch`). */
+export interface WatchAnswer {
+  id: string;
+  /** Which program and version answered, and whether it is in `run`. */
+  state: { mode: string; program: string; version: string; scans: number };
+  values: WatchedValue[];
+  age_ms: number;
+}
+
 interface RuntimesConfig {
   instances: Array<{ id: string } & Record<string, unknown>>;
 }
@@ -205,6 +222,8 @@ export const api = {
   runtimes: () => host().api<RuntimesAnswer>('/api/v1/runtimes'),
   run: (id: string) => host().api(`/api/v1/runtimes/${name(id)}/run`, { method: 'POST' }),
   stop: (id: string) => host().api(`/api/v1/runtimes/${name(id)}/stop`, { method: 'POST' }),
+  watch: (id: string, variables: string[]) =>
+    host().api<WatchAnswer>(`/api/v1/runtimes/${name(id)}/watch`, json('POST', { variables })),
   /**
    * Put `instance` into the project's runtimes in place of the one with its id, or take the
    * one called `id` out when `instance` is `null`. Every other instance is sent back as it was

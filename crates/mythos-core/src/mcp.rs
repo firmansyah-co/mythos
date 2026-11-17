@@ -194,6 +194,7 @@ const PARAMS: &[(&str, &str)] = &[
     ("token", "token_id"),
     ("username", "username"),
     ("module", "module_id"),
+    ("runtime", "runtime_id"),
     ("node", "node_id"),
     ("device", "device_id"),
 ];
@@ -427,6 +428,22 @@ fn udt_schema() -> Value {
 /// The data type routes take the definition itself as the body.
 fn datatype_body() -> Value {
     udt_schema()
+}
+
+fn watch_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["variables"],
+        "properties": {
+            "variables": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": crate::runtimes::WATCH_LIMIT,
+                "items": { "type": "string" },
+                "description": "Variable names as the program declares them: level, pump.running, hist[2]"
+            }
+        }
+    })
 }
 
 fn runtimes_config_body() -> Value {
@@ -1129,7 +1146,7 @@ pub const TOOLS: &[Tool] = &[
         title: "Put a program in RUN",
         description: "Put a loaded program in RUN. From stop or fault this is a cold start: its variables take their initial values. It takes effect at the runtime's next exchange; read list_runtimes to see.",
         method: "POST",
-        path: "/api/v1/runtimes/:id/run",
+        path: "/api/v1/runtimes/:runtime/run",
         query: &[],
         body: None,
         read_only: false,
@@ -1140,11 +1157,22 @@ pub const TOOLS: &[Tool] = &[
         title: "Put a program in STOP",
         description: "Stop a program. Its outputs are written their safe values and its published tags stop being current.",
         method: "POST",
-        path: "/api/v1/runtimes/:id/stop",
+        path: "/api/v1/runtimes/:runtime/stop",
         query: &[],
         body: None,
         read_only: false,
         destructive: true,
+    },
+    Tool {
+        name: "watch_runtime",
+        title: "Read a program's variables",
+        description: "The values of a running program's variables as its last scan left them: any variable, bound to a tag or not, and one element of an array as name[2] or name[1,3]. It changes nothing in the program. Each value comes with its type; a variable the program does not have, or one with no single value (a whole array, a structure), has an error instead. 'state' says which program and version answered and whether it is in run: values read from a stopped or faulted program are what it stopped with. 'age_ms' is how old the values are. The first call waits for the runtime's next exchange; calls within a few seconds of each other answer at once.",
+        method: "POST",
+        path: "/api/v1/runtimes/:runtime/watch",
+        query: &[],
+        body: Some(watch_body),
+        read_only: true,
+        destructive: false,
     },
     Tool {
         name: "get_runtimes_config",

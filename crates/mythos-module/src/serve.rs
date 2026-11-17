@@ -12,7 +12,7 @@
 //! the order they arrive, one at a time.
 
 use crate::protocol::{
-    Call, ErrorKind, ExchangeReply, ModuleManifest, Request, Response, RuntimeState,
+    Call, ErrorKind, ExchangeReply, ModuleManifest, Request, Response, RuntimeState, WatchReply,
     WireDeclaration, WireError, WireInput, WireSample, MANIFEST_FLAG, SERVE_FLAG,
 };
 use mythos_plugin_sdk::{async_trait, PluginContext, PluginError, ProtocolDriver};
@@ -44,6 +44,17 @@ pub trait RuntimeEngine: ProtocolDriver {
         ctx: &PluginContext,
         run: bool,
     ) -> Result<RuntimeState, PluginError>;
+
+    /// Read variables as the last scan left them. A runtime that cannot be watched says so.
+    async fn watch(
+        &mut self,
+        _ctx: &PluginContext,
+        _variables: Vec<String>,
+    ) -> Result<WatchReply, PluginError> {
+        Err(PluginError::RuntimeError(
+            "this runtime module does not give the values of its variables".to_string(),
+        ))
+    }
 }
 
 /// The calls a module answers beyond a driver's.
@@ -77,7 +88,7 @@ impl<D: ProtocolDriver> ExtraCalls<D> for DriverOnly {
     }
 }
 
-/// A runtime module answers `exchange` and `mode`.
+/// A runtime module answers `exchange`, `mode` and `watch`.
 pub struct RuntimeCalls;
 
 #[async_trait]
@@ -94,6 +105,7 @@ impl<D: RuntimeEngine> ExtraCalls<D> for RuntimeCalls {
         match call {
             Call::Exchange { inputs } => encode(driver.exchange(ctx, inputs).await.map_err(fail)?),
             Call::Mode { run } => encode(driver.set_mode(ctx, run).await.map_err(fail)?),
+            Call::Watch { variables } => encode(driver.watch(ctx, variables).await.map_err(fail)?),
             _ => Err(WireError {
                 kind: ErrorKind::Protocol,
                 message: "not a runtime call".to_string(),
@@ -352,7 +364,7 @@ where
         }),
         // A driver does not need to know the node; it is told nothing it must act on.
         Call::Node { .. } => Ok(json!(null)),
-        call @ (Call::Exchange { .. } | Call::Mode { .. }) => {
+        call @ (Call::Exchange { .. } | Call::Mode { .. } | Call::Watch { .. }) => {
             extra.handle(manifest, driver, ctx.as_ref(), call).await
         }
     }

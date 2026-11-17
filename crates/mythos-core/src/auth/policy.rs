@@ -95,6 +95,8 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     ("GET", "/api/v1/projects/:id/datatypes/:dut", V),
     ("GET", "/api/v1/projects/:id/io", V),
     ("GET", "/api/v1/runtimes", V),
+    // Reading a program's variables changes nothing in it; the body is only the list of names.
+    ("POST", "/api/v1/runtimes/:runtime/watch", V),
     ("GET", "/api/v1/projects/:id/runtimes", V),
     ("GET", "/api/v1/telemetry/stream", V),
     ("GET", "/api/v1/io/status", V),
@@ -116,8 +118,8 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     ("PUT", "/api/v1/projects/:id/io", E),
     // Loading, starting and stopping a control program is engineering.
     ("PUT", "/api/v1/projects/:id/runtimes", E),
-    ("POST", "/api/v1/runtimes/:id/run", E),
-    ("POST", "/api/v1/runtimes/:id/stop", E),
+    ("POST", "/api/v1/runtimes/:runtime/run", E),
+    ("POST", "/api/v1/runtimes/:runtime/stop", E),
     ("POST", "/api/v1/modules/rescan", E),
     ("POST", "/api/v1/control/deploy", E),
     // A service module's routes: any signed-in account gets as far as the module host, which

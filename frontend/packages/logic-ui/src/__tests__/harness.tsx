@@ -6,7 +6,7 @@
 import { act } from 'react';
 import { vi } from 'vitest';
 import { activate, MODULE_ID } from '../entry';
-import type { CheckResult, ProgramEntry, RuntimesAnswer, RuntimeStatus } from '../bridge';
+import type { CheckResult, ProgramEntry, RuntimesAnswer, RuntimeStatus, WatchAnswer, WatchedValue } from '../bridge';
 import { createHost } from '../../../ui-shell/src/modules/host';
 import { resetStores as resetShell } from '../../../ui-shell/src/__tests__/harness';
 
@@ -51,6 +51,8 @@ export interface Backend {
   /** Whether saving the runtimes applies them (the project is the active one). */
   applied?: boolean;
   warnings?: string[];
+  /** What a watch of a runtime's variables answers; `'fails'`, or left out, answers 502. */
+  watch?: ((variables: string[]) => WatchAnswer) | 'fails';
   /** Answer a call before the fake does, to make one fail. */
   intercept?: (call: Call) => Response | undefined;
 }
@@ -91,6 +93,22 @@ export const runtimesOf = (...runtimes: RuntimeStatus[]): RuntimesAnswer => ({
   problem: null,
 });
 
+/** A watch's answer: `values` by variable name, from a program in `mode`. */
+export const watchOf =
+  (values: Record<string, Partial<WatchedValue>>, mode = 'run') =>
+  (variables: string[]): WatchAnswer => ({
+    id: 'Tank',
+    state: { mode, program: 'Tank', version: 'aaaaaaaaaaaa', scans: 42 },
+    values: variables.map((variable) => ({
+      variable,
+      type: null,
+      value: null,
+      error: `the program has no variable ${variable}`,
+      ...(values[variable] ? { error: null, ...values[variable] } : {}),
+    })),
+    age_ms: 12,
+  });
+
 const failure = (status: number, error: string) =>
   new Response(JSON.stringify({ error }), { status, statusText: status === 500 ? 'Internal Server Error' : 'Bad Request' });
 
@@ -115,6 +133,11 @@ export function server(backend: Backend): Call[] {
           : Response.json(backend.runtimes);
       }
       if (/\/api\/v1\/runtimes\/[^/]+\/(run|stop)$/.test(path)) return Response.json({});
+      if (/\/api\/v1\/runtimes\/[^/]+\/watch$/.test(path)) {
+        return typeof backend.watch === 'function'
+          ? Response.json(backend.watch((body as { variables: string[] }).variables))
+          : new Response('{"error":"the runtime\'s module does not answer"}', { status: 502, statusText: 'Bad Gateway' });
+      }
       if (/\/projects\/[^/]+\/runtimes$/.test(path)) {
         if (method === 'GET') return Response.json({ config: backend.config ?? null });
         backend.config = body as Backend['config'];
