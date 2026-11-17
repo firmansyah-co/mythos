@@ -1,0 +1,19 @@
+[package]
+name = "mythos-logic-vm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "The MythOS logic VM: runs compiled IEC 61131-3 programs. no_std, allocates nothing, no unsafe; the same core runs on a PC and on a microcontroller (ADR-013)"
+
+[lints]
+workspace = true
+
+# No dependencies, on purpose: the core must build for bare-metal targets (thumbv6m-none-eabi,
+# riscv32imc-unknown-none-elf) with nothing but `core`.
+[dependencies]
+
+[[example]]
+name = "footprint"
+path = "examples/footprint/main.rs"

@@ -2594,6 +2594,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "mythos-logic-backend-vm"
+version = "0.1.0"
+dependencies = [
+ "mythos-logic-ir",
+ "mythos-logic-vm",
+ "serde",
+]
+
+[[package]]
+name = "mythos-logic-compiler"
+version = "0.1.0"
+dependencies = [
+ "mythos-logic-backend-vm",
+ "mythos-logic-ir",
+ "mythos-logic-st",
+ "mythos-logic-vm",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mythos-logic-ir"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "mythos-logic-st"
+version = "0.1.0"
+dependencies = [
+ "mythos-logic-ir",
+]
+
+[[package]]
+name = "mythos-logic-vm"
+version = "0.1.0"
+
+[[package]]
 name = "mythos-module"
 version = "0.1.0"
 dependencies = [

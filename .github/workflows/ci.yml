@@ -371,6 +371,29 @@ jobs:
           MYTHOS_TEST_SERVICE: "1"
         run: cargo test -p mythos-cli --test service_roundtrip -- --ignored --nocapture
 
+  # ADR-013: the logic VM's core must run on microcontrollers (ESP32, RP2040) as well as in the
+  # PC runner. This links it into bare-metal firmware for both, with `core` alone, from the first
+  # PR on, so nothing can make it need `std` or an allocator without this job going red. It
+  # prints the flash it costs. A hosted runner: it is a cross build, not a measurement of a host.
+  logic-vm-bare-metal:
+    name: Logic VM on Bare Metal (RP2040, ESP32-C3)
+    needs: already-verified
+    if: ${{ !cancelled() && needs.already-verified.outputs.verified != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv6m-none-eabi,riscv32imc-unknown-none-elf
+          components: llvm-tools
+
+      - name: Link the VM into firmware and print its size
+        run: scripts/logic-vm-footprint.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
   frontend-tests:
     name: Frontend Web Workbench Test Suite & Lints
     needs: already-verified

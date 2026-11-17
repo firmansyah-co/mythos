@@ -1,0 +1,15 @@
+[package]
+name = "mythos-logic-ir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "The intermediate representation of MythOS control logic: what every language front-end produces and every backend consumes (ADR-013)"
+
+[lints]
+workspace = true
+
+# The seam between languages and targets. It depends on no front-end, no backend and no VM.
+[dependencies]
+serde.workspace = true

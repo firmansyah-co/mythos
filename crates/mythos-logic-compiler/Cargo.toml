@@ -1,0 +1,21 @@
+[package]
+name = "mythos-logic-compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "The MythOS logic compiler: joins the language front-ends, the target profiles and the backends (ADR-013)"
+
+[lints]
+workspace = true
+
+[dependencies]
+mythos-logic-ir.workspace = true
+mythos-logic-st.workspace = true
+mythos-logic-backend-vm.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+mythos-logic-vm.workspace = true
+serde_json.workspace = true
