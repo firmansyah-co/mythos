@@ -330,8 +330,6 @@ pub fn scan(
                 let (a, b) = s.pop2()?;
                 let (a, b) = (f32_of(a), f32_of(b));
                 let r = match opcode {
-                    // CONTROL, NOT FOR MERGE: wrong on Arm only, to see the emulator step go red.
-                    op::ADD_F32 if cfg!(target_arch = "arm") => a + b + 1.0,
                     op::ADD_F32 => a + b,
                     op::SUB_F32 => a - b,
                     op::MUL_F32 => a * b,
