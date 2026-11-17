@@ -1033,7 +1033,10 @@ async fn prepare(
 
     let declared = driver.declared_tags();
     let mut seen = HashSet::new();
-    let problem = if declared.is_empty() {
+    // A field connection with no tags reads nothing: a mistake. A control program need not
+    // publish a tag: one that only writes its outputs declares none, and still has to run.
+    let problem = if declared.is_empty() && !crate::runtimes::is_runtime_connection(&connection.id)
+    {
         Some("the connection declares no tags".to_string())
     } else {
         declared

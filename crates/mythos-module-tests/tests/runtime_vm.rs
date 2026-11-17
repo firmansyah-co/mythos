@@ -716,3 +716,40 @@ async fn a_program_that_does_not_load_or_names_a_variable_it_lacks_is_refused_by
     let said = ask(&module, &|i| i["program"]["interval_ms"] = json!(0)).await;
     assert!(said.contains("interval_ms must be at least 1"), "{said}");
 }
+
+#[tokio::test]
+async fn a_program_that_publishes_no_tag_runs_and_writes_its_outputs() {
+    // Outputs only: nothing of the program is a tag of its own.
+    let mut outputs_only = runtimes(TANK, true);
+    outputs_only.instances[0].program.published.clear();
+    let p = plant_running(outputs_only, 20).await;
+    p.drive_is("the pump runs at 300", 1, 300).await;
+    let tank = p.tank();
+    assert_eq!(tank.mode, "run", "{tank:?}");
+    assert!(tank.scans > 0, "{tank:?}");
+
+    // Stopped, its outputs go to their safe values like any other program's.
+    assert!(p.states.command("tank", false));
+    p.drive_is("stopped: pump off, speed at its safe value", 0, SAFE_SPEED)
+        .await;
+    p.runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_program_bound_to_nothing_at_all_still_scans() {
+    let mut unbound = runtimes(TANK, true);
+    let program = &mut unbound.instances[0].program;
+    program.inputs.clear();
+    program.outputs.clear();
+    program.published.clear();
+    let p = plant_running(unbound, 20).await;
+    p.until("it scans", |s| {
+        s.tank
+            .as_ref()
+            .is_some_and(|t| t.mode == "run" && t.scans > 3)
+    })
+    .await;
+    // It was given no output, so it wrote none: the drive is as the test left it.
+    assert_eq!(p.drive.holding(1).await, Some(999));
+    p.runtime.shutdown().await;
+}
