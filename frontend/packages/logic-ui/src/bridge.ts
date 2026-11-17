@@ -142,10 +142,12 @@ export interface RuntimeStatus {
   /** `run`, `stop`, `fault`, or `unreachable`. */
   mode: string;
   reason: string | null;
-  scans: number;
-  last_scan_us: number;
-  max_scan_us: number;
-  overruns: number;
+  /** `null`: nothing is known (the module does not answer). */
+  scans: number | null;
+  /** `null` while nothing is known, and until a scan has run. */
+  last_scan_us: number | null;
+  max_scan_us: number | null;
+  overruns: number | null;
   outputs_safe: boolean;
   outputs: OutputStatus[];
 }

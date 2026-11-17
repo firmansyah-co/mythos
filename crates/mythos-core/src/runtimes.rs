@@ -296,10 +296,16 @@ pub struct RuntimeStatus {
     pub mode: String,
     /// Why it is in `fault`, or why it is `unreachable`.
     pub reason: Option<String>,
-    pub scans: u64,
-    pub last_scan_us: u64,
-    pub max_scan_us: u64,
-    pub overruns: u64,
+    /// Scans since the program was last put in RUN, as its module last said. `None`: nothing
+    /// is known, because its module has not answered (yet, or any more). Not zero: zero is
+    /// what a program in STOP that never ran has done, and that is a different statement.
+    pub scans: Option<u64>,
+    /// The last and the longest scan time. `None` while nothing is known, and until a scan has
+    /// run: a module sends 0 before its first scan, and 0 µs was never measured.
+    pub last_scan_us: Option<u64>,
+    pub max_scan_us: Option<u64>,
+    /// Scans that started late. `None` while nothing is known.
+    pub overruns: Option<u64>,
     /// Whether every output is confirmed at its safe value. Meaningful while not in `run`.
     pub outputs_safe: bool,
     pub outputs: Vec<OutputStatus>,
@@ -613,10 +619,12 @@ impl RuntimeDriver {
                 interval_ms: instance.program.interval_ms,
                 mode: mode.to_string(),
                 reason,
-                scans: state.map_or(0, |s| s.scans),
-                last_scan_us: state.map_or(0, |s| s.last_scan_us),
-                max_scan_us: state.map_or(0, |s| s.max_scan_us),
-                overruns: state.map_or(0, |s| s.overruns),
+                // What the module last said, and only that: a module that does not answer
+                // reports no figures, never zeros that nothing measured.
+                scans: state.map(|s| s.scans),
+                last_scan_us: state.filter(|s| s.scans > 0).map(|s| s.last_scan_us),
+                max_scan_us: state.filter(|s| s.scans > 0).map(|s| s.max_scan_us),
+                overruns: state.map(|s| s.overruns),
                 outputs_safe: instance
                     .program
                     .outputs
@@ -921,10 +929,10 @@ mod tests {
                 interval_ms: 20,
                 mode: "run".into(),
                 reason: None,
-                scans: 1,
-                last_scan_us: 1,
-                max_scan_us: 1,
-                overruns: 0,
+                scans: Some(1),
+                last_scan_us: Some(1),
+                max_scan_us: Some(1),
+                overruns: Some(0),
                 outputs_safe: false,
                 outputs: Vec::new(),
                 pid: None,

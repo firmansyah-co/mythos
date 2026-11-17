@@ -277,10 +277,12 @@ export interface RuntimeStatus {
   /** Why it is in `fault`, or why it is `unreachable`. */
   reason: string | null;
   /** Scans completed since the program was last put in RUN. */
-  scans: number;
-  last_scan_us: number;
-  max_scan_us: number;
-  overruns: number;
+  /** `null`: nothing is known (the module does not answer). */
+  scans: number | null;
+  /** `null` while nothing is known, and until a scan has run. */
+  last_scan_us: number | null;
+  max_scan_us: number | null;
+  overruns: number | null;
   /** Whether every output is confirmed at its safe value. Meaningful while not in `run`. */
   outputs_safe: boolean;
   outputs: RuntimeOutput[];

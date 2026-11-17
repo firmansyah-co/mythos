@@ -506,7 +506,7 @@ describe('what the runtime is doing', () => {
     expect(byTestId(container, 'runtime-reason')?.textContent).toBe('division by zero at 0x1c');
     expect(byTestId(container, 'runtime-outputs')?.textContent).toBe('at their safe values');
 
-    backend.runtimes = runtimesOf(runtimeOf('Tank', { mode: 'stop', outputs_safe: false, scans: 0, last_scan_us: 0, max_scan_us: 0, outputs }));
+    backend.runtimes = runtimesOf(runtimeOf('Tank', { mode: 'stop', outputs_safe: false, scans: 0, last_scan_us: null, max_scan_us: null, outputs }));
     await doing(() => state().readRuntimes());
     expect(mode(container)).toBe('STOP');
     expect(byTestId(container, 'runtime-mode')?.className).not.toContain('badge--good');
@@ -514,6 +514,19 @@ describe('what the runtime is doing', () => {
     expect(byTestId(container, 'runtime-outputs')?.textContent).toBe('NOT CONFIRMED at their safe values');
     // No scan has run: there is no scan time, and zero is not one.
     expect(byTestId(container, 'runtime-scan-time')?.textContent).toBe('NOT MEASURED');
+  });
+
+  it('shows no scan figure of a runtime whose module does not answer, never a zero', async () => {
+    const backend = tank({
+      runtimes: runtimesOf(
+        runtimeOf('Tank', { mode: 'unreachable', reason: 'the module does not answer', scans: null, last_scan_us: null, max_scan_us: null, overruns: null })
+      ),
+    });
+    const { container } = await opened(backend);
+    expect(mode(container)).toBe('UNREACHABLE');
+    expect(byTestId(container, 'runtime-scans')?.textContent).toBe('NOT MEASURED');
+    expect(byTestId(container, 'runtime-scan-time')?.textContent).toBe('NOT MEASURED');
+    expect(byTestId(container, 'runtime-overruns')?.textContent).toBe('NOT MEASURED');
   });
 
   it('says UNKNOWN while the runtimes have never been read', async () => {

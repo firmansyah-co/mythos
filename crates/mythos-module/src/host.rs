@@ -636,13 +636,24 @@ impl ProcessDriver {
     }
 
     /// Bring a module process that ended back, with the configuration it was running.
+    ///
+    /// A process found dead fails the call that found it, and is started again by the next one.
+    /// Started again in the same call, its replacement's first answer would follow the last
+    /// reading of the dead one with nothing in between, so what it provides would never say
+    /// that nothing was read while it was gone, however long the restart took.
     async fn revive(&mut self) -> Result<(), PluginError> {
         let reason = match self.session.as_mut() {
             Some(session) => {
                 if session.usable() {
                     return Ok(());
                 }
-                session.end_reason()
+                let reason = session.end_reason();
+                if let Some(old) = self.session.take() {
+                    old.close(false).await;
+                }
+                return Err(PluginError::CommunicationError(format!(
+                    "{reason}; it will be started again"
+                )));
             }
             None => "the module process is not running".to_string(),
         };
