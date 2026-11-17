@@ -79,13 +79,18 @@ the guard each kind of break.
 
 ### 2.2 Target profiles are data
 
-A target declares what it can run: the bytecode format its VM reads, types it refuses, and the
-variable memory and code a program may use. The compiler checks the IR and its output against
-the profile, so a program that does not fit is refused at compile time with the reason, never on
-the controller. A profile is `serde` data: **a runtime module carries its own in its manifest**
+A target declares what it can run: the bytecode format its VM reads, types it refuses, the
+variable memory and code a program may use, and how deep its evaluation stack and its calls may
+go (`max_stack_depth`, `max_call_depth`: what the target's firmware has). The compiler checks
+the IR and its output against the profile, so a program that does not fit is refused at compile
+time with the reason, never on the controller: `the program needs a stack 7 values deep; the
+target board allows 6`. A profile that leaves a depth out states no limit, which is not a limit
+of zero; the `pc` profile states none, because a PC runner gives each program what it declares. A profile is `serde` data: **a runtime module carries its own in its manifest**
 (§2.4), so a new board brings its profile without a compiler change. Until runtime modules exist,
 three stand in (`pc`, `rp2040`, `esp32`); their microcontroller limits are budgets chosen for a
-program, not the chips' sizes.
+program, not the chips' sizes. The stack and call depths of `rp2040` and `esp32` (64 and 16)
+are those of the firmware this repository builds for their instruction sets (§2.9), which a
+test holds equal.
 
 ### 2.3 The logic VM
 
@@ -98,6 +103,13 @@ program, not the chips' sizes.
 - **Checked twice.** At load, every instruction is decoded and every address, jump and function
   block instance checked. At run time, every memory and stack access is checked again; a program
   that would go outside them stops with a fault.
+- **As deep as it declares, on every host.** A program declares the depth of its evaluation
+  stack and of its calls. A scan uses that many stack slots and call frames and no more,
+  whatever the host gave: a push beyond them is `StackOverflow`, a call beyond them
+  `CallDepthExceeded`. So a program that would go deeper than it says is found on a PC, not
+  on the controller. A host with arrays of a fixed size (firmware) loads a program within its
+  limits (`Program::load_within`): one that declares more memory, a deeper stack or deeper
+  calls than the host has is refused when it is loaded, naming what it declares.
 - **A bounded scan.** An instruction budget stops an endless loop with `BudgetExceeded`.
   Division by zero is a fault, not a value.
 - **Format 1** (functions, user function blocks, arrays, structures). Format 0 is refused by
@@ -124,8 +136,18 @@ program, not the chips' sizes.
     regions, instance sizes, call targets (an earlier body only), jumps inside their own body,
     and that no body can run into the next. At run time every access is checked again, every
     sum is checked, and calls nested deeper than the declared depth stop the scan with
-    `CallDepthExceeded`. A jump into the middle of an instruction is not refused at load; the
-    run-time checks still hold. `damaged_programs_never_panic.rs` damages every compiled
+    `CallDepthExceeded`.
+  - *A jump lands where an instruction starts.* The loader walks each body a second time and
+    refuses a jump to a byte that is not the start of an instruction of that body
+    (`BadJump`); landing inside one would run its operands as code. (A call goes to the start
+    of a body, which is such a start by construction.) The loader has no memory to note the
+    starts in, so it proves a target by walking to it from a start it already knows: the
+    start of the body, the jump itself, or one of four targets it has proved (the END a CASE's
+    arms all jump to, the last target ahead, the heads of the last two loops). For what the
+    compiler emits this keeps the second walk about as long as the first. For code the
+    compiler did not make, the walk for one jump can be as long as its body: a hostile
+    program can make the loader work in proportion to its jumps times its length. The
+    run-time checks hold as before. `damaged_programs_never_panic.rs` damages every compiled
     program of the corpus at random, thousands of times, and requires each to be refused or to
     fault, never to panic.
 
@@ -426,10 +448,9 @@ A program that names a variable `step`, `on`, `to` or `from` is therefore refuse
 differential corpus and two tests did, and were renamed). This list is a reading of ed. 3, not
 a table copied from it; ed. 4, which drops IL, has not been read.
 
-Known gaps, to close in L2b: the evaluation stack uses whatever the host gives instead of
-stopping at the depth the program declares, as the call frames do; a target profile does not
-yet carry a stack depth or a call depth, so a program too deep for a firmware is refused at
-its start and not at compile time. Found while reading §6.1.2 and not built: an identifier
+Closed in L2b: the evaluation stack stops at the depth the program declares, and a target
+profile carries a stack depth and a call depth (§2.2, §2.3). Found while reading §6.1.2 and
+not built: an identifier
 with two underscores together, or one at its end, is accepted (the standard forbids both).
 
 The differential test lists the first three rows as deliberate differences from STruC++
@@ -468,8 +489,9 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   static allocation, no recursion, instance-relative addressing, a bounded call stack;
   format 1.
 - L2. In three parts. **L2a** (done): a parser that recovers from errors and gives ranges, for
-  the editor (§2.8); a keyword is refused as a name (§2.13). **L2b**: the limits the VM and
-  the profiles enforce (the known gaps of §2.13). **L2c**: more of the standard library;
+  the editor (§2.8); a keyword is refused as a name (§2.13). **L2b** (done): the limits the VM
+  and the profiles enforce: the stack stops at the declared depth, profiles carry a stack
+  depth and a call depth, a jump into the middle of an instruction is refused at load. **L2c**: more of the standard library;
   strings.
 - L3. **LD, FBD, SFC** (not IL, §2.1), each a front-end crate and an editor kind.
 
@@ -498,8 +520,8 @@ Each step leaves `dev` working.
 | :--- | :--- |
 | 2.1 Crates and layers | `mythos-logic-ir`, `-st`, `-vm`, `-backend-vm`, `-compiler`; `layers.rs` guards them |
 | 2.1 ST front-end | Several POUs in any order: TYPE (STRUCT, named ARRAY), FUNCTION (VAR_INPUT, VAR; positional and formal calls), FUNCTION_BLOCK (VAR_INPUT, VAR_OUTPUT, VAR; nesting; arrays of instances), one PROGRAM; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME; arrays of any dimensions with initial value lists; whole-structure and whole-array assignment; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between the elementary types; implicit widening per Figure 11; recursion refused naming the cycle; a keyword of the standard refused as a name; diagnostics for everything else (enumerations, subranges, strings, VAR_IN_OUT, methods, and more: each refused by name); every independent mistake of a source in one pass, each once, with the range it is about (§2.8); a body or a type nested more than 100 deep refused, a structure that contains itself told before anything follows it (§2.8) |
-| 2.2 Profiles | `serde` data with a format version; `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format) proven with profiles read from JSON |
-| 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 1: bodies, call frames, instance-relative and region-confined addressing; loader checks, run-time checks, budget; faults, with `IndexOutOfRange` and `CallDepthExceeded` |
+| 2.2 Profiles | `serde` data with a format version; `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format, stack depth, call depth) proven with profiles read from JSON; a profile written before the depths existed still loads and states no limit |
+| 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 1 (unchanged by L2b): bodies, call frames, instance-relative and region-confined addressing; loader checks, with every jump landing on an instruction of its body, and `load_within` a host's limits; run-time checks, budget; the stack and the calls stop at the depths the program declares; faults, with `IndexOutOfRange`, `CallDepthExceeded` and `StackOverflow` |
 | 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
 | 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Not built: forcing variables, state carried across a replacement, a watchdog on the scan thread, RETAIN |
 | 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run`, `/stop` and `/watch`, `GET`/`PUT /api/v1/projects/:id/runtimes`, each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
@@ -561,6 +583,22 @@ Evidence of the spike (2026-11-17):
   optimised. Windows and macOS: not measured.
 - **Microcontrollers** (`scripts/logic-vm-footprint.sh`, CI job `logic-vm-bare-metal`): the VM
   with its loader and scan loop, `opt-level=s`, LTO, linked with `core` alone: **RP2040**
-  (thumbv6m-none-eabi) 19,200 bytes of code (15,884 before format 1); **ESP32-C3**
-  (riscv32imc-unknown-none-elf) 22,908 bytes (19,146 before). Run on a real board: not yet (none attached). The original ESP32 and the S3 are
+  (thumbv6m-none-eabi) 19,304 bytes of code (19,200 before L2b, 15,884 before format 1);
+  **ESP32-C3** (riscv32imc-unknown-none-elf) 22,812 bytes (22,908 before L2b, 19,146 before
+  format 1). The L2b figures and the ones before it were both measured with rustc 1.99.1; the
+  RISC-V build came out smaller with more in it, which is the compiler's doing and was not
+  looked into. Run on a real board: not yet (none attached). The original ESP32 and the S3 are
   Xtensa, which needs Espressif's Rust toolchain: not built.
+- **L2b** (the limits): 13 tests added to the five logic crates (120 on the branch it was built
+  on, from 107). `jumps_land_on_instructions.rs` lists every start of every body the plain
+  way and points every jump of the six corpus programs, and of one written to have every
+  shape the loader's shortcuts are for, at every byte of its body: 99 jumps (81 forward, 18
+  back), 72,611 placements, 16,260 taken and 56,351 refused, the loader agreeing with the
+  list on every one. Of 24,000 damaged programs, 5,304 now pass the loader (5,495 before).
+  The emulators: all 12 runs equal, with the firmware loading within its limits.
+  **Load time on a PC** (`load_time.rs`, release, i9-11980HK, Linux, desktop load; best of
+  20): a program of 374,211 bytes of code with 18,400 jumps, 1,200 of them back and loops
+  nested three deep at its end, loads in 10.1 ms (6.3 ms before the second walk); one of
+  1,555,011 bytes in 42.5 ms (20.3 ms before). With three of the four proved targets kept (not
+  the head of the loop before a nest), the first took 152 ms: the walks to the heads of nested
+  loops started at the top of the body. Load time on a microcontroller: NOT MEASURED.

@@ -21,5 +21,5 @@ pub mod fb;
 pub mod format;
 mod vm;
 
-pub use format::{crc32, ElemType, LoadError, Program, FORMAT_VERSION, MAGIC};
+pub use format::{crc32, ElemType, Limits, LoadError, Program, FORMAT_VERSION, MAGIC};
 pub use vm::{cold_start, read, scan, write, Fault, Frame, ScanReport, Value};
