@@ -374,7 +374,8 @@ jobs:
   # ADR-013: the logic VM's core must run on microcontrollers (ESP32, RP2040) as well as in the
   # PC runner. This links it into bare-metal firmware for both, with `core` alone, from the first
   # PR on, so nothing can make it need `std` or an allocator without this job going red. It
-  # prints the flash it costs. A hosted runner: it is a cross build, not a measurement of a host.
+  # prints the flash it costs, then runs real programs on the VM in emulators of both
+  # instruction sets. A hosted runner: it is a cross build, not a measurement of a host.
   logic-vm-bare-metal:
     name: Logic VM on Bare Metal (RP2040, ESP32-C3)
     needs: already-verified
@@ -391,8 +392,29 @@ jobs:
           targets: thumbv6m-none-eabi,riscv32imc-unknown-none-elf
           components: llvm-tools
 
+      # `shell: bash` is what gives these steps `pipefail`: without it GitHub runs `bash -e`,
+      # and a script that fails into `| tee` leaves the step green.
       - name: Link the VM into firmware and print its size
+        shell: bash
         run: scripts/logic-vm-footprint.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends qemu-system-arm
+          # The RISC-V emulators are in qemu-system-riscv on newer Ubuntu and in
+          # qemu-system-misc on older ones.
+          sudo apt-get install -y -qq --no-install-recommends qemu-system-riscv \
+            || sudo apt-get install -y -qq --no-install-recommends qemu-system-misc
+          qemu-system-arm --version | head -n 1
+          qemu-system-riscv32 --version | head -n 1
+
+      # The same programs, on the VM, inside an emulated Cortex-M0 (the RP2040's instruction
+      # set) and an emulated RV32IMC machine (the ESP32-C3's): every scan must leave the VM's
+      # memory byte for byte as it is on this machine.
+      - name: Run programs on emulated microcontrollers and compare with this machine
+        shell: bash
+        run: scripts/logic-vm-on-emulators.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
   frontend-tests:
     name: Frontend Web Workbench Test Suite & Lints

@@ -54,7 +54,7 @@ intent and may describe things that do not exist.
   types and data types; the workbench has no editors for them.
 - **A logic engine that runs.** A compiler for a subset of Structured Text and the VM that runs
   it exist as libraries (`crates/mythos-logic-*`, ADR-013),
-  tested, compared against STruC++ and linked for microcontrollers in CI; no server, module or
+  tested, compared against STruC++ and run on emulated microcontrollers in CI; no server, module or
   firmware runs them yet. `POST /api/v1/control/deploy` answers `501` and compiles nothing.
 - **Writes to field devices** from the API or the HMI.
 - **Alarms, historian, recipes, device discovery, disaster recovery.**
