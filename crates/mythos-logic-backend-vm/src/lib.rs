@@ -18,7 +18,7 @@
 use mythos_logic_ir::*;
 use mythos_logic_vm::fb::FbKind;
 use mythos_logic_vm::format::{
-    crc32, op, string_size, ElemType, MAGIC, PLACE_INDEXED, PLACE_RELATIVE,
+    crc32, op, rfn, string_size, ElemType, MAGIC, PLACE_INDEXED, PLACE_RELATIVE,
 };
 
 pub use mythos_logic_vm::FORMAT_VERSION;
@@ -1051,7 +1051,7 @@ impl Emitter<'_> {
                 strings.push(1);
                 (op::SREPLACE, &args[2..4])
             }
-            StdFn::Len | StdFn::Find => unreachable!("{} gives an INT", f.name()),
+            _ => unreachable!("{} does not give a STRING", f.name()),
         };
         let mut operands = vec![self.string_value(&args[0])];
         for k in strings {
@@ -1067,8 +1067,8 @@ impl Emitter<'_> {
         }
     }
 
-    /// A function of the standard library that gives a value on the stack.
-    fn std_value(&mut self, f: StdFn, args: &[Expr]) {
+    /// A function of the standard library that gives a value of type `ty` on the stack.
+    fn std_value(&mut self, f: StdFn, args: &[Expr], ty: Ty) {
         match f {
             StdFn::Len => {
                 let a = self.string_value(&args[0]);
@@ -1082,8 +1082,182 @@ impl Emitter<'_> {
                 self.string_operand(a.0, a.1);
                 self.string_operand(b.0, b.1);
             }
-            _ => unreachable!("{} gives a STRING", f.name()),
+            f if f.is_string_function() => unreachable!("{} gives a STRING", f.name()),
+            _ => self.numeric(f, args, ty),
         }
+    }
+
+    /// A numeric or selection function (Table 28, EXPT, TRUNC, Table 32) giving a `ty`.
+    fn numeric(&mut self, f: StdFn, args: &[Expr], ty: Ty) {
+        let real = |t: Ty| if t == Ty::Real { op::RFN32 } else { op::RFN };
+        let which = match f {
+            StdFn::Sqrt => Some(rfn::SQRT),
+            StdFn::Ln => Some(rfn::LN),
+            StdFn::Log => Some(rfn::LOG),
+            StdFn::Exp => Some(rfn::EXP),
+            StdFn::Sin => Some(rfn::SIN),
+            StdFn::Cos => Some(rfn::COS),
+            StdFn::Tan => Some(rfn::TAN),
+            StdFn::Asin => Some(rfn::ASIN),
+            StdFn::Acos => Some(rfn::ACOS),
+            StdFn::Atan => Some(rfn::ATAN),
+            _ => None,
+        };
+        if let Some(which) = which {
+            self.expr(&args[0]);
+            self.op(real(ty), 0);
+            self.code.push(which);
+            return;
+        }
+        match f {
+            StdFn::Abs => {
+                self.expr(&args[0]);
+                let code = match class(ty) {
+                    Class::I32 => op::ABS_I32,
+                    Class::I64 => op::ABS_I64,
+                    Class::F32 => op::ABS_F32,
+                    Class::F64 => op::ABS_F64,
+                    Class::Bool => unreachable!("ABS of a BOOL"),
+                };
+                self.op(code, 0);
+                // ABS of SINT's or INT's most negative value is outside its type: it wraps,
+                // as every result outside its type does here.
+                self.wrap(ty);
+            }
+            StdFn::Trunc => {
+                let from = args[0].ty;
+                self.expr(&args[0]);
+                self.op(real(from), 0);
+                self.code.push(rfn::TRUNC);
+                self.convert(from, ty);
+            }
+            StdFn::Atan2 => {
+                self.expr(&args[0]);
+                self.expr(&args[1]);
+                let code = if ty == Ty::Real {
+                    op::ATAN2_F32
+                } else {
+                    op::ATAN2_F64
+                };
+                self.op(code, -1);
+            }
+            StdFn::Expt => {
+                let (base, exponent) = (&args[0], &args[1]);
+                if exponent.ty.is_int() {
+                    self.expr(base);
+                    self.expr(exponent);
+                    let code = if ty == Ty::Real {
+                        op::EXPTI_F32
+                    } else {
+                        op::EXPTI_F64
+                    };
+                    self.op(code, -1);
+                } else if exponent.ty == ty {
+                    self.expr(base);
+                    self.expr(exponent);
+                    let code = if ty == Ty::Real {
+                        op::EXPT_F32
+                    } else {
+                        op::EXPT_F64
+                    };
+                    self.op(code, -1);
+                } else {
+                    // A REAL to an LREAL power: in LREAL, the result a REAL again.
+                    self.expr(base);
+                    self.convert(ty, Ty::Lreal);
+                    self.expr(exponent);
+                    self.convert(exponent.ty, Ty::Lreal);
+                    self.op(op::EXPT_F64, -1);
+                    self.convert(Ty::Lreal, ty);
+                }
+            }
+            StdFn::Sel => {
+                // IN0 when G is FALSE, IN1 when it is TRUE; only the one chosen is worked out.
+                self.expr(&args[0]);
+                let to_in0 = self.jump(op::JZ);
+                let depth = self.depth;
+                self.expr(&args[2]);
+                let to_end = self.jump(op::JMP);
+                let h = self.here();
+                self.patch(to_in0, h);
+                self.depth = depth;
+                self.expr(&args[1]);
+                let h = self.here();
+                self.patch(to_end, h);
+            }
+            StdFn::Max | StdFn::Min => {
+                let more = if f == StdFn::Max { Cmp::Gt } else { Cmp::Lt };
+                let acc = self.scratch(self.lay.size(ty));
+                self.expr(&args[0]);
+                self.store(ty, acc);
+                for a in &args[1..] {
+                    self.keep_if(ty, acc, a, more);
+                }
+                self.load(ty, acc);
+            }
+            StdFn::Limit => {
+                // MIN(MAX(IN, MN), MX).
+                let acc = self.scratch(self.lay.size(ty));
+                self.expr(&args[1]);
+                self.store(ty, acc);
+                self.keep_if(ty, acc, &args[0], Cmp::Gt);
+                self.keep_if(ty, acc, &args[2], Cmp::Lt);
+                self.load(ty, acc);
+            }
+            StdFn::Mux => {
+                // K is checked against the inputs (Table 32 footnote e), then compared with
+                // each; only the input chosen is worked out.
+                let k = self.scratch(8);
+                self.expr(&args[0]);
+                self.store(Ty::Lint, k);
+                self.load(Ty::Lint, k);
+                let inputs = &args[1..];
+                self.op_u32(op::CHKSEL, inputs.len() as u32, -1);
+                let depth = self.depth;
+                let mut ends = Vec::new();
+                for (i, input) in inputs.iter().enumerate() {
+                    self.depth = depth;
+                    if i + 1 == inputs.len() {
+                        self.expr(input);
+                        break;
+                    }
+                    self.load(Ty::Lint, k);
+                    self.push_const(Ty::Lint, Const::Int(i as i64));
+                    self.op(op::CMP_I64 + cmp_code(Cmp::Eq), -1);
+                    let next = self.jump(op::JZ);
+                    self.expr(input);
+                    ends.push(self.jump(op::JMP));
+                    let h = self.here();
+                    self.patch(next, h);
+                }
+                let h = self.here();
+                for j in ends {
+                    self.patch(j, h);
+                }
+            }
+            _ => unreachable!("{} is not numeric", f.name()),
+        }
+    }
+
+    /// `acc := a` when `a` compares to `acc` as `more` says (MAX, MIN, LIMIT).
+    fn keep_if(&mut self, ty: Ty, acc: Loc, a: &Expr, more: Cmp) {
+        let tmp = self.scratch(self.lay.size(ty));
+        self.expr(a);
+        self.store(ty, tmp);
+        self.load(ty, tmp);
+        self.load(ty, acc);
+        let base = match class(ty) {
+            Class::Bool | Class::I32 => op::CMP_I32,
+            Class::I64 => op::CMP_I64,
+            Class::F32 => op::CMP_F32,
+            Class::F64 => op::CMP_F64,
+        };
+        self.op(base + cmp_code(more), -1);
+        let skip = self.jump(op::JZ);
+        self.load(ty, tmp);
+        self.store(ty, acc);
+        let h = self.here();
+        self.patch(skip, h);
     }
 
     /// Note that the body being emitted calls POU `q`, with the stack as deep as it is now.
@@ -1153,7 +1327,7 @@ impl Emitter<'_> {
         match &e.kind {
             ExprKind::Const(k) => self.push_const(e.ty, *k),
             ExprKind::Str(_) => unreachable!("a string is not a value on the stack"),
-            ExprKind::Std(f, args) => self.std_value(*f, args),
+            ExprKind::Std(f, args) => self.std_value(*f, args, e.ty),
             ExprKind::Load(p) => {
                 let a = self.place(p);
                 self.load(e.ty, a);

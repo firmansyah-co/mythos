@@ -494,6 +494,9 @@ fn describe(fault: Fault) -> String {
         Fault::BadNumber(at) => {
             format!("a string converted to an integer does not write one (code offset {at})")
         }
+        Fault::SelectorOutOfRange(at) => {
+            format!("MUX was given a K with no input to choose (code offset {at})")
+        }
     }
 }
 

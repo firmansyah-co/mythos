@@ -31,15 +31,15 @@ fn an_input_left_out_of_a_call_by_name_has_its_initial_value_every_time() {
     // IEC 61131-3 ed. 3 §6.6.1.4.2 and Table 20 feature 1b: a variable given no value in a
     // formal call has the initial value of its declaration, or its type's default.
     let mut r = Run::new(
-        "FUNCTION Limit : INT
+        "FUNCTION Bound : INT
          VAR_INPUT x : INT; lo : INT; hi : INT := 100; END_VAR
-           IF x > hi THEN Limit := hi; ELSIF x < lo THEN Limit := lo; ELSE Limit := x; END_IF;
+           IF x > hi THEN Bound := hi; ELSIF x < lo THEN Bound := lo; ELSE Bound := x; END_IF;
          END_FUNCTION
          PROGRAM Main VAR a, b, c, d : INT; END_VAR
-           a := Limit(x := 500);
-           b := Limit(x := 500, hi := 20);
-           c := Limit(x := 500);
-           d := Limit(x := -5);
+           a := Bound(x := 500);
+           b := Bound(x := 500, hi := 20);
+           c := Bound(x := 500);
+           d := Bound(x := -5);
          END_PROGRAM",
     );
     r.scan().unwrap();
@@ -126,16 +126,16 @@ fn an_argument_may_be_a_call_of_the_same_function() {
     // A function's parameters are one fixed place. Every argument is worked out before any
     // is put there, so the inner calls do not overwrite the outer call's.
     let mut r = Run::new(
-        "FUNCTION Sub : DINT
+        "FUNCTION Diff : DINT
          VAR_INPUT a, b : DINT; END_VAR
          VAR t : DINT; END_VAR
            t := a - b;
-           Sub := t;
+           Diff := t;
          END_FUNCTION
          PROGRAM Main VAR x, y, z : DINT; END_VAR
-           x := Sub(100, Sub(30, 5));
-           y := Sub(Sub(100, 30), 5);
-           z := Sub(Sub(50, Sub(9, 4)), Sub(Sub(8, 2), 1));
+           x := Diff(100, Diff(30, 5));
+           y := Diff(Diff(100, 30), 5);
+           z := Diff(Diff(50, Diff(9, 4)), Diff(Diff(8, 2), 1));
          END_PROGRAM",
     );
     r.scan().unwrap();

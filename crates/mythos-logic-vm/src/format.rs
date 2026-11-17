@@ -51,8 +51,9 @@ use crate::fb::FbKind;
 pub const MAGIC: [u8; 4] = *b"MLBC";
 /// The format this VM's compiler makes, and the newest this VM reads.
 ///
-/// 2: strings (`STRING[n]` and the instructions on them). 1: functions, function blocks,
-/// arrays and structures.
+/// 3: the numeric functions of the standard library (`RFN`, `ATAN2_*`, `EXPT*`, `ABS_*`,
+/// `CHKSEL`). 2: strings (`STRING[n]` and the instructions on them). 1: functions, function
+/// blocks, arrays and structures.
 ///
 /// A VM reads every format it extends (ADR-013, "Format versions"): each format from
 /// [`OLDEST_FORMAT_VERSION`] to this one only adds instructions to the one before, and
@@ -60,7 +61,7 @@ pub const MAGIC: [u8; 4] = *b"MLBC";
 /// of an older version is read exactly as it was written. A format that changed what an
 /// older program means would start a new line, and this VM would refuse what came before
 /// it. A version outside the range is refused, never guessed at.
-pub const FORMAT_VERSION: u16 = 2;
+pub const FORMAT_VERSION: u16 = 3;
 /// The oldest format this VM reads. Format 0, the spike's, had a 16-byte header without a
 /// call depth or a table of bodies: this VM does not extend it.
 pub const OLDEST_FORMAT_VERSION: u16 = 1;
@@ -267,6 +268,47 @@ pub mod op {
     /// single underscores between digits. Anything else, or a value beyond 64 bits, stops the
     /// scan with `BadNumber`.
     pub const STOI: u8 = 0xDC;
+
+    // The numeric functions of IEC 61131-3 ed. 3 Table 28 and EXPT (Table 29), format 3. The
+    // VM computes them itself (`crate::math`), the same bits on every target.
+    /// `RFN which:u8`: replace the LREAL on top by its function `which` (`rfn`).
+    pub const RFN: u8 = 0xE0;
+    /// `RFN32 which:u8`: the same for a REAL, computed in LREAL and rounded once.
+    pub const RFN32: u8 = 0xE1;
+    /// Pop X, then Y; push ATAN2(Y, X).
+    pub const ATAN2_F64: u8 = 0xE2;
+    pub const ATAN2_F32: u8 = 0xE3;
+    /// Pop the exponent (a real of the same type), then the base; push base ** exponent.
+    pub const EXPT_F64: u8 = 0xE4;
+    pub const EXPT_F32: u8 = 0xE5;
+    /// Pop the exponent (an i64), then the base (a real); push base ** exponent.
+    pub const EXPTI_F64: u8 = 0xE6;
+    pub const EXPTI_F32: u8 = 0xE7;
+    /// The absolute value; of the most negative integer it wraps to itself.
+    pub const ABS_I32: u8 = 0xE8;
+    pub const ABS_I64: u8 = 0xE9;
+    pub const ABS_F32: u8 = 0xEA;
+    pub const ABS_F64: u8 = 0xEB;
+    /// `CHKSEL count:u32`: pop an i64; outside `0 .. count-1` the scan stops with
+    /// `SelectorOutOfRange` (MUX's K, Table 32 footnote e).
+    pub const CHKSEL: u8 = 0xEC;
+}
+
+/// The functions of one real that `RFN` and `RFN32` compute, by their `which`.
+pub mod rfn {
+    pub const SQRT: u8 = 0;
+    pub const LN: u8 = 1;
+    pub const LOG: u8 = 2;
+    pub const EXP: u8 = 3;
+    pub const SIN: u8 = 4;
+    pub const COS: u8 = 5;
+    pub const TAN: u8 = 6;
+    pub const ASIN: u8 = 7;
+    pub const ACOS: u8 = 8;
+    pub const ATAN: u8 = 9;
+    /// Toward zero, as a real (TRUNC is this, then a conversion of an integral value).
+    pub const TRUNC: u8 = 10;
+    pub const LAST: u8 = TRUNC;
 }
 
 /// Bytes of a string operand: `cap:u16 place`.
@@ -406,6 +448,9 @@ pub fn instruction_len(opcode: u8) -> Option<usize> {
         }
         I32_TO_I64..=I64_TO_BOOL => 1,
         FB => 6,
+        RFN | RFN32 => 2,
+        ATAN2_F64..=ABS_F64 => 1,
+        CHKSEL => 5,
         SCMP => 2 + 2 * SOP_LEN,
         x if string_shape(x).is_some() => {
             1 + string_shape(x).map_or(0, |(operands, _)| operands) * SOP_LEN
@@ -747,6 +792,9 @@ fn verify_body(
                 let kind =
                     FbKind::from_code(code[pc + 1]).ok_or(LoadError::UnknownFunctionBlock(at))?;
                 place(place_at(code, pc + 2), kind.size(), at)?;
+            }
+            op::RFN | op::RFN32 if code[pc + 1] > rfn::LAST => {
+                return Err(LoadError::BadOperand(at));
             }
             x if string_shape(x).is_some() => {
                 let (operands, _) = string_shape(x).unwrap_or((0, 0));

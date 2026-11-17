@@ -1356,9 +1356,6 @@ impl Parser {
         let mut operands = vec![self.operand()?];
         let mut waiting: Vec<(usize, BinOp, Span)> = Vec::new();
         loop {
-            if self.is_sym("**") {
-                return self.refuse("** (power) is not supported yet".into());
-            }
             // A message about an operation is about its operator.
             let span = self.span();
             let Some((level, op)) = self.operator() else {
@@ -1389,7 +1386,7 @@ impl Parser {
 
     /// The operator at the next token: its precedence (0 binds least) and what it does.
     fn operator(&self) -> Option<(usize, BinOp)> {
-        const LEVELS: [&[(&str, BinOp)]; 6] = [
+        const LEVELS: [&[(&str, BinOp)]; 7] = [
             &[("OR", BinOp::Or)],
             &[("XOR", BinOp::Xor)],
             &[("AND", BinOp::And)],
@@ -1405,6 +1402,8 @@ impl Parser {
             ],
             &[("+", BinOp::Add), ("-", BinOp::Sub)],
             &[("*", BinOp::Mul), ("/", BinOp::Div), ("MOD", BinOp::Mod)],
+            // Table 71 precedence 7: above * and below a unary minus, so -a**2 is (-a)**2.
+            &[("**", BinOp::Pow)],
         ];
         let token = match self.peek() {
             Tok::Sym(s) => *s,

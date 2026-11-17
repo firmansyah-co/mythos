@@ -1231,3 +1231,37 @@ fn an_indexed_string_operand_pops_its_offset_and_stays_in_its_region() {
         }
     }
 }
+
+#[test]
+fn a_function_of_one_real_names_one_the_vm_has() {
+    use mythos_logic_vm::format::rfn;
+    for which in 0..=rfn::LAST + 1 {
+        let mut code = ins(op::PUSH64, &[&2.0f64.to_bits().to_le_bytes()]);
+        code.extend(ins(op::RFN, &[&[which]]));
+        code.extend(with_addr(op::ST_64, 0));
+        code.push(op::END);
+        let loaded = refused(&build(FORMAT_VERSION, 1, &[0; 8], &code));
+        if which <= rfn::LAST {
+            assert_eq!(loaded, None, "{which}");
+        } else {
+            assert_eq!(loaded, Some(LoadError::BadOperand(9)));
+        }
+    }
+}
+
+#[test]
+fn a_selector_outside_its_inputs_stops_the_scan() {
+    // MUX's K (IEC 61131-3 ed. 3 Table 32 footnote e): 0 to count-1 passes, else a fault.
+    for (k, want) in [
+        (0i64, Ok(())),
+        (2, Ok(())),
+        (3, Err(Fault::SelectorOutOfRange(9))),
+        (-1, Err(Fault::SelectorOutOfRange(9))),
+    ] {
+        let mut code = ins(op::PUSH64, &[&k.to_le_bytes()]);
+        code.extend(with_addr(op::CHKSEL, 3));
+        code.push(op::END);
+        let (r, _) = run(&build(FORMAT_VERSION, 1, &[], &code));
+        assert_eq!(r, want, "K = {k}");
+    }
+}

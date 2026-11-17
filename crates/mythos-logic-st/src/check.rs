@@ -165,6 +165,39 @@ fn fits(ty: Ty, v: i128) -> bool {
     ty.int_range().is_some_and(|(lo, hi)| v >= lo && v <= hi)
 }
 
+/// The integer type a truncation names: `TRUNC_INT` (Table 22 feature 2c) or
+/// `REAL_TRUNC_INT`, `LREAL_TRUNC_INT` (feature 2b). The old TRUNC alone (2a) is deprecated
+/// and not taken.
+fn truncation(upper: &str) -> Option<Ty> {
+    let (from, to) = upper.split_once("TRUNC_")?;
+    let to = Ty::from_name(to).filter(|t| t.is_int())?;
+    match from {
+        "" | "REAL_" | "LREAL_" => Some(to),
+        _ => None,
+    }
+}
+
+/// The operators that are also functions by name (Table 29, Table 33): ADD and MUL take two
+/// or more, the comparisons other than NE two or more, the rest two (MOVE one). MOD, AND,
+/// OR, XOR and NOT are keywords of ST and are written as operators.
+fn operator_function(upper: &str) -> Option<BinOp> {
+    Some(match upper {
+        "ADD" => BinOp::Add,
+        "SUB" => BinOp::Sub,
+        "MUL" => BinOp::Mul,
+        "DIV" => BinOp::Div,
+        "GT" => BinOp::Gt,
+        "GE" => BinOp::Ge,
+        "EQ" => BinOp::Eq,
+        "LE" => BinOp::Le,
+        "LT" => BinOp::Lt,
+        "NE" => BinOp::Ne,
+        // MOVE: OUT := IN; marked by an operator it never applies.
+        "MOVE" => BinOp::Or,
+        _ => return None,
+    })
+}
+
 /// The most characters the decimal text of a value of the integer type `ty` takes, its sign
 /// included: what `<int>_TO_STRING` gives.
 fn decimal_width(ty: Ty) -> u16 {
@@ -255,7 +288,10 @@ impl Checker {
             let conversion = upper
                 .split_once("_TO_")
                 .is_some_and(|(a, b)| Ty::from_name(a).is_some() && Ty::from_name(b).is_some());
-            if Ty::from_name(&upper).is_some() || conversion || StdFn::by_name(&upper).is_some() {
+            let library = StdFn::by_name(&upper).is_some()
+                || truncation(&upper).is_some()
+                || operator_function(&upper).is_some();
+            if Ty::from_name(&upper).is_some() || conversion || library {
                 // A keyword as a name is told by the parser, once.
                 if !is_keyword(&upper) {
                     c.err(
@@ -1338,7 +1374,10 @@ impl Checker {
             if self.is_refused(name) {
                 return None;
             }
-            let standard = StdFn::by_name(&name.to_ascii_uppercase()).is_some();
+            let upper = name.to_ascii_uppercase();
+            let standard = StdFn::by_name(&upper).is_some()
+                || truncation(&upper).is_some()
+                || operator_function(&upper).is_some();
             let msg = if self.function(name).is_some() || standard {
                 // Table 72 lets a function be called as a statement, its result
                 // discarded; a function here has no other effect, so that is refused.
@@ -1645,7 +1684,7 @@ impl Checker {
                 self.neg(x, span)
             }
             A::Binary(op, l, r) => self.binary(*op, l, r, want, span),
-            A::Call(name, args) => self.call(name, args, span),
+            A::Call(name, args) => self.call(name, args, span, want),
         }
     }
 
@@ -1777,6 +1816,9 @@ impl Checker {
         want: Option<Ty>,
         span: Span,
     ) -> Option<Expr> {
+        if op == BinOp::Pow {
+            return self.expt(l, r, want);
+        }
         let comparison = matches!(
             op,
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
@@ -1973,12 +2015,28 @@ impl Checker {
     /// A function call in an expression: a function of the source, a function of the
     /// standard library, or one of the type conversions `<A>_TO_<B>` between the elementary
     /// numeric types and BOOL, and between the integer types and STRING.
-    fn call(&mut self, name: &str, args: &[ast::CallArg], span: Span) -> Option<Expr> {
+    fn call(
+        &mut self,
+        name: &str,
+        args: &[ast::CallArg],
+        span: Span,
+        want: Option<Ty>,
+    ) -> Option<Expr> {
         if let Some(f) = self.function(name) {
             return self.call_function(f, args, span);
         }
-        if let Some(f) = StdFn::by_name(&name.to_ascii_uppercase()) {
-            return self.call_std(f, args, span);
+        let upper = name.to_ascii_uppercase();
+        if let Some(f) = StdFn::by_name(&upper) {
+            if f.is_string_function() {
+                return self.call_std(f, args, span);
+            }
+            return self.call_numeric(f, args, span, want);
+        }
+        if let Some(to) = truncation(&upper) {
+            return self.call_trunc(&upper, to, args, span);
+        }
+        if let Some(op) = operator_function(&upper) {
+            return self.call_operator(&upper, op, args, span, want);
         }
         let (from, to) = self.conversion(name, args, span)?;
         let x = self.expr(&args[0].value, Some(from))?;
@@ -2008,6 +2066,44 @@ impl Checker {
         span: Span,
     ) -> Option<Vec<&'a ast::Expr>> {
         let name = f.name();
+        // An extensible function takes as many as it is given: CONCAT, MAX and MIN IN1 … INn
+        // (Table 34 feature 5, Table 32), MUX K then IN0 … INn-1 (Table 32 footnote b).
+        let inputs: Vec<String> = match f {
+            StdFn::Mux => {
+                if args.len() < 3 {
+                    self.err(span, "MUX takes K and two or more inputs");
+                    return None;
+                }
+                std::iter::once("K".to_string())
+                    .chain((0..args.len() - 1).map(|k| format!("IN{k}")))
+                    .collect()
+            }
+            f if f.is_extensible() => {
+                if args.len() < 2 {
+                    let what = if f == StdFn::Concat {
+                        "strings"
+                    } else {
+                        "inputs"
+                    };
+                    self.err(span, format!("{name} takes two or more {what}"));
+                    return None;
+                }
+                (1..=args.len()).map(|k| format!("IN{k}")).collect()
+            }
+            f => f.inputs().iter().map(|s| s.to_string()).collect(),
+        };
+        self.arguments(name, args, inputs, span)
+    }
+
+    /// The arguments of a call of `name`, whose inputs are `inputs`, each set against the
+    /// input it gives (by position, or all by name), in the order of `inputs`.
+    fn arguments<'a>(
+        &mut self,
+        name: &str,
+        args: &'a [ast::CallArg],
+        inputs: Vec<String>,
+        span: Span,
+    ) -> Option<Vec<&'a ast::Expr>> {
         let named = args.iter().filter(|a| a.name.is_some()).count();
         if named != 0 && named != args.len() {
             self.err(
@@ -2016,16 +2112,6 @@ impl Checker {
             );
             return None;
         }
-        // CONCAT takes two or more: IN1, IN2, … INn (Table 34 feature 5).
-        let inputs: Vec<String> = if f == StdFn::Concat {
-            if args.len() < 2 {
-                self.err(span, "CONCAT takes two or more strings");
-                return None;
-            }
-            (1..=args.len()).map(|k| format!("IN{k}")).collect()
-        } else {
-            f.inputs().iter().map(|s| s.to_string()).collect()
-        };
         if named == 0 {
             if args.len() != inputs.len() {
                 self.err(
@@ -2076,6 +2162,316 @@ impl Checker {
         Some(given.into_iter().flatten().collect())
     }
 
+    /// An operator called as a function (Table 29, Table 33): `ADD(a, b, c)` is `a + b + c`,
+    /// `GT(a, b, c)` is `(a > b) AND (b > c)`, `MOVE(a)` is `a`. Typed as the operators are.
+    fn call_operator(
+        &mut self,
+        upper: &str,
+        op: BinOp,
+        args: &[ast::CallArg],
+        span: Span,
+        want: Option<Ty>,
+    ) -> Option<Expr> {
+        let (least, most) = match upper {
+            "MOVE" => (1, 1),
+            "ADD" | "MUL" | "GT" | "GE" | "EQ" | "LE" | "LT" => (2, usize::MAX),
+            _ => (2, 2),
+        };
+        if args.len() < least || args.len() > most {
+            let many = match (least, most) {
+                (1, 1) => "one input".to_string(),
+                (2, 2) => "two inputs".to_string(),
+                _ => "two or more inputs".to_string(),
+            };
+            self.err(span, format!("{upper} takes {many}"));
+            return None;
+        }
+        let inputs: Vec<String> = if upper == "MOVE" {
+            vec!["IN".into()]
+        } else {
+            (1..=args.len()).map(|k| format!("IN{k}")).collect()
+        };
+        let values = self.arguments(upper, args, inputs, span)?;
+        if upper == "MOVE" {
+            return self.expr(values[0], want);
+        }
+        let binary = |op: BinOp, l: &ast::Expr, r: &ast::Expr| ast::Expr {
+            kind: A::Binary(op, Box::new(l.clone()), Box::new(r.clone())),
+            span,
+        };
+        let comparison = matches!(
+            op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+        );
+        let tree = if comparison {
+            // Each neighbouring pair, all of them true.
+            let mut t = binary(op, values[0], values[1]);
+            for k in 2..values.len() {
+                t = binary(BinOp::And, &t, &binary(op, values[k - 1], values[k]));
+            }
+            t
+        } else {
+            let mut t = binary(op, values[0], values[1]);
+            for v in &values[2..] {
+                t = binary(op, &t, v);
+            }
+            t
+        };
+        self.expr(&tree, want)
+    }
+
+    /// `TRUNC_<int>(x)`: a real toward zero, as the integer type named.
+    fn call_trunc(
+        &mut self,
+        upper: &str,
+        to: Ty,
+        args: &[ast::CallArg],
+        span: Span,
+    ) -> Option<Expr> {
+        let values = self.arguments(upper, args, vec!["IN".into()], span)?;
+        let from = if upper.starts_with("LREAL_") {
+            Some(Ty::Lreal)
+        } else if upper.starts_with("REAL_") {
+            Some(Ty::Real)
+        } else {
+            None
+        };
+        let x = self.expr(values[0], from)?;
+        let x = match from {
+            Some(t) => self.coerce(x, t, values[0].span)?,
+            None => x,
+        };
+        if !x.ty.is_real() {
+            let what = self.n(x.ty);
+            self.err(
+                values[0].span,
+                format!("IN of {upper} is a REAL or an LREAL; this is a {what}"),
+            );
+            return None;
+        }
+        Some(Expr {
+            ty: to,
+            kind: ExprKind::Std(StdFn::Trunc, vec![x]),
+        })
+    }
+
+    /// The real type an argument of a function of reals takes: its own if it is one; for an
+    /// integer, the real it widens to (Figure 11: SINT and INT to REAL, DINT to LREAL; LINT to
+    /// neither); `None`, told, otherwise.
+    fn real_type(&mut self, ty: Ty, span: Span, what: &str) -> Option<Ty> {
+        Some(match ty {
+            t if t.is_real() => t,
+            Ty::Sint | Ty::Int => Ty::Real,
+            Ty::Dint => Ty::Lreal,
+            other => {
+                let n = self.n(other);
+                self.err(span, format!("{what} is a REAL or an LREAL; this is a {n}"));
+                return None;
+            }
+        })
+    }
+
+    /// Values of one type, for the inputs of a function overloaded on a generic type: typed
+    /// as the operands of an operation are (a bare literal takes the type of the others),
+    /// then each widened to the type all of them widen to.
+    fn common(
+        &mut self,
+        name: &str,
+        values: &[&ast::Expr],
+        want: Option<Ty>,
+        span: Span,
+    ) -> Option<Vec<Expr>> {
+        let mut typed: Vec<Option<Expr>> = vec![None; values.len()];
+        let mut ok = true;
+        for (k, e) in values.iter().enumerate() {
+            if !Self::is_untyped_literal(e) {
+                match self.expr(e, want) {
+                    Some(x) => typed[k] = Some(x),
+                    None => ok = false,
+                }
+            }
+        }
+        if !ok {
+            return None;
+        }
+        let join = |c: &mut Checker, acc: Option<Ty>, t: Ty| -> Result<Option<Ty>, ()> {
+            let Some(a) = acc else { return Ok(Some(t)) };
+            if t.widens_to(a) {
+                Ok(Some(a))
+            } else if a.widens_to(t) {
+                Ok(Some(t))
+            } else if a.widens_to(Ty::Lreal) && t.widens_to(Ty::Lreal) {
+                Ok(Some(Ty::Lreal))
+            } else {
+                let (x, y) = (c.n(a), c.n(t));
+                c.err(
+                    span,
+                    format!(
+                        "the inputs of {name} are a {x} and a {y}, which have no type in common"
+                    ),
+                );
+                Err(())
+            }
+        };
+        let mut acc: Option<Ty> = None;
+        for x in typed.iter().flatten() {
+            acc = join(self, acc, x.ty).ok()?;
+        }
+        let hint = acc.or(want);
+        for (k, e) in values.iter().enumerate() {
+            if typed[k].is_none() {
+                let x = self.expr(e, hint)?;
+                acc = join(self, acc, x.ty).ok()?;
+                typed[k] = Some(x);
+            }
+        }
+        let ty = acc?;
+        let mut out = Vec::with_capacity(values.len());
+        for (k, x) in typed.into_iter().enumerate() {
+            out.push(self.coerce(x?, ty, values[k].span)?);
+        }
+        Some(out)
+    }
+
+    /// A call of a numeric or selection function of IEC 61131-3 ed. 3 (Table 28, Table 29's
+    /// EXPT, Table 32).
+    fn call_numeric(
+        &mut self,
+        f: StdFn,
+        args: &[ast::CallArg],
+        span: Span,
+        want: Option<Ty>,
+    ) -> Option<Expr> {
+        let values = self.std_args(f, args, span)?;
+        let name = f.name();
+        let real_want = want.filter(|t| t.is_real());
+        let made = |ty: Ty, args: Vec<Expr>| {
+            Some(Expr {
+                ty,
+                kind: ExprKind::Std(f, args),
+            })
+        };
+        match f {
+            StdFn::Abs => {
+                let x = self.expr(values[0], want)?;
+                if !(x.ty.is_int() || x.ty.is_real()) {
+                    let what = self.n(x.ty);
+                    self.err(
+                        values[0].span,
+                        format!("IN of ABS is a number; this is a {what}"),
+                    );
+                    return None;
+                }
+                made(x.ty, vec![x])
+            }
+            StdFn::Atan2 => {
+                let xs = self.common(name, &values, real_want, span)?;
+                let what = format!("each input of {name}");
+                let ty = self.real_type(xs[0].ty, span, &what)?;
+                let mut out = Vec::new();
+                for (k, x) in xs.into_iter().enumerate() {
+                    out.push(self.coerce(x, ty, values[k].span)?);
+                }
+                made(ty, out)
+            }
+            StdFn::Expt => self.expt(values[0], values[1], want),
+            StdFn::Sel => {
+                let g = self.condition(values[0]);
+                let xs = self.common(name, &values[1..], want, span);
+                let (g, xs) = (g?, xs?);
+                let ty = self.selectable(name, xs[0].ty, span)?;
+                made(ty, std::iter::once(g).chain(xs).collect())
+            }
+            StdFn::Max | StdFn::Min | StdFn::Limit => {
+                let xs = self.common(name, &values, want, span)?;
+                let ty = self.selectable(name, xs[0].ty, span)?;
+                made(ty, xs)
+            }
+            StdFn::Mux => {
+                let k = self.expr(values[0], Some(Ty::Dint));
+                let xs = self.common(name, &values[1..], want, span);
+                let (k, xs) = (k?, xs?);
+                if !k.ty.is_int() {
+                    let what = self.n(k.ty);
+                    self.err(
+                        values[0].span,
+                        format!("K of MUX is an integer; this is a {what}"),
+                    );
+                    return None;
+                }
+                // Table 32 footnote e: a K outside 0 … n-1 is an error; a literal one is
+                // found here.
+                if let ExprKind::Const(Const::Int(v)) = k.kind {
+                    if v < 0 || v >= xs.len() as i64 {
+                        let last = xs.len() - 1;
+                        self.err(
+                            values[0].span,
+                            format!("K of MUX is {v}; this MUX has inputs IN0 to IN{last}"),
+                        );
+                        return None;
+                    }
+                }
+                let k = self.coerce(k, Ty::Lint, values[0].span)?;
+                let ty = self.selectable(name, xs[0].ty, span)?;
+                made(ty, std::iter::once(k).chain(xs).collect())
+            }
+            // Of one real: SQRT, LN, LOG, EXP and the trigonometric functions.
+            _ => {
+                let x = self.expr(values[0], real_want)?;
+                let ty = self.real_type(x.ty, values[0].span, &format!("IN of {name}"))?;
+                let x = self.coerce(x, ty, values[0].span)?;
+                made(ty, vec![x])
+            }
+        }
+    }
+
+    /// `EXPT(base, exponent)`, and `base ** exponent` (Table 71 footnote b): the base a real,
+    /// the result of its type; the exponent an integer (as a LINT) or a real.
+    fn expt(&mut self, base: &ast::Expr, exponent: &ast::Expr, want: Option<Ty>) -> Option<Expr> {
+        let b = self.expr(base, want.filter(|t| t.is_real()));
+        let ty = b
+            .as_ref()
+            .and_then(|b| self.real_type(b.ty, base.span, "IN1 of EXPT"));
+        let hint = match exponent.kind {
+            A::Real(_) => ty,
+            _ => Some(Ty::Lint),
+        };
+        let e = self.expr(exponent, hint);
+        let (b, ty, e) = (b?, ty?, e?);
+        let b = self.coerce(b, ty, base.span)?;
+        let e = match e.ty {
+            t if t.is_int() => self.coerce(e, Ty::Lint, exponent.span)?,
+            t if t.is_real() => e,
+            other => {
+                let what = self.n(other);
+                self.err(
+                    exponent.span,
+                    format!("IN2 of EXPT is a number; this is a {what}"),
+                );
+                return None;
+            }
+        };
+        Some(Expr {
+            ty,
+            kind: ExprKind::Std(StdFn::Expt, vec![b, e]),
+        })
+    }
+
+    /// What SEL, MAX, MIN, LIMIT and MUX choose among: a number, a TIME or a BOOL.
+    fn selectable(&mut self, name: &str, ty: Ty, span: Span) -> Option<Ty> {
+        if ty.is_elementary() {
+            return Some(ty);
+        }
+        let what = self.n(ty);
+        let msg = if ty.is_string() {
+            format!("{name} of strings is not supported yet")
+        } else {
+            format!("{name} chooses among numbers, TIMEs or BOOLs; this is a {what}")
+        };
+        self.err(span, msg);
+        None
+    }
+
     /// A call of a function of IEC 61131-3 ed. 3 Table 34.
     fn call_std(&mut self, f: StdFn, args: &[ast::CallArg], span: Span) -> Option<Expr> {
         let values = self.std_args(f, args, span)?;
@@ -2085,6 +2481,7 @@ impl Checker {
             StdFn::Concat | StdFn::Len | StdFn::Find => true,
             StdFn::Left | StdFn::Right | StdFn::Mid | StdFn::Delete => k == 0,
             StdFn::Insert | StdFn::Replace => k < 2,
+            _ => unreachable!("{} is not a string function", f.name()),
         };
         let inputs = f.inputs();
         let mut lowered = Vec::with_capacity(values.len());
@@ -2132,6 +2529,7 @@ impl Checker {
             StdFn::Left | StdFn::Right | StdFn::Mid | StdFn::Delete => Some(len(0)),
             StdFn::Insert | StdFn::Replace => Some(len(0) + len(1)),
             StdFn::Concat => Some((0..lowered.len()).map(len).sum()),
+            _ => unreachable!("{} is not a string function", f.name()),
         };
         let ty = match longest {
             None => Ty::Int,

@@ -713,7 +713,7 @@ fn an_array_is_one_symbol_with_its_element_type_size_and_bounds() {
 #[test]
 fn a_target_refuses_a_type_wherever_it_is_used_and_a_program_too_large_for_it() {
     let no_lreal: TargetProfile = serde_json::from_str(
-        r#"{"name":"no-lreal","format_version":2,"max_memory":65536,"max_code":65536,"refuses":["Lreal"]}"#,
+        r#"{"name":"no-lreal","format_version":3,"max_memory":65536,"max_code":65536,"refuses":["Lreal"]}"#,
     )
     .unwrap();
     for src in [
@@ -729,7 +729,7 @@ fn a_target_refuses_a_type_wherever_it_is_used_and_a_program_too_large_for_it() 
         );
     }
     let small: TargetProfile = serde_json::from_str(
-        r#"{"name":"small","format_version":2,"max_memory":100,"max_code":65536}"#,
+        r#"{"name":"small","format_version":3,"max_memory":100,"max_code":65536}"#,
     )
     .unwrap();
     let err = compile(
