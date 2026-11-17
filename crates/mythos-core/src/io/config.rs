@@ -99,6 +99,13 @@ impl IoConfig {
                     "a connection has an empty id".into(),
                 ));
             }
+            if crate::runtimes::is_runtime_connection(&connection.id) {
+                return Err(IoConfigError::Invalid(format!(
+                    "connection id '{}' starts with '{}', which names a runtime",
+                    connection.id,
+                    crate::runtimes::CONNECTION_PREFIX
+                )));
+            }
             if !ids.insert(connection.id.as_str()) {
                 return Err(IoConfigError::Invalid(format!(
                     "connection id '{}' is used more than once",

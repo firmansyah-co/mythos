@@ -295,8 +295,11 @@ impl ProtocolDriver for ModbusDriver {
             )));
         }
 
+        // A boolean is written as 1 or 0: a register is how a device without coils takes one.
         let num_val = value
-            .as_f64()
+            .as_bool()
+            .map(|b| if b { 1.0 } else { 0.0 })
+            .or_else(|| value.as_f64())
             .or_else(|| value.as_i64().map(|v| v as f64))
             .ok_or_else(|| {
                 PluginError::InvalidConfiguration("Value must be a valid number".into())

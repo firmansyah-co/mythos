@@ -111,13 +111,25 @@ thing that executes continuously against the tags. A **runtime** module is a pro
 starts, watches, restarts and swaps like any module, speaking the module protocol with these
 calls:
 
-- `load` a program (for the logic VM: bytecode and its symbol table), `run`, `stop`, `state`
-  (RUN, STOP or FAULT and why; scan time last and max; overruns; program version);
-- it **subscribes** to the tags it reads and is given their values and qualities;
-- it **publishes** values for the tags it owns, and **requests writes** to field tags; the core
-  performs both. The tag bus keeps one writer (ADR-002, ADR-010 §2.2);
-- `read`, `write` and `force` a variable by its path, for monitoring;
-- its manifest declares its **target profile** (§2.2) and what kinds of program it loads.
+- `start` with a program and how it is tied to the tags (`RuntimeProgram`: the code and symbols,
+  which are the module's own and opaque to the core, and the bindings, which the core reads),
+  `stop`, and `mode` (RUN, from a cold start, or STOP);
+- `exchange`: the tags the program reads go in, as they are now, with whether each is GOOD;
+  what it publishes and what it wants written to field tags come out, with its state (RUN,
+  STOP or FAULT and why; scans; scan time last and max; overruns; program and version). The
+  core writes both: the tag bus keeps one writer (ADR-002, ADR-010 §2.2);
+- `write` of a published variable marked writable: an operator's setpoint;
+- reading and forcing any variable by its path, for monitoring (C5);
+- its manifest declares its **target profile** (§2.2).
+
+**How the core hosts one.** A runtime instance is a connection of the field I/O runtime
+(`crate::runtimes::RuntimeDriver`): the tags its program publishes are the connection's tags,
+and the connection's poll cycle is one exchange. So what the read path promises holds for a
+runtime's tags without being built twice: a slot and a catalog entry per tag, a deadline per
+cycle, `BAD_COMM_FAILURE` when the process dies, a restart with the same program, and
+replacement in place when a new build or program publishes the same tags. A project's
+runtimes are in `runtimes.json`, beside `io.json`, and are applied with it. A program
+therefore runs only where field I/O runs.
 
 The protocol is not specific to logic or to our VM: it is "compute continuously from tags;
 publish tags; request writes; report state". The logic VM runner on a PC
@@ -128,14 +140,23 @@ engine, a historian's logger) are candidates for the same kind when they are bui
 
 Rules the core enforces for every runtime:
 
-- **Process image.** Inputs are latched at the start of a scan, outputs sent after it. Only
-  changed values cross, so the scan time does not depend on the exchange. A runtime on the same
-  machine may read the tag bus directly as a reader; outputs always go through the core.
+- **Process image.** A scan sees one set of inputs: those of the last exchange. The module
+  scans on its own clock; exchanges happen beside it (every 20 to 200 ms), so the scan time
+  does not depend on them. Only outputs that changed are written to the field. A runtime
+  reading the tag bus directly, as a reader, is not built.
+- **No scan before the first inputs, no output before the first scan.** Nothing computed from
+  initial values alone reaches the plant. A tag that is not GOOD feeds its variable no value:
+  the variable keeps what it last took (its initial value, if it never took one), and a
+  binding `of: good` gives the program a BOOL to act on.
 - **Safe values.** Every output bound to a field tag has a safe value, set in the project and
-  required. When the program stops, faults, misses its watchdog or its process dies, the core
-  writes the safe values. A stopped runtime's own tags read `BAD_COMM_FAILURE` with no value.
-- **Write authority.** An output bound to a runtime is owned by it. The operator and the HMI
-  cannot write it; a setpoint is an input variable they may write, through the same path.
+  required (there is no default). When the program is stopped, faults, its process dies or
+  does not answer an exchange within a second, or the instance is removed, the core writes
+  every output its safe value, and writes it again each cycle until the device confirms. A
+  program that is not running publishes no values: its tags are bad and say why.
+- **Write authority.** An output bound to a runtime is owned by it for as long as it is
+  loaded, running or not. The operator and the HMI cannot write it (`409`, naming the owner);
+  two runtimes cannot bind the same output. A setpoint is a published variable marked
+  writable, written through the same route as any tag.
 - **Swap.** A new build starts beside the old one; variables whose path and type match are copied
   at a scan boundary; then I/O switches and the old one stops. A build that cannot start, **or
   whose profile cannot run the program now running**, is refused and the old one keeps running.
@@ -266,9 +287,11 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
 
 - C1. **Writes to field devices** (done): `PUT /api/v1/tags/<uri>/value`, a driver's `write`,
   the tag's declared access, an MCP tool. Also what HMI setpoints need.
-- C2. **The `runtime` module kind** in the protocol and the module host; the PC runner; safe
-  values and write authority (§2.4); `GET /api/v1/runtimes` and Settings → Runtimes. Proven
-  against a real Modbus simulator on Linux, macOS and Windows.
+- C2. **The `runtime` module kind** (done): the protocol, the PC runner
+  (`mythos-module-runtime-vm`), its host in the core, safe values and write authority (§2.4),
+  `GET /api/v1/runtimes`, a project's `runtimes.json`, run and stop, MCP tools. Proven against
+  real Modbus simulators through the real module process on Linux, macOS and Windows. The
+  Runtimes page comes with C4.
 - C3. **The logic module** (authoring): programs, tasks, bindings, check, compile, load.
 - C4. **The ST editor** and the Runtimes page in the workbench.
 - C5. **Online**: monitor, force, runtime tags in the HMI.
@@ -311,7 +334,9 @@ Each step leaves `dev` working.
 | 2.2 Profiles | `serde` data with a format version; `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format) proven with profiles read from JSON |
 | 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; loader checks, run-time checks, budget, faults |
 | 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
-| 2.4 the `runtime` kind, 2.5, 2.6, 2.8, 2.10 | Not built |
+| 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. Not built: reading or forcing variables, state carried across a replacement, a watchdog on the scan thread, RETAIN |
+| 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:id/run` and `/stop`, `GET`/`PUT /api/v1/projects/:id/runtimes`, each an MCP tool; engineer for all but reading. Not built: the Runtimes page; data types shared in the core |
+| 2.6, 2.8, 2.10 | Not built |
 | 2.9 Emulators | Built: four programs, 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else |
 | 2.12 Oracle | `differential_strucpp.rs`: 4 programs, 60 cycles, 3,840 values, all agree except the three deliberate rows of §2.13 (167 values). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
 

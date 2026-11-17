@@ -12,14 +12,95 @@
 //! the order they arrive, one at a time.
 
 use crate::protocol::{
-    Call, ErrorKind, ModuleManifest, Request, Response, WireDeclaration, WireError, WireSample,
-    MANIFEST_FLAG, SERVE_FLAG,
+    Call, ErrorKind, ExchangeReply, ModuleManifest, Request, Response, RuntimeState,
+    WireDeclaration, WireError, WireInput, WireSample, MANIFEST_FLAG, SERVE_FLAG,
 };
-use mythos_plugin_sdk::{PluginContext, PluginError, ProtocolDriver};
+use mythos_plugin_sdk::{async_trait, PluginContext, PluginError, ProtocolDriver};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::process::ExitCode;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+
+/// A runtime module's engine (ADR-013 §2.4): what executes a program against the tags.
+///
+/// It is a [`ProtocolDriver`] for everything a driver does, so the host runs it with the
+/// machinery it runs drivers with: `start` loads the program it is configured with (a
+/// [`crate::protocol::RuntimeProgram`] and whether to run it), `declared_tags` are the tags it
+/// publishes, `write_tag` writes a published variable, `stop` unloads. `poll_cycle` is never
+/// called: the host exchanges instead.
+#[async_trait]
+pub trait RuntimeEngine: ProtocolDriver {
+    /// Take the tags the program reads, as they are now; give what it publishes and what it
+    /// wants written. Must not wait for a scan: it reports the last one.
+    async fn exchange(
+        &mut self,
+        ctx: &PluginContext,
+        inputs: Vec<WireInput>,
+    ) -> Result<ExchangeReply, PluginError>;
+
+    /// Put the program in RUN (from a cold start unless it already runs) or in STOP.
+    async fn set_mode(
+        &mut self,
+        ctx: &PluginContext,
+        run: bool,
+    ) -> Result<RuntimeState, PluginError>;
+}
+
+/// The calls a module answers beyond a driver's.
+#[async_trait]
+pub trait ExtraCalls<D>: Send + Sync {
+    async fn handle(
+        &self,
+        manifest: &ModuleManifest,
+        driver: &mut D,
+        ctx: Option<&PluginContext>,
+        call: Call,
+    ) -> Result<Value, WireError>;
+}
+
+/// A driver answers none.
+pub struct DriverOnly;
+
+#[async_trait]
+impl<D: ProtocolDriver> ExtraCalls<D> for DriverOnly {
+    async fn handle(
+        &self,
+        manifest: &ModuleManifest,
+        _driver: &mut D,
+        _ctx: Option<&PluginContext>,
+        _call: Call,
+    ) -> Result<Value, WireError> {
+        Err(WireError {
+            kind: ErrorKind::Protocol,
+            message: format!("{} is a driver; it runs no program", manifest.id),
+        })
+    }
+}
+
+/// A runtime module answers `exchange` and `mode`.
+pub struct RuntimeCalls;
+
+#[async_trait]
+impl<D: RuntimeEngine> ExtraCalls<D> for RuntimeCalls {
+    async fn handle(
+        &self,
+        _manifest: &ModuleManifest,
+        driver: &mut D,
+        ctx: Option<&PluginContext>,
+        call: Call,
+    ) -> Result<Value, WireError> {
+        let ctx = ctx.ok_or_else(not_initialised)?;
+        let fail = |e: PluginError| WireError::from(&e);
+        match call {
+            Call::Exchange { inputs } => encode(driver.exchange(ctx, inputs).await.map_err(fail)?),
+            Call::Mode { run } => encode(driver.set_mode(ctx, run).await.map_err(fail)?),
+            _ => Err(WireError {
+                kind: ErrorKind::Protocol,
+                message: "not a runtime call".to_string(),
+            }),
+        }
+    }
+}
 
 /// Entry point of a driver module executable.
 ///
@@ -29,6 +110,25 @@ pub fn run_driver_module<D, F>(manifest: ModuleManifest, factory: F) -> ExitCode
 where
     D: ProtocolDriver + 'static,
     F: Fn() -> D,
+{
+    run_module(manifest, factory, DriverOnly)
+}
+
+/// Entry point of a runtime module executable. As [`run_driver_module`], for a
+/// [`RuntimeEngine`].
+pub fn run_runtime_module<D, F>(manifest: ModuleManifest, factory: F) -> ExitCode
+where
+    D: RuntimeEngine + 'static,
+    F: Fn() -> D,
+{
+    run_module(manifest, factory, RuntimeCalls)
+}
+
+fn run_module<D, F, X>(manifest: ModuleManifest, factory: F, extra: X) -> ExitCode
+where
+    D: ProtocolDriver + 'static,
+    F: Fn() -> D,
+    X: ExtraCalls<D>,
 {
     let arg = std::env::args().nth(1);
     match arg.as_deref() {
@@ -59,9 +159,10 @@ where
                     return ExitCode::FAILURE;
                 }
             };
-            runtime.block_on(serve_driver(
+            runtime.block_on(serve_module(
                 manifest,
                 factory,
+                extra,
                 tokio::io::stdin(),
                 tokio::io::stdout(),
             ));
@@ -89,6 +190,33 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    serve_module(manifest, factory, DriverOnly, input, output).await
+}
+
+/// Serve the protocol for one runtime instance until `input` closes.
+pub async fn serve_runtime<D, F, R, W>(manifest: ModuleManifest, factory: F, input: R, output: W)
+where
+    D: RuntimeEngine,
+    F: Fn() -> D,
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    serve_module(manifest, factory, RuntimeCalls, input, output).await
+}
+
+async fn serve_module<D, F, X, R, W>(
+    manifest: ModuleManifest,
+    factory: F,
+    extra: X,
+    input: R,
+    output: W,
+) where
+    D: ProtocolDriver,
+    F: Fn() -> D,
+    X: ExtraCalls<D>,
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut lines = BufReader::new(input).lines();
     let mut output = output;
     let mut driver = factory();
@@ -101,7 +229,16 @@ where
         let response = match serde_json::from_str::<Request>(&line) {
             Ok(request) => {
                 let id = request.id;
-                match handle(&manifest, &factory, &mut driver, &mut ctx, request.call).await {
+                match handle(
+                    &manifest,
+                    &factory,
+                    &extra,
+                    &mut driver,
+                    &mut ctx,
+                    request.call,
+                )
+                .await
+                {
                     Ok(result) => Response::ok(id, result),
                     Err(error) => Response::err(id, error),
                 }
@@ -148,9 +285,10 @@ fn encode(value: impl serde::Serialize) -> Result<Value, WireError> {
     })
 }
 
-async fn handle<D, F>(
+async fn handle<D, F, X>(
     manifest: &ModuleManifest,
     factory: &F,
+    extra: &X,
     driver: &mut D,
     ctx: &mut Option<PluginContext>,
     call: Call,
@@ -158,6 +296,7 @@ async fn handle<D, F>(
 where
     D: ProtocolDriver,
     F: Fn() -> D,
+    X: ExtraCalls<D>,
 {
     let fail = |e: PluginError| WireError::from(&e);
     match call {
@@ -213,5 +352,8 @@ where
         }),
         // A driver does not need to know the node; it is told nothing it must act on.
         Call::Node { .. } => Ok(json!(null)),
+        call @ (Call::Exchange { .. } | Call::Mode { .. }) => {
+            extra.handle(manifest, driver, ctx.as_ref(), call).await
+        }
     }
 }

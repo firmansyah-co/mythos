@@ -33,6 +33,10 @@ pub enum ModuleKind {
     Driver,
     /// Serves routes of the API, with data of its own (ADR-011): the HMI, logic, …
     Service,
+    /// Executes a program continuously against the tags (ADR-013 §2.4): it is given the tags
+    /// it reads, publishes tags of its own, and asks for writes to field tags. `provides` is
+    /// the name a runtime instance's `module` field uses.
+    Runtime,
 }
 
 /// What a module says about itself.
@@ -64,6 +68,10 @@ pub struct ModuleManifest {
     /// finds it and starts it again when it stops.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub always_on: bool,
+    /// A runtime module's target profile (ADR-013 §2.2): what it can run, as data a compiler
+    /// checks a program against. Other kinds have none.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub profile: Value,
 }
 
 /// The node a service module runs on (ADR-012 §2.1), sent as [`Call::Node`] after `hello` and
@@ -243,6 +251,134 @@ pub enum Call {
     Stop,
     /// A request to one of a service module's routes. Answers with an [`HttpReply`].
     Http(HttpCall),
+    /// One exchange with a runtime module: the tags it reads as they are now, in; what it
+    /// publishes and what it wants written, out. Answers with an [`ExchangeReply`].
+    Exchange { inputs: Vec<WireInput> },
+    /// Put a runtime module's program in RUN (from STOP or FAULT: from a cold start) or in
+    /// STOP. Answers with its [`RuntimeState`].
+    Mode { run: bool },
+}
+
+// -----------------------------------------------------------------------------
+// Runtime modules (ADR-013 §2.4)
+// -----------------------------------------------------------------------------
+
+/// What a runtime module is started with: a program and how it is tied to the tags.
+///
+/// The core reads the bindings (it owns the tags); `code` and `symbols` are the runtime
+/// module's own and opaque to the core.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeProgram {
+    pub name: String,
+    /// What identifies this build of the program: shown as the version that runs.
+    pub version: String,
+    /// The interval of its cyclic task.
+    pub interval_ms: u64,
+    /// The program in the runtime module's own form, as lowercase hex.
+    pub code: String,
+    /// Where its variables are, in the runtime module's own form.
+    #[serde(default)]
+    pub symbols: Value,
+    /// Tags read into variables at the start of each scan.
+    #[serde(default)]
+    pub inputs: Vec<InputBinding>,
+    /// Variables written to field tags after a scan, and what each tag is set to when the
+    /// program is not running.
+    #[serde(default)]
+    pub outputs: Vec<OutputBinding>,
+    /// Variables published as tags of the runtime's own.
+    #[serde(default)]
+    pub published: Vec<PublishedBinding>,
+}
+
+/// What of a tag a variable takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputOf {
+    /// Its value. While the tag is not GOOD the variable keeps what it last took.
+    #[default]
+    Value,
+    /// Whether it is GOOD: a BOOL, so a program can act on a value having gone stale.
+    Good,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputBinding {
+    pub variable: String,
+    pub tag: String,
+    #[serde(default)]
+    pub of: InputOf,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutputBinding {
+    pub variable: String,
+    pub tag: String,
+    /// What the tag is written to whenever the program is not running. Required: there is no
+    /// default, because no value is safe for every plant.
+    pub safe: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedBinding {
+    pub variable: String,
+    pub tag: String,
+    /// Whether an operator may write the variable through the tag (a setpoint).
+    #[serde(default)]
+    pub writable: bool,
+}
+
+/// A tag a runtime reads, as it is at this exchange.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WireInput {
+    pub tag: String,
+    /// `None`: the tag has never been read, or does not exist.
+    #[serde(default)]
+    pub value: Option<Value>,
+    /// Whether the value is current (quality GOOD).
+    pub good: bool,
+}
+
+/// A value a runtime wants written to a field tag.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WireOutput {
+    pub tag: String,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeMode {
+    Run,
+    Stop,
+    /// The program stopped itself: a scan faulted. `RuntimeState::fault` says why.
+    Fault,
+}
+
+/// What a runtime module's program is doing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeState {
+    pub mode: RuntimeMode,
+    #[serde(default)]
+    pub fault: Option<String>,
+    pub program: String,
+    pub version: String,
+    /// Scans completed since the program was last put in RUN.
+    pub scans: u64,
+    pub last_scan_us: u64,
+    pub max_scan_us: u64,
+    /// Scans that started late because the one before had not finished.
+    pub overruns: u64,
+}
+
+/// A runtime module's answer to [`Call::Exchange`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExchangeReply {
+    pub state: RuntimeState,
+    /// One sample per published tag: its value while the program runs, a fault otherwise.
+    pub samples: Vec<WireSample>,
+    /// The outputs as the last scan left them. Empty unless the program is running.
+    pub outputs: Vec<WireOutput>,
 }
 
 /// The module's answer to one request: `result` or `error`, never both.

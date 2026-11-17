@@ -562,6 +562,17 @@ impl ProcessDriver {
         self.restarts
     }
 
+    /// Send the running module a call that is not one of a driver's (a runtime module's
+    /// `exchange` or `mode`), reviving its process first as a poll does.
+    pub async fn call(&mut self, call: Call, deadline: Duration) -> Result<Value, PluginError> {
+        self.revive().await?;
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| PluginError::CommunicationError("no module process".to_string()))?;
+        session.call(call, Some(deadline)).await
+    }
+
     fn label(&self) -> String {
         match &self.context {
             Some(context) => format!("{} ({})", self.module.manifest.id, context.plugin_id),
@@ -690,6 +701,7 @@ impl MythosPlugin for ProcessDriver {
             plugin_type: match manifest.kind {
                 ModuleKind::Driver => PluginType::ProtocolDriver,
                 ModuleKind::Service => PluginType::Extension,
+                ModuleKind::Runtime => PluginType::ProcessEngine,
             },
             capabilities: manifest.capabilities.clone(),
         }
