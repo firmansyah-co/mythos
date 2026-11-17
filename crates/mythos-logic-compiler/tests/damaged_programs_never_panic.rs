@@ -86,8 +86,10 @@ fn a_damaged_program_is_refused_or_faults_and_never_panics() {
     assert!(corpus.len() >= 4, "the corpus is where it is expected");
     let mut rng = Rng(0x00C0_FFEE_1234_5678);
     let (mut tried, mut loaded) = (0u32, 0u32);
+    let mut each = Vec::new();
     for (name, good) in &corpus {
         assert!(exercise(good), "{name} as compiled loads");
+        let before = loaded;
         let body = good.len() - 4;
         for round in 0..4_000 {
             let mut bytes = good.clone();
@@ -107,12 +109,21 @@ fn a_damaged_program_is_refused_or_faults_and_never_panics() {
             tried += 1;
             loaded += exercise(&bytes) as u32;
         }
+        each.push((name.clone(), loaded - before));
         // And cut short at every length: a download that stopped half way.
         for len in 0..good.len().min(600) {
             let _ = exercise(&good[..len]);
         }
     }
     println!("{tried} damaged programs, {loaded} of them passed the loader and were scanned");
+    for (name, n) in &each {
+        println!("  {name}: {n} of 4000");
+    }
+    // Every program's damage reaches the scan: each kind of instruction in the corpus (the
+    // string instructions of strings.st among them) is run damaged, not only loaded.
+    for (name, n) in &each {
+        assert!(*n > 4_000 / 20, "too few damaged {name} load: {n} of 4000");
+    }
     // The damage must actually reach the scan, or this proves only the loader.
     assert!(
         loaded > tried / 20,
