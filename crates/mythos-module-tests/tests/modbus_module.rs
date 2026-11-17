@@ -9,8 +9,10 @@ use mythos_core::io::{
     ConnectionState, DriverRegistry, IoConfig, IoManager, IoRuntime, IoStatusHandle,
 };
 use mythos_core::tag::TagCatalog;
-use mythos_module::{discover, ModuleKind};
+use mythos_module::host::RESPAWN_BACKOFF;
+use mythos_module::{discover, ModuleKind, ProcessDriver};
 use mythos_pal::DefaultShm;
+use mythos_plugin_sdk::{MythosPlugin, PluginContext, ProtocolDriver};
 use mythos_shm::{QualityCode, ShmReaderHandle, ShmWriterHandle, TagDataType, TagSlot};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -373,6 +375,10 @@ async fn a_module_process_that_dies_is_replaced_and_its_tag_is_never_left_good()
     let before = module_children(&modbus_exe(dir.path()));
     assert_eq!(before.len(), 1);
 
+    // Past the respawn backoff, so the replacement may be started at once: the case of
+    // `a_poll_that_finds_its_module_process_dead_fails_and_the_next_one_replaces_it`, seen here
+    // on Windows in CI (PR #128).
+    tokio::time::sleep(RESPAWN_BACKOFF + Duration::from_millis(200)).await;
     kill(before[0]);
 
     let bad = wait_for_slot(
@@ -690,4 +696,58 @@ async fn a_new_build_that_cannot_start_leaves_the_running_one_in_place() {
     sim.set_holding(0, 10).await;
     wait_for_slot(&rig.segment, |s| s.value.as_u16() == 10, "still read").await;
     rig.io.shutdown().await;
+}
+
+/// The host found its module process dead at the start of a poll, past the respawn backoff. It
+/// used to start the replacement inside that poll and answer it, so the tags went from the dead
+/// process's last reading to the new one's, GOOD throughout, however long the restart took. A
+/// death in the middle of a poll failed it either way, which is why this is driven here, with
+/// the process gone before the poll begins.
+#[tokio::test]
+async fn a_poll_that_finds_its_module_process_dead_fails_and_the_next_one_replaces_it() {
+    let dir = module_dir();
+    let module = discover(&[dir.path().to_path_buf()])
+        .await
+        .modules
+        .into_iter()
+        .next()
+        .expect("the Modbus module is found");
+    let sim = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
+    sim.set_holding(0, 77).await;
+
+    // As the field I/O runtime grants it (`DRIVER_CAPABILITY` in `mythos_core::io`).
+    let ctx = PluginContext::new(
+        "io.plc1",
+        std::iter::once("network:client".to_string()).collect(),
+        String::new(),
+    );
+    let mut driver = ProcessDriver::new(Arc::new(module));
+    driver.init(&ctx).await.unwrap();
+    driver
+        .start(&ctx, &connection(sim.port())["config"])
+        .await
+        .unwrap();
+    driver.poll_cycle(&ctx).await.expect("the first poll reads");
+
+    tokio::time::sleep(RESPAWN_BACKOFF + Duration::from_millis(200)).await;
+    let pid = driver.pid().expect("a module process runs");
+    kill(pid);
+    // Gone before the next poll starts.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let found_dead = driver.poll_cycle(&ctx).await;
+    let why = found_dead
+        .expect_err("the poll that finds the process dead fails, rather than answer for a new one")
+        .to_string();
+    assert!(why.contains("it will be started again"), "{why}");
+    assert_eq!(driver.restarts(), 0, "nothing was started yet");
+
+    let replaced = driver
+        .poll_cycle(&ctx)
+        .await
+        .expect("the next poll starts a new process and reads");
+    assert_eq!(replaced.len(), 1);
+    assert_eq!(driver.restarts(), 1);
+    assert_ne!(driver.pid(), Some(pid), "a new process, not the killed one");
+    driver.stop(&ctx).await.unwrap();
 }
