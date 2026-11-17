@@ -42,16 +42,16 @@ const STOPPED: RuntimeStatus = {
   outputs_safe: true,
   outputs: [{ tag: 'external.Plant.P1.speed', variable: 'speed', safe: 7, written: 7, error: null }],
 };
-// Its module does not answer: the controller holds no state of the program (it sends zeros), no
-// process id, and the device has not confirmed the safe value.
+// Its module does not answer: the controller holds no state of the program (it sends no scan
+// figures), no process id, and the device has not confirmed the safe value.
 const UNREACHABLE: RuntimeStatus = {
   ...RUNNING,
   mode: 'unreachable',
   reason: 'the module did not answer an exchange within 1000 ms',
-  scans: 0,
-  last_scan_us: 0,
-  max_scan_us: 0,
-  overruns: 0,
+  scans: null,
+  last_scan_us: null,
+  max_scan_us: null,
+  overruns: null,
   outputs_safe: false,
   outputs: [
     {
@@ -291,7 +291,13 @@ describe('Settings → Runtimes: never an invented value', () => {
     expect(text(view, 'runtime-output-safe')).toBe('7');
   });
 
-  it('scan figures of a runtime whose module does not answer are NOT MEASURED, not the zeros sent in their place', async () => {
+  it('scan figures of a runtime whose module does not answer are NOT MEASURED, not the zeros an older controller sent in their place', async () => {
+    // What a controller before the figures became optional sent: zeros nothing measured.
+    const older = { ...UNREACHABLE, scans: 0, last_scan_us: 0, max_scan_us: 0, overruns: 0 };
+    const { view: old } = await shown({ body: list([older]) });
+    expect(text(old, 'runtime-scans')).toBe('NOT MEASURED');
+    expect(text(old, 'runtime-last-scan')).toBe('NOT MEASURED');
+    unmountAll();
     const { view } = await shown({ body: list([UNREACHABLE]) });
     expect(text(view, 'runtime-scans')).toBe('NOT MEASURED');
     expect(text(view, 'runtime-last-scan')).toBe('NOT MEASURED');
@@ -303,7 +309,7 @@ describe('Settings → Runtimes: never an invented value', () => {
   });
 
   it('a program that has not scanned yet has a scan count of 0 and no scan time', async () => {
-    const loaded = { ...STOPPED, reason: 'loaded; no exchange yet', scans: 0, last_scan_us: 0, max_scan_us: 0, overruns: 0 };
+    const loaded = { ...STOPPED, reason: 'loaded; no exchange yet', scans: 0, last_scan_us: null, max_scan_us: null, overruns: 0 };
     const { view } = await shown({ body: list([loaded]) });
     expect(text(view, 'runtime-scans')).toBe('0');
     expect(text(view, 'runtime-last-scan')).toBe('NOT MEASURED');

@@ -405,7 +405,14 @@ async fn a_program_reads_a_tag_decides_and_the_device_takes_its_outputs() {
         (tank.program.as_str(), tank.version.as_str()),
         ("Tank", "test-1")
     );
-    assert!(tank.scans > 0 && tank.pid.is_some(), "{tank:?}");
+    assert!(
+        tank.scans.is_some_and(|n| n > 0) && tank.pid.is_some(),
+        "{tank:?}"
+    );
+    assert!(
+        tank.last_scan_us.is_some() && tank.max_scan_us.is_some() && tank.overruns.is_some(),
+        "a running program's scan figures are measured: {tank:?}"
+    );
     assert!(!tank.outputs_safe);
     assert_eq!(tank.outputs[1].written, Some(json!(300)), "{tank:?}");
 
@@ -517,7 +524,19 @@ async fn a_program_loaded_without_run_waits_in_stop_with_its_outputs_safe() {
     let p = plant(TANK, 20, false).await;
     p.drive_is("loaded in stop: outputs safe", 0, SAFE_SPEED)
         .await;
-    assert_eq!(p.tank().mode, "stop");
+    let tank = p.tank();
+    assert_eq!(tank.mode, "stop");
+    // It has never scanned: that is known (0 scans), and no scan time was measured.
+    assert_eq!(
+        (
+            tank.scans,
+            tank.last_scan_us,
+            tank.max_scan_us,
+            tank.overruns
+        ),
+        (Some(0), None, None, Some(0)),
+        "{tank:?}"
+    );
     assert!(p.states.command("tank", true));
     p.drive_is("then run", 1, 300).await;
     p.runtime.shutdown().await;
@@ -534,6 +553,14 @@ async fn when_the_runtime_process_dies_its_outputs_go_safe_and_it_is_started_aga
         .await;
     p.until("it reports unreachable", |s| s.mode() == "unreachable")
         .await;
+    // Nothing is known of a program whose module does not answer: no figure, not zeros.
+    p.until("unreachable, with no scan figures", |s| {
+        s.tank.as_ref().is_some_and(|t| {
+            t.mode == "unreachable"
+                && (t.scans, t.last_scan_us, t.max_scan_us, t.overruns) == (None, None, None, None)
+        })
+    })
+    .await;
     assert!(
         !p.tag(T_PUMP).await.1,
         "its tags are not GOOD while it is gone"
@@ -788,7 +815,7 @@ async fn a_program_that_publishes_no_tag_runs_and_writes_its_outputs() {
     p.drive_is("the pump runs at 300", 1, 300).await;
     let tank = p.tank();
     assert_eq!(tank.mode, "run", "{tank:?}");
-    assert!(tank.scans > 0, "{tank:?}");
+    assert!(tank.scans.is_some_and(|n| n > 0), "{tank:?}");
 
     // Stopped, its outputs go to their safe values like any other program's.
     assert!(p.states.command("tank", false));
@@ -808,7 +835,7 @@ async fn a_program_bound_to_nothing_at_all_still_scans() {
     p.until("it scans", |s| {
         s.tank
             .as_ref()
-            .is_some_and(|t| t.mode == "run" && t.scans > 3)
+            .is_some_and(|t| t.mode == "run" && t.scans.is_some_and(|n| n > 3))
     })
     .await;
     // It was given no output, so it wrote none: the drive is as the test left it.
