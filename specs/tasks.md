@@ -53,7 +53,7 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | Task ID | Task Description | Assigned Division | Deliverables & Code Artifacts | Acceptance Criteria |
 |---|---|---|---|---|
 | **TSK-001** | Initialize Cargo Workspace and Crate Structure | Software (`head-software`) | `Cargo.toml`, `crates/mythos-pal/`, `crates/mythos-core/`, `crates/mythos-shm/`, `crates/mythos-plugin-sdk/`, `crates/mythos-cli/` | Zero compilation errors. Cargo tree resolves cleanly with strict compiler flags (`-D warnings`). |
-| **TSK-002** | Implement Triple-Buffered Lock-Free SHM Engine | Software (`head-software`) | `crates/mythos-shm/src/lib.rs`, `buffer.rs`, `slot.rs` | 32,768 tag slots allocated in `/dev/shm/mythos_tagbus`. 64-byte alignment verified. Lock-free atomic swap latency $< 50\,\text{ns}$. |
+| **TSK-002** | Implement Triple-Buffered Lock-Free SHM Engine | Software (`head-software`) | `crates/mythos-shm/src/lib.rs`, `buffer.rs`, `slot.rs` | 32,768 tag slots allocated in `/dev/shm/mythos_tagbus`. 64-byte alignment verified. Lock-free atomic swap latency $< 300\,\text{ns}$ (was $< 50\,\text{ns}$; set to 300 ns by the owner on 2026-11-17 as the stricter figure was not needed). |
 | **TSK-003** | Define Canonical Plant Hierarchy Tag Engine | Software (`head-software`) | `crates/mythos-core/src/tag.rs`, `namespace.rs` | Validates `external.<namespace>.<device>.<variable>` hierarchy. Scopes namespace to plant locations (e.g. `BoilerRoom`). Omits `external` for internal PLC tags. |
 | **TSK-004** | Develop Protocol Driver Service Provider Interface | Software (`head-software`) | `crates/mythos-plugin-sdk/src/lib.rs` | Asynchronous `ProtocolDriver` trait implemented with isolated JSON schema parsing. |
 | **TSK-005** | Implement Reference Modbus RTU/TCP Driver Crate | Software (`head-software`), Hardware (`head-hardware`) | `plugins/drivers/driver-modbus/` | Successful register polling with simulated slave device. Zero thread blocking on serial timeouts. |
@@ -82,7 +82,7 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 >
 > **Why no p99 number replaces it.** The 16-thread case CAS-es one 64-bit state word. The measured tail is contention on that word, not the cost of a tag access. A p99 under N-thread contention measures the scheduler and the co-tenant load as much as the architecture: read swap-acquire p99 moved from 1,209 ns to 4,145 ns (3.4x) between the two runs above, at different co-tenant load. No fixed p99 bound is defensible as a merge gate, and this amendment does not invent one.
 >
-> **Recommended replacement, FOR BOARD SIGN-OFF, not adopted here.** Gate on a best-batch bound in the regime that TSK-002 already uses, which measures uncontended atomic swap cost ($< 50\,\text{ns}$). Retain the 16-thread p99 as a report-only CI measurement so that a real regression stays visible without a gate that reddens on unrelated changes. Selecting the exact bound is a board decision.
+> **Recommended replacement, FOR BOARD SIGN-OFF, not adopted here.** Gate on a best-batch bound in the regime that TSK-002 already uses, which measures uncontended atomic swap cost (now $< 300\,\text{ns}$, was $< 50\,\text{ns}$). Retain the 16-thread p99 as a report-only CI measurement so that a real regression stays visible without a gate that reddens on unrelated changes. Selecting the exact bound is a board decision.
 >
 > The measurement harness introduced by PR #25 is retained. Only its gate status changes.
 >
@@ -250,7 +250,7 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 ```
 +---------------------------------------------------------------------------------------------------+
 | GATE 0: Architecture & Foundations Sign-Off (End of Sprint 0)                                     |
-| Criteria: Cargo workspace compiles cleanly; SHM benchmark < 50 ns; target storage & WAL verified;  |
+| Criteria: Cargo workspace compiles cleanly; SHM benchmark < 300 ns; target storage & WAL verified; |
 |           Axum REST Gateway operational; Universal Plugin SDK trait & host harness validated.      |
 +---------------------------------------------------------------------------------------------------+
                                                   |

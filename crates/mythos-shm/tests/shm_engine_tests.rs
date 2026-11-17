@@ -196,8 +196,10 @@ fn test_concurrent_writer_and_readers() {
 
 /// # Latency measurement regime (read before changing this test)
 ///
-/// **Target.** `TSK-002` requires atomic swap latency `< 50 ns`. That target is unchanged and
-/// this file does not loosen it.
+/// **Target.** `TSK-002` requires atomic swap latency `< 300 ns` ([`SWAP_BOUND_NS`]). It was
+/// `< 50 ns` until 2026-11-17, when the owner (Adrian) set it to 300 ns: "50ns sebenernya
+/// terlalu strict, 300ns pun gapapa" (50 ns is in fact too strict; even 300 ns is fine). The
+/// measurements below were taken against the old 50 ns target and are kept as they were.
 ///
 /// **Which profile measures it.** The acceptance assertion runs **only in a release build**
 /// (`#[cfg(not(debug_assertions))]`), and CI runs it through the
@@ -317,15 +319,19 @@ fn best_batch_ns_per_op() -> f64 {
     sorted[0]
 }
 
-/// TSK-002 acceptance: atomic swap latency < 50 ns, measured on an optimised build.
+/// TSK-002's bound on the atomic swap, in ns per operation: set by the owner on 2026-11-17 (it
+/// was 50 ns; see the header). A published figure, not one chosen here to make a test pass.
+const SWAP_BOUND_NS: f64 = 300.0;
+
+/// TSK-002 acceptance: atomic swap latency < [`SWAP_BOUND_NS`], measured on an optimised build.
 #[cfg(not(debug_assertions))]
 #[test]
-fn test_atomic_swap_latency_under_50ns() {
+fn test_atomic_swap_latency_under_300ns() {
     let best = best_batch_ns_per_op();
     assert!(
-        best < 50.0,
-        "Atomic swap latency best batch ({best:.2} ns) exceeded the 50 ns TSK-002 target. \
-         This is a release build, so this is the optimised number; a regression has been \
+        best < SWAP_BOUND_NS,
+        "Atomic swap latency best batch ({best:.2} ns) exceeded the {SWAP_BOUND_NS} ns TSK-002 \
+         target. This is a release build, so this is the optimised number; a regression has been \
          introduced. See the regime table in this file's header."
     );
 }
@@ -345,6 +351,6 @@ fn test_atomic_swap_latency_smoke_debug() {
         "Debug smoke check failed: best batch {best:.2} ns. Release measures ~17-20 ns and debug \
          ~26-87 ns depending on host load, so this indicates a real regression (e.g. a lock or \
          syscall on the hot path), not merely the debug profile or contention. The acceptance \
-         criterion is the release-only test_atomic_swap_latency_under_50ns."
+         criterion is the release-only test_atomic_swap_latency_under_300ns."
     );
 }
