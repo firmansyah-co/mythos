@@ -321,6 +321,8 @@ fn best_batch_ns_per_op() -> f64 {
 
 /// TSK-002's bound on the atomic swap, in ns per operation: set by the owner on 2026-11-17 (it
 /// was 50 ns; see the header). A published figure, not one chosen here to make a test pass.
+/// Only the release build asserts it, so only the release build has it.
+#[cfg(not(debug_assertions))]
 const SWAP_BOUND_NS: f64 = 300.0;
 
 /// TSK-002 acceptance: atomic swap latency < [`SWAP_BOUND_NS`], measured on an optimised build.
