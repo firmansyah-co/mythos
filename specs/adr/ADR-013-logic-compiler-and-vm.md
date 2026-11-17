@@ -137,7 +137,7 @@ test holds equal.
     the corpus as the format-1 compiler made it (committed bytes, never regenerated) against
     the same sources compiled now, 200 scans each with the same inputs, memory equal after
     every scan.
-- **Format 2** (format 1 with strings; L2c).
+- **Format 3** (format 1 with strings, L2c-1, and the numeric functions, L2c-2).
   - *Header*: magic, version, stack depth, memory size, code length, call depth, number of
     bodies, then a table of bodies (code offset, instance size), the initial memory image, the
     code, CRC-32.
@@ -189,6 +189,20 @@ test holds equal.
     one; the host or damage did). Text that does not write an integer, converted to one:
     `BadNumber`. A literal is a string in the memory image, one for each distinct text, never
     written.
+  - *Numeric functions* (format 3): `RFN which` (and `RFN32` for a REAL) for SQRT, LN, LOG,
+    EXP, SIN, COS, TAN, ASIN, ACOS, ATAN and truncation, `ATAN2_*`, `EXPT_*` (a real power)
+    and `EXPTI_*` (an integer power), `ABS_*`, and `CHKSEL count`, which stops the scan with
+    `SelectorOutOfRange` when MUX's K has no input. SEL, MAX, MIN, LIMIT and MUX are jumps
+    and comparisons the backend emits; SEL and MUX work out only the input they choose.
+    **The VM computes the real functions itself** (`mythos_logic_vm::math`): `core` has none
+    on the targets the VM runs on (no libm), and the VM takes no dependency (§2.1); `libm`, a
+    port of musl, would be one, and would be code nobody here has read. The methods are
+    fdlibm's (argument reduction, a minimax polynomial, the reduction undone), with Payne and
+    Hanek's reduction for SIN, COS and TAN past 2^20 · π/2, using 1,280 bits of 2/π computed
+    for it; SQRT is exact. Built from the basic operations only, which IEC 60559 makes exact
+    in software as in hardware, they give the same bits on every target, which the emulators
+    check scan by scan (a libm differs between platforms). A REAL's is computed in LREAL and
+    rounded once.
 
 ### 2.4 A third module kind: `runtime`
 
@@ -475,6 +489,15 @@ Adrian, 2026-11-17: where an implementation and the standard differ, follow the 
 | INSERT's position | Table 34 feature 6: "Insert IN2 into IN1 after the P-th character position"; `INSERT('ABC', 'XY', 2)` is `'ABXYC'` | after the P-th; P from 0 (first) to `LEN(IN1)` (last) | before the P-th: `'AXYBC'` (deliberate difference) |
 | FIND of an empty string | Table 34 feature 9: the position where IN2 first begins, 0 if none | 1: an empty string stands at position 1 | not compared |
 | CONCAT's result | Table 34 feature 5, §6.6.2.5.11 | as long as all its inputs together, up to 32,767; longer stops the scan | as long as its longest input |
+| Accuracy of the real functions | §6.6.2.5.8: "expressed in terms of one or more Implementer specific dependencies" | measured against the host's libm (`math_against_the_host.rs`, 200,000 points each): SQRT exact; EXP, LN, SIN, COS, ATAN, ATAN2 within 1 ulp; LOG, TAN, ASIN, ACOS within 2; EXPT within 4, and within 128 where the result nears the ends of LREAL (`e^(y ln x)` with `y ln x` near ±700). SIN, COS, TAN of any finite argument, to 10^300 | glibc's; agrees to the 1e-6 the REPL prints |
+| A result that is not a real number | §6.6.2.5.8: a result outside the output's range is an error; Table 10 footnotes e and f leave infinity and NaN to the implementer | IEC 60559's: SQRT(-1) and ASIN(2) are NaN, LN(0) is -∞, EXP(1000) is +∞; the scan goes on, as for REAL division by zero | not compared |
+| ABS of the most negative integer | §6.6.2.5.8: an error | wraps (ABS of SINT -128 is -128), as every result outside its type does here (Overflow, below) | not compared |
+| EXPT | Table 29 footnote f: IN1 an ANY_REAL, IN2 an ANY_NUM, the result IN1's type; Table 71: `**`, precedence 7, so `-2.0 ** 2` is 4 | as written; an integer exponent by squaring (`2.0 ** 10` is 1024 exactly), 0.5 as SQRT, a negative base to a power that is not integral is NaN | agrees |
+| TRUNC | Table 22 features 2b, 2c and footnote c: toward zero; `TRUNC_INT(-1.6)` is -1 | `TRUNC_<int>`, `REAL_TRUNC_<int>`, `LREAL_TRUNC_<int>`; the old TRUNC alone (2a, deprecated) is not taken | has no TRUNC_* |
+| A function of reals given an integer | Figure 11: SINT and INT widen to REAL, DINT to LREAL, LINT to neither | as the figure: `SQRT(n)` of a DINT is an LREAL; of a LINT refused | not compared |
+| SEL, MAX, MIN, LIMIT, MUX | Table 32; footnote e: MUX's K outside 0 … n-1 is an error | of numbers, TIMEs and BOOLs, the inputs taken to their common type as an operation's are; `LIMIT` is `MIN(MAX(IN, MN), MX)`; a K outside its inputs stops the scan (`SelectorOutOfRange`), a literal one is refused. SEL and MUX evaluate only the input chosen (a function has no effect a program sees but a fault: one in an input not chosen does not stop the scan) | agrees on what was compared; it falls through to the last input on a K out of range |
+| The operators as functions | Table 29, Table 33 | ADD, MUL, GT, GE, EQ, LE, LT of two or more (a comparison of each neighbouring pair), SUB, DIV, NE of two, MOVE of one. MOD, AND, OR, XOR, NOT are keywords of ST and stay operators | agrees |
+| A user POU named as a standard function | not addressed by ed. 3 | refused, naming the word, as a type's or a conversion's name is (`FUNCTION Max` would make `MAX(a, b)` mean two things). A variable may bear such a name | not compared |
 | An integer to and from STRING | Table 22 footnote e: the "external representation" of the value | `INT_TO_STRING(-5)` is `'-5'`; `STRING_TO_DINT` reads an integer literal: a sign and decimal digits, or `2#`, `8#`, `16#` digits, single underscores between digits. Nothing else (no space, no type prefix): `BadNumber`. A value its type cannot hold wraps, as narrowing does | stops at the first character that is not a digit: `'16#7F'` is 16 (deliberate difference) |
 
 Three places where the standard leaves a choice or we go beyond it:
@@ -521,7 +544,10 @@ difference must be exactly one apart to count as one.
 
 Not built in L2c (each refused by name): WSTRING, CHAR and WCHAR, and so a string's character
 by subscript (`s[2]`, §6.4.2.2); an initial value on a TYPE; conversions between STRING and
-BOOL, REAL, LREAL or TIME; STRING in SEL, MAX, MIN, LIMIT, MUX.
+BOOL, REAL, LREAL or TIME; STRING in SEL, MAX, MIN, LIMIT, MUX. Not built in L2c-2: the bit
+strings (BYTE, WORD, DWORD, LWORD) and the unsigned integers, and so the shifts of Table 30
+(SHL, SHR, ROL, ROR) and the bitwise functions of Table 31 on them; TO_* conversions without
+the source type; typed literals (`INT#5`, `REAL#1.5`).
 
 ## 3. Order of work
 
@@ -561,8 +587,10 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   and the profiles enforce: the stack stops at the declared depth, profiles carry a stack
   depth and a call depth, a jump into the middle of an instruction is refused at load. **L2c**, in two:
   **L2c-1** (done): STRING, its literals, assignment, comparison, the functions of Table 34
-  and integer conversions; bytecode format 2 (§2.3, §2.13). **L2c-2**: more of the standard
-  library (numeric, selection, the functions of operators).
+  and integer conversions; bytecode format 2 (§2.3, §2.13). **L2c-2** (done): the numeric
+  functions of Table 28, EXPT and `**`, TRUNC, the selection of Table 32, the operators by
+  name; the VM's own real functions; bytecode format 3. Not built: the bit strings and their
+  shifts (§2.13).
 - L3. **LD, FBD, SFC** (not IL, §2.1), each a front-end crate and an editor kind.
 
 **Later:** ESP32 and RP2040 firmware as runtime modules on real boards; a C backend; a Linux
@@ -589,16 +617,16 @@ Each step leaves `dev` working.
 | Part | Built |
 | :--- | :--- |
 | 2.1 Crates and layers | `mythos-logic-ir`, `-st`, `-vm`, `-backend-vm`, `-compiler`; `layers.rs` guards them |
-| 2.1 ST front-end | Several POUs in any order: TYPE (STRUCT, named ARRAY), FUNCTION (VAR_INPUT, VAR; positional and formal calls), FUNCTION_BLOCK (VAR_INPUT, VAR_OUTPUT, VAR; nesting; arrays of instances), one PROGRAM; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME, STRING (`STRING[n]`, `STRING(n)`, 254 by default; literals with `$` combinations; assignment that cuts; comparison; LEN, LEFT, RIGHT, MID, CONCAT, INSERT, DELETE, REPLACE, FIND; integer to and from STRING; in functions, function blocks, arrays, structures and a TYPE name); arrays of any dimensions with initial value lists; whole-structure and whole-array assignment; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between the elementary types; implicit widening per Figure 11; recursion refused naming the cycle; a keyword of the standard refused as a name; diagnostics for everything else (enumerations, subranges, WSTRING, CHAR, VAR_IN_OUT, methods, and more: each refused by name); every independent mistake of a source in one pass, each once, with the range it is about (§2.8); a body or a type nested more than 100 deep refused, a structure that contains itself told before anything follows it (§2.8) |
+| 2.1 ST front-end | Several POUs in any order: TYPE (STRUCT, named ARRAY), FUNCTION (VAR_INPUT, VAR; positional and formal calls), FUNCTION_BLOCK (VAR_INPUT, VAR_OUTPUT, VAR; nesting; arrays of instances), one PROGRAM; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME, STRING (`STRING[n]`, `STRING(n)`, 254 by default; literals with `$` combinations; assignment that cuts; comparison; LEN, LEFT, RIGHT, MID, CONCAT, INSERT, DELETE, REPLACE, FIND; integer to and from STRING; in functions, function blocks, arrays, structures and a TYPE name); ABS, SQRT, LN, LOG, EXP, SIN, COS, TAN, ASIN, ACOS, ATAN, ATAN2, EXPT and `**`, TRUNC_*, SEL, MAX, MIN, LIMIT, MUX, and ADD, SUB, MUL, DIV, MOVE, GT, GE, EQ, LE, LT, NE by name; arrays of any dimensions with initial value lists; whole-structure and whole-array assignment; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between the elementary types; implicit widening per Figure 11; recursion refused naming the cycle; a keyword of the standard refused as a name; diagnostics for everything else (enumerations, subranges, WSTRING, CHAR, VAR_IN_OUT, methods, and more: each refused by name); every independent mistake of a source in one pass, each once, with the range it is about (§2.8); a body or a type nested more than 100 deep refused, a structure that contains itself told before anything follows it (§2.8) |
 | 2.2 Profiles | `serde` data with a format version; `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format, stack depth, call depth) proven with profiles read from JSON; a profile written before the depths existed still loads and states no limit |
-| 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 2 (L2c: format 1 with strings, §2.3), and format 1 read as it was written (a VM reads every format it extends; an instruction newer than a program's format refused at load): bodies, call frames, instance-relative and region-confined addressing; loader checks, with every jump landing on an instruction of its body, and `load_within` a host's limits; run-time checks, budget; the stack and the calls stop at the depths the program declares; faults, with `IndexOutOfRange`, `CallDepthExceeded`, `StackOverflow`, and for strings `StringTooLong`, `StringArgument`, `BadString`, `BadNumber` |
+| 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 3 (L2c: format 1 with strings and the numeric functions, with its own real functions, §2.3), and formats 1 and 2 read as they were written (a VM reads every format it extends; an instruction newer than a program's format refused at load): bodies, call frames, instance-relative and region-confined addressing; loader checks, with every jump landing on an instruction of its body, and `load_within` a host's limits; run-time checks, budget; the stack and the calls stop at the depths the program declares; faults, with `IndexOutOfRange`, `CallDepthExceeded`, `StackOverflow`, for strings `StringTooLong`, `StringArgument`, `BadString`, `BadNumber`, and `SelectorOutOfRange` |
 | 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
 | 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Not built: forcing variables, state carried across a replacement, a watchdog on the scan thread, RETAIN |
 | 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run`, `/stop` and `/watch`, `GET`/`PUT /api/v1/projects/:id/runtimes`, each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
 | 2.6 The logic module | Built: `plugins/logic` (programs, bindings, check, build; eight MCP tools), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes; its workbench UI `frontend/packages/logic-ui` (tree section, program editor, load, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus. Not built: unit tests in ST, programs in a device's slice |
 | 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); editors for LD, FBD, SFC are not built. 2.10: not built |
-| 2.9 Emulators | Built: seven programs (`strings.st` since L2c-1), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else |
-| 2.12 Oracle | `differential_strucpp.rs`: 7 programs, 60 cycles, 7,500 values, all agree except the five deliberate rows of §2.13 (287 values: 167 of the first three, 60 each of INSERT's position and a based literal read as an integer). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
+| 2.9 Emulators | Built: eight programs (`strings.st` since L2c-1, `library.st` since L2c-2), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else |
+| 2.12 Oracle | `differential_strucpp.rs`: 8 programs, 60 cycles, 9,480 values, all agree except the five deliberate rows of §2.13 (287 values: 167 of the first three, 60 each of INSERT's position and a based literal read as an integer). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
 
 Evidence of the spike (2026-11-17):
 

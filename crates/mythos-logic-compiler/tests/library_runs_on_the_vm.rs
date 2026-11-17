@@ -64,10 +64,10 @@ fn abs_expt_trunc_and_atan2_as_the_tables_say() {
         "PROGRAM Main
          VAR a : INT; b : DINT; c : LREAL; d : SINT; e, f, g, h, k : LREAL; m : REAL;
              t1, t2, t3, t4 : INT; t5 : LINT; at1, at2 : LREAL; n : INT := 3; five : DINT := -5;
-             half : REAL := 1.5; ms : SINT := -128; END_VAR
+             half : REAL := 1.5; ms : SINT := -128; p : LREAL; END_VAR
            a := ABS(-7); b := ABS(five); c := ABS(-2.5); d := ABS(ms);
            e := EXPT(2.0, 10); f := 2.0 ** 0.5; g := EXPT(-2.0, n); h := 2.0 ** -2;
-           k := -2.0 ** 2; m := EXPT(half, 2.0);
+           k := -2.0 ** 2; m := EXPT(half, 2.0); p := 2.0 * 3.0 ** 2;
            t1 := TRUNC_INT(1.6); t2 := TRUNC_INT(-1.6); t3 := REAL_TRUNC_INT(2.5);
            t4 := LREAL_TRUNC_INT(-2.5); t5 := TRUNC_LINT(1.0E15 + 0.75);
            at1 := ATAN2(1.0, -1.0); at2 := ATAN2(Y := -1.0, X := 0.0);
@@ -86,6 +86,8 @@ fn abs_expt_trunc_and_atan2_as_the_tables_say() {
     assert_eq!(r.real("h"), 0.25);
     // Table 71: the minus binds before **.
     assert_eq!(r.real("k"), 4.0);
+    // And ** before *: 2 * (3 ** 2).
+    assert_eq!(r.real("p"), 18.0);
     assert_eq!(r.get("m"), Value::Real(2.25));
     // Table 22 footnote c's examples: TRUNC_INT(1.6) is 1, TRUNC_INT(-1.6) is -1.
     assert_eq!(r.int("t1"), 1);
@@ -213,6 +215,11 @@ fn what_the_library_does_not_allow_is_refused_with_the_reason() {
         (
             "PROGRAM Main VAR a : LREAL; n : LINT; END_VAR a := SIN(n); END_PROGRAM",
             "IN of SIN is a REAL or an LREAL; this is a LINT",
+        ),
+        (
+            // Figure 11: a DINT widens to LREAL, not to REAL, so its root is an LREAL.
+            "PROGRAM Main VAR r : REAL; d : DINT; END_VAR r := SQRT(d); END_PROGRAM",
+            "a LREAL cannot be used as a REAL without a conversion: write LREAL_TO_REAL(…)",
         ),
         (
             "PROGRAM Main VAR a : INT; b : BOOL; END_VAR a := ABS(b); END_PROGRAM",
