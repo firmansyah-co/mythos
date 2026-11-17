@@ -231,7 +231,8 @@ impl<S: PlatformShm> TagBusEngine<S> {
     }
 
     /// Atomically publish the current write buffer and advance writer to the new bank.
-    /// Guarantees zero allocation and lock-free execution (< 50ns latency).
+    /// Allocates nothing and takes no lock. TSK-002 bounds the swap at 300 ns per operation
+    /// (`tests/shm_engine_tests.rs`); an optimised build on an idle host measures ~17-20 ns.
     #[inline(always)]
     pub fn publish_cycle(&mut self) -> usize {
         let next_bank = self.bank_state().publish_write(self.active_write_bank);

@@ -218,7 +218,8 @@ jobs:
           fi
           cargo test --workspace --verbose
 
-      # TSK-002's "< 50 ns atomic swap" target is asserted here on the release build, because
+      # TSK-002's "< 300 ns atomic swap" target (50 ns until the owner raised it on 2026-11-17)
+      # is asserted here on the release build, because
       # release has ~3x headroom rather than ~1.6x and degrades much less when the runner is
       # loaded. Debug is not incapable of meeting the bound (it measures 26-32 ns at true idle),
       # but this runner shares its cores with the agent fleet and its load swings from 1.2 to
