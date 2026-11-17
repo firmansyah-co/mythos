@@ -287,6 +287,11 @@ impl Loc {
     }
 }
 
+/// An argument of a function call worked out and not yet put in its place: the input it
+/// sets, its type, and, for a structure, an array or a string, where it is (a string with its
+/// length); a value is on the stack.
+type Waiting = (usize, Ty, Option<(u16, Loc)>);
+
 /// A function block instance being called. Its inputs, the call and its outputs each reach
 /// it again, so an offset computed at run time is kept in a scratch variable (`saved`).
 #[derive(Clone, Copy)]
@@ -1251,7 +1256,7 @@ impl Emitter<'_> {
             |e: &Emitter, var: usize| Loc::absolute((frame + e.lay.pous[f].offsets[var]) as u32);
         // A value goes on the stack; a structure, an array or a string stays where it is, and
         // only an offset computed for it goes on the stack.
-        let mut waiting: Vec<(usize, Ty, Option<(u16, Loc)>)> = Vec::new();
+        let mut waiting: Vec<Waiting> = Vec::new();
         for (var, a) in args {
             if a.ty.is_aggregate() {
                 let ExprKind::Load(src) = &a.kind else {
