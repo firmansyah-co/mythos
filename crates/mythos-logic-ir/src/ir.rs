@@ -6,10 +6,10 @@
 //! addresses, no instruction choices and no word sizes: variables are indices, and a backend
 //! decides where they live.
 
-use mythos_logic_vm::fb::FbKind;
+use crate::{Section, StdFb};
 
 /// The types the IR knows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Ty {
     Bool,
     Sint,
@@ -19,7 +19,7 @@ pub enum Ty {
     Real,
     Lreal,
     Time,
-    Fb(FbKind),
+    Fb(StdFb),
 }
 
 impl Ty {
@@ -34,7 +34,7 @@ impl Ty {
             "LREAL" => Ty::Lreal,
             "TIME" => Ty::Time,
             _ => {
-                return FbKind::ALL
+                return StdFb::ALL
                     .into_iter()
                     .find(|k| k.name() == upper)
                     .map(Ty::Fb)
@@ -75,7 +75,7 @@ impl Ty {
     }
 
     /// Whether a value of `self` may be used where `to` is wanted without a conversion
-    /// function: the lossless conversions of IEC 61131-3 ed. 3, Table 11.
+    /// function: the lossless conversions. Not yet checked against the standard (ADR-013 §2.13).
     pub fn widens_to(self, to: Ty) -> bool {
         use Ty::*;
         self == to
@@ -90,7 +90,7 @@ impl Ty {
 }
 
 /// A constant value.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Const {
     Bool(bool),
     Int(i64),
@@ -98,23 +98,23 @@ pub enum Const {
     Time(i64),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Var {
     pub name: String,
     pub ty: Ty,
-    pub section: crate::ast::Section,
+    pub section: Section,
     pub init: Option<Const>,
 }
 
 /// Where a value is read or written: a variable, or a member of a function block instance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Place {
     pub var: usize,
-    /// Index into the instance's `FbKind::members()`.
+    /// Index into the instance's `StdFb::members()`.
     pub member: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Arith {
     Add,
     Sub,
@@ -123,7 +123,7 @@ pub enum Arith {
     Mod,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Cmp {
     Eq,
     Ne,
@@ -133,20 +133,20 @@ pub enum Cmp {
     Ge,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Logic {
     And,
     Or,
     Xor,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Expr {
     pub ty: Ty,
     pub kind: ExprKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ExprKind {
     Const(Const),
     Load(Place),
@@ -165,7 +165,7 @@ pub enum ExprKind {
 /// statements.
 pub type CaseArm = (Vec<(i64, i64)>, Vec<Stmt>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Stmt {
     Assign(Place, Expr),
     /// Set the inputs, run the block, copy the outputs out.
@@ -190,7 +190,7 @@ pub enum Stmt {
     Return,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Program {
     pub name: String,
     pub vars: Vec<Var>,
@@ -202,7 +202,7 @@ impl Program {
     pub fn place_ty(&self, place: Place) -> Ty {
         let var = &self.vars[place.var];
         match (var.ty, place.member) {
-            (Ty::Fb(k), Some(m)) => elem_to_ty(k.members()[m].ty),
+            (Ty::Fb(k), Some(m)) => k.members()[m].ty,
             (ty, _) => ty,
         }
     }
@@ -219,7 +219,7 @@ impl Program {
             add(v.ty);
             if let Ty::Fb(k) = v.ty {
                 for m in k.members() {
-                    add(elem_to_ty(m.ty));
+                    add(m.ty);
                 }
             }
         }
@@ -266,19 +266,5 @@ impl Program {
         }
         walk_s(&self.body, &mut add);
         out
-    }
-}
-
-pub fn elem_to_ty(e: mythos_logic_vm::ElemType) -> Ty {
-    use mythos_logic_vm::ElemType as E;
-    match e {
-        E::Bool => Ty::Bool,
-        E::Sint => Ty::Sint,
-        E::Int => Ty::Int,
-        E::Dint => Ty::Dint,
-        E::Lint => Ty::Lint,
-        E::Real => Ty::Real,
-        E::Lreal => Ty::Lreal,
-        E::Time => Ty::Time,
     }
 }

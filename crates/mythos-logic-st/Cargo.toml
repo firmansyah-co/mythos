@@ -1,0 +1,15 @@
+[package]
+name = "mythos-logic-st"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "The Structured Text front-end of MythOS control logic: IEC 61131-3 ST to the IR (ADR-013)"
+
+[lints]
+workspace = true
+
+# A front-end knows the IR and nothing downstream of it: no backend, no VM, no target.
+[dependencies]
+mythos-logic-ir.workspace = true

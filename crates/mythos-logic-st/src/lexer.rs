@@ -1,13 +1,8 @@
 //! Structured Text tokens. Keywords and identifiers are case-insensitive (IEC 61131-3 §6.1.2);
 //! a word keeps its spelling for messages and its upper-case form for matching.
 
-use crate::Diagnostic;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
-pub struct Span {
-    pub line: u32,
-    pub col: u32,
-}
+use mythos_logic_ir::Diagnostic;
+pub use mythos_logic_ir::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {

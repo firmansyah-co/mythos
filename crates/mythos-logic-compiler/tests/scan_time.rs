@@ -68,7 +68,7 @@ END_PROGRAM
 #[test]
 #[ignore = "a measurement, not a check: run with --ignored --nocapture"]
 fn scan_time_of_a_small_plant_program() {
-    let c = compile(PLANT, &TargetProfile::PC).unwrap_or_else(|d| panic!("{d:?}"));
+    let c = compile(PLANT, &TargetProfile::pc()).unwrap_or_else(|d| panic!("{d:?}"));
     let p = Program::load(&c.bytecode).unwrap();
     let mut mem = vec![0u8; p.memory_size()];
     let mut stack = vec![0u64; p.stack_depth()];

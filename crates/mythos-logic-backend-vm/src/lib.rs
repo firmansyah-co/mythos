@@ -1,7 +1,37 @@
-//! The VM backend: lays the IR's variables out in memory and emits bytecode for it.
+//! The logic VM backend (ADR-013 §2.1): lays an IR program's variables out in memory and emits
+//! bytecode for `mythos-logic-vm`.
+//!
+//! It depends on the IR and on the VM's format, and on no front-end: it compiles whatever
+//! language was lowered to the IR. Another target kind (C for small microcontrollers) is
+//! another crate like this one.
 
-use crate::ir::*;
-use mythos_logic_vm::format::{crc32, op, ElemType, FORMAT_VERSION, MAGIC};
+use mythos_logic_ir::*;
+use mythos_logic_vm::fb::FbKind;
+use mythos_logic_vm::format::{crc32, op, ElemType, MAGIC};
+
+pub use mythos_logic_vm::FORMAT_VERSION;
+
+/// The VM's block for a standard function block of the IR.
+///
+/// The IR names the blocks and their members; the VM owns how an instance is stored and run.
+/// They are matched by name, and `the_vm_has_every_standard_block_of_the_ir` holds them equal.
+fn vm_fb(fb: StdFb) -> FbKind {
+    FbKind::ALL
+        .into_iter()
+        .find(|k| k.name() == fb.name())
+        .unwrap_or_else(|| panic!("the VM has no function block {}", fb.name()))
+}
+
+/// Where member `m` of `fb` (an index into `fb.members()`) lies in an instance.
+fn member_offset(fb: StdFb, m: usize) -> u32 {
+    let name = fb.members()[m].name;
+    vm_fb(fb)
+        .members()
+        .iter()
+        .find(|x| x.name == name)
+        .unwrap_or_else(|| panic!("the VM's {} has no member {name}", fb.name()))
+        .offset
+}
 
 /// Where a variable (and each member of an instance) was put, for the host: binding a variable
 /// to a tag, monitoring and forcing all go by these.
@@ -11,7 +41,7 @@ pub struct Symbol {
     pub path: String,
     #[serde(rename = "type")]
     pub ty: &'static str,
-    pub section: crate::ast::Section,
+    pub section: Section,
     pub offset: u32,
     pub size: u32,
     /// The host may set it (a program input, or an FB input it is not given here).
@@ -53,7 +83,7 @@ fn size(t: Ty) -> u32 {
         Ty::Int => 2,
         Ty::Dint | Ty::Real => 4,
         Ty::Lint | Ty::Lreal | Ty::Time => 8,
-        Ty::Fb(k) => k.size(),
+        Ty::Fb(k) => vm_fb(k).size(),
     }
 }
 
@@ -127,13 +157,13 @@ pub fn emit(p: &Program) -> Output {
         let o = e.offsets[i];
         match v.ty {
             Ty::Fb(k) => {
-                for m in k.members() {
+                for (i, m) in k.members().iter().enumerate() {
                     symbols.push(Symbol {
                         path: format!("{}.{}", v.name, m.name),
-                        ty: elem_to_ty(m.ty).name(),
+                        ty: m.ty.name(),
                         section: v.section,
-                        offset: o + m.offset,
-                        size: m.ty.size(),
+                        offset: o + member_offset(k, i),
+                        size: size(m.ty),
                         writable: false,
                     });
                 }
@@ -144,7 +174,7 @@ pub fn emit(p: &Program) -> Output {
                 section: v.section,
                 offset: o,
                 size: size(ty),
-                writable: v.section == crate::ast::Section::Input,
+                writable: v.section == Section::Input,
             }),
         }
     }
@@ -194,7 +224,7 @@ impl Emitter<'_> {
     fn addr(&self, p: Place) -> u32 {
         let base = self.offsets[p.var];
         match (self.p.vars[p.var].ty, p.member) {
-            (Ty::Fb(k), Some(m)) => base + k.members()[m].offset,
+            (Ty::Fb(k), Some(m)) => base + member_offset(k, m),
             _ => base,
         }
     }
@@ -389,16 +419,14 @@ impl Emitter<'_> {
                 let base = self.offsets[*var];
                 for (m, v) in inputs {
                     self.expr(v);
-                    let mem = k.members()[*m];
-                    self.store(elem_to_ty(mem.ty), base + mem.offset);
+                    self.store(k.members()[*m].ty, base + member_offset(k, *m));
                 }
                 self.op(op::FB, 0);
-                self.code.push(k.code());
+                self.code.push(vm_fb(k).code());
                 self.code.extend_from_slice(&base.to_le_bytes());
                 for (m, target) in outputs {
-                    let mem = k.members()[*m];
-                    let mty = elem_to_ty(mem.ty);
-                    self.load(mty, base + mem.offset);
+                    let mty = k.members()[*m].ty;
+                    self.load(mty, base + member_offset(k, *m));
                     let tty = self.p.place_ty(*target);
                     self.convert(mty, tty);
                     let a = self.addr(*target);
@@ -539,6 +567,38 @@ impl Emitter<'_> {
                 }
             }
             Stmt::Return => self.op(op::END, 0),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mythos_logic_vm::fb::Direction as VmDirection;
+
+    /// The IR's catalog and the VM's blocks are written twice (the IR must not depend on a
+    /// VM); this is what keeps them one thing.
+    #[test]
+    fn the_vm_has_every_standard_block_of_the_ir_with_the_same_members() {
+        assert_eq!(StdFb::ALL.len(), FbKind::ALL.len());
+        for fb in StdFb::ALL {
+            let kind = vm_fb(fb);
+            assert_eq!(fb.members().len(), kind.members().len(), "{}", fb.name());
+            for (i, m) in fb.members().iter().enumerate() {
+                let v = kind
+                    .members()
+                    .iter()
+                    .find(|x| x.name == m.name)
+                    .unwrap_or_else(|| panic!("{}.{} missing in the VM", fb.name(), m.name));
+                assert_eq!(elem(m.ty), v.ty, "{}.{}", fb.name(), m.name);
+                let same = matches!(
+                    (m.direction, v.direction),
+                    (Direction::Input, VmDirection::Input)
+                        | (Direction::Output, VmDirection::Output)
+                );
+                assert!(same, "{}.{} direction", fb.name(), m.name);
+                assert_eq!(member_offset(fb, i), v.offset);
+            }
         }
     }
 }

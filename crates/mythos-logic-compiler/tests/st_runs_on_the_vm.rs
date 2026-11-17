@@ -15,7 +15,7 @@ struct Run {
 
 impl Run {
     fn new(src: &str) -> Run {
-        let c = compile(src, &TargetProfile::PC).unwrap_or_else(|d| panic!("{d:?}"));
+        let c = compile(src, &TargetProfile::pc()).unwrap_or_else(|d| panic!("{d:?}"));
         let p = Program::load(&c.bytecode).expect("the VM loads what the compiler made");
         let mut memory = vec![0; p.memory_size()];
         cold_start(&p, &mut memory).unwrap();
@@ -64,7 +64,7 @@ fn elem(ty: &str) -> mythos_logic_vm::ElemType {
 }
 
 fn diagnostics(src: &str) -> Vec<String> {
-    match compile(src, &TargetProfile::PC) {
+    match compile(src, &TargetProfile::pc()) {
         Ok(_) => panic!("compiled, but should not have"),
         Err(d) => d.iter().map(|d| d.to_string()).collect(),
     }
@@ -307,14 +307,16 @@ fn what_is_not_supported_yet_is_refused_by_name_never_compiled_as_something_else
     }
 }
 
+/// A profile as a runtime module's manifest will carry it (ADR-013 §2.2): data, not code.
+fn profile(json: &str) -> TargetProfile {
+    serde_json::from_str(json).unwrap()
+}
+
 #[test]
 fn a_target_that_cannot_run_a_type_refuses_the_program_at_compile_time() {
-    use mythos_logic_compiler::ir::Ty;
-    let no_lreal = TargetProfile {
-        name: "no-lreal",
-        refuses: &[Ty::Lreal],
-        ..TargetProfile::RP2040
-    };
+    let no_lreal = profile(
+        r#"{"name":"no-lreal","format_version":0,"max_memory":65536,"max_code":65536,"refuses":["Lreal"]}"#,
+    );
     let err = compile("PROGRAM P VAR x : LREAL; END_VAR END_PROGRAM", &no_lreal)
         .err()
         .unwrap();
@@ -322,12 +324,12 @@ fn a_target_that_cannot_run_a_type_refuses_the_program_at_compile_time() {
         err[0].message,
         "LREAL is not supported on the target no-lreal"
     );
+    assert!(
+        compile("PROGRAM P VAR x : REAL; END_VAR END_PROGRAM", &no_lreal).is_ok(),
+        "and what it can run compiles"
+    );
 
-    let tiny = TargetProfile {
-        name: "tiny",
-        max_memory: 8,
-        ..TargetProfile::RP2040
-    };
+    let tiny = profile(r#"{"name":"tiny","format_version":0,"max_memory":8,"max_code":65536}"#);
     let err = compile("PROGRAM P VAR t : TON; END_VAR END_PROGRAM", &tiny)
         .err()
         .unwrap();
@@ -338,10 +340,36 @@ fn a_target_that_cannot_run_a_type_refuses_the_program_at_compile_time() {
 }
 
 #[test]
+fn a_target_whose_vm_reads_another_bytecode_format_is_refused_at_compile_time() {
+    // Otherwise the refusal would come from the controller, at download or at a hot swap.
+    let newer =
+        profile(r#"{"name":"board-x","format_version":7,"max_memory":65536,"max_code":65536}"#);
+    let err = compile("PROGRAM P VAR x : INT; END_VAR END_PROGRAM", &newer)
+        .err()
+        .unwrap();
+    assert_eq!(
+        err[0].message,
+        "the target board-x runs bytecode format 7; this compiler makes format 0"
+    );
+}
+
+#[test]
+fn the_built_in_profiles_are_found_by_name_and_read_this_compilers_format() {
+    for name in ["pc", "rp2040", "esp32"] {
+        let p = TargetProfile::by_name(name).unwrap();
+        assert!(
+            compile("PROGRAM P VAR x : LREAL; END_VAR END_PROGRAM", &p).is_ok(),
+            "{name}"
+        );
+    }
+    assert!(TargetProfile::by_name("plc-9000").is_none());
+}
+
+#[test]
 fn the_symbol_table_says_where_every_variable_and_member_is_and_which_the_host_may_set() {
     let c = compile(
         "PROGRAM P VAR_INPUT go : BOOL; END_VAR VAR_OUTPUT out : INT; END_VAR VAR t : TON; END_VAR END_PROGRAM",
-        &TargetProfile::PC,
+        &TargetProfile::pc(),
     )
     .unwrap();
     let paths: Vec<(&str, &str, u32, bool)> = c

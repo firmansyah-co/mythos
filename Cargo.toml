@@ -9,7 +9,10 @@ members = [
     "crates/mythos-module-tests",
     "crates/mythos-cli",
     "crates/mythos-update",
+    "crates/mythos-logic-ir",
+    "crates/mythos-logic-st",
     "crates/mythos-logic-vm",
+    "crates/mythos-logic-backend-vm",
     "crates/mythos-logic-compiler",
     "plugins/drivers/driver-modbus",
     "plugins/hmi",
@@ -35,7 +38,10 @@ mythos-core = { path = "crates/mythos-core" }
 mythos-plugin-sdk = { path = "crates/mythos-plugin-sdk" }
 mythos-module = { path = "crates/mythos-module" }
 mythos-update = { path = "crates/mythos-update" }
+mythos-logic-ir = { path = "crates/mythos-logic-ir" }
+mythos-logic-st = { path = "crates/mythos-logic-st" }
 mythos-logic-vm = { path = "crates/mythos-logic-vm" }
+mythos-logic-backend-vm = { path = "crates/mythos-logic-backend-vm" }
 mythos-logic-compiler = { path = "crates/mythos-logic-compiler" }
 driver-modbus = { path = "plugins/drivers/driver-modbus" }
 

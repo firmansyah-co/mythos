@@ -5,11 +5,17 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Compiles IEC 61131-3 Structured Text to a target-neutral IR and from it to MythOS logic VM bytecode (ADR-013)"
+description = "The MythOS logic compiler: joins the language front-ends, the target profiles and the backends (ADR-013)"
 
 [lints]
 workspace = true
 
 [dependencies]
-mythos-logic-vm.workspace = true
+mythos-logic-ir.workspace = true
+mythos-logic-st.workspace = true
+mythos-logic-backend-vm.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+mythos-logic-vm.workspace = true
+serde_json.workspace = true

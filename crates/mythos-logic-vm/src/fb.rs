@@ -364,9 +364,9 @@ mod tests {
     }
 
     #[test]
-    fn ctu_counts_on_past_pv_up_to_the_types_limit_as_iec_table_45_says() {
-        // IEC 61131-3 ed. 3 Table 45: `ELSIF CU AND (CV < PVmax)`. STruC++ (as OpenPLC/MatIEC)
-        // stops at PV instead; this is a deliberate difference (ADR-013).
+    fn ctu_counts_on_past_pv_up_to_the_types_limit() {
+        // STruC++ (as OpenPLC/MatIEC) stops at PV instead. Which the standard says has not
+        // been checked against its text: an open question in ADR-013 §2.13.
         let mut x = [0u8; 8];
         put_i16(&mut x, 4, 2);
         for k in 0..10 {

@@ -3,10 +3,7 @@
 //! compiled into something else: it is a diagnostic.
 
 use crate::ast::{self, BinOp, CaseLabel, ExprKind as A};
-use crate::ir::*;
-use crate::lexer::Span;
-use crate::Diagnostic;
-use mythos_logic_vm::fb::Direction;
+use mythos_logic_ir::*;
 
 pub fn check(p: &ast::Program) -> Result<Program, Vec<Diagnostic>> {
     let mut c = Checker {
@@ -135,7 +132,7 @@ impl Checker {
     fn place_ty(&self, p: Place) -> Ty {
         let v = &self.vars[p.var];
         match (v.ty, p.member) {
-            (Ty::Fb(k), Some(m)) => elem_to_ty(k.members()[m].ty),
+            (Ty::Fb(k), Some(m)) => k.members()[m].ty,
             (ty, _) => ty,
         }
     }
@@ -254,7 +251,7 @@ impl Checker {
                         continue;
                     };
                     let member = k.members()[mi];
-                    let mty = elem_to_ty(member.ty);
+                    let mty = member.ty;
                     match a {
                         ast::Arg::In(_, e, _) => {
                             if member.direction != Direction::Input {

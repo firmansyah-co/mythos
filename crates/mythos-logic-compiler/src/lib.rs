@@ -1,51 +1,24 @@
-//! The MythOS logic compiler (ADR-013).
+//! The MythOS logic compiler (ADR-013): the one call that takes source to something a target
+//! runs. It owns no language and no target; it joins the crates that do.
 //!
 //! ```text
-//! Structured Text ──lex/parse──► syntax tree ──check──► IR ──backend──► VM bytecode
-//!  (LD, FBD, SFC, IL later)                             │   (C later)
-//!                                              target profile check
+//! mythos-logic-st ──► mythos-logic-ir ──► target profile check ──► mythos-logic-backend-vm
+//!  (a front-end           (the seam)        (this crate)             (a backend per
+//!   per language)                                                      target kind)
 //! ```
-//!
-//! What it takes today is a subset of IEC 61131-3 ed. 3, and everything outside it is a
-//! diagnostic, never a guess: one PROGRAM with VAR, VAR_INPUT and VAR_OUTPUT; BOOL, SINT,
-//! INT, DINT, LINT, REAL, LREAL, TIME; assignment, IF, CASE, FOR, WHILE, REPEAT, EXIT,
-//! RETURN; arithmetic, comparison and BOOL logic; the `*_TO_*` conversions between those
-//! types; and the standard function blocks TON, TOF, TP, CTU, CTD, R_TRIG, F_TRIG, SR, RS.
 
-pub mod ast;
-pub mod bytecode;
-pub mod check;
-pub mod ir;
-pub mod lexer;
-pub mod parser;
 pub mod profile;
 
-pub use bytecode::Symbol;
-pub use lexer::Span;
+pub use mythos_logic_backend_vm::Symbol;
+pub use mythos_logic_ir::{Diagnostic, Span};
 pub use profile::TargetProfile;
 
-/// A message about the source, at a line and column.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct Diagnostic {
-    pub line: u32,
-    pub col: u32,
-    pub message: String,
-}
-
-impl Diagnostic {
-    pub fn at(span: Span, message: impl Into<String>) -> Self {
-        Diagnostic {
-            line: span.line,
-            col: span.col,
-            message: message.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for Diagnostic {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}: {}", self.line, self.col, self.message)
-    }
+/// The languages a program may be written in. One front-end crate each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Language {
+    /// Structured Text.
+    St,
 }
 
 /// A compiled program.
@@ -68,50 +41,58 @@ impl Compiled {
     }
 }
 
-/// Parse and check `source` into the IR.
-pub fn lower(source: &str) -> Result<ir::Program, Vec<Diagnostic>> {
-    let toks = lexer::lex(source).map_err(|d| vec![d])?;
-    let ast = parser::Parser::new(toks).program().map_err(|d| vec![d])?;
-    check::check(&ast)
+/// Parse and check `source`, written in `language`, into the IR.
+pub fn lower(
+    source: &str,
+    language: Language,
+) -> Result<mythos_logic_ir::Program, Vec<Diagnostic>> {
+    match language {
+        Language::St => mythos_logic_st::lower(source),
+    }
 }
 
-/// Compile `source` for `target`.
+/// Compile Structured Text `source` for `target`.
 pub fn compile(source: &str, target: &TargetProfile) -> Result<Compiled, Vec<Diagnostic>> {
-    let program = lower(source)?;
+    compile_in(source, Language::St, target)
+}
+
+/// Compile `source`, written in `language`, for `target`.
+pub fn compile_in(
+    source: &str,
+    language: Language,
+    target: &TargetProfile,
+) -> Result<Compiled, Vec<Diagnostic>> {
+    let program = lower(source, language)?;
     let mut diags = Vec::new();
+    if target.format_version != mythos_logic_backend_vm::FORMAT_VERSION {
+        diags.push(Diagnostic::whole(format!(
+            "the target {} runs bytecode format {}; this compiler makes format {}",
+            target.name,
+            target.format_version,
+            mythos_logic_backend_vm::FORMAT_VERSION
+        )));
+    }
     for t in program.types_used() {
         if target.refuses.contains(&t) {
-            diags.push(Diagnostic {
-                line: 0,
-                col: 0,
-                message: format!(
-                    "{} is not supported on the target {}",
-                    t.name(),
-                    target.name
-                ),
-            });
+            diags.push(Diagnostic::whole(format!(
+                "{} is not supported on the target {}",
+                t.name(),
+                target.name
+            )));
         }
     }
-    let out = bytecode::emit(&program);
+    let out = mythos_logic_backend_vm::emit(&program);
     if out.memory_size > target.max_memory {
-        diags.push(Diagnostic {
-            line: 0,
-            col: 0,
-            message: format!(
-                "the program needs {} bytes of variable memory; the target {} allows {}",
-                out.memory_size, target.name, target.max_memory
-            ),
-        });
+        diags.push(Diagnostic::whole(format!(
+            "the program needs {} bytes of variable memory; the target {} allows {}",
+            out.memory_size, target.name, target.max_memory
+        )));
     }
     if out.code_size > target.max_code {
-        diags.push(Diagnostic {
-            line: 0,
-            col: 0,
-            message: format!(
-                "the program is {} bytes of code; the target {} allows {}",
-                out.code_size, target.name, target.max_code
-            ),
-        });
+        diags.push(Diagnostic::whole(format!(
+            "the program is {} bytes of code; the target {} allows {}",
+            out.code_size, target.name, target.max_code
+        )));
     }
     if !diags.is_empty() {
         return Err(diags);

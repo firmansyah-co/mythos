@@ -12,8 +12,8 @@
 //! Its REPL advances a simulated clock by its cycle time (20 ms) per cycle, starting at 0, so
 //! cycle k runs at (k-1) × 20 ms here too.
 
-use mythos_logic_compiler::lexer::{lex, Tok};
 use mythos_logic_compiler::{compile, TargetProfile};
+use mythos_logic_st::lexer::{lex, Tok};
 use mythos_logic_vm::{cold_start, read, scan, ElemType, Program, Value};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -28,12 +28,12 @@ const DELIBERATE: &[(&str, &str, &str)] = &[
     (
         "timers_and_counters.st",
         "UP",
-        "CTU: IEC 61131-3 ed. 3 Table 45 counts while CV < PVmax; STruC++ stops at PV (as OpenPLC)",
+        "CTU counts on past PV to the type's limit; STruC++ stops at PV (as OpenPLC). Which the standard says is unverified: ADR-013 §2.13",
     ),
     (
         "timers_and_counters.st",
         "DOWN",
-        "CTD: IEC 61131-3 ed. 3 Table 45 counts while CV > PVmin; STruC++ stops at 0 (as OpenPLC)",
+        "CTD counts on below 0 to the type's limit; STruC++ stops at 0 (as OpenPLC). Which the standard says is unverified: ADR-013 §2.13",
     ),
 ];
 const CYCLE_NS: i64 = 20_000_000;
@@ -182,8 +182,8 @@ fn every_variable_agrees_with_strucpp_after_every_cycle() {
     for st in &programs {
         let src = std::fs::read_to_string(st).unwrap();
         let reference = strucpp(&cli, st, &work);
-        let c =
-            compile(&src, &TargetProfile::PC).unwrap_or_else(|d| panic!("{}: {d:?}", st.display()));
+        let c = compile(&src, &TargetProfile::pc())
+            .unwrap_or_else(|d| panic!("{}: {d:?}", st.display()));
         let p = Program::load(&c.bytecode).unwrap();
         let mut mem = vec![0u8; p.memory_size()];
         let mut stack = vec![0u64; p.stack_depth()];

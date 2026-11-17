@@ -1,9 +1,9 @@
-//! Structured Text to a syntax tree. Recursive descent; operator precedence as in IEC 61131-3
-//! Table 71 (lowest first): OR, XOR, AND/&, = <>, < > <= >=, + -, * / MOD, unary - NOT, call.
+//! Structured Text to a syntax tree. Recursive descent; operator precedence, lowest first:
+//! OR, XOR, AND/&, = <>, < > <= >=, + -, * / MOD, unary - NOT, call.
 
 use crate::ast::*;
-use crate::lexer::{Span, Tok, Token};
-use crate::Diagnostic;
+use crate::lexer::{Tok, Token};
+use mythos_logic_ir::{Diagnostic, Span};
 
 pub struct Parser {
     toks: Vec<Token>,

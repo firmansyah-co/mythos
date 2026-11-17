@@ -1,6 +1,7 @@
 //! The syntax tree of Structured Text, as written: names unresolved, types unchecked.
 
-use crate::lexer::Span;
+pub use mythos_logic_ir::Section;
+use mythos_logic_ir::Span;
 
 #[derive(Debug, Clone)]
 pub struct Program {
@@ -8,14 +9,6 @@ pub struct Program {
     pub span: Span,
     pub vars: Vec<VarDecl>,
     pub body: Vec<Stmt>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Section {
-    Var,
-    Input,
-    Output,
 }
 
 #[derive(Debug, Clone)]
