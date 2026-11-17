@@ -681,10 +681,11 @@ Evidence of the spike (2026-11-17):
   optimised. Windows and macOS: not measured.
 - **Microcontrollers** (`scripts/logic-vm-footprint.sh`, CI job `logic-vm-bare-metal`): the VM
   with its loader and scan loop, `opt-level=s`, LTO, linked with `core` alone: **RP2040**
-  (thumbv6m-none-eabi) 23,272 bytes of code with strings and format 1 read as well (23,216
-  with strings, L2c-1; 19,304 before, 19,200 before L2b, 15,884 before format 1);
-  **ESP32-C3** (riscv32imc-unknown-none-elf) 27,254 bytes (27,204 with strings; 22,812 before,
-  22,908 before L2b, 19,146 before format 1). The L2b figures and the ones before it were both measured with rustc 1.99.1; the
+  (thumbv6m-none-eabi) 32,180 bytes of code with the real functions (L2c-2; 23,216 with strings
+  alone, 19,304 before them, 19,200 before L2b, 15,884 before format 1);
+  **ESP32-C3** (riscv32imc-unknown-none-elf) 39,206 bytes (L2c-2; 27,204 with strings alone,
+  22,812 before them, 22,908 before L2b, 19,146 before format 1). The real functions are most
+  of L2c-2's: LREAL arithmetic in software on both. The L2b figures and the ones before it were both measured with rustc 1.99.1; the
   RISC-V build came out smaller with more in it, which is the compiler's doing and was not
   looked into. Run on a real board: not yet (none attached). The original ESP32 and the S3 are
   Xtensa, which needs Espressif's Rust toolchain: not built.
@@ -736,3 +737,15 @@ Evidence of the spike (2026-11-17):
   module's test red; skipping the check of each instruction against the program's version
   turns `an_instruction_newer_than_the_programs_format_is_refused_at_load` red. The oracle
   and the emulators are unchanged (7,500 values, 287 deliberate; all 14 runs equal).
+- **L2c-2** (the library): 13 tests added to the five logic crates (192, from 179):
+  `math_against_the_host.rs` (the accuracy of §2.13, measured; NaN and infinity where IEC 60559
+  gives them; exact where it can be), `library_runs_on_the_vm.rs` (8: every function against
+  the VM's own values, the tables' examples, MUX's error, only the chosen input worked out,
+  the operators by name, the refusals) and two loader tests. `library.st` joins the corpus:
+  the oracle compares 1,980 more values (9,480 in all), every one agreeing; on both emulated
+  instruction sets every scan's memory equals the host's (all 16 runs equal), so SIN, LN and
+  EXPT in software floating point on a Cortex-M0 give the host's bits; of its 4,000 damaged
+  copies 976 pass the loader and are scanned (32,000 damaged programs, 23,697 damaged
+  sources). Mutation-checked with 19 mutations in a copy of the tree, each turning named
+  tests red; two survived at first (a DINT given to a real function taken as REAL, and `**`
+  binding below `*`), each caught by a test added for it.
