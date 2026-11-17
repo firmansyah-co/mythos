@@ -1,0 +1,15 @@
+[package]
+name = "mythos-logic-compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Compiles IEC 61131-3 Structured Text to a target-neutral IR and from it to MythOS logic VM bytecode (ADR-013)"
+
+[lints]
+workspace = true
+
+[dependencies]
+mythos-logic-vm.workspace = true
+serde.workspace = true

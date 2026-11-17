@@ -52,8 +52,10 @@ intent and may describe things that do not exist.
   alarm displays.
 - **A logic editor and a network editor in the workbench.** The server still stores faceplate
   types and data types; the workbench has no editors for them.
-- **A logic engine.** There is no IEC 61131-3 compiler or runtime. `POST /api/v1/control/deploy`
-  answers `501` and compiles nothing.
+- **A logic engine that runs.** A compiler for a subset of Structured Text and the VM that runs
+  it exist as libraries (`crates/mythos-logic-compiler`, `crates/mythos-logic-vm`, ADR-013),
+  tested, compared against STruC++ and linked for microcontrollers in CI; no server, module or
+  firmware runs them yet. `POST /api/v1/control/deploy` answers `501` and compiles nothing.
 - **Writes to field devices** from the API or the HMI.
 - **Alarms, historian, recipes, device discovery, disaster recovery.**
 - **Encrypted transport.** The server speaks plain HTTP and listens on every interface: a
@@ -74,6 +76,8 @@ intent and may describe things that do not exist.
 | `crates/mythos-module` | The module protocol, both sides of it, and module discovery. |
 | `crates/mythos-module-tests` | Modules tested as real processes. |
 | `crates/mythos-cli` | The `mythos` command-line tool. |
+| `crates/mythos-logic-compiler` | IEC 61131-3 compiler (a subset of Structured Text so far) to a target-neutral IR and VM bytecode (ADR-013). |
+| `crates/mythos-logic-vm` | The VM that runs compiled logic: `no_std`, no allocation, for the PC runner and microcontrollers (ADR-013). |
 | `plugins/drivers/driver-modbus` | Modbus TCP driver, its module executable, and a device simulator (`sim` feature). |
 | `plugins/hmi` | The HMI service module: screens and faceplates. Its workbench UI is `frontend/packages/hmi-ui`. |
 | `src-tauri` | Desktop shell. |

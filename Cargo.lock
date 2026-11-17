@@ -2594,6 +2594,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mythos-logic-compiler"
+version = "0.1.0"
+dependencies = [
+ "mythos-logic-vm",
+ "serde",
+]
+
+[[package]]
+name = "mythos-logic-vm"
+version = "0.1.0"
+
+[[package]]
 name = "mythos-module"
 version = "0.1.0"
 dependencies = [

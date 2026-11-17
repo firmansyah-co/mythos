@@ -17,8 +17,9 @@ README and in `crates/mythos-core/src/mcp.rs`.
   intended product, most of which is not built.
 - [Work breakdown](../specs/tasks.md) — the original sprint plan. It carries no completion
   status and still names deliverables that have been removed.
-- [Architectural decision records](../specs/adr/) — ADR-001 to ADR-010. ADR-003, ADR-004,
-  ADR-005 and ADR-007 record decisions about subsystems that are not in the tree.
+- [Architectural decision records](../specs/adr/) — ADR-001 to ADR-013. ADR-003, ADR-004,
+  ADR-005 and ADR-007 record decisions about subsystems that are not in the tree; ADR-013
+  (proposed) replaces ADR-003's logic engine with our own compiler and a portable VM.
   [ADR-010](../specs/adr/ADR-010-modules-are-processes.md) is how MythOS is assembled: every
   driver is a module process.
 

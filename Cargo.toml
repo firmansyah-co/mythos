@@ -9,6 +9,8 @@ members = [
     "crates/mythos-module-tests",
     "crates/mythos-cli",
     "crates/mythos-update",
+    "crates/mythos-logic-vm",
+    "crates/mythos-logic-compiler",
     "plugins/drivers/driver-modbus",
     "plugins/hmi",
     "plugins/discovery",
@@ -33,6 +35,8 @@ mythos-core = { path = "crates/mythos-core" }
 mythos-plugin-sdk = { path = "crates/mythos-plugin-sdk" }
 mythos-module = { path = "crates/mythos-module" }
 mythos-update = { path = "crates/mythos-update" }
+mythos-logic-vm = { path = "crates/mythos-logic-vm" }
+mythos-logic-compiler = { path = "crates/mythos-logic-compiler" }
 driver-modbus = { path = "plugins/drivers/driver-modbus" }
 
 # Concurrency and Async

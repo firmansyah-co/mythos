@@ -1,6 +1,6 @@
 # ADR-003: Native STruC++ Runtime Engine Architecture & In-Process FFI Bridge
 
-- **Status**: ACCEPTED
+- **Status**: ACCEPTED; to be superseded by [ADR-013](ADR-013-logic-compiler-and-vm.md) (proposed 2026-11-17: our own compiler and a portable VM, logic as a module process). Nothing of this ADR was ever built into a binary that ran.
 - **Date**: 2026-10-13
 - **Author**: Neo (VP Software & Infrastructure)
 - **Deciders**: Adrian (Board of Commissioners), Aria (CEO), Neo (VP Software)
