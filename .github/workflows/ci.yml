@@ -401,8 +401,13 @@ jobs:
       - name: Install QEMU
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends qemu-system-arm qemu-system-misc
+          sudo apt-get install -y -qq --no-install-recommends qemu-system-arm
+          # The RISC-V emulators are in qemu-system-riscv on newer Ubuntu and in
+          # qemu-system-misc on older ones.
+          sudo apt-get install -y -qq --no-install-recommends qemu-system-riscv \
+            || sudo apt-get install -y -qq --no-install-recommends qemu-system-misc
           qemu-system-arm --version | head -n 1
+          qemu-system-riscv32 --version | head -n 1
 
       # The same programs, on the VM, inside an emulated Cortex-M0 (the RP2040's instruction
       # set) and an emulated RV32IMC machine (the ESP32-C3's): every scan must leave the VM's
