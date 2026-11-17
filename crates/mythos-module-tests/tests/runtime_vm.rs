@@ -399,6 +399,15 @@ async fn a_program_reads_a_tag_decides_and_the_device_takes_its_outputs() {
 
     // Level 20, setpoint 50: the pump runs at (50 - 20) * 10.
     p.drive_is("the pump runs at 300", 1, 300).await;
+    // The runtime reports what the device confirmed when its exchange ends, so the register can
+    // hold 300 a moment before the status says so: wait for the status, rather than assume both
+    // change at once (it failed so on Linux in CI, PR #125).
+    p.until("the status says 300 was confirmed", |s| {
+        s.tank
+            .as_ref()
+            .is_some_and(|t| t.outputs[1].written == Some(json!(300)))
+    })
+    .await;
     let tank = p.tank();
     assert_eq!(tank.mode, "run", "{tank:?}");
     assert_eq!(

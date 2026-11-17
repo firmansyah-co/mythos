@@ -205,6 +205,21 @@ impl Rig {
         self.eng("GET", "/api/v1/runtimes", None, 200).await["runtimes"][0].clone()
     }
 
+    /// The runtime's status once `holds` says it is so. A runtime reports what the device
+    /// confirmed when its exchange ends, so the device can show a value a moment before the
+    /// status does: a test waits for the status, never assumes both change at once.
+    async fn tank_when(&self, what: &str, holds: impl Fn(&Value) -> bool) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let tank = self.tank().await;
+            if holds(&tank) {
+                return tank;
+            }
+            assert!(Instant::now() < deadline, "never: {what}; runtime {tank}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     async fn speed_is(&self, what: &str, speed: u16) {
         let deadline = Instant::now() + Duration::from_secs(15);
         while self.sim.holding(1).await != Some(speed) {
@@ -341,7 +356,11 @@ async fn a_program_is_written_checked_built_loaded_and_runs_the_plant() {
     );
     // Level 20, setpoint 50.
     rig.speed_is("the program commands 300", 300).await;
-    let running = rig.tank().await;
+    let running = rig
+        .tank_when("the status names the built version", |t| {
+            t["version"] == built["version"]
+        })
+        .await;
     assert_eq!(running["program"], "Tank", "{running}");
     assert_eq!(running["version"], built["version"], "{running}");
 
@@ -365,7 +384,11 @@ async fn a_program_is_written_checked_built_loaded_and_runs_the_plant() {
     )
     .await;
     rig.speed_is("the new program commands 600", 600).await;
-    assert_eq!(rig.tank().await["version"], rebuilt["version"]);
+    // The replacement's status is published at the end of its first exchange, which writes 600.
+    rig.tank_when("the status names the rebuilt version", |t| {
+        t["version"] == rebuilt["version"]
+    })
+    .await;
 
     // A program that does not compile, or binds a variable it lost, is not built.
     rig.eng(
