@@ -399,6 +399,15 @@ async fn a_program_reads_a_tag_decides_and_the_device_takes_its_outputs() {
 
     // Level 20, setpoint 50: the pump runs at (50 - 20) * 10.
     p.drive_is("the pump runs at 300", 1, 300).await;
+    // The runtime reports what the device confirmed when its exchange ends, so the register can
+    // hold 300 a moment before the status says so: wait for the status, rather than assume both
+    // change at once (it failed so on Linux in CI, PR #125).
+    p.until("the status says 300 was confirmed", |s| {
+        s.tank
+            .as_ref()
+            .is_some_and(|t| t.outputs[1].written == Some(json!(300)))
+    })
+    .await;
     let tank = p.tank();
     assert_eq!(tank.mode, "run", "{tank:?}");
     assert_eq!(
@@ -878,9 +887,20 @@ async fn any_variable_is_read_as_the_last_scan_left_it_bound_to_a_tag_or_not() {
         "t", // what has none
     ];
     let reply = p
-        .watched_until("the level reached the program", &names, |r| {
-            value(r, "hist[2]").value == Some(json!(20))
-        })
+        // The first scan that sees the level can be the timer's first too, where its elapsed
+        // time is still 0 (observed on macOS): wait for both, rather than assume a scan apart.
+        .watched_until(
+            "the level reached the program and its timer ran",
+            &names,
+            |r| {
+                value(r, "hist[2]").value == Some(json!(20))
+                    && value(r, "t.ET")
+                        .value
+                        .as_ref()
+                        .and_then(Value::as_i64)
+                        .is_some_and(|ns| ns > 0)
+            },
+        )
         .await;
     assert_eq!(reply.state.mode, RuntimeMode::Run);
     assert_eq!(reply.state.program, "Tank");

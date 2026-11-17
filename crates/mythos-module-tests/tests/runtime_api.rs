@@ -183,6 +183,21 @@ impl Rig {
         body["runtimes"][0].clone()
     }
 
+    /// The runtime's status once `holds` says it is so. A runtime reports what the device
+    /// confirmed when its exchange ends, so the device can show a value a moment before the
+    /// status does: a test waits for the status, never assumes both change at once.
+    async fn tank_when(&self, what: &str, holds: impl Fn(&Value) -> bool) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let tank = self.tank().await;
+            if holds(&tank) {
+                return tank;
+            }
+            assert!(Instant::now() < deadline, "never: {what}; runtime {tank}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     async fn speed_is(&self, what: &str, speed: u16) {
         let deadline = Instant::now() + Duration::from_secs(15);
         while self.sim.holding(1).await != Some(speed) {
@@ -337,7 +352,11 @@ async fn an_engineer_loads_a_program_it_runs_the_plant_and_each_role_does_what_i
 
     // Level 20, setpoint 50.
     rig.speed_is("the program commands 300", 300).await;
-    let tank = rig.tank().await;
+    let tank = rig
+        .tank_when("the status says 300 was confirmed", |t| {
+            t["outputs"][0]["written"] == 300
+        })
+        .await;
     assert_eq!(tank["mode"], "run", "{tank}");
     assert_eq!(tank["program"], "Tank");
     assert_eq!(tank["outputs"][0]["written"], 300, "{tank}");
