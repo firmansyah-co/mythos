@@ -80,6 +80,12 @@ async function opened(backend: Backend) {
   return { calls, container };
 }
 
+// Each test renders the whole program editor, its timers polling the runtimes, and waits for
+// what it asserts. On this host a test takes 0.1-3.4 s at a load average of ~50; CI, sharing the
+// machine with builds, went past vitest's 5 s default (PR #126). The bound is for a test that
+// hangs, so it is set to what the work takes under load, not to what it takes on an idle host.
+vi.setConfig({ testTimeout: 20_000 });
+
 beforeEach(() => {
   resetStores();
 });
