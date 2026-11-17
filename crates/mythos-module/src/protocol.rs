@@ -334,6 +334,10 @@ impl From<WireError> for PluginError {
 pub struct WireDeclaration {
     pub uri: String,
     pub description: String,
+    /// Whether the module can write the tag. A module built before this field existed does
+    /// not say, and is taken at its word: read-only.
+    #[serde(default)]
+    pub writable: bool,
 }
 
 impl From<&TagDeclaration> for WireDeclaration {
@@ -341,6 +345,7 @@ impl From<&TagDeclaration> for WireDeclaration {
         Self {
             uri: d.uri.clone(),
             description: d.description.clone(),
+            writable: d.writable,
         }
     }
 }
@@ -350,6 +355,7 @@ impl From<WireDeclaration> for TagDeclaration {
         Self {
             uri: d.uri,
             description: d.description,
+            writable: d.writable,
         }
     }
 }

@@ -303,7 +303,38 @@ async fn the_runtime_reads_a_device_through_the_module_process() {
     sim.set_holding(0, 4321).await;
     wait_for_slot(&segment, |s| s.value.as_u16() == 4321, "a changed value").await;
 
+    // And writes it through the same process: the module says the tag is writable (so the
+    // catalog does), the write crosses the protocol, the device holds the value, and the
+    // next poll reads it back.
+    assert_eq!(
+        catalog.read().await.get_by_uri(TAG).unwrap().access_mode,
+        mythos_core::tag::AccessMode::ReadWrite,
+        "what the module declared arrived"
+    );
+    status
+        .write_tag(TAG, json!(555))
+        .await
+        .expect("the device confirms");
+    assert_eq!(sim.holding(0).await, Some(555));
+    wait_for_slot(
+        &segment,
+        |s| s.value.as_u16() == 555,
+        "the written value read back",
+    )
+    .await;
+    let refused = status.write_tag(TAG, json!(70000)).await;
+    assert!(
+        matches!(&refused, Err(mythos_core::io::WriteError::Refused(why)) if why.contains("does not fit")),
+        "a refusal crosses the protocol as a refusal: {refused:?}"
+    );
+    assert_eq!(sim.holding(0).await, Some(555));
+
     runtime.shutdown().await;
+    assert_eq!(
+        status.write_tag(TAG, json!(1)).await,
+        Err(mythos_core::io::WriteError::UnknownTag),
+        "nothing can be written once the runtime is gone"
+    );
     let slot = wait_for_slot(&segment, |_| true, "after shutdown").await;
     assert_eq!(slot.quality, QualityCode::BAD_NOT_CONNECTED);
     // The module process is gone with the runtime.

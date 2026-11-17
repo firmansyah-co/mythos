@@ -240,6 +240,36 @@ async fn each_role_may_do_what_its_level_allows_and_no_more() {
         .await;
     assert_eq!(status, StatusCode::CREATED);
 
+    // Commanding a field device is what an operator may do and a viewer may not. No field
+    // I/O runs here, so an allowed write is answered "no such tag"; a refused one never gets
+    // that far.
+    let write = Some(json!({"value": 1}));
+    let (status, body, _) = rig
+        .send(
+            &viewer,
+            "PUT",
+            "/api/v1/tags/external.A.B.c/value",
+            write.clone(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("operator"),
+        "{body}"
+    );
+    for who in [&operator, &engineer, &admin] {
+        let (status, body, _) = rig
+            .send(
+                who,
+                "PUT",
+                "/api/v1/tags/external.A.B.c/value",
+                write.clone(),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(body["written"], json!(false), "{body}");
+    }
+
     let (status, _, _) = rig.send(&engineer, "GET", "/api/v1/users", None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, body, _) = rig.send(&admin, "GET", "/api/v1/users", None).await;

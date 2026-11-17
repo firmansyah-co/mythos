@@ -300,6 +300,19 @@ fn password_change_body() -> Value {
     })
 }
 
+fn write_tag_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+            "value": {
+                "type": ["number", "boolean"],
+                "description": "The value in engineering units, as the tag is read"
+            }
+        }
+    })
+}
+
 fn new_token_body() -> Value {
     json!({
         "type": "object",
@@ -859,6 +872,17 @@ pub const TOOLS: &[Tool] = &[
         body: None,
         read_only: true,
         destructive: false,
+    },
+    Tool {
+        name: "write_tag",
+        title: "Write a value to a field device",
+        description: "Write a value to the field device behind a tag, as an operator. Only a tag whose access_mode is READ_WRITE can be written. The answer's 'written' is true when the device confirmed, false when nothing reached it, and \"unknown\" when a request went out and no confirmation came back. The tag's value does not change with the write: read it again after the next poll to see what the device now holds.",
+        method: "PUT",
+        path: "/api/v1/tags/:uri/value",
+        query: &[],
+        body: Some(write_tag_body),
+        read_only: false,
+        destructive: true,
     },
     Tool {
         name: "list_projects",

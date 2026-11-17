@@ -65,6 +65,7 @@ impl ProtocolDriver for MockDriver {
         vec![TagDeclaration {
             uri: "external.Plant.PT101.pv".to_string(),
             description: "mock register".to_string(),
+            writable: false,
         }]
     }
 

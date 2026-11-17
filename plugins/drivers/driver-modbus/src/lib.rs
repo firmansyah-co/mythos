@@ -88,8 +88,16 @@ fn declarations(config: &ModbusDriverConfig) -> Vec<TagDeclaration> {
                 },
                 m.address
             ),
+            writable: writable(m),
         })
         .collect()
+}
+
+/// Whether `write_tag` can write a mapping: a holding register that fits one register. An
+/// input register cannot be written at all, and a value spanning two registers would need a
+/// multi-register write, which does not exist here. `write_tag` refuses exactly the others.
+fn writable(mapping: &TagMapping) -> bool {
+    mapping.function_code == 3 && matches!(mapping.data_type, RegisterType::U16 | RegisterType::I16)
 }
 
 fn read_request(slave_id: u8, mapping: &TagMapping) -> ModbusRequest {
