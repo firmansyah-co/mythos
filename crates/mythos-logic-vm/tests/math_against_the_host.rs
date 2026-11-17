@@ -1,5 +1,8 @@
 //! The VM's own real functions (it has no libm: `mythos_logic_vm::math`) measured against
-//! the host's, which is the platform's libm. IEC 61131-3 ed. 3 §6.6.2.5.8 leaves their
+//! the host's, which is the platform's libm. The VM's give the same bits on every platform;
+//! the libms do not, and are not exact either: a bound here holds against each libm CI runs
+//! on (glibc on Linux, Apple's on macOS, Microsoft's on Windows). TAN is 2 ulp from glibc's
+//! and 3 from Apple's at the same points. IEC 61131-3 ed. 3 §6.6.2.5.8 leaves their
 //! accuracy to the implementer; this is where it is measured, and ADR-013 §2.13 states it.
 //!
 //! The points are drawn from a fixed seed: a failure is reproducible.
@@ -95,8 +98,8 @@ fn each_function_of_one_argument_is_within_its_stated_ulps_of_the_host() {
         ("SIN past 10^7", math::sin, f64::sin, 7.0, 300.0, true, 1.0),
         ("COS", math::cos, f64::cos, -10.0, 10.0, false, 1.0),
         ("COS past 10^7", math::cos, f64::cos, 7.0, 300.0, true, 1.0),
-        ("TAN", math::tan, f64::tan, -10.0, 10.0, false, 2.0),
-        ("TAN past 10^7", math::tan, f64::tan, 7.0, 300.0, true, 2.0),
+        ("TAN", math::tan, f64::tan, -10.0, 10.0, false, 3.0),
+        ("TAN past 10^7", math::tan, f64::tan, 7.0, 300.0, true, 3.0),
         ("ATAN", math::atan, f64::atan, -300.0, 300.0, true, 1.0),
         ("ASIN", math::asin, f64::asin, -1.0, 1.0, false, 2.0),
         ("ACOS", math::acos, f64::acos, -1.0, 1.0, false, 2.0),
