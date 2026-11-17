@@ -51,12 +51,18 @@ path = "src/bin/runtime-vm-module-under-test.rs"
 name = "stubborn-runtime-under-test"
 path = "src/bin/stubborn-runtime-under-test.rs"
 
+# The logic authoring module (ADR-013 §2.6).
+[[bin]]
+name = "logic-module-under-test"
+path = "src/bin/logic-module-under-test.rs"
+
 [dependencies]
 mythos-plugin-sdk.workspace = true
 driver-modbus.workspace = true
 mythos-runtime-vm = { path = "../../plugins/runtime-vm" }
 mythos-discovery = { path = "../../plugins/discovery" }
 mythos-hmi = { path = "../../plugins/hmi" }
+mythos-logic = { path = "../../plugins/logic" }
 mythos-module.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true

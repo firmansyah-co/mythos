@@ -6,7 +6,8 @@
     bin/mythos-module-modbus[.exe]   modules, found beside the server: the Modbus driver
     bin/mythos-module-hmi[.exe]      the HMI service module (ADR-011)
     bin/mythos-module-discovery[.exe] the discovery service module (ADR-012)
-    bin/mythos-module-runtime-vm[.exe] and the logic runtime module (ADR-013)
+    bin/mythos-module-runtime-vm[.exe] the logic runtime module (ADR-013)
+    bin/mythos-module-logic[.exe]    and the logic authoring module (ADR-013)
     web/                             the workbench, served by the server from ../web
     modules-ui/<module id>/          each module's workbench UI, served at /modules/<id>/ui/
 
@@ -33,6 +34,7 @@ EXECUTABLES = [
     "mythos-module-hmi",
     "mythos-module-discovery",
     "mythos-module-runtime-vm",
+    "mythos-module-logic",
 ]
 # Module UIs a bundle must carry: a module shipped without its UI would serve routes nobody can
 # use from the workbench.
