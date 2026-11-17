@@ -15,10 +15,6 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-// CONTROL, NOT FOR MERGE: makes the bare-metal build need std, to see the CI job go red.
-#[cfg(target_os = "none")]
-extern crate std;
-
 pub mod fb;
 pub mod format;
 mod vm;
