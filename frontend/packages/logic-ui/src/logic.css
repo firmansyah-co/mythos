@@ -1,0 +1,309 @@
+/* The logic module's workbench UI. It uses the workbench's tokens and classes (btn, badge,
+   grid, field, notice, …); what is here is only what the workbench has no class for. */
+
+.logic-root {
+  display: contents;
+}
+
+.logic-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* The source with the runtime and the task beside it; the variables beneath, across. */
+.logic-editor__top {
+  display: flex;
+  flex: 3;
+  min-height: 0;
+}
+
+.logic-editor__bottom {
+  flex: 2;
+  min-height: 0;
+  overflow: auto;
+  border-top: 1px solid var(--c-chrome-border);
+  background: var(--c-surface-alt);
+}
+
+.logic-editor__main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  border-right: 1px solid var(--c-rule);
+}
+
+/* One line under the toolbar: what the last request came to. */
+.logic-note {
+  flex: none;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--c-rule);
+  border-left: 3px solid var(--c-neutral);
+  background: var(--c-surface-alt);
+  font-size: var(--fs-sm);
+}
+
+.logic-note p {
+  margin: 0;
+}
+
+.logic-note--warn {
+  border-left-color: var(--c-warn);
+  background: var(--c-warn-soft);
+}
+
+.logic-note--bad {
+  border-left-color: var(--c-bad);
+  background: var(--c-bad-soft);
+}
+
+.logic-editor__source {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--c-surface);
+}
+
+.logic-editor__side {
+  flex: none;
+  width: 340px;
+  overflow: auto;
+  background: var(--c-surface-alt);
+}
+
+/* The source: a text area over the same text painted in colour. Both use one font and one line
+   height, or the caret would not sit on the letters. */
+
+.logic-source {
+  display: flex;
+  min-height: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.logic-source__gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  min-width: 44px;
+  padding: 6px 0;
+  border-right: 1px solid var(--c-rule);
+  background: var(--c-surface-sunken);
+  color: var(--c-text-faint);
+  text-align: right;
+  user-select: none;
+}
+
+.logic-source__line {
+  padding: 0 8px;
+}
+
+.logic-source__line.has-error {
+  color: var(--c-bad);
+  background: var(--c-bad-soft);
+  font-weight: 600;
+}
+
+.logic-source__body {
+  position: relative;
+  flex: 1;
+}
+
+.logic-source__paint,
+.logic-source__area {
+  margin: 0;
+  padding: 6px 8px;
+  border: 0;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: 0;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.logic-source__paint {
+  color: var(--c-text);
+  pointer-events: none;
+}
+
+.logic-source__area {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  resize: none;
+  outline: 0;
+  background: transparent;
+  /* The letters shown are the painted ones beneath; the text area keeps the caret and the
+     selection. */
+  color: transparent;
+  caret-color: var(--c-text);
+}
+
+.logic-source__area::selection {
+  background: var(--c-select);
+  color: transparent;
+}
+
+.logic-tok--keyword {
+  color: var(--c-accent);
+  font-weight: 600;
+}
+
+.logic-tok--type {
+  color: var(--c-accent);
+}
+
+.logic-tok--comment {
+  color: var(--c-text-muted);
+  font-style: italic;
+}
+
+.logic-tok--string,
+.logic-tok--number {
+  color: var(--c-neutral);
+}
+
+.logic-tok--error {
+  text-decoration: underline wavy var(--c-bad);
+  text-decoration-skip-ink: none;
+}
+
+/* What the compiler said. */
+
+.logic-check {
+  flex: none;
+  max-height: 30%;
+  margin: 0;
+  padding: 6px 10px;
+  overflow: auto;
+  border-top: 1px solid var(--c-rule);
+  background: var(--c-surface-alt);
+  font-size: var(--fs-sm);
+}
+
+.logic-check p {
+  margin: 0 0 4px;
+}
+
+.logic-diagnostics {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.logic-diagnostic {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  padding: 2px 4px;
+  border: 0;
+  border-left: 3px solid var(--c-bad);
+  background: transparent;
+  text-align: left;
+}
+
+button.logic-diagnostic:hover {
+  background: var(--c-hover);
+}
+
+.logic-diagnostic--plain {
+  border-left-color: var(--c-warn);
+}
+
+.logic-diagnostic__at {
+  flex: none;
+  min-width: 48px;
+  color: var(--c-text-muted);
+}
+
+/* The panels beside the source. */
+
+.logic-panel {
+  padding: 8px 10px 12px;
+  border-bottom: 1px solid var(--c-rule);
+  font-size: var(--fs-sm);
+}
+
+.logic-panel__title {
+  margin: 0 0 6px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.logic-panel p {
+  margin: 0 0 6px;
+}
+
+.logic-panel__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.logic-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 0;
+}
+
+.logic-facts dt {
+  color: var(--c-text-muted);
+}
+
+.logic-facts dd {
+  margin: 0;
+}
+
+.logic-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px 12px;
+  align-items: end;
+}
+
+.logic-binding {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.logic-binding__kind {
+  flex: none;
+  min-width: 96px;
+  color: var(--c-text-muted);
+}
+
+.logic-binding__tag {
+  flex: 1;
+  min-width: 160px;
+}
+
+.logic-binding__safe {
+  width: 84px;
+  text-align: right;
+}
+
+.logic-binding .field__error {
+  flex-basis: 100%;
+}
+
+.logic-binding__add {
+  color: var(--c-text-muted);
+}
+
+.logic-binding-orphan {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
