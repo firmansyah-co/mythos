@@ -930,8 +930,10 @@ impl Emitter<'_> {
     // A string never goes on the stack: an instruction names each string it reads or writes
     // (`cap place`). What an expression of a STRING type gives is a string somewhere in
     // memory: the variable it loads, a literal's string in the memory image, or scratch the
-    // value was written to. Every string an instruction reads, but the source of an
-    // assignment, is at a place without an offset, so only `SMOVE` pops offsets.
+    // value was written to. A string read from an array element is named where it is, its
+    // offset on the stack: an instruction pops its integers, then the offsets of its operands
+    // from the last to the first, which is the reverse of the order they are emitted in
+    // here. What a function gives is always written to scratch, never to an element.
 
     /// A string operand: `cap` and the place of `2 + cap` bytes at `loc`.
     fn string_operand(&mut self, cap: u16, loc: Loc) {
@@ -958,19 +960,14 @@ impl Emitter<'_> {
         self.string_operand(src.0, src.1);
     }
 
-    /// Where the string `e` gives is, at a place without an offset, and its length.
+    /// Where the string `e` gives is, and its length. When it is an element of an array, its
+    /// offset is now on the stack.
     fn string_value(&mut self, e: &Expr) -> (u16, Loc) {
         match &e.kind {
             ExprKind::Str(text) => (text.len() as u16, self.literal(text)),
             ExprKind::Load(p) => {
                 let cap = string_cap(self.u.place_ty(self.cur, p));
-                let loc = self.place(p);
-                if loc.indexed.is_none() {
-                    return (cap, loc);
-                }
-                let tmp = self.scratch(string_size(cap) as u64);
-                self.string_move((cap, tmp), (cap, loc));
-                (cap, tmp)
+                (cap, self.place(p))
             }
             _ => {
                 let cap = string_cap(e.ty);
@@ -981,16 +978,9 @@ impl Emitter<'_> {
         }
     }
 
-    /// The string of `e` where an assignment takes it from: a place that may take an
-    /// offset, which is then on the stack.
-    fn string_source(&mut self, e: &Expr) -> (u16, Loc) {
-        match &e.kind {
-            ExprKind::Load(p) => {
-                let cap = string_cap(self.u.place_ty(self.cur, p));
-                (cap, self.place(p))
-            }
-            _ => self.string_value(e),
-        }
+    /// How many of `strings` have an offset on the stack, which the instruction pops.
+    fn offsets(strings: &[(u16, Loc)]) -> i32 {
+        strings.iter().filter(|(_, l)| l.indexed.is_some()).count() as i32
     }
 
     /// An integer argument, as the i64 the instructions on strings pop.
@@ -1016,7 +1006,7 @@ impl Emitter<'_> {
                 self.string_move(dst, result);
             }
             ExprKind::Str(_) | ExprKind::Load(_) => {
-                let src = self.string_source(e);
+                let src = self.string_value(e);
                 self.string_move(dst, src);
             }
             _ => unreachable!("{:?} does not give a STRING", e.kind),
@@ -1031,13 +1021,13 @@ impl Emitter<'_> {
                 // Two at a time, into `dst`: the first two, then `dst` and each next one.
                 let a = self.string_value(&args[0]);
                 let b = self.string_value(&args[1]);
-                self.op(op::SCAT, 0);
+                self.op(op::SCAT, -Self::offsets(&[a, b]));
                 self.string_operand(dst.0, dst.1);
                 self.string_operand(a.0, a.1);
                 self.string_operand(b.0, b.1);
                 for next in &args[2..] {
                     let b = self.string_value(next);
-                    self.op(op::SCAT, 0);
+                    self.op(op::SCAT, -Self::offsets(&[b]));
                     self.string_operand(dst.0, dst.1);
                     self.string_operand(dst.0, dst.1);
                     self.string_operand(b.0, b.1);
@@ -1065,7 +1055,7 @@ impl Emitter<'_> {
         for i in ints {
             self.int64(i);
         }
-        self.op(code, -(ints.len() as i32));
+        self.op(code, -(ints.len() as i32) - Self::offsets(&operands));
         self.string_operand(dst.0, dst.1);
         for (cap, loc) in operands {
             self.string_operand(cap, loc);
@@ -1077,13 +1067,13 @@ impl Emitter<'_> {
         match f {
             StdFn::Len => {
                 let a = self.string_value(&args[0]);
-                self.op(op::SLEN, 1);
+                self.op(op::SLEN, 1 - Self::offsets(&[a]));
                 self.string_operand(a.0, a.1);
             }
             StdFn::Find => {
                 let a = self.string_value(&args[0]);
                 let b = self.string_value(&args[1]);
-                self.op(op::SFIND, 1);
+                self.op(op::SFIND, 1 - Self::offsets(&[a, b]));
                 self.string_operand(a.0, a.1);
                 self.string_operand(b.0, b.1);
             }
@@ -1193,7 +1183,7 @@ impl Emitter<'_> {
             ExprKind::Cmp(c, a, b) if a.ty.is_string() => {
                 let a = self.string_value(a);
                 let b = self.string_value(b);
-                self.op(op::SCMP, 1);
+                self.op(op::SCMP, 1 - Self::offsets(&[a, b]));
                 self.code.push(cmp_code(*c));
                 self.string_operand(a.0, a.1);
                 self.string_operand(b.0, b.1);
@@ -1231,7 +1221,7 @@ impl Emitter<'_> {
             }
             ExprKind::Convert(a) if a.ty.is_string() => {
                 let a = self.string_value(a);
-                self.op(op::STOI, 1);
+                self.op(op::STOI, 1 - Self::offsets(&[a]));
                 self.string_operand(a.0, a.1);
                 self.convert(Ty::Lint, e.ty);
             }
@@ -1270,7 +1260,7 @@ impl Emitter<'_> {
                 let src = self.place(src);
                 waiting.push((*var, a.ty, Some((0, src))));
             } else if a.ty.is_string() {
-                let src = self.string_source(a);
+                let src = self.string_value(a);
                 waiting.push((*var, a.ty, Some(src)));
             } else {
                 self.expr(a);
@@ -1352,7 +1342,7 @@ impl Emitter<'_> {
                 let ty = self.u.place_ty(self.cur, p);
                 let dst = self.place(p);
                 if let Ty::String(cap) = ty {
-                    let src = self.string_source(v);
+                    let src = self.string_value(v);
                     self.string_move((cap, dst), src);
                 } else if v.ty.is_aggregate() {
                     let ExprKind::Load(src) = &v.kind else {
@@ -1384,7 +1374,7 @@ impl Emitter<'_> {
                     let (mty, offset) = member(self, *m);
                     let dst = self.within(inst, offset);
                     if let Ty::String(cap) = mty {
-                        let src = self.string_source(v);
+                        let src = self.string_value(v);
                         self.string_move((cap, dst), src);
                     } else if mty.is_aggregate() {
                         let ExprKind::Load(src) = &v.kind else {
