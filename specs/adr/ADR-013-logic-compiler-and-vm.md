@@ -653,10 +653,10 @@ Evidence of the spike (2026-11-17):
   optimised. Windows and macOS: not measured.
 - **Microcontrollers** (`scripts/logic-vm-footprint.sh`, CI job `logic-vm-bare-metal`): the VM
   with its loader and scan loop, `opt-level=s`, LTO, linked with `core` alone: **RP2040**
-  (thumbv6m-none-eabi) 23,216 bytes of code with strings (L2c-1; 19,304 before, 19,200 before
-  L2b, 15,884 before format 1);
-  **ESP32-C3** (riscv32imc-unknown-none-elf) 27,204 bytes (L2c-1; 22,812 before, 22,908 before
-  L2b, 19,146 before format 1). The L2b figures and the ones before it were both measured with rustc 1.99.1; the
+  (thumbv6m-none-eabi) 23,272 bytes of code with strings and format 1 read as well (23,216
+  with strings, L2c-1; 19,304 before, 19,200 before L2b, 15,884 before format 1);
+  **ESP32-C3** (riscv32imc-unknown-none-elf) 27,254 bytes (27,204 with strings; 22,812 before,
+  22,908 before L2b, 19,146 before format 1). The L2b figures and the ones before it were both measured with rustc 1.99.1; the
   RISC-V build came out smaller with more in it, which is the compiler's doing and was not
   looked into. Run on a real board: not yet (none attached). The original ESP32 and the S3 are
   Xtensa, which needs Espressif's Rust toolchain: not built.
@@ -688,3 +688,23 @@ Evidence of the spike (2026-11-17):
   reads it): the copy was redundant, as the VM pops an operand's offset itself, and was
   removed; the two mutations of the stack accounting that replaced it then went red once the
   test put a comparison of elements before its deepest statement.
+- **Format versions** (review of L2c-1: the loader refused format 1, which every controller
+  running a program held). The six corpus programs compiled by the format-1 and the format-2
+  compiler, each tree extracted with its own target directory, differ only in the version
+  field and the checksum (the reviewer's comparison); the diff of the VM changes no format-1
+  opcode, operand layout, loader check or run-time step. 5 tests added to the five logic
+  crates (184, from 179), and one to the runtime module, which takes a format-1 program
+  through its own configuration and refuses a newer one. `older_formats_run_alike.rs`: the
+  six format-1 fixtures (made once by `dev`'s compiler at `f4637cd`, committed with their
+  hashes) run 200 scans each beside the same source compiled now, the same inputs written
+  before every scan, memory equal after every scan and changed by more than half of them.
+  Mutation-checked, each in a copy of the tree: reading only the current version turns
+  `every_format_this_vm_extends_is_read_and_runs_alike`,
+  `an_instruction_newer_than_the_programs_format_is_refused_at_load`,
+  `format_1_bytecode_runs_to_the_same_scans_as_its_source_compiled_now` and the runtime
+  module's `a_program_built_before_an_update_of_the_vm_is_still_taken` red; reading any
+  version turns `a_format_newer_than_this_vm_is_refused_not_guessed_at`,
+  `a_program_of_the_format_before_this_one_is_refused_by_its_version` and the runtime
+  module's test red; skipping the check of each instruction against the program's version
+  turns `an_instruction_newer_than_the_programs_format_is_refused_at_load` red. The oracle
+  and the emulators are unchanged (7,500 values, 287 deliberate; all 14 runs equal).
