@@ -232,6 +232,19 @@
   background: var(--c-surface);
 }
 
+/* What the controller said in words, inside a grid cell: it wraps and is never cut short. */
+.settings__said {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* A grid whose cells hold more than one line: each cell starts at the top of its row. */
+.settings__tall td {
+  padding-top: 4px;
+  padding-bottom: 4px;
+  vertical-align: top;
+}
+
 .settings__row-actions {
   display: flex;
   align-items: center;

@@ -5,7 +5,7 @@
 // entry here and a component.
 
 import type { ComponentType } from 'react';
-import { Link2, Network, Puzzle, RefreshCcw, Server, UserRound, Users } from 'lucide-react';
+import { Cpu, Link2, Network, Puzzle, RefreshCcw, Server, UserRound, Users } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Role } from '../../api/client';
 import { AccountSettings } from './AccountSettings';
@@ -13,6 +13,7 @@ import { FleetSettings } from './FleetSettings';
 import { ModulesSettings } from './ModulesSettings';
 import { NodeSettings } from './NodeSettings';
 import { PairingSettings } from './PairingSettings';
+import { RuntimesSettings } from './RuntimesSettings';
 import { UpdatesSettings } from './UpdatesSettings';
 import { UsersSettings } from './UsersSettings';
 
@@ -33,6 +34,8 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   { id: 'pairing', label: 'Pairing', icon: Link2, minRole: null, component: PairingSettings },
   // Every paired node asked now: how it is reached and what it runs (ADR-012 §2.6).
   { id: 'fleet', label: 'Fleet', icon: Network, minRole: null, component: FleetSettings },
+  // Anyone may see what this node executes; only an engineer runs or stops a program (ADR-013 §2.5).
+  { id: 'runtimes', label: 'Runtimes', icon: Cpu, minRole: null, component: RuntimesSettings },
   { id: 'users', label: 'Users', icon: Users, minRole: 'admin', component: UsersSettings },
   // Anyone may see the versions; only an administrator changes them (the section says so).
   { id: 'updates', label: 'Updates', icon: RefreshCcw, minRole: null, component: UpdatesSettings },
