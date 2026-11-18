@@ -265,7 +265,8 @@ pub struct Confirm {
 const UNCONFIRMED: &str =
     "a download changes what a node runs: send {\"confirm\": true} to say it is meant";
 
-/// Make `project` what this node runs: activate it and apply its I/O.
+/// Make `project` what this node runs: activate it and apply its I/O and its programs. An error
+/// when a connection or a program did not start, naming each: what was asked does not run.
 async fn run_here<S: PlatformShm + 'static>(
     state: &ApiState<S>,
     project: &str,
@@ -275,9 +276,56 @@ async fn run_here<S: PlatformShm + 'static>(
         .activate_project(project)
         .map_err(|e| e.to_string())?;
     if let Some(io) = &state.io_manager {
-        io.reload().await;
+        if let Some(report) = io.reload().await {
+            if !report.failed.is_empty() {
+                let each: Vec<String> = report
+                    .failed
+                    .iter()
+                    .map(|(id, why)| format!("{id}: {why}"))
+                    .collect();
+                return Err(format!("not everything started: {}", each.join("; ")));
+            }
+        }
     }
     Ok(())
+}
+
+/// What this node could not run of `slice`, asked before anything is installed (ADR-012
+/// §2.5): each connection's driver module and each program's runtime module must be here and
+/// take the configuration. Empty when it would all start.
+async fn check_slice<S: PlatformShm + 'static>(
+    state: &ApiState<S>,
+    slice: &Slice,
+) -> Result<Vec<crate::io::ConfigProblem>, String> {
+    let Some(io) = &state.io_manager else {
+        return Ok(Vec::new());
+    };
+    let mut problems = Vec::new();
+    if let Some(bytes) =
+        plant::file_in(slice, crate::io::IO_CONFIG_FILE).map_err(|e| e.to_string())?
+    {
+        let config: crate::io::IoConfig = serde_json::from_slice(&bytes).map_err(|e| {
+            format!(
+                "{} is not an I/O configuration: {e}",
+                crate::io::IO_CONFIG_FILE
+            )
+        })?;
+        problems.extend(io.check(&config).await);
+    }
+    if let Some(bytes) =
+        plant::file_in(slice, crate::runtimes::RUNTIMES_FILE).map_err(|e| e.to_string())?
+    {
+        let config: crate::runtimes::RuntimesConfig =
+            serde_json::from_slice(&bytes).map_err(|e| {
+                format!(
+                    "{} is not a runtimes configuration: {e}",
+                    crate::runtimes::RUNTIMES_FILE
+                )
+            })?;
+        config.validate()?;
+        problems.extend(io.check_runtimes(&config).await);
+    }
+    Ok(problems)
 }
 
 /// Download one device: what it reports.
@@ -295,12 +343,28 @@ async fn download_one<S: PlatformShm + 'static>(
         Err(e) => return json!({ "device": device.id, "state": "refused", "error": e.to_string() }),
     };
     match target {
-        Target::Here => match run_here(state, &device.project).await {
-            Ok(()) => {
-                json!({ "device": device.id, "state": "done", "hash": slice.hash, "node": "this" })
+        Target::Here => {
+            match check_slice(state, &slice).await {
+                Ok(problems) if problems.is_empty() => {}
+                Ok(problems) => {
+                    return json!({ "device": device.id, "state": "refused", "error": "this node cannot run the slice, so nothing was changed", "problems": problems })
+                }
+                Err(e) => return json!({ "device": device.id, "state": "refused", "error": e }),
             }
-            Err(e) => json!({ "device": device.id, "state": "refused", "error": e }),
-        },
+            let was_active = state.storage.get_active_project().ok().flatten();
+            match run_here(state, &device.project).await {
+                Ok(()) => {
+                    json!({ "device": device.id, "state": "done", "hash": slice.hash, "node": "this" })
+                }
+                Err(e) => {
+                    // What ran before runs again.
+                    if let Some(active) = was_active.filter(|a| *a != device.project) {
+                        let _ = run_here(state, &active).await;
+                    }
+                    json!({ "device": device.id, "state": "refused", "error": e })
+                }
+            }
+        }
         Target::Peer(peer) => {
             let body = json!({ "slice": slice, "confirm": true });
             match ask(
@@ -398,6 +462,37 @@ pub async fn put_slice<S: PlatformShm + 'static>(
 ) -> Response {
     if !upload.confirm {
         return error(StatusCode::PRECONDITION_REQUIRED, UNCONFIRMED);
+    }
+    // Checked before anything is installed: a slice this node cannot run is refused whole, and
+    // what it runs goes on.
+    match check_slice(&state, &upload.slice).await {
+        Ok(problems) if problems.is_empty() => {}
+        Ok(problems) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({
+                    "error": format!(
+                        "this node cannot run the slice, so nothing was installed: {}",
+                        problems
+                            .iter()
+                            .map(|p| match &p.connection_id {
+                                Some(id) => format!("{id}: {}", p.message),
+                                None => p.message.clone(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ),
+                    "problems": problems,
+                })),
+            )
+                .into_response()
+        }
+        Err(why) => {
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("the slice was not installed: {why}"),
+            )
+        }
     }
     let was_active = state.storage.get_active_project().ok().flatten();
     let previous = match plant::install(&state.storage, &project, &upload.slice) {

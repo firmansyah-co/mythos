@@ -400,6 +400,117 @@ fn a_plant_downloads_a_device_to_its_paired_node_and_compares_it() {
     assert_eq!(gone["state"], "unreachable", "{gone}");
 }
 
+/// ADR-012 §2.5: a node checks a slice before it installs it. A program whose runtime module is
+/// not on the node, or a connection whose driver is not, is refused whole, saying which, and the
+/// node goes on running what it ran; a slice it can run runs its programs.
+#[test]
+fn a_download_the_node_cannot_run_is_refused_whole_and_one_it_can_runs_its_programs() {
+    let runtime = std::path::Path::new(env!("CARGO_BIN_EXE_mythos-server")).with_file_name(
+        format!("mythos-module-runtime-vm{}", std::env::consts::EXE_SUFFIX),
+    );
+    assert!(
+        runtime.is_file(),
+        "{} is not built: run the workspace's tests (cargo test --workspace), which build it",
+        runtime.display()
+    );
+    let a = start("check-a");
+    let b = start("check-b");
+    let b_id = pair(&a, &b);
+    let (status, body) = a.call(
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"id": "plant_c", "name": "Checked", "description": "", "author": "test"})),
+    );
+    assert!(status == 200 || status == 201, "{status} {body}");
+    let (status, device) = a.call(
+        "PUT",
+        "/api/v1/projects/plant_c/plant/devices/edge1",
+        Some(json!({"name": "Edge 1", "node": b_id})),
+    );
+    assert_eq!(status, 200, "{device}");
+    let download = || {
+        a.call(
+            "POST",
+            "/api/v1/projects/plant_c/plant/devices/edge1/download",
+            Some(json!({"confirm": true})),
+        )
+    };
+    let (status, first) = download();
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(first["state"], "done", "{first}");
+    let held = || b.call("GET", "/api/v1/slices/plant_c--edge1", None).1["hash"].clone();
+    let first_hash = held();
+    assert_eq!(first_hash, first["hash"], "b holds what it was given");
+
+    // The device's project gets a program for a runtime module b does not have. It is written
+    // as a file: a would refuse it over its own API for the same reason.
+    let code: String = include_bytes!(
+        "../../mythos-logic-compiler/tests/fixtures/format1/integers_and_control.mlbc"
+    )
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect();
+    let program = |module: &str| {
+        json!({"instances": [{
+            "id": "counter", "module": module, "run": true,
+            "program": {"name": "P", "version": "1", "interval_ms": 50, "code": code, "symbols": []}
+        }]})
+    };
+    let file = a._dir.path().join("plant_c--edge1").join("runtimes.json");
+    std::fs::write(&file, program("plc-9000").to_string()).unwrap();
+    let (status, refused) = download();
+    assert_ne!(
+        status, 200,
+        "a refused download is not answered as done: {refused}"
+    );
+    assert_eq!(refused["state"], "refused", "{refused}");
+    assert!(
+        refused["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("no runtime module provides 'plc-9000'")),
+        "it says which module is missing: {refused}"
+    );
+    assert_eq!(held(), first_hash, "nothing was installed on b");
+    let (_, active) = b.call("GET", "/api/v1/projects/active", None);
+    assert_eq!(active["project_id"], "plant_c--edge1", "{active}");
+    assert_eq!(
+        b.call("GET", "/api/v1/runtimes", None).1["runtimes"],
+        json!([]),
+        "b runs what it ran"
+    );
+
+    // A connection whose driver b does not have is refused the same way.
+    std::fs::remove_file(&file).unwrap();
+    std::fs::write(
+        a._dir.path().join("plant_c--edge1").join("io.json"),
+        json!({"connections": [{"id": "x", "driver": "no-such-driver", "poll_interval_ms": 100, "config": {}}]})
+            .to_string(),
+    )
+    .unwrap();
+    let (_, refused) = download();
+    assert_eq!(refused["state"], "refused", "{refused}");
+    assert!(
+        refused["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("no-such-driver")),
+        "{refused}"
+    );
+    assert_eq!(held(), first_hash, "nothing was installed on b");
+    std::fs::remove_file(a._dir.path().join("plant_c--edge1").join("io.json")).unwrap();
+
+    // With the module b has, it is installed and the program runs there.
+    std::fs::write(&file, program("vm").to_string()).unwrap();
+    let (status, done) = download();
+    assert_eq!(status, 200, "{done}");
+    assert_eq!(done["state"], "done", "{done}");
+    assert_ne!(held(), first_hash, "b holds the new slice");
+    until("b runs the program it was given", || {
+        let runtimes = b.call("GET", "/api/v1/runtimes", None).1;
+        (runtimes["runtimes"][0]["id"] == "counter" && runtimes["runtimes"][0]["mode"] == "run")
+            .then_some(runtimes)
+    });
+}
+
 /// Pair `a` with `b` (b makes the code); b's node id.
 fn pair(a: &Server, b: &Server) -> String {
     let b_node = b.node();

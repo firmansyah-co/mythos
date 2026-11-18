@@ -372,6 +372,21 @@ pub struct Previous {
     pub dir: Option<PathBuf>,
 }
 
+/// The content of the file at `path` in `slice`, if it holds one.
+pub fn file_in(slice: &Slice, path: &str) -> Result<Option<Vec<u8>>, PlantError> {
+    let engine = base64::engine::general_purpose::STANDARD;
+    slice
+        .files
+        .iter()
+        .find(|f| f.path == path)
+        .map(|f| {
+            engine
+                .decode(&f.data)
+                .map_err(|e| PlantError::Invalid(format!("'{path}' is not base64: {e}")))
+        })
+        .transpose()
+}
+
 /// Install `slice` as `project` on this node: checked and written beside the project first,
 /// then put in its place, the project it replaces kept to return to ([`restore`]).
 pub fn install(
