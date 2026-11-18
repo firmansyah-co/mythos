@@ -12,8 +12,9 @@
 //! the order they arrive, one at a time.
 
 use crate::protocol::{
-    Call, ErrorKind, ExchangeReply, ModuleManifest, Request, Response, RetainedValue, RuntimeState,
-    WatchReply, WireDeclaration, WireError, WireInput, WireSample, MANIFEST_FLAG, SERVE_FLAG,
+    Call, CarryReport, ErrorKind, ExchangeReply, ModuleManifest, ProgramVariables, Request,
+    Response, RetainedValue, RuntimeState, WatchReply, WireDeclaration, WireError, WireInput,
+    WireSample, MANIFEST_FLAG, SERVE_FLAG,
 };
 use mythos_plugin_sdk::{async_trait, PluginContext, PluginError, ProtocolDriver};
 use serde_json::{json, Value};
@@ -75,6 +76,25 @@ pub trait RuntimeEngine: ProtocolDriver {
     async fn retained(&mut self, _ctx: &PluginContext) -> Result<Vec<RetainedValue>, PluginError> {
         Err(PluginError::RuntimeError(
             "this runtime module keeps no RETAIN values".to_string(),
+        ))
+    }
+
+    /// The values of every variable of a program in RUN, and its clock, for a new build of it
+    /// to carry on from (an online change). A runtime that cannot give them says so, and a new
+    /// build then starts as at a warm restart.
+    async fn variables(&mut self, _ctx: &PluginContext) -> Result<ProgramVariables, PluginError> {
+        Err(PluginError::RuntimeError(
+            "this runtime module does not give the values of its variables, so a new build of \
+             its program cannot carry them on"
+                .to_string(),
+        ))
+    }
+
+    /// What the program took of the values it was started with. A runtime that cannot carry
+    /// values says so.
+    async fn carried(&mut self, _ctx: &PluginContext) -> Result<CarryReport, PluginError> {
+        Err(PluginError::RuntimeError(
+            "this runtime module does not carry a running program's values".to_string(),
         ))
     }
 
@@ -141,6 +161,8 @@ impl<D: RuntimeEngine> ExtraCalls<D> for RuntimeCalls {
                 encode(driver.set_mode(ctx, run, cold).await.map_err(fail)?)
             }
             Call::Retained => encode(driver.retained(ctx).await.map_err(fail)?),
+            Call::Variables => encode(driver.variables(ctx).await.map_err(fail)?),
+            Call::Carried => encode(driver.carried(ctx).await.map_err(fail)?),
             Call::Watch { variables } => encode(driver.watch(ctx, variables).await.map_err(fail)?),
             Call::Force { variable, value } => {
                 encode(driver.force(ctx, variable, value).await.map_err(fail)?)
@@ -411,6 +433,8 @@ where
         | Call::Watch { .. }
         | Call::Force { .. }
         | Call::Unforce { .. }
-        | Call::Retained) => extra.handle(manifest, driver, ctx.as_ref(), call).await,
+        | Call::Retained
+        | Call::Variables
+        | Call::Carried) => extra.handle(manifest, driver, ctx.as_ref(), call).await,
     }
 }

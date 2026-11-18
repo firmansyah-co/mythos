@@ -1250,10 +1250,13 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "save_runtimes_config",
         title: "Save a project's runtimes",
-        description: "Check and save the programs a project runs. Each instance names a runtime module (list_runtimes shows them), whether to run at once, and a program: its code and symbols as the logic compiler made them, the tags read into variables (inputs), the variables written to field tags with the safe value each tag takes whenever the program is not running (outputs), and the variables published as tags starting with internal. (published; writable makes one a setpoint an operator may write). The module loads each program to check it; anything that does not load is refused and nothing is saved. For the active project the runtimes are then made to match: 'applied' true says the configuration was put in force, not that every program started. 'changes.failed' lists each instance that did not start, with why; read list_runtimes for what runs.",
+        description: "Check and save the programs a project runs. Each instance names a runtime module (list_runtimes shows them), whether to run at once, and a program: its code and symbols as the logic compiler made them, the tags read into variables (inputs), the variables written to field tags with the safe value each tag takes whenever the program is not running (outputs), and the variables published as tags starting with internal. (published; writable makes one a setpoint an operator may write). The module loads each program to check it; anything that does not load is refused and nothing is saved. For the active project the runtimes are then made to match: 'applied' true says the configuration was put in force, not that every program started. 'changes.failed' lists each instance that did not start, with why; read list_runtimes for what runs. A new build of a program in run replaces it online: it takes over every variable of the same name, type and size (RETAIN or not) and scans on, its outputs never going to their safe values; start=cold starts every program it starts or replaces from its initial values instead, RETAIN ones included. 'changes.runtimes' says for each how it started: start online (with carried, the count, and dropped and initialized, the variables that did not carry over and why), warm (RETAIN values kept, the rest initial; why says why not online) or cold. Forces are released by a load either way.",
         method: "PUT",
         path: "/api/v1/projects/:id/runtimes",
-        query: &[],
+        query: &[(
+            "start",
+            "cold to start every program this starts or replaces from its initial values, RETAIN variables included; leave it out to change running programs online",
+        )],
         body: Some(runtimes_config_body),
         read_only: false,
         destructive: true,

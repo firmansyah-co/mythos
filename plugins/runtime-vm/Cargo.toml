@@ -2,7 +2,7 @@
 name = "mythos-runtime-vm"
 # A module has its own version (ADR-011 §2.6): it is released and replaced on its own,
 # and the server says which version of it runs. Bump it when the module changes.
-version = "0.3.0"
+version = "0.4.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true

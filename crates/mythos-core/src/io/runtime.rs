@@ -557,6 +557,9 @@ pub struct ApplyReport {
     /// Connections that could not be started or replaced, and why. A connection listed here
     /// that was running before keeps running as it was.
     pub failed: Vec<(String, String)>,
+    /// How each runtime this started, replaced or restarted began: changed online, warm or
+    /// cold, and what did not carry over (ADR-013 §2.5).
+    pub runtimes: Vec<crate::runtimes::RuntimeLoad>,
 }
 
 /// The running field I/O of one server.

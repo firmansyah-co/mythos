@@ -5,7 +5,7 @@ use crate::api::state::ApiState;
 use crate::io::ConfigProblem;
 use crate::runtimes::{ForceAsk, ForceRefusal, RuntimesConfig, RUNTIMES_FILE, WATCH_LIMIT};
 use crate::storage::StorageError;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Extension;
 use axum::Json;
@@ -316,17 +316,40 @@ pub async fn get_config<S: PlatformShm + 'static>(
     Ok(Json(json!({ "config": config })))
 }
 
+/// How `PUT /api/v1/projects/:id/runtimes` starts what it loads.
+#[derive(serde::Deserialize)]
+pub struct LoadQuery {
+    /// `cold`: every runtime it starts or replaces starts from its initial values, RETAIN
+    /// variables included. Left out, a new build of a running program is changed online.
+    start: Option<String>,
+}
+
 /// `PUT /api/v1/projects/:id/runtimes` — check, save and, for the active project, apply.
 ///
 /// Each instance is checked by the runtime module it names, which loads the program without
 /// running it: a program that does not load, or a binding to a variable it does not have, is
 /// refused here and nothing is written. For the active project the runtimes are then made to
-/// match: an instance whose published tags stay the same is replaced in place.
+/// match: an instance whose published tags stay the same is replaced in place. A new build of
+/// a program in RUN takes over its variables (changed online) unless `?start=cold`; how each
+/// runtime started is in `changes.runtimes`.
 pub async fn put_config<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
     Path(project): Path<String>,
+    Query(query): Query<LoadQuery>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
+    let cold = match query.start.as_deref() {
+        None => false,
+        Some("cold") => true,
+        Some(other) => {
+            return Err(failure(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "start={other} is not a way to start: 'cold' starts every program it loads from its initial values; leave it out to change a running program online"
+                ),
+            ))
+        }
+    };
     let path = config_path(&state, &project)?;
     let config: RuntimesConfig = serde_json::from_value(body).map_err(|e| {
         failure(
@@ -367,7 +390,7 @@ pub async fn put_config<S: PlatformShm + 'static>(
         Ok(Some(active)) if active == project
     );
     let (applied, changes) = if is_active {
-        (true, io.reload().await)
+        (true, io.reload_with(cold).await)
     } else {
         (false, None)
     };

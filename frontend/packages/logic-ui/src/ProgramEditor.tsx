@@ -36,7 +36,9 @@ import {
 } from './bridge';
 import {
   checkIsCurrent,
+  describeStart,
   isDirty,
+  loadOf,
   runState,
   usePrograms,
   type ProgramDoc,
@@ -813,6 +815,42 @@ function RemovePanel({ name, busy, onRemoved }: { name: string; busy: boolean; o
   );
 }
 
+/**
+ * How the loaded program started, as the controller said: changed online, warm or cold, and
+ * each variable that did not carry over with why.
+ */
+function StartFacts({ load }: { load: ReturnType<typeof loadOf> }) {
+  return (
+    <>
+      <p data-testid="program-start">{describeStart(load)}</p>
+      {load !== null && load.dropped.length > 0 && (
+        <p>
+          Not carried over:{' '}
+          {load.dropped.map((d, i) => (
+            <span key={d.variable} data-testid="program-dropped">
+              {i > 0 ? '; ' : ''}
+              <span className="mono">{d.variable}</span> ({d.why})
+            </span>
+          ))}
+          .
+        </p>
+      )}
+      {load !== null && load.initialized.length > 0 && (
+        <p>
+          From the initial value:{' '}
+          {load.initialized.map((d, i) => (
+            <span key={d.variable} data-testid="program-initialized">
+              {i > 0 ? '; ' : ''}
+              <span className="mono">{d.variable}</span> ({d.why})
+            </span>
+          ))}
+          .
+        </p>
+      )}
+    </>
+  );
+}
+
 export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (name: string) => void }) {
   const phase = usePrograms((s) => s.phase);
   const loadError = usePrograms((s) => s.loadError);
@@ -936,10 +974,29 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
           className="btn"
           disabled={!may || working}
           onClick={() => void download(name)}
-          title="Save, check and build the program, and put it into the project's runtimes."
+          title="Save, check and build the program, and put it into the project's runtimes. A new version of the program while it runs is changed online: it takes over the running variables and scans on."
           data-testid="program-load"
         >
           <Download size={13} aria-hidden /> Load
+        </button>
+        <button
+          type="button"
+          className="btn"
+          disabled={!may || working}
+          onClick={() => {
+            // A cold load throws away what the running program holds: it is asked first.
+            if (
+              window.confirm(
+                `Load ${name} cold? Every variable starts from its initial value, RETAIN variables included, and nothing the running version holds is carried over.`
+              )
+            ) {
+              void download(name, true);
+            }
+          }}
+          title="Load the program with every variable from its initial value, RETAIN ones included."
+          data-testid="program-load-cold"
+        >
+          <Download size={13} aria-hidden /> Load cold
         </button>
         {dirty && (
           <span className="badge badge--warn" data-testid="program-unsaved">
@@ -972,6 +1029,9 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
                 </span>
               )}
             </p>
+            {doc.loaded?.applied && doc.startFailure === null && (
+              <StartFacts load={loadOf(doc.loaded, name)} />
+            )}
             {doc.built.warnings.map((warning) => (
               <p key={warning} data-testid="build-warning">
                 {warning}

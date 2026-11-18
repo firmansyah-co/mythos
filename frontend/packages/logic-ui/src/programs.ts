@@ -11,6 +11,7 @@ import {
   type BuildResult,
   type CheckResult,
   type ProgramEntry,
+  type RuntimeLoad,
   type RuntimeStatus,
   type Variable,
   type WatchAnswer,
@@ -84,8 +85,11 @@ export interface ProgramsState {
   discard: (name: string) => void;
   save: (name: string) => Promise<boolean>;
   check: (name: string) => Promise<void>;
-  /** Save, check, build, and put what was built into the project's runtimes. */
-  download: (name: string) => Promise<boolean>;
+  /**
+   * Save, check, build, and put what was built into the project's runtimes. With `cold`, it
+   * starts from its initial values, RETAIN ones included, instead of being changed online.
+   */
+  download: (name: string, cold?: boolean) => Promise<boolean>;
   /** Take the program out of the project's runtimes. */
   unload: (name: string) => Promise<boolean>;
   command: (name: string, run: boolean) => Promise<void>;
@@ -109,6 +113,35 @@ export function canonical(value: unknown): string {
         )
       : inner
   );
+}
+
+/** How the controller says the runtime of program `name` started at this load, if it says. */
+export function loadOf(answer: ApplyAnswer | null, name: string): RuntimeLoad | null {
+  return answer?.changes?.runtimes?.find((load) => load.runtime === name) ?? null;
+}
+
+/**
+ * How a loaded program started, in one sentence that claims what the controller said and
+ * nothing more: changed online only when it says so.
+ */
+export function describeStart(load: RuntimeLoad | null): string {
+  if (load === null) return 'The controller did not say how it started.';
+  const notCarried = load.dropped.length + load.initialized.length;
+  switch (load.start) {
+    case 'online':
+      return (
+        `Changed online: it took over the running version's variables (${load.carried ?? 'UNKNOWN'} carried over) and scans on without a restart.` +
+        (notCarried > 0
+          ? ` ${load.dropped.length} of the running version's did not carry over, and ${load.initialized.length} of its own started from their initial values.`
+          : '')
+      );
+    case 'warm':
+      return `Not changed online${load.why ? `: ${load.why}` : ''}. Its RETAIN variables start from the values kept for them, every other variable from its initial value.`;
+    case 'cold':
+      return 'Loaded cold: every variable starts from its initial value, RETAIN ones included.';
+    case 'unknown':
+      return `How its variables started is not known${load.why ? `: ${load.why}` : ''}.`;
+  }
 }
 
 export function isDirty(doc: ProgramDoc): boolean {
@@ -339,7 +372,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
       }
     },
 
-    download: async (name) => {
+    download: async (name, cold = false) => {
       const projectId = get().projectId;
       if (!projectId || !find(name)) return false;
       set({ busy: 'loading', error: null });
@@ -364,7 +397,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
         }
         const built = await api.build(projectId, name);
         change(name, (d) => ({ ...d, built, loaded: null, startFailure: null }));
-        const applied = await api.setInstance(projectId, name, built.instance);
+        const applied = await api.setInstance(projectId, name, built.instance, cold);
         // Saved and applied is not started: the controller lists what did not start, and why.
         const refused = (applied.changes?.failed ?? []).find(([id]) => id === `runtime:${name}`);
         change(name, (d) => ({ ...d, loaded: applied, startFailure: refused ? refused[1] : null }));
@@ -380,7 +413,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
         set({ busy: null });
         log.info(
           applied.applied
-            ? `Program ${name} version ${built.version} was loaded.`
+            ? `Program ${name} version ${built.version} was loaded. ${describeStart(loadOf(applied, name))}`
             : `Program ${name} version ${built.version} was saved into the project's runtimes. The controller runs another project, so nothing was started.`
         );
         void get().readRuntimes();
