@@ -3,7 +3,7 @@
 - **Document Identifier**: MYTHOS-PLAN-001
 - **Controlled Language**: ASD-STE100 Simplified Technical English
 - **Standard Reference**: ISO/IEC/IEEE 29148 & Agile Scrum Enterprise Delivery
-- **Version**: 1.5.0
+- **Version**: 1.6.0
 - **Status**: APPROVED / MASTER ROADMAP
 - **Author**: Scribe (VP of Publication & Technical Documentation)
 - **Approved by**: Adrian (Board of Commissioners), Aria (Chief Executive Officer)
@@ -247,6 +247,44 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 >
 > **On the migration this note warned about:** it was not needed. The decision record anticipated that collapsing the enums "changes the wire name of any serialised value and requires a migration". Checked against the merged tree: the only code that serialises the type is #57's own test (`crates/mythos-strucpp/tests/device_execution_mode_identity.rs`), so there is no persisted or transmitted value to migrate. One serialisable structure does carry it — `SimulationAuditEvent` in `mythos-core/src/device/mode.rs`, which derives `Serialize` and holds `previous_mode` / `new_mode` — and nothing writes it to storage or the wire today; it appears outside that module only as a re-export. That is the seam where a migration would have been required had the collapse come later.
 
+### Long-term horizons (owner, 2026-11-18)
+
+Recorded so they are not lost. None is scheduled, and none is started without the owner.
+
+**Order after ADR-013 L3 (LD, FBD, SFC), agreed with the owner:**
+
+1. **Alarms (ISA-18.2 / IEC 62682) and the historian.** ADR-007 is accepted and nothing of it is built yet, and a SCADA without them is not fit for a control room. Alarms need priorities, acknowledgement, shelving, first-out and flood suppression. The historian needs trends a user can trust: it keeps the honest quality of every sample, and never shows an interpolated value as a measured one.
+2. **The foundation for IEC 62443.** Signed modules and updates (the supply chain), documented secure defaults, a development process to 62443-4-1, and a mapping of what exists (accounts and roles, the audit log, TLS, pinned pairing) to the component requirements of 62443-4-2. ISASecure certification is the long-term aim; the foundation is laid first because certification takes long.
+3. **An OPC UA server (IEC 62541)**, so that tags, alarms and history reach MES, ERP and other systems; then an OPC UA client driver for other vendors' PLCs, the PLCopen companion specification for IEC 61131-3, and MQTT Sparkplug B for IIoT. All of them are modules (ADR-010); none needs a change to the core.
+
+**Medium to long term:**
+
+- **Redundancy and high availability:** hot-standby servers and controllers that fail over without losing outputs, and redundant networks. Safe values, RETAIN, online change and its variable snapshot (ADR-013 C6b) are the foundations; full redundancy is a project of its own.
+- **Determinism measured, not claimed:** a Linux PREEMPT_RT mode whose scan jitter is measured against NFR-002 (±100 µs).
+- **Proof of conformance:** the PLCopen IEC 61131-3 conformity tests (ADR-013's "semantics settled" tables are the groundwork), and unit tests in ST.
+- **Importers from the incumbents:** CODESYS and TIA Portal projects through PLCopen TC6 XML, which ADR-013 L3 already reads.
+- **Regulated industries (21 CFR Part 11):** an audit trail of every change to programs and configuration, and electronic signatures (named in ADR-007, not built).
+- **Long-term support releases**, with the compatibility discipline the bytecode formats already keep.
+
+**Deliberately not on the roadmap:** functional safety certified to IEC 61508 (SIL). MythOS is not a safety system (ADR-013 §2.11), and that boundary is kept.
+
+- **IEC 61850 (long term).** Reading and commanding substation IEDs (protection relays, MV switchgear, PV and battery plants) directly, as **driver modules** (ADR-010), not in the core. In stages:
+  1. an MMS client: reads, buffered and unbuffered reports, and SCL (ICD/CID/SCD) import that yields the tag mappings;
+  2. control with select-before-operate, through the existing write path and an operator's confirmation;
+  3. a GOOSE subscriber, for monitoring only (raw Ethernet: Npcap on Windows is a cross-platform cost);
+  4. MythOS as an IEC 61850 server or gateway, possibly never.
+
+  61850 quality (validity and its detail bits) maps to `QualityCode` as it is, with the IED's timestamps. Protection stays in the IEDs: MythOS is not a safety system (ADR-013 §2.11). Open risk: the mature open stack, libIEC61850, is GPLv3 or commercially licensed (MZ Automation). Whether a separate GPL module process is possible needs legal advice. Writing a stack (ISO/OSI, ASN.1 BER, MMS) is large. A spike against one IED or simulator comes before the build/license decision.
+- **IEC 61499 (long term).** Distributed, event-driven control on the same platform as IEC 61131-3, chosen automatically by what a project holds:
+  1. **Recognised by its files.** An upload's PLCopen TC6 XML or `.st` goes to the logic module (IEC 61131-3). An IEC 61499-2 XML system (as 4diac writes it: `.sys`, `.fbt`; to be verified when the work starts) goes to a 61499 authoring module.
+  2. **One artefact.** Both build to a runtime instance in `runtimes.json` with a `model` field (`iec61131-3`: a cyclic program; `iec61499`: one resource's FB network, its types and its event and data connections). A basic FB's algorithms (usually ST) compile with our ST compiler, and its ECC compiles to VM code.
+  3. **Chosen automatically.** A runtime module's manifest says which models it runs (`runs`). The core matches each instance's `model` to a module; nobody picks one by hand. The slice check (ADR-012 §2.5) refuses a node without a runtime for the model.
+  4. **One VM, two schedulers.** A cyclic scheduler (IEC 61131-3, as today) and an event scheduler (IEC 61499: an event queue that runs ECCs and algorithms). Both models therefore share what the VM gives: PC, ESP32 and RP2040; watch, force, RETAIN, watchdog, online change; bindings, safe outputs and honest quality.
+  5. **Distribution on plant projects.** A 61499 application is mapped onto a plant's devices (ADR-012); each device's slice carries its resources, and PUBLISH/SUBSCRIBE between devices is bridged to the cross-device tags.
+
+  One project may mix both: per device, or on one device as separate runtime instances sharing tags. Eclipse 4diac FORTE (EPL-2.0) serves as a **differential oracle** in a separate process, as STruC++ does for IEC 61131-3. No code is copied, and FORTE is not our runtime: it does not run IEC 61131-3 programs as the standard defines them, and it would bypass the VM's guarantees.
+- **CFC (medium term).** A free-placement editing mode for FBD in the style of CODESYS's Continuous Function Chart: blocks placed anywhere, an explicit execution order, feedback paths. CFC is not an IEC 61131-3 language. It stays within the standard because FBD leaves network order to the implementer (§8.3.3) and defines feedback paths (§8.1.5.2). A CFC program is stored as FBD in PLCopen TC6 XML (`executionOrderId`), so it stays portable. Standard FBD comes first (ADR-013 L3).
+
 ## 3. Milestones & Quality Gates
 
 ```
@@ -374,3 +412,4 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | 1.3.0 | 2026-10-23 | Scribe (VP Publication & Documentation) | ADR-008 propagation. TSK-001 and TSK-004 now name `crates/mythos-plugin-sdk` and the real workspace members. TSK-005 now names `plugins/drivers/driver-modbus/`. GATE 3 status recorded as REOPENED: TSK-309 was not delivered and had no mechanical evidence. |
 | 1.4.0 | 2026-10-26 | Scribe (VP Publication & Technical Documentation) | TSK-010 criterion revised: the $< 100\,\text{ns}$ p99-under-16-threads acceptance criterion is withdrawn as a merge gate and recorded as not met, with the measurement preserved (PR #25, run 40089446143, merged at `333d199`) and the 16-thread step reduced to report-only. No replacement bound is selected; that is a board decision. New Sprint 8 records TSK-801 as a pre-committed prerequisite: the live-telemetry consumer plus the SYS-REQ-096 device-mode end-to-end path. `DeviceExecutionMode` duplication recorded as accepted and temporary; its real cost is a serde wire-name divergence between the two definitions, with the canonical ownership decision as a precondition on TSK-801. |
 | 1.5.0 | 2026-11-18 | Adrian (owner); recorded by Claude | TSK-002's atomic swap bound is 300 ns (was 50 ns; owner, 2026-11-17). The owner extended 300 ns to a tag read on 2026-11-18; the TSK-010 STATUS note records how that is gated (best of five rounds of 1,000,000 uncontended reads) and that the 16-thread p99 stays report-only. No write bound is decided. |
+| 1.6.0 | 2026-11-18 | Adrian (owner); recorded by Claude | Long-term horizons recorded: IEC 61850 as driver modules (long term, staged, license risk stated) and a CFC mode for FBD (medium term, after standard FBD). IEC 61499 (long term): one VM with a cyclic and an event scheduler, the execution model recognised from the uploaded files and matched to a runtime module, FORTE as an oracle only. None is scheduled. The order after L3 (alarms and the historian, the IEC 62443 foundation, OPC UA) and the medium- to long-term items (redundancy, PREEMPT_RT, PLCopen conformance, importers, 21 CFR Part 11, LTS) are recorded; IEC 61508 is recorded as out of scope. |

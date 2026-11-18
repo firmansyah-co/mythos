@@ -921,7 +921,9 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   their state retained like any variable's. Next: OSCAT, once its license is checked.
 
 **Later:** ESP32 and RP2040 firmware as runtime modules on real boards; a C backend; a Linux
-real-time mode.
+real-time mode. Medium term (owner, 2026-11-18): a CFC mode for the FBD editor (free placement,
+explicit execution order, feedback), stored as FBD in TC6 XML, after standard FBD; see
+`specs/tasks.md`, "Long-term horizons".
 
 Each step leaves `dev` working.
 
