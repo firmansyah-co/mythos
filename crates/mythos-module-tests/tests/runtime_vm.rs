@@ -249,6 +249,7 @@ async fn plant_running(runtimes: RuntimesConfig, level: i16) -> Plant {
         tags: tags.clone(),
         io: status.clone(),
         states: states.clone(),
+        retain: None,
     });
 
     runtimes.validate().unwrap();

@@ -22,10 +22,11 @@
 //! writes anything.
 
 use crate::io::{ConnectionConfig, IoStatusHandle, WriteError};
+use crate::storage::ControllerStorage;
 use crate::tag::TagCatalog;
 use mythos_module::protocol::{
-    Call, ExchangeReply, ForcedValue, RuntimeMode, RuntimeProgram, RuntimeState, WatchReply,
-    WireInput,
+    Call, ExchangeReply, ForcedValue, RetainedValue, RuntimeMode, RuntimeProgram, RuntimeState,
+    WatchReply, WireInput,
 };
 use mythos_module::{ModuleBinary, ProcessDriver};
 use mythos_pal::PlatformShm;
@@ -37,7 +38,7 @@ use mythos_shm::{QualityCode, ShmReaderHandle};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, Mutex, Notify, RwLock};
@@ -56,6 +57,9 @@ const EXCHANGE_DEADLINE: Duration = Duration::from_millis(1_000);
 pub const WATCH_KEPT: Duration = Duration::from_secs(5);
 /// The most variables one watch may name.
 pub const WATCH_LIMIT: usize = 256;
+/// How often a program's RETAIN values are asked for and, when they changed, kept on disk. A
+/// restart of the server or the module takes the values kept last: at most this old.
+const RETAIN_EVERY: Duration = Duration::from_secs(2);
 /// The connection's cycle deadline: one exchange and the writes it leads to.
 const CYCLE_TIMEOUT_MS: u64 = 10_000;
 
@@ -368,6 +372,8 @@ struct StatesInner {
     statuses: BTreeMap<String, (u64, RuntimeStatus)>,
     /// What an engineer asked of an instance since it was loaded: run or stop.
     wanted: HashMap<String, bool>,
+    /// Instances an engineer asked to start cold, not yet told.
+    cold: HashSet<String>,
     /// Why the project's runtimes are not as configured, when they are not.
     problem: Option<String>,
     /// What is being watched, by instance id.
@@ -409,6 +415,35 @@ impl RuntimeStates {
         }
         inner.wanted.insert(id.to_string(), run);
         true
+    }
+
+    /// Ask a loaded instance to start again cold, from its initial values, RETAIN variables
+    /// included, and run. `false` when there is no such instance. It takes effect at its next
+    /// exchange.
+    pub fn cold_start(&self, id: &str) -> bool {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        if !inner.statuses.contains_key(id) {
+            return false;
+        }
+        inner.wanted.insert(id.to_string(), true);
+        inner.cold.insert(id.to_string());
+        true
+    }
+
+    /// Whether a cold start was asked of the instance, and not yet taken.
+    fn take_cold(&self, id: &str) -> bool {
+        self.0
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .cold
+            .remove(id)
+    }
+
+    fn put_back_cold(&self, id: &str) {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        if inner.statuses.contains_key(id) {
+            inner.cold.insert(id.to_string());
+        }
     }
 
     /// Ask a loaded instance for these variables at its coming exchanges, for [`WATCH_KEPT`]
@@ -531,6 +566,7 @@ impl RuntimeStates {
         {
             inner.statuses.remove(id);
             inner.wanted.remove(id);
+            inner.cold.remove(id);
             inner.watches.remove(id);
             for pending in inner.forcing.remove(id).unwrap_or_default() {
                 let _ = pending.reply.send(Err(ForceRefusal::Unloaded));
@@ -547,6 +583,62 @@ pub struct RuntimeEnv {
     pub tags: Arc<dyn TagSource>,
     pub io: IoStatusHandle,
     pub states: RuntimeStates,
+    /// Where RETAIN values are kept; `None` keeps none, and every start is cold.
+    pub retain: Option<RetainStore>,
+}
+
+/// Where the RETAIN values of the active project's runtimes are kept, so that a restart of the
+/// module process or of the server is a warm restart (IEC 61131-3 §6.5.6): in the controller's
+/// own directory (`<system>/retain/<project>/<runtime>.json`), not in the project, which is the
+/// engineer's configuration and is not rewritten every few seconds.
+#[derive(Clone)]
+pub struct RetainStore {
+    storage: Arc<ControllerStorage>,
+}
+
+impl RetainStore {
+    pub fn new(storage: Arc<ControllerStorage>) -> Self {
+        Self { storage }
+    }
+
+    /// The file of the active project's runtime `id`; `None` when no project is active.
+    pub fn file(&self, id: &str) -> Option<PathBuf> {
+        let project = self.storage.get_active_project().ok().flatten()?;
+        Some(
+            self.storage
+                .system_dir()
+                .join("retain")
+                .join(project)
+                .join(format!("{id}.json")),
+        )
+    }
+
+    /// What is kept in `path`: nothing when there is no such file. A file that cannot be read
+    /// is said and taken as nothing, so the program starts cold rather than from a guess.
+    pub fn read(path: &Path) -> Vec<RetainedValue> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(e) => {
+                tracing::error!(
+                    "the RETAIN values in {} cannot be read: {e}",
+                    path.display()
+                );
+                return Vec::new();
+            }
+        };
+        serde_json::from_str(&text).unwrap_or_else(|e| {
+            tracing::error!("{} holds no RETAIN values: {e}", path.display());
+            Vec::new()
+        })
+    }
+
+    fn write(&self, path: &Path, values: &[RetainedValue]) -> Result<(), String> {
+        let bytes = serde_json::to_vec_pretty(values).map_err(|e| e.to_string())?;
+        self.storage
+            .atomic_write_file(path, &bytes)
+            .map_err(|e| e.to_string())
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -572,6 +664,14 @@ pub struct RuntimeDriver {
     safe: BTreeSet<String>,
     errors: HashMap<String, String>,
     last: Option<RuntimeState>,
+    /// Where its RETAIN values are kept, and what was kept last.
+    retain_file: Option<PathBuf>,
+    kept: Option<Vec<RetainedValue>>,
+    retain_due: Instant,
+    /// Its module said it keeps no RETAIN values: it is not asked again.
+    retain_unsupported: bool,
+    /// The configuration its module was started with, the kept values in it.
+    sent: Option<Value>,
 }
 
 impl RuntimeDriver {
@@ -588,6 +688,62 @@ impl RuntimeDriver {
             safe: BTreeSet::new(),
             errors: HashMap::new(),
             last: None,
+            retain_file: None,
+            kept: None,
+            retain_due: Instant::now(),
+            retain_unsupported: false,
+            sent: None,
+        }
+    }
+
+    /// Ask the module for the RETAIN values, every [`RETAIN_EVERY`] or `now`, and keep them when
+    /// they changed. A module started again after a crash is given the values kept last.
+    async fn keep_retained(&mut self, now: bool) {
+        let Some(path) = self.retain_file.clone() else {
+            return;
+        };
+        let Some(store) = self.env.retain.clone() else {
+            return;
+        };
+        if self.retain_unsupported || (!now && Instant::now() < self.retain_due) {
+            return;
+        }
+        self.retain_due = Instant::now() + RETAIN_EVERY;
+        let values = match self.process.call(Call::Retained, EXCHANGE_DEADLINE).await {
+            Ok(v) => match serde_json::from_value::<Vec<RetainedValue>>(v) {
+                Ok(values) => values,
+                Err(e) => {
+                    tracing::warn!(
+                        "the module answered for RETAIN values with something else: {e}"
+                    );
+                    return;
+                }
+            },
+            // Not answering now is the exchange's to report; it is asked again later.
+            Err(PluginError::CommunicationError(_) | PluginError::Timeout(_)) => return,
+            Err(e) => {
+                tracing::warn!("{}: no RETAIN values are kept: {e}", self.module);
+                self.retain_unsupported = true;
+                return;
+            }
+        };
+        if self.kept.as_ref() == Some(&values) {
+            return;
+        }
+        match store.write(&path, &values) {
+            Ok(()) => {
+                if let Some(Value::Object(map)) = self.sent.as_mut() {
+                    map.insert(
+                        "retained".to_string(),
+                        serde_json::to_value(&values).unwrap_or(Value::Null),
+                    );
+                }
+                if let Some(sent) = self.sent.clone() {
+                    self.process.restart_with(sent);
+                }
+                self.kept = Some(values);
+            }
+            Err(e) => tracing::error!("the RETAIN values were not kept in {}: {e}", path.display()),
         }
     }
 
@@ -781,7 +937,25 @@ impl MythosPlugin for RuntimeDriver {
     /// Load the program into a module process, then claim its outputs.
     async fn start(&mut self, ctx: &PluginContext, config: &Value) -> Result<(), PluginError> {
         let instance = Self::parse(config)?;
-        self.process.start(ctx, config).await?;
+        // The values its RETAIN variables had when it last ran, kept by this server: a start
+        // into RUN is then a warm restart.
+        let retain_file = self.env.retain.as_ref().and_then(|r| r.file(&instance.id));
+        let kept = retain_file
+            .as_deref()
+            .map(RetainStore::read)
+            .unwrap_or_default();
+        let mut sent = config.clone();
+        if let Value::Object(map) = &mut sent {
+            map.insert(
+                "retained".to_string(),
+                serde_json::to_value(&kept).unwrap_or(Value::Null),
+            );
+        }
+        self.process.start(ctx, &sent).await?;
+        self.retain_file = retain_file;
+        self.kept = Some(kept);
+        self.sent = Some(sent);
+        self.retain_due = Instant::now() + RETAIN_EVERY;
         let outputs: Vec<String> = instance
             .program
             .outputs
@@ -812,6 +986,8 @@ impl MythosPlugin for RuntimeDriver {
     /// Unload. The outputs still ours go to their safe values first; then the claim is given
     /// up and the process stopped.
     async fn stop(&mut self, ctx: &PluginContext) -> Result<(), PluginError> {
+        // What its RETAIN variables hold now is kept before the process goes.
+        self.keep_retained(true).await;
         if self.instance.is_some() {
             self.safe.clear();
             self.make_safe().await;
@@ -905,11 +1081,14 @@ impl ProtocolDriver for RuntimeDriver {
 
         // What an engineer asked for, if it is not what the program is doing. It takes effect
         // by the next exchange.
+        let mut changed = false;
         if let Some(run) = wanted {
-            if run != (reply.state.mode == RuntimeMode::Run) {
+            let cold = run && self.env.states.take_cold(&id);
+            if cold || run != (reply.state.mode == RuntimeMode::Run) {
+                changed = true;
                 match self
                     .process
-                    .call(Call::Mode { run }, EXCHANGE_DEADLINE)
+                    .call(Call::Mode { run, cold }, EXCHANGE_DEADLINE)
                     .await
                     .and_then(|v| {
                         serde_json::from_value::<RuntimeState>(v)
@@ -920,10 +1099,19 @@ impl ProtocolDriver for RuntimeDriver {
                         self.report(mode_name(state.mode), state.fault.clone());
                         self.last = Some(state);
                     }
-                    Err(e) => tracing::warn!("{}: mode change not taken: {e}", Self::owner(&id)),
+                    Err(e) => {
+                        tracing::warn!("{}: mode change not taken: {e}", Self::owner(&id));
+                        if cold {
+                            self.env.states.put_back_cold(&id);
+                        }
+                    }
                 }
             }
         }
+
+        // Its RETAIN values, kept when they changed: at once after a change of mode, so that a
+        // stop keeps what it stopped with.
+        self.keep_retained(changed).await;
 
         // What an engineer asked to force or release, in the order asked: after a mode change,
         // so a force asked after a stop is refused by a program that no longer runs.

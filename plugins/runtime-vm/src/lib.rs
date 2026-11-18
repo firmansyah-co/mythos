@@ -26,8 +26,9 @@ use mythos_logic_vm::{
     Value as VmValue,
 };
 use mythos_module::protocol::{
-    ExchangeReply, ForcedValue, InputOf, ModuleKind, ModuleManifest, RuntimeMode, RuntimeProgram,
-    RuntimeState, WatchReply, WatchedValue, WireInput, WireOutput, WireSample, PROTOCOL_VERSION,
+    ExchangeReply, ForcedValue, InputOf, ModuleKind, ModuleManifest, RetainedValue, RuntimeMode,
+    RuntimeProgram, RuntimeState, WatchReply, WatchedValue, WireInput, WireOutput, WireSample,
+    PROTOCOL_VERSION,
 };
 use mythos_module::RuntimeEngine;
 use mythos_plugin_sdk::{
@@ -87,6 +88,10 @@ struct StartConfig {
     /// Whether to put it in RUN at once. Otherwise it is loaded and waits in STOP.
     #[serde(default)]
     run: bool,
+    /// The values its RETAIN variables had when it last ran, as the host kept them: taken at
+    /// its first start into RUN, a warm restart.
+    #[serde(default)]
+    retained: Vec<RetainedValue>,
 }
 
 /// One entry of the compiler's symbol table; only what binding and watching need.
@@ -96,8 +101,14 @@ struct SymbolEntry {
     #[serde(rename = "type")]
     ty: String,
     offset: u32,
+    /// Its size in bytes; a whole array's for an array.
+    #[serde(default)]
+    size: u32,
     #[serde(default)]
     array: Option<ArrayEntry>,
+    /// Whether it keeps its value across a warm restart (IEC 61131-3 §6.5.6).
+    #[serde(default)]
+    retain: bool,
 }
 
 /// What an array symbol holds: enough to find one element.
@@ -124,6 +135,8 @@ struct Plan {
     published: Vec<(Var, String, bool)>,
     /// Every symbol of the program, by its path in lower case: what can be watched.
     symbols: HashMap<String, SymbolEntry>,
+    /// Its RETAIN variables, each as one span of memory: `(path, type, offset, size)`.
+    retain: Vec<(String, String, u32, u32)>,
 }
 
 fn invalid(message: impl Into<String>) -> PluginError {
@@ -255,8 +268,12 @@ fn locate(plan: &Plan, variable: &str) -> Result<(u32, Shape, String), String> {
 }
 
 /// Check a configuration and work out where everything is. Starts nothing.
-fn plan(config: &Value) -> Result<(Plan, bool), PluginError> {
-    let StartConfig { program, run } = serde_json::from_value(config.clone())
+fn plan(config: &Value) -> Result<(Plan, bool, Vec<RetainedValue>), PluginError> {
+    let StartConfig {
+        program,
+        run,
+        retained,
+    } = serde_json::from_value(config.clone())
         .map_err(|e| invalid(format!("not a runtime program: {e}")))?;
     if program.interval_ms == 0 {
         return Err(invalid("interval_ms must be at least 1"));
@@ -325,6 +342,16 @@ fn plan(config: &Value) -> Result<(Plan, bool), PluginError> {
         }
         published.push((resolve(&b.variable)?, b.tag.clone(), b.writable));
     }
+    let mut retain = Vec::new();
+    for s in entries.iter().filter(|s| s.retain) {
+        if s.size == 0 || s.offset as usize + s.size as usize > memory_size {
+            return Err(invalid(format!(
+                "the RETAIN variable {} lies outside the program's memory",
+                s.path
+            )));
+        }
+        retain.push((s.path.clone(), s.ty.clone(), s.offset, s.size));
+    }
     Ok((
         Plan {
             program,
@@ -337,9 +364,60 @@ fn plan(config: &Value) -> Result<(Plan, bool), PluginError> {
                 .iter()
                 .map(|s| (s.path.to_ascii_lowercase(), s.clone()))
                 .collect(),
+            retain,
         },
         run,
+        retained,
     ))
+}
+
+/// The values of the program's RETAIN variables in `memory`.
+fn snapshot(plan: &Plan, memory: &[u8]) -> Vec<RetainedValue> {
+    plan.retain
+        .iter()
+        .map(|(path, ty, offset, size)| RetainedValue {
+            path: path.clone(),
+            ty: ty.clone(),
+            bytes: hex::encode(&memory[*offset as usize..(*offset + *size) as usize]),
+        })
+        .collect()
+}
+
+/// Put retained values into the program's RETAIN variables: each only into a variable of the
+/// same path, type and size, which a program built again from changed text may no longer have.
+/// Returns the paths of the values not taken, and why.
+fn restore(plan: &Plan, memory: &mut [u8], values: &[RetainedValue]) -> Vec<String> {
+    let mut refused = Vec::new();
+    for value in values {
+        let found = plan
+            .retain
+            .iter()
+            .find(|(path, ..)| path.eq_ignore_ascii_case(&value.path));
+        let Some((_, ty, offset, size)) = found else {
+            refused.push(format!(
+                "{}: the program has no RETAIN variable of that name",
+                value.path
+            ));
+            continue;
+        };
+        if *ty != value.ty {
+            refused.push(format!(
+                "{}: its type is {ty} now, not {}",
+                value.path, value.ty
+            ));
+            continue;
+        }
+        match hex::decode(&value.bytes) {
+            Ok(bytes) if bytes.len() == *size as usize => {
+                memory[*offset as usize..(*offset + *size) as usize].copy_from_slice(&bytes);
+            }
+            _ => refused.push(format!(
+                "{}: the value kept is not {size} bytes of a {ty}",
+                value.path
+            )),
+        }
+    }
+    refused
 }
 
 fn declarations(plan: &Plan) -> Vec<TagDeclaration> {
@@ -544,6 +622,10 @@ struct Live {
     /// When the program last showed it is being scanned: its first inputs after it was put in
     /// RUN, then each scan it completed. `None` until it is fed. What the watchdog measures.
     beat: Option<Instant>,
+    /// Whether it has been put in RUN since it was loaded: its memory then holds its values.
+    ran: bool,
+    /// Until then, the RETAIN values the host gave with the program, for its first warm start.
+    pending: Vec<RetainedValue>,
 }
 
 impl Live {
@@ -579,12 +661,25 @@ impl Live {
         self.forces.iter().any(|f| f.offset == offset)
     }
 
-    /// From its initial values, clock at zero, waiting for its first inputs.
-    fn cold_run(&mut self, plan: &Plan) -> Result<(), PluginError> {
+    /// From its initial values, clock at zero, waiting for its first inputs. With `retained`
+    /// it is a warm restart: those values are put into its RETAIN variables over the initial
+    /// ones (IEC 61131-3 §6.5.6); without, a cold restart.
+    fn cold_run(
+        &mut self,
+        plan: &Plan,
+        retained: Option<Vec<RetainedValue>>,
+    ) -> Result<(), PluginError> {
         let program = Program::load(&plan.bytes)
             .map_err(|e| PluginError::RuntimeError(format!("the program does not load: {e:?}")))?;
         cold_start(&program, &mut self.memory)
             .map_err(|e| PluginError::RuntimeError(describe(e)))?;
+        if let Some(values) = retained {
+            for why in restore(plan, &mut self.memory, &values) {
+                tracing::warn!("a retained value was not taken: {why}");
+            }
+        }
+        self.ran = true;
+        self.pending.clear();
         self.mode = RuntimeMode::Run;
         self.fault = None;
         self.forces.clear();
@@ -781,7 +876,7 @@ impl MythosPlugin for VmEngine {
     /// Load the program, and put it in RUN if the configuration says so.
     async fn start(&mut self, _ctx: &PluginContext, config: &Value) -> Result<(), PluginError> {
         self.halt();
-        let (plan, run) = plan(config)?;
+        let (plan, run, retained) = plan(config)?;
         let mut live = Live {
             memory: vec![0u8; plan.memory_size],
             mode: RuntimeMode::Stop,
@@ -795,9 +890,12 @@ impl MythosPlugin for VmEngine {
             since: Instant::now(),
             forces: Vec::new(),
             beat: None,
+            ran: false,
+            pending: retained,
         };
         if run {
-            live.cold_run(&plan)?;
+            let retained = std::mem::take(&mut live.pending);
+            live.cold_run(&plan, Some(retained))?;
         }
         let plan = Arc::new(plan);
         let live = Arc::new(Mutex::new(live));
@@ -963,12 +1061,24 @@ impl RuntimeEngine for VmEngine {
         &mut self,
         _ctx: &PluginContext,
         run: bool,
+        cold: bool,
     ) -> Result<RuntimeState, PluginError> {
         let running = self.running()?;
         let mut l = lock(&running.live);
         match (run, l.mode) {
-            (true, RuntimeMode::Run) => {}
-            (true, _) => l.cold_run(&running.plan)?,
+            (true, RuntimeMode::Run) if !cold => {}
+            (true, _) => {
+                // A warm restart takes what its RETAIN variables held when it stopped, or what
+                // the host gave if it has not run since it was loaded.
+                let retained = if cold {
+                    None
+                } else if l.ran {
+                    Some(snapshot(&running.plan, &l.memory))
+                } else {
+                    Some(std::mem::take(&mut l.pending))
+                };
+                l.cold_run(&running.plan, retained)?;
+            }
             (false, _) => {
                 l.mode = RuntimeMode::Stop;
                 l.fault = None;
@@ -1015,6 +1125,18 @@ impl RuntimeEngine for VmEngine {
         Ok(WatchReply {
             state: l.state(plan),
             values,
+        })
+    }
+
+    /// The values of its RETAIN variables now; before it has run, the values the host gave, so
+    /// that a program loaded in STOP never has its kept values replaced by zeros.
+    async fn retained(&mut self, _ctx: &PluginContext) -> Result<Vec<RetainedValue>, PluginError> {
+        let running = self.running()?;
+        let l = lock(&running.live);
+        Ok(if l.ran {
+            snapshot(&running.plan, &l.memory)
+        } else {
+            l.pending.clone()
         })
     }
 
@@ -1136,7 +1258,75 @@ mod tests {
                 value: VmValue::Int(1),
             }],
             beat,
+            ran: true,
+            pending: Vec::new(),
         }
+    }
+
+    fn retaining(symbols: Value) -> Result<Plan, PluginError> {
+        let bytes = include_bytes!(
+            "../../../crates/mythos-logic-compiler/tests/fixtures/format1/integers_and_control.mlbc"
+        );
+        plan(&json!({ "program": {
+            "name": "P", "version": "1", "interval_ms": 10,
+            "code": hex::encode(bytes), "symbols": symbols,
+        }}))
+        .map(|(plan, ..)| plan)
+    }
+
+    #[test]
+    fn a_retained_value_is_taken_only_into_a_variable_of_the_same_name_type_and_size() {
+        let plan = retaining(json!([
+            {"path": "Total", "type": "DINT", "offset": 0, "size": 4, "retain": true},
+            {"path": "n", "type": "DINT", "offset": 4, "size": 4},
+        ]))
+        .unwrap();
+        assert_eq!(plan.retain.len(), 1, "only what is RETAIN");
+        let mut memory = vec![0u8; plan.memory_size];
+        memory[..4].copy_from_slice(&1234i32.to_le_bytes());
+        let kept = snapshot(&plan, &memory);
+        assert_eq!(
+            serde_json::to_value(&kept).unwrap(),
+            json!([{"path": "Total", "type": "DINT", "bytes": "d2040000"}])
+        );
+
+        let value = |path: &str, ty: &str, bytes: &str| RetainedValue {
+            path: path.into(),
+            ty: ty.into(),
+            bytes: bytes.into(),
+        };
+        let mut fresh = vec![0u8; plan.memory_size];
+        let refused = restore(
+            &plan,
+            &mut fresh,
+            &[
+                value("total", "DINT", "d2040000"),
+                value("gone", "DINT", "01000000"),
+                value("Total", "INT", "0100"),
+                value("Total", "DINT", "0100"),
+            ],
+        );
+        assert_eq!(
+            &fresh[..4],
+            &1234i32.to_le_bytes(),
+            "the name's case does not count"
+        );
+        assert_eq!(
+            refused,
+            vec![
+                "gone: the program has no RETAIN variable of that name".to_string(),
+                "Total: its type is DINT now, not INT".to_string(),
+                "Total: the value kept is not 4 bytes of a DINT".to_string(),
+            ]
+        );
+
+        // A RETAIN variable the program's memory cannot hold is refused when it is loaded.
+        let outside = retaining(json!([
+            {"path": "far", "type": "DINT", "offset": 1_000_000, "size": 4, "retain": true},
+        ]));
+        assert!(outside.err().is_some_and(|e| e
+            .to_string()
+            .contains("the RETAIN variable far lies outside")));
     }
 
     #[test]

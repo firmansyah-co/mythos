@@ -613,7 +613,7 @@ describe('what the runtime is doing', () => {
     click(byTestId(container, 'runtime-run'));
     await settle();
     expect(asked).toHaveLength(1);
-    expect(asked[0]).toContain('cold start');
+    expect(asked[0]).toContain('warm restart');
     expect(writes(calls)).toEqual(['POST /runtimes/Tank/stop']);
 
     agree = true;

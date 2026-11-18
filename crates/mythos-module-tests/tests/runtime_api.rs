@@ -825,6 +825,291 @@ async fn an_engineer_forces_a_variable_everyone_sees_it_and_stopping_releases_it
     rig.io.shutdown().await;
 }
 
+fn kill(pid: u32) {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let pid = sysinfo::Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    let process = system.process(pid).expect("the process to kill is running");
+    assert!(process.kill(), "could not kill process {pid}");
+}
+
+/// A program with one RETAIN variable, `total`, and one that is not, `n`; both count scans.
+/// The compiler marks `total` as the symbol table says a RETAIN section does (`"retain": true`).
+fn counter(version: &str) -> Value {
+    const COUNTER: &str = "
+PROGRAM Counter
+VAR total : DINT; n : DINT; END_VAR
+  total := total + 1;
+  n := n + 1;
+END_PROGRAM
+";
+    let compiled = compile(COUNTER, &TargetProfile::pc()).unwrap_or_else(|d| panic!("{d:?}"));
+    let mut symbols = serde_json::to_value(&compiled.symbols).unwrap();
+    for symbol in symbols.as_array_mut().unwrap() {
+        if symbol["path"] == "total" {
+            symbol["retain"] = json!(true);
+        }
+    }
+    json!({"instances": [{
+        "id": "counter", "module": "vm", "run": true,
+        "program": {
+            "name": compiled.name, "version": version, "interval_ms": 20,
+            "code": hex::encode(&compiled.bytecode), "symbols": symbols,
+        }
+    }]})
+}
+
+impl Rig {
+    /// `total` and `n` of the counter as its last scan left them, and its mode.
+    async fn counted(&self) -> (i64, i64, String) {
+        let (status, body) = self
+            .send(
+                &self.viewer,
+                "POST",
+                "/api/v1/runtimes/counter/watch",
+                Some(json!({"variables": ["total", "n"]})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        (
+            body["values"][0]["value"].as_i64().unwrap(),
+            body["values"][1]["value"].as_i64().unwrap(),
+            body["state"]["mode"].as_str().unwrap().to_string(),
+        )
+    }
+
+    /// The counter, once `holds` says it is so.
+    async fn counted_when(&self, what: &str, holds: impl Fn(i64, i64, &str) -> bool) -> (i64, i64) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let (total, n, mode) = self.counted().await;
+            if holds(total, n, &mode) {
+                return (total, n);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "never: {what}; total {total}, n {n}, mode {mode}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// What the server keeps for the counter's RETAIN variables, once it is there.
+    async fn kept_when(&self, what: &str, holds: impl Fn(i64) -> bool) -> i64 {
+        let file = self
+            ._root
+            .path()
+            .join("projects/.mythos-system/retain/plant/counter.json");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(&file) {
+                let kept: Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(kept[0]["path"], "total", "{kept}");
+                assert_eq!(kept[0]["type"], "DINT", "{kept}");
+                assert_eq!(
+                    kept.as_array().unwrap().len(),
+                    1,
+                    "only the RETAIN one: {kept}"
+                );
+                let bytes = hex::decode(kept[0]["bytes"].as_str().unwrap()).unwrap();
+                let total = i64::from(i32::from_le_bytes(bytes.try_into().unwrap()));
+                if holds(total) {
+                    return total;
+                }
+            }
+            assert!(Instant::now() < deadline, "never kept: {what}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_retain_variable_keeps_its_value_across_a_stop_and_a_new_process_and_a_cold_start_resets_it(
+) {
+    let rig = rig().await;
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/runtimes",
+            Some(counter("v1")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    rig.counted_when("it counts past 60", |total, _, mode| {
+        mode == "run" && total > 60
+    })
+    .await;
+
+    // Stopped and run again: a warm restart. The RETAIN variable goes on from where it was,
+    // the other starts from its initial value.
+    let (status, _) = rig
+        .send(&rig.engineer, "POST", "/api/v1/runtimes/counter/stop", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (stopped, _) = rig
+        .counted_when("it is stopped", |_, _, mode| mode == "stop")
+        .await;
+    let (status, body) = rig
+        .send(&rig.engineer, "POST", "/api/v1/runtimes/counter/run", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (total, n) = rig
+        .counted_when("it runs again", |_, n, mode| mode == "run" && n > 0)
+        .await;
+    assert!(total > stopped, "total went on from {stopped}: {total}");
+    assert!(
+        n < stopped,
+        "n started again from 0: {n}, stopped at {stopped}"
+    );
+
+    // The server keeps the value, and a new module process starts from it: loading the
+    // program again (another version) is a warm restart too.
+    let kept = rig
+        .kept_when("a value past the one it stopped with", |t| t > stopped)
+        .await;
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/runtimes",
+            Some(counter("v2")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, body) = rig.send(&rig.viewer, "GET", "/api/v1/runtimes", None).await;
+        if body["runtimes"][0]["version"] == "v2" && body["runtimes"][0]["mode"] == "run" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "v2 never ran: {body}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (total, n) = rig
+        .counted_when("v2 scans", |_, n, mode| mode == "run" && n > 0)
+        .await;
+    assert!(
+        total >= kept + n,
+        "v2 went on from what was kept ({kept}): {total}, n {n}"
+    );
+
+    // Its module process dies; the one started in its place takes the values kept last, not
+    // those v2 was loaded with.
+    let later = rig
+        .kept_when("a value well past the one v2 was loaded with", |t| {
+            t > kept + 100
+        })
+        .await;
+    let (_, body) = rig.send(&rig.viewer, "GET", "/api/v1/runtimes", None).await;
+    let pid = body["runtimes"][0]["pid"].as_u64().unwrap() as u32;
+    kill(pid);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, body) = rig.send(&rig.viewer, "GET", "/api/v1/runtimes", None).await;
+        let runtime = &body["runtimes"][0];
+        if runtime["restarts"].as_u64() >= Some(1)
+            && runtime["mode"] == "run"
+            && runtime["pid"].as_u64().is_some_and(|p| p as u32 != pid)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never started again: {body}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (total, n) = rig
+        .counted_when("the new process scans", |_, n, mode| mode == "run" && n > 0)
+        .await;
+    assert!(
+        total >= later + n,
+        "the new process went on from what was kept last ({later}): {total}, n {n}"
+    );
+
+    // Stopped, and loaded again in STOP: what is kept stays as it was while it waits, and
+    // RUN takes it. (The engineer's last command holds across a load, so it is a stop.)
+    let (status, _) = rig
+        .send(&rig.engineer, "POST", "/api/v1/runtimes/counter/stop", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    rig.counted_when("it is stopped", |_, _, mode| mode == "stop")
+        .await;
+    let mut stopped_load = counter("v3");
+    stopped_load["instances"][0]["run"] = json!(false);
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/runtimes",
+            Some(stopped_load),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    let waiting = rig.kept_when("what v2 left", |t| t > later).await;
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    assert_eq!(
+        rig.kept_when("the same while it waits", |_| true).await,
+        waiting,
+        "a program that has not run yet does not replace what is kept"
+    );
+    let (status, _) = rig
+        .send(&rig.engineer, "POST", "/api/v1/runtimes/counter/run", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (total, n) = rig
+        .counted_when("v3 runs", |_, n, mode| mode == "run" && n > 0)
+        .await;
+    assert!(
+        total >= waiting + n,
+        "v3 went on from what was kept ({waiting}): {total}, n {n}"
+    );
+
+    // Only an engineer starts a program cold.
+    for who in [&rig.viewer, &rig.operator] {
+        let (status, _) = rig
+            .send(who, "POST", "/api/v1/runtimes/counter/cold-start", None)
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+    // A cold start, of a program in RUN: every variable from its initial value, and what is
+    // kept follows.
+    let before = rig.counted().await.0;
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "POST",
+            "/api/v1/runtimes/counter/cold-start",
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["asked"], "cold start", "{body}");
+    let (total, _) = rig
+        .counted_when("it started cold", |total, _, mode| {
+            mode == "run" && total < before
+        })
+        .await;
+    assert!(total < before, "{total} < {before}");
+    rig.kept_when("the cold start's count", |t| t < before)
+        .await;
+    let (status, _) = rig
+        .send(
+            &rig.engineer,
+            "POST",
+            "/api/v1/runtimes/nobody/cold-start",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    rig.io.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_program_for_a_runtime_module_that_is_not_installed_is_refused_naming_what_is() {
     let rig = rig().await;

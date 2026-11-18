@@ -71,11 +71,15 @@ async fn command<S: PlatformShm + 'static>(
     state: &ApiState<S>,
     id: &str,
     run: bool,
+    cold: bool,
 ) -> Result<Json<Value>, ApiError> {
-    let known = state
-        .io_manager
-        .as_ref()
-        .is_some_and(|io| io.runtimes().command(id, run));
+    let known = state.io_manager.as_ref().is_some_and(|io| {
+        if cold {
+            io.runtimes().cold_start(id)
+        } else {
+            io.runtimes().command(id, run)
+        }
+    });
     if !known {
         return Err(failure(
             StatusCode::NOT_FOUND,
@@ -84,18 +88,28 @@ async fn command<S: PlatformShm + 'static>(
     }
     Ok(Json(json!({
         "id": id,
-        "asked": if run { "run" } else { "stop" },
+        "asked": if cold { "cold start" } else if run { "run" } else { "stop" },
         "note": "it takes effect at the runtime's next exchange; read GET /api/v1/runtimes for what it is doing",
     })))
 }
 
 /// `POST /api/v1/runtimes/:id/run` — put a loaded program in RUN. From STOP or FAULT that is
-/// a cold start: its variables take their initial values.
+/// a warm restart (IEC 61131-3 §6.5.6): its RETAIN variables keep the values they had, the
+/// others take their initial values.
 pub async fn run<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    command(&state, &id, true).await
+    command(&state, &id, true, false).await
+}
+
+/// `POST /api/v1/runtimes/:id/cold-start` — start a program again from its initial values,
+/// RETAIN variables included, and run it: a cold restart. A program in RUN is restarted too.
+pub async fn cold_start<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    command(&state, &id, true, true).await
 }
 
 /// `POST /api/v1/runtimes/:id/stop` — put a program in STOP. Its outputs are written their
@@ -104,7 +118,7 @@ pub async fn stop<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    command(&state, &id, false).await
+    command(&state, &id, false, false).await
 }
 
 /// An answer no older than this is given at once; an older one is waited out.

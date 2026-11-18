@@ -562,6 +562,17 @@ impl ProcessDriver {
         self.restarts
     }
 
+    /// Change the configuration a process that ended is started again with, from now on. The
+    /// running process is not told: it is for a host whose module's state belongs in its
+    /// configuration (a runtime's RETAIN values), so that a process started again after a crash
+    /// starts from the latest of it rather than from what it was first started with. Nothing
+    /// happens before the first start.
+    pub fn restart_with(&mut self, config: Value) {
+        if self.config.is_some() {
+            self.config = Some(config);
+        }
+    }
+
     /// Send the running module a call that is not one of a driver's (a runtime module's
     /// `exchange` or `mode`), reviving its process first as a poll does.
     pub async fn call(&mut self, call: Call, deadline: Duration) -> Result<Value, PluginError> {

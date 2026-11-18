@@ -634,12 +634,12 @@ export function RuntimesSettings() {
                             className="btn"
                             disabled={!mayCommand || !named || asking?.id === id}
                             aria-label={`Run ${named ? id : UNKNOWN}`}
-                            title="Put the program in RUN. From STOP or FAULT that is a cold start: its variables take their initial values."
+                            title="Put the program in RUN. From STOP or FAULT that is a warm restart: its RETAIN variables keep their values, the others take their initial values."
                             onClick={() => {
                               if (
                                 named &&
                                 window.confirm(
-                                  `Put ${id} in RUN? From STOP or FAULT that is a cold start: its variables take their initial values, and the program writes its outputs.`
+                                  `Put ${id} in RUN? From STOP or FAULT that is a warm restart: its RETAIN variables keep the values they had, the others take their initial values, and the program writes its outputs.`
                                 )
                               ) {
                                 void command(id, 'run');
