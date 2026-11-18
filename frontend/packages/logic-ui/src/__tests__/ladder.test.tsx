@@ -29,6 +29,7 @@ import {
   typeInto,
   unmountAll,
   useController,
+  useSession,
   useShell,
   watchOf,
   type Backend,
@@ -191,8 +192,13 @@ describe('a Ladder Diagram in the tree', () => {
   });
 });
 
+/** Signed in as a viewer: the read-only view, drawn where the document puts each element. */
+const asViewer = () =>
+  useSession.setState({ phase: 'signed-in', user: { username: 'vera', display_name: 'Vera', role: 'viewer', via: 'session' } });
+
 describe('drawing a Ladder Diagram', () => {
   it('draws every kind of element where the document puts it, and numbers the rungs in evaluation order', async () => {
+    asViewer();
     const shapes = ladderOf(
       'Shapes',
       [
@@ -273,6 +279,7 @@ describe('drawing a Ladder Diagram', () => {
   });
 
   it('draws each diagnostic at the element it names, and lists where it is', async () => {
+    asViewer();
     const { container } = await opened(
       main({
         check: () => ({

@@ -1,7 +1,7 @@
 // A Ladder Diagram, drawn read-only as SVG from its TC6 document (ADR-013 §2.8, §2.15): the
 // power rails, each rung numbered in the order it is evaluated, contacts, coils, blocks with
 // their pins, variables, jumps, labels, returns and comments, where the document places them.
-// Editing it is the next slice (L3b-2).
+// The editor (LadderEditor.tsx, L3b-2b) draws each network with `PouView`.
 //
 // **Live state** is drawn only from what was watched, and only while the runtime runs the very
 // version this text builds (the check's version equals the runtime's) in RUN. The compiler keeps
@@ -341,7 +341,7 @@ function valueText(e: LdElement, live: LadderLive | null, state: LiveState): str
 }
 
 /** One POU's body. */
-function PouView({
+export function PouView({
   pou,
   live,
   diagnostics,

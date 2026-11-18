@@ -87,7 +87,11 @@ export interface ProgramsState {
   setSettings: (name: string, change: Partial<ProgramEntry>) => void;
   discard: (name: string) => void;
   save: (name: string) => Promise<boolean>;
-  check: (name: string) => Promise<void>;
+  /**
+   * Check the text in the editor. `quiet`: the check the Ladder Diagram editor makes by itself
+   * after an edit, which neither marks the editor busy nor reports a failure as an error.
+   */
+  check: (name: string, quiet?: boolean) => Promise<void>;
   /**
    * Save, check, build, and put what was built into the project's runtimes. With `cold`, it
    * starts from its initial values, RETAIN ones included, instead of being changed online.
@@ -376,20 +380,22 @@ export const usePrograms = create<ProgramsState>((set, get) => {
       }
     },
 
-    check: async (name) => {
+    check: async (name, quiet = false) => {
       const projectId = get().projectId;
       const doc = find(name);
       if (!projectId || !doc || doc.source === null) return;
       const source = doc.source;
-      set({ busy: 'checking', error: null });
+      if (!quiet) set({ busy: 'checking', error: null });
       try {
         const result = await api.check(projectId, name, source);
-        change(name, (d) => checked(d, result, source));
-        set({ busy: null });
+        // A quiet check answered after the text moved on is of a text no longer shown: dropped.
+        change(name, (d) => (quiet && d.source !== source ? d : checked(d, result, source)));
+        if (!quiet) set({ busy: null });
       } catch (cause) {
         // No result is kept: an old one would read as the answer for this text.
         change(name, (d) => ({ ...d, check: null, checkedSource: null }));
-        failed(`Program ${name} was not checked`, cause);
+        if (quiet) log.error(`Program ${name} was not checked: ${message(cause)}`);
+        else failed(`Program ${name} was not checked`, cause);
       }
     },
 
