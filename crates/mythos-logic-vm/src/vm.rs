@@ -736,6 +736,7 @@ pub fn scan(
                 let a = s.pop()?;
                 s.push(a & !(1 << 63))?;
             }
+            op::NOW => s.push(now as u64)?,
             op::CHKSEL => {
                 let k = s.pop()? as i64;
                 if k < 0 || k >= operand() as i64 {

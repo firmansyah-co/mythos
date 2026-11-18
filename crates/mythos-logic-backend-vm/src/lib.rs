@@ -16,34 +16,11 @@
 //! requires and what makes the stack and call depths known when a call is emitted.
 
 use mythos_logic_ir::*;
-use mythos_logic_vm::fb::FbKind;
 use mythos_logic_vm::format::{
     crc32, op, rfn, string_size, ElemType, MAGIC, PLACE_INDEXED, PLACE_RELATIVE,
 };
 
 pub use mythos_logic_vm::FORMAT_VERSION;
-
-/// The VM's block for a standard function block of the IR.
-///
-/// The IR names the blocks and their members; the VM owns how an instance is stored and run.
-/// They are matched by name, and `the_vm_has_every_standard_block_of_the_ir` holds them equal.
-fn vm_fb(fb: StdFb) -> FbKind {
-    FbKind::ALL
-        .into_iter()
-        .find(|k| k.name() == fb.name())
-        .unwrap_or_else(|| panic!("the VM has no function block {}", fb.name()))
-}
-
-/// Where member `m` of `fb` (an index into `fb.members()`) lies in an instance.
-fn member_offset(fb: StdFb, m: usize) -> u32 {
-    let name = fb.members()[m].name;
-    vm_fb(fb)
-        .members()
-        .iter()
-        .find(|x| x.name == name)
-        .unwrap_or_else(|| panic!("the VM's {} has no member {name}", fb.name()))
-        .offset
-}
 
 /// Where a variable (and each member of a structure or an instance) was put, for the host:
 /// binding a variable to a tag, monitoring and forcing all go by these.
@@ -128,7 +105,7 @@ fn class(t: Ty) -> Class {
         Ty::Lint | Ty::Time => Class::I64,
         Ty::Real => Class::F32,
         Ty::Lreal => Class::F64,
-        Ty::String(_) | Ty::Fb(_) | Ty::Struct(_) | Ty::Array(_) | Ty::Instance(_) => {
+        Ty::String(_) | Ty::Struct(_) | Ty::Array(_) | Ty::Instance(_) => {
             unreachable!("only an elementary value is on the stack")
         }
     }
@@ -144,7 +121,7 @@ pub fn elem(t: Ty) -> ElemType {
         Ty::Real => ElemType::Real,
         Ty::Lreal => ElemType::Lreal,
         Ty::Time => ElemType::Time,
-        Ty::String(_) | Ty::Fb(_) | Ty::Struct(_) | Ty::Array(_) | Ty::Instance(_) => {
+        Ty::String(_) | Ty::Struct(_) | Ty::Array(_) | Ty::Instance(_) => {
             unreachable!("not an element")
         }
     }
@@ -241,7 +218,6 @@ impl<'u> Layouts<'u> {
             Ty::Dint | Ty::Real => 4,
             Ty::Lint | Ty::Lreal | Ty::Time => 8,
             Ty::String(n) => string_size(n) as u64,
-            Ty::Fb(k) => vm_fb(k).size() as u64,
             Ty::Struct(i) => self.structs[i].size,
             Ty::Instance(p) => self.pous[p].size,
             Ty::Array(a) => {
@@ -256,7 +232,6 @@ impl<'u> Layouts<'u> {
         match of {
             Ty::Struct(i) => self.structs[i].offsets[m],
             Ty::Instance(p) => self.pous[p].offsets[m],
-            Ty::Fb(k) => member_offset(k, m) as u64,
             _ => unreachable!("a member of what has none"),
         }
     }
@@ -620,7 +595,6 @@ impl Layouts<'_> {
                     }
                 }
             }
-            (Ty::Fb(_), _) => {}
             (Ty::String(_), Some(Init::Str(text))) => {
                 put(image, at, &(text.len() as u16).to_le_bytes());
                 put(image, at + 2, text);
@@ -660,15 +634,6 @@ impl Layouts<'_> {
                     let path = format!("{path}.{}", v.name);
                     let retention = self.u.member_retention(retention, v);
                     self.symbols(out, &path, v.ty, section, retention, at, false);
-                }
-            }
-            // A standard function block declares no retention of its own: its members take
-            // the instance's.
-            Ty::Fb(k) => {
-                for (i, m) in k.members().iter().enumerate() {
-                    let at = offset + member_offset(k, i) as u64;
-                    let path = format!("{path}.{}", m.name);
-                    self.symbols(out, &path, m.ty, section, retention, at, false);
                 }
             }
             ty => out.push(Symbol {
@@ -725,21 +690,6 @@ impl Layouts<'_> {
                     .map(|(k, v)| member(&v.name, v.ty, self.pous[p].offsets[k]))
                     .collect(),
             });
-        }
-        let used = self.u.types_used();
-        for k in StdFb::ALL {
-            if used.contains(&Ty::Fb(k)) {
-                out.push(TypeLayout {
-                    name: k.name().to_string(),
-                    size: vm_fb(k).size(),
-                    members: k
-                        .members()
-                        .iter()
-                        .enumerate()
-                        .map(|(i, m)| member(m.name, m.ty, member_offset(k, i) as u64))
-                        .collect(),
-                });
-            }
         }
         out
     }
@@ -1350,6 +1300,7 @@ impl Emitter<'_> {
             ExprKind::Const(k) => self.push_const(e.ty, *k),
             ExprKind::Str(_) => unreachable!("a string is not a value on the stack"),
             ExprKind::Std(f, args) => self.std_value(*f, args, e.ty),
+            ExprKind::Intrinsic(Intrinsic::Now) => self.op(op::NOW, 1),
             ExprKind::Load(p) => {
                 let a = self.place(p);
                 self.load(e.ty, a);
@@ -1590,25 +1541,13 @@ impl Emitter<'_> {
                 }
                 let at = self.within(inst, 0);
                 let popped = -(at.indexed.is_some() as i32);
-                match block {
-                    Ty::Fb(k) if !at.rel && at.indexed.is_none() => {
-                        self.op(op::FB, 0);
-                        self.code.push(vm_fb(k).code());
-                        self.code.extend_from_slice(&at.addr.to_le_bytes());
-                    }
-                    Ty::Fb(k) => {
-                        self.op(op::FBP, popped);
-                        self.code.push(vm_fb(k).code());
-                        self.place_operand(at, vm_fb(k).size());
-                    }
-                    Ty::Instance(q) => {
-                        self.op(op::CALLFB, popped);
-                        self.code.extend_from_slice(&self.body[q].to_le_bytes());
-                        self.place_operand(at, self.size(block));
-                        self.calling(q);
-                    }
-                    _ => unreachable!("only a function block instance is called"),
-                }
+                let Ty::Instance(q) = block else {
+                    unreachable!("only a function block instance is called")
+                };
+                self.op(op::CALLFB, popped);
+                self.code.extend_from_slice(&self.body[q].to_le_bytes());
+                self.place_operand(at, self.size(block));
+                self.calling(q);
                 for (m, target) in outputs {
                     let (mty, offset) = member(self, *m);
                     let tty = u.place_ty(self.cur, target);
@@ -1769,34 +1708,6 @@ impl Emitter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mythos_logic_vm::fb::Direction as VmDirection;
-
-    /// The IR's catalog and the VM's blocks are written twice (the IR must not depend on a
-    /// VM); this is what keeps them one thing.
-    #[test]
-    fn the_vm_has_every_standard_block_of_the_ir_with_the_same_members() {
-        assert_eq!(StdFb::ALL.len(), FbKind::ALL.len());
-        for fb in StdFb::ALL {
-            let kind = vm_fb(fb);
-            assert_eq!(fb.members().len(), kind.members().len(), "{}", fb.name());
-            for (i, m) in fb.members().iter().enumerate() {
-                let v = kind
-                    .members()
-                    .iter()
-                    .find(|x| x.name == m.name)
-                    .unwrap_or_else(|| panic!("{}.{} missing in the VM", fb.name(), m.name));
-                assert_eq!(elem(m.ty), v.ty, "{}.{}", fb.name(), m.name);
-                let same = matches!(
-                    (m.direction, v.direction),
-                    (Direction::Input, VmDirection::Input)
-                        | (Direction::Output, VmDirection::Output)
-                );
-                assert!(same, "{}.{} direction", fb.name(), m.name);
-                assert_eq!(member_offset(fb, i), v.offset);
-            }
-        }
-    }
-
     #[test]
     fn a_unit_of_another_ir_version_or_with_recursion_is_refused_not_compiled() {
         let function = |name: &str, calls: usize| Pou {

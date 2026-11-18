@@ -1,0 +1,340 @@
+[
+  {
+    "path": "cnt",
+    "type": "INT",
+    "section": "var",
+    "offset": 0,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "ch",
+    "type": "ARRAY [1..3] OF Channel",
+    "section": "var",
+    "offset": 2,
+    "size": 33,
+    "writable": false,
+    "array": {
+      "element_type": "Channel",
+      "element_size": 11,
+      "bounds": [
+        [
+          1,
+          3
+        ]
+      ]
+    }
+  },
+  {
+    "path": "spare.raw",
+    "type": "INT",
+    "section": "var",
+    "offset": 35,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "spare.range.lo",
+    "type": "INT",
+    "section": "var",
+    "offset": 37,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "spare.range.hi",
+    "type": "INT",
+    "section": "var",
+    "offset": 39,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "spare.gain",
+    "type": "REAL",
+    "section": "var",
+    "offset": 41,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "spare.ok",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 45,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "squares",
+    "type": "ARRAY [1..5] OF INT",
+    "section": "var",
+    "offset": 46,
+    "size": 10,
+    "writable": false,
+    "array": {
+      "element_type": "INT",
+      "element_size": 2,
+      "bounds": [
+        [
+          1,
+          5
+        ]
+      ]
+    }
+  },
+  {
+    "path": "copy",
+    "type": "ARRAY [1..5] OF INT",
+    "section": "var",
+    "offset": 56,
+    "size": 10,
+    "writable": false,
+    "array": {
+      "element_type": "INT",
+      "element_size": 2,
+      "bounds": [
+        [
+          1,
+          5
+        ]
+      ]
+    }
+  },
+  {
+    "path": "around",
+    "type": "ARRAY [-2..2] OF DINT",
+    "section": "var",
+    "offset": 66,
+    "size": 20,
+    "writable": false,
+    "array": {
+      "element_type": "DINT",
+      "element_size": 4,
+      "bounds": [
+        [
+          -2,
+          2
+        ]
+      ]
+    }
+  },
+  {
+    "path": "grid",
+    "type": "ARRAY [0..2, 1..4] OF INT",
+    "section": "var",
+    "offset": 86,
+    "size": 24,
+    "writable": false,
+    "array": {
+      "element_type": "INT",
+      "element_size": 2,
+      "bounds": [
+        [
+          0,
+          2
+        ],
+        [
+          1,
+          4
+        ]
+      ]
+    }
+  },
+  {
+    "path": "flt",
+    "type": "ARRAY [1..2] OF Average",
+    "section": "var",
+    "offset": 110,
+    "size": 44,
+    "writable": false,
+    "array": {
+      "element_type": "Average",
+      "element_size": 22,
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ]
+    }
+  },
+  {
+    "path": "timers",
+    "type": "ARRAY [1..2] OF TON",
+    "section": "var",
+    "offset": 154,
+    "size": 56,
+    "writable": false,
+    "array": {
+      "element_type": "TON",
+      "element_size": 28,
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ]
+    }
+  },
+  {
+    "path": "i",
+    "type": "INT",
+    "section": "var",
+    "offset": 210,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "j",
+    "type": "INT",
+    "section": "var",
+    "offset": 212,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "k",
+    "type": "INT",
+    "section": "var",
+    "offset": 214,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "sum_sq",
+    "type": "DINT",
+    "section": "var",
+    "offset": 216,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "sum_copy",
+    "type": "DINT",
+    "section": "var",
+    "offset": 220,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "ok1",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 224,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "ok2",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 225,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "ok3",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 226,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "q1",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 227,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "q2",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 228,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "raw2",
+    "type": "INT",
+    "section": "var",
+    "offset": 229,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "hi3",
+    "type": "INT",
+    "section": "var",
+    "offset": 231,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "cell",
+    "type": "INT",
+    "section": "var",
+    "offset": 233,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "diag",
+    "type": "INT",
+    "section": "var",
+    "offset": 235,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "scaled",
+    "type": "REAL",
+    "section": "var",
+    "offset": 237,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "mid",
+    "type": "DINT",
+    "section": "var",
+    "offset": 241,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "edge",
+    "type": "DINT",
+    "section": "var",
+    "offset": 245,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "mean1",
+    "type": "REAL",
+    "section": "var",
+    "offset": 249,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "mean2",
+    "type": "REAL",
+    "section": "var",
+    "offset": 253,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "et2",
+    "type": "TIME",
+    "section": "var",
+    "offset": 257,
+    "size": 8,
+    "writable": false
+  }
+]

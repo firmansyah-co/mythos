@@ -51,7 +51,9 @@ use crate::fb::FbKind;
 pub const MAGIC: [u8; 4] = *b"MLBC";
 /// The format this VM's compiler makes, and the newest this VM reads.
 ///
-/// 3: the numeric functions of the standard library (`RFN`, `ATAN2_*`, `EXPT*`, `ABS_*`,
+/// 4: the scan clock (`NOW`), which the standard function blocks written in Structured Text
+/// read (ADR-013 L4); the compiler no longer emits `FB` and `FBP`, which every format still
+/// has. 3: the numeric functions of the standard library (`RFN`, `ATAN2_*`, `EXPT*`, `ABS_*`,
 /// `CHKSEL`). 2: strings (`STRING[n]` and the instructions on them). 1: functions, function
 /// blocks, arrays and structures.
 ///
@@ -61,7 +63,7 @@ pub const MAGIC: [u8; 4] = *b"MLBC";
 /// of an older version is read exactly as it was written. A format that changed what an
 /// older program means would start a new line, and this VM would refuse what came before
 /// it. A version outside the range is refused, never guessed at.
-pub const FORMAT_VERSION: u16 = 3;
+pub const FORMAT_VERSION: u16 = 4;
 /// The oldest format this VM reads. Format 0, the spike's, had a 16-byte header without a
 /// call depth or a table of bodies: this VM does not extend it.
 pub const OLDEST_FORMAT_VERSION: u16 = 1;
@@ -200,9 +202,13 @@ pub mod op {
     /// Any non-zero integer to TRUE.
     pub const I64_TO_BOOL: u8 = 0x9E;
 
-    /// `FB kind:u8 base:u32`: run a standard function block on the instance at `base`.
+    /// `FB kind:u8 base:u32`: run a standard function block on the instance at `base`. The
+    /// compiler of formats 1 to 3 emitted it; from format 4 the standard blocks are written in
+    /// Structured Text and called as any function block is. It stays, in every format, so
+    /// that a program built before keeps running ([`crate::fb`]).
     pub const FB: u8 = 0xA0;
-    /// `FBP kind:u8 place`: run a standard function block on the instance at `place`.
+    /// `FBP kind:u8 place`: run a standard function block on the instance at `place`; as
+    /// `FB`.
     pub const FBP: u8 = 0xA1;
 
     // Relative loads and stores: `LDR_x off:u32`, at the base plus `off`. A 32-bit load serves
@@ -292,6 +298,12 @@ pub mod op {
     /// `CHKSEL count:u32`: pop an i64; outside `0 .. count-1` the scan stops with
     /// `SelectorOutOfRange` (MUX's K, Table 32 footnote e).
     pub const CHKSEL: u8 = 0xEC;
+
+    /// Push the scan clock (format 4): the `now` the host gave this scan, a TIME in
+    /// nanoseconds since the program was put in RUN. It is the same for every instruction of a
+    /// scan, and it is what the native function blocks were given. Only the standard library
+    /// asks for it, through an intrinsic no program can name (ADR-013 L4).
+    pub const NOW: u8 = 0xF0;
 }
 
 /// The functions of one real that `RFN` and `RFN32` compute, by their `which`.
@@ -417,6 +429,7 @@ pub(crate) fn access(opcode: u8) -> Option<(bool, Cell, Reach)> {
 pub fn introduced_in(opcode: u8) -> Option<u16> {
     instruction_len(opcode)?;
     Some(match opcode {
+        op::NOW => 4,
         op::RFN..=op::CHKSEL => 3,
         x if string_shape(x).is_some() => 2,
         _ => 1,
@@ -427,7 +440,7 @@ pub fn introduced_in(opcode: u8) -> Option<u16> {
 pub fn instruction_len(opcode: u8) -> Option<usize> {
     use op::*;
     Some(match opcode {
-        END | RET | NOT | AND | OR | XOR => 1,
+        END | RET | NOT | AND | OR | XOR | NOW => 1,
         JMP | JZ => 5,
         CALL => 3,
         CALLFB => 3 + PLACE_LEN,

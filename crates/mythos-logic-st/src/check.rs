@@ -44,6 +44,8 @@ pub fn check(src: &ast::Source) -> Result<Unit, Vec<Diagnostic>> {
         resolving: 0,
         result_unknown: vec![false; src.pous.len()],
         lost: src.lost.clone(),
+        library: src.pous.iter().map(|p| p.library).collect(),
+        in_library: false,
         diags: Vec::new(),
         cur: 0,
         loops: 0,
@@ -59,9 +61,11 @@ pub fn check(src: &ast::Source) -> Result<Unit, Vec<Diagnostic>> {
             continue;
         }
         c.cur = i;
+        c.in_library = p.library;
         c.loops = 0;
         c.result_assigned = false;
         let body = c.stmts(&p.body);
+        c.in_library = false;
         c.unit.pous[i].body = body;
         // IEC 61131-3 ed. 3 §7.3.3.2.3: a POU with a result assigns it at least once.
         if p.kind == ast::PouKind::Function && !c.result_assigned {
@@ -130,8 +134,9 @@ struct Target {
 
 struct Checker {
     unit: Unit,
-    /// Every type and POU of the source, by its name in upper case.
-    names: Vec<(String, Named)>,
+    /// Every type and POU of the source and of the standard library, by its name in upper
+    /// case, and whether it is the library's.
+    names: Vec<(String, Named, bool)>,
     aliases: Vec<Alias>,
     /// For each type declaration of the source: the array type it names, if it names one.
     alias_specs: Vec<Option<ast::TypeSpec>>,
@@ -158,6 +163,12 @@ struct Checker {
     result_unknown: Vec<bool>,
     /// What the source declares under names the parser could not read.
     lost: Vec<ast::Lost>,
+    /// For each POU: it is of the standard library (ADR-013 L4).
+    library: Vec<bool>,
+    /// A POU of the library is being read. Its names are looked up among the library's
+    /// alone, so nothing a program declares can change what the library means, and an
+    /// intrinsic may be called.
+    in_library: bool,
     diags: Vec<Diagnostic>,
     /// The POU whose declarations or body are being read.
     cur: usize,
@@ -268,12 +279,15 @@ impl Checker {
         matches!(ty, Ty::Instance(p) if self.gaps[p])
     }
 
+    /// The type or POU `name` stands for where it is read: in a program, any of the source's
+    /// and the library's (no name is both, `names` refuses that); in the library, only the
+    /// library's.
     fn named(&self, name: &str) -> Option<Named> {
         let upper = name.to_ascii_uppercase();
         self.names
             .iter()
-            .find(|(n, _)| *n == upper)
-            .map(|(_, x)| *x)
+            .find(|(n, _, library)| *n == upper && (*library || !self.in_library))
+            .map(|(_, x, _)| *x)
     }
 
     /// The function named `name`, if there is one.
@@ -286,17 +300,28 @@ impl Checker {
         }
     }
 
+    /// The function named `name` declared where the POU being read is: in the program's
+    /// source, or in the library. A function of the library is a standard function, and a
+    /// variable may bear the name of one, as of LEN or MAX.
+    fn own_function(&self, name: &str) -> Option<usize> {
+        self.function(name)
+            .filter(|f| self.library.get(*f).copied().unwrap_or(false) == self.in_library)
+    }
+
     /// First pass: every type and POU by name, so that a later one can be used earlier.
     fn names(&mut self, src: &ast::Source) {
-        fn taken(c: &mut Checker, name: &str, span: Span, what: Named) {
+        fn taken(c: &mut Checker, name: &str, span: Span, what: Named, library: bool) {
             let upper = name.to_ascii_uppercase();
             let conversion = upper
                 .split_once("_TO_")
                 .is_some_and(|(a, b)| Ty::from_name(a).is_some() && Ty::from_name(b).is_some());
-            let library = StdFn::by_name(&upper).is_some()
+            let standard = StdFn::by_name(&upper).is_some()
                 || truncation(&upper).is_some()
-                || operator_function(&upper).is_some();
-            if Ty::from_name(&upper).is_some() || conversion || library {
+                || operator_function(&upper).is_some()
+                // Every name the library declares, whether this program uses it or not: a
+                // program that took one would change meaning when the library is used.
+                || (!library && crate::library::declares(&upper));
+            if Ty::from_name(&upper).is_some() || conversion || standard {
                 // A keyword as a name is told by the parser, once.
                 if !is_keyword(&upper) {
                     c.err(
@@ -304,10 +329,10 @@ impl Checker {
                         format!("{name} is a name of the standard; choose another"),
                     );
                 }
-            } else if c.names.iter().any(|(n, _)| *n == upper) {
+            } else if c.names.iter().any(|(n, _, _)| *n == upper) {
                 c.err(span, format!("{name} is declared twice"));
             } else {
-                c.names.push((upper, what));
+                c.names.push((upper, what, library));
             }
         }
         for (i, t) in src.types.iter().enumerate() {
@@ -330,7 +355,7 @@ impl Checker {
                     Named::Alias(i)
                 }
             };
-            taken(self, &t.name, t.span, what);
+            taken(self, &t.name, t.span, what, false);
         }
         let mut programs = 0;
         for (i, p) in src.pous.iter().enumerate() {
@@ -359,7 +384,7 @@ impl Checker {
                 vars: Vec::new(),
                 body: Vec::new(),
             });
-            taken(self, &p.name, p.span, Named::Pou(i));
+            taken(self, &p.name, p.span, Named::Pou(i), p.library);
         }
         // A PROGRAM the parser could not read the name of is one all the same.
         if programs == 0 && !self.lost.contains(&ast::Lost::Program) {
@@ -440,6 +465,7 @@ impl Checker {
         }
         for (i, p) in src.pous.iter().enumerate() {
             self.cur = i;
+            self.in_library = p.library;
             if p.kind == ast::PouKind::Function {
                 // A function's result is its variable 0, named as the function. When its
                 // type is not known (the parser or this has said why), the variable stands
@@ -471,6 +497,7 @@ impl Checker {
             for d in &p.vars {
                 self.declare(d, p);
             }
+            self.in_library = false;
         }
     }
 
@@ -489,7 +516,7 @@ impl Checker {
         // IEC 61131-3 ed. 3 §6.6.3.2 rule 18 advises against an instance named as a function;
         // here no variable may be, so `name(…)` is never two things. A variable named as a
         // type (`pump : Pump`) is no ambiguity: a type is named only in a declaration.
-        if self.function(&d.name).is_some() {
+        if self.own_function(&d.name).is_some() {
             self.err(
                 d.span,
                 format!(
@@ -691,7 +718,7 @@ impl Checker {
             (ast::Init::Value(e), ty) if ty.is_elementary() => {
                 self.constant(e, ty).map(Init::Value)
             }
-            (ast::Init::Value(e), Ty::Fb(_) | Ty::Instance(_)) => {
+            (ast::Init::Value(e), Ty::Instance(_)) => {
                 self.err(
                     e.span,
                     "a function block instance cannot be given an initial value",
@@ -1040,18 +1067,6 @@ impl Checker {
     /// The member `name` of a function block instance of type `ty`: its index, type and role.
     fn fb_member(&self, ty: Ty, name: &str) -> Option<(usize, Ty, Role)> {
         match ty {
-            Ty::Fb(k) => {
-                let i = k
-                    .members()
-                    .iter()
-                    .position(|m| m.name.eq_ignore_ascii_case(name))?;
-                let m = k.members()[i];
-                let role = match m.direction {
-                    Direction::Input => Role::Input,
-                    Direction::Output => Role::Output,
-                };
-                Some((i, m.ty, role))
-            }
             Ty::Instance(p) => {
                 let vars = &self.unit.pous[p].vars;
                 let i = vars
@@ -1140,7 +1155,7 @@ impl Checker {
                 t.ty = fields[at].ty;
                 t.place.path.push(Sel::Member(at));
             }
-            Ty::Fb(_) | Ty::Instance(_) => {
+            Ty::Instance(_) => {
                 let block = self.n(t.ty);
                 let Some((at, mty, role)) = self.fb_member(t.ty, m) else {
                     if !self.has_gap(t.ty) {
@@ -1311,7 +1326,7 @@ impl Checker {
     /// A place to be read or written as a value: not a whole function block instance.
     fn assign_to(&mut self, place: &ast::Place, writing: bool) -> Option<(Place, Ty)> {
         let t = self.place(place)?;
-        if let Ty::Fb(_) | Ty::Instance(_) = t.ty {
+        if let Ty::Instance(_) = t.ty {
             self.err(
                 place.span,
                 format!(
@@ -1431,7 +1446,7 @@ impl Checker {
         }
         let t = self.place(called)?;
         let block = self.n(t.ty);
-        if !matches!(t.ty, Ty::Fb(_) | Ty::Instance(_)) {
+        if !matches!(t.ty, Ty::Instance(_)) {
             self.err(
                 called.span,
                 format!(
@@ -1785,22 +1800,20 @@ impl Checker {
         }
         let text = p.text();
         match t.ty {
-            Ty::Fb(_) => {
-                self.err(
-                    span,
-                    format!(
-                        "{text} is a function block instance; name one of its outputs, like {text}.Q"
+            Ty::Instance(p) => {
+                // An input is not read from outside (Figure 13 rule 1b): name an output.
+                let output = self.unit.pous[p]
+                    .vars
+                    .iter()
+                    .find(|v| v.section == Section::Output);
+                let msg = match output {
+                    Some(q) => format!(
+                        "{text} is a function block instance; name one of its outputs, like {text}.{}",
+                        q.name
                     ),
-                );
-                return None;
-            }
-            Ty::Instance(_) => {
-                self.err(
-                    span,
-                    format!(
-                        "{text} is a function block instance; name one of its inputs or outputs"
-                    ),
-                );
+                    None => format!("{text} is a function block instance; it has no output to read"),
+                };
+                self.err(span, msg);
                 return None;
             }
             ty if self.unit.holds_instance(ty) => {
@@ -2063,6 +2076,18 @@ impl Checker {
             return self.call_function(f, args, span);
         }
         let upper = name.to_ascii_uppercase();
+        // Only the library can write an intrinsic's name (§6.1.2 forbids it to a program,
+        // and the lexer refuses it there); this holds the line in the checker as well.
+        if let Some(i) = Intrinsic::by_name(&upper).filter(|_| self.in_library) {
+            if !args.is_empty() {
+                self.err(span, format!("{name} takes no argument"));
+                return None;
+            }
+            return Some(Expr {
+                ty: i.ty(),
+                kind: ExprKind::Intrinsic(i),
+            });
+        }
         if let Some(f) = StdFn::by_name(&upper) {
             if f.is_string_function() {
                 return self.call_std(f, args, span);
@@ -2596,7 +2621,7 @@ impl Checker {
         }
         if let Some(v) = self.find(name) {
             let ty = self.unit.pous[self.cur].vars[v].ty;
-            let msg = if matches!(ty, Ty::Fb(_) | Ty::Instance(_)) {
+            let msg = if matches!(ty, Ty::Instance(_)) {
                 format!(
                     "{name} is a function block instance: call it as a statement, {name}(…); then read its outputs"
                 )

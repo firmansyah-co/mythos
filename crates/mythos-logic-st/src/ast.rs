@@ -68,6 +68,9 @@ pub struct Pou {
     pub partial_vars: bool,
     /// One of its statements could not be read: `body` is not all it does.
     pub partial_body: bool,
+    /// It is of the standard library, not of the program's source (ADR-013 L4): its names
+    /// are resolved among the library's alone, and it may call an intrinsic.
+    pub library: bool,
 }
 
 /// A type as a declaration names it.

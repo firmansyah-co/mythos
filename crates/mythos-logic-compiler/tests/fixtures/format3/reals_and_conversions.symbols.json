@@ -1,0 +1,122 @@
+[
+  {
+    "path": "cnt",
+    "type": "INT",
+    "section": "var",
+    "offset": 0,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "x",
+    "type": "REAL",
+    "section": "var",
+    "offset": 2,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "y",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 6,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "half",
+    "type": "REAL",
+    "section": "var",
+    "offset": 14,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "r1",
+    "type": "INT",
+    "section": "var",
+    "offset": 18,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "r2",
+    "type": "INT",
+    "section": "var",
+    "offset": 20,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "r3",
+    "type": "INT",
+    "section": "var",
+    "offset": 22,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "d1",
+    "type": "DINT",
+    "section": "var",
+    "offset": 24,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "d2",
+    "type": "DINT",
+    "section": "var",
+    "offset": 28,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "l1",
+    "type": "LINT",
+    "section": "var",
+    "offset": 32,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "avg",
+    "type": "REAL",
+    "section": "var",
+    "offset": 40,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "sum",
+    "type": "REAL",
+    "section": "var",
+    "offset": 44,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "big",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 48,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "ok",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 56,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "b2i",
+    "type": "INT",
+    "section": "var",
+    "offset": 57,
+    "size": 2,
+    "writable": false
+  }
+]
