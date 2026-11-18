@@ -46,6 +46,11 @@ pub struct Symbol {
     /// in a RETAIN section, or a member of an instance or structure that is, as the rules say.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub retain: bool,
+    /// Inside a function block instance, and not one of its inputs: an internal variable or an
+    /// output of the block, or part of one. Only the block writes it (IEC 61131-3 ed. 3
+    /// §6.6.3.2, Figure 13): a host may read it, never bind a tag to write it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
 }
 
 /// What an array symbol or member holds.
@@ -467,6 +472,7 @@ pub fn emit(u: &Unit) -> Result<Output, Diagnostic> {
             v.retention,
             e.lay.pous[u.entry].offsets[i],
             v.section == Section::Input,
+            false,
         );
     }
     let types = e.lay.types();
@@ -617,6 +623,7 @@ impl Layouts<'_> {
         retention: Retention,
         offset: u64,
         writable: bool,
+        private: bool,
     ) {
         match ty {
             // Every element of a structure, nested ones too, takes its qualifier.
@@ -624,7 +631,7 @@ impl Layouts<'_> {
                 for (k, f) in self.u.structs[i].fields.iter().enumerate() {
                     let at = offset + self.structs[i].offsets[k];
                     let path = format!("{path}.{}", f.name);
-                    self.symbols(out, &path, f.ty, section, retention, at, writable);
+                    self.symbols(out, &path, f.ty, section, retention, at, writable, private);
                 }
             }
             // The members of an instance are the block's to set: the host sets none of them.
@@ -633,7 +640,9 @@ impl Layouts<'_> {
                     let at = offset + self.pous[p].offsets[k];
                     let path = format!("{path}.{}", v.name);
                     let retention = self.u.member_retention(retention, v);
-                    self.symbols(out, &path, v.ty, section, retention, at, false);
+                    // Only an input of a block is written from outside it.
+                    let private = private || v.section != Section::Input;
+                    self.symbols(out, &path, v.ty, section, retention, at, false, private);
                 }
             }
             ty => out.push(Symbol {
@@ -650,6 +659,7 @@ impl Layouts<'_> {
                     .u
                     .retained(ty, retention)
                     .expect("an array retained in part is refused before it is laid out"),
+                private,
             }),
         }
     }

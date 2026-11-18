@@ -414,9 +414,9 @@ fn the_symbol_table_says_retain_true_and_says_nothing_otherwise() {
              "array": {"element_type": "INT", "element_size": 2, "bounds": [[1, 2]]},
              "retain": true},
             {"path": "b.k", "type": "INT", "section": "var", "offset": 12, "size": 2,
-             "writable": false, "retain": true},
+             "writable": false, "retain": true, "private": true},
             {"path": "b.p", "type": "BOOL", "section": "var", "offset": 14, "size": 1,
-             "writable": false},
+             "writable": false, "private": true},
         ])
     );
     // A symbol without the key reads back as not retained.
