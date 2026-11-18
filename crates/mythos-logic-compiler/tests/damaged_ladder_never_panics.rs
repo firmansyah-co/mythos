@@ -78,6 +78,11 @@ fn damage(text: &str, rng: &mut Rng) -> String {
                     .lines()
                     .map(String::from)
                     .collect();
+                // An earlier damage can leave no line at all (a Windows checkout, with CRLF,
+                // feeds other text to the same seed): there is no line to move then.
+                if lines.is_empty() {
+                    continue;
+                }
                 let (a, b) = (rng.below(lines.len()), rng.below(lines.len()));
                 match rng.below(3) {
                     0 => lines.swap(a, b),
