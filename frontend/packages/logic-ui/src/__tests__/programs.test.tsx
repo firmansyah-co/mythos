@@ -242,6 +242,14 @@ describe('editing, checking and saving', () => {
     expect(byTestId(container, 'check-stale')).not.toBeNull();
     expect(byTestId(container, 'source-error-mark')).toBeNull();
     expect(byTestId(container, 'source-error-line')).toBeNull();
+    // A Check that compiles brings the Diagnostics tab forward too: its COMPILES is the answer.
+    act(() => useShell.getState().setInspectorTab('properties'));
+    typeSource(container, TANK);
+    click(button(container, 'Check'));
+    await settle();
+    expect(useShell.getState().inspectorTab).toBe('diagnostics');
+    expect(paneOf(container, 'diagnostics', PANES.check)?.querySelector('[data-testid="check-ok"]')?.textContent).toBe('COMPILES');
+    expect(useModuleUi.getState().diagnostics[PANES.check]?.item.count).toBe(0);
   });
 
   it('underlines the whole of what each diagnostic is about, over words and lines', async () => {

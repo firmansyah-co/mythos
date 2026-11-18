@@ -673,8 +673,8 @@ Unload, Release all, scan times, forces) are the **Runtime** task card; the prog
 (language, task interval, runtime module, target, Run when loaded, Remove) are the inspector's
 Properties, selected when the editor opens and again on a click in it; what the compiler said
 is a panel of the inspector's **Diagnostics** tab (`host.setDiagnostics`), counted on the tab
-only for the text as it is now, and brought forward after a Check or Load the engineer asked for
-that the compiler refused. The toolbar says the check in a word. Nothing is set while another
+only for the text as it is now, and brought forward after a Check the engineer asked for, and
+after a Load only when the compiler refused it. The toolbar says the check in a word. Nothing is set while another
 editor is active: the workbench draws only the active one.
 
 **The Function Block Diagram view** (L3c-1; `FbdView.tsx`, `fbd.ts`). An FBD program opens in

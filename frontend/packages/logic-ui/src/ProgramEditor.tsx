@@ -1315,8 +1315,13 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
   // What runs is another version than the last one built here: said, since the text may differ.
   const differs =
     state.kind === 'loaded' && doc.built !== null && doc.built.version !== state.runtime.version;
-  // What the compiler refused is brought forward after the engineer asked for a check or a load,
-  // as TIA opens its compile results; a check made by itself while editing does not move the panes.
+  // What the compiler said is brought forward after a Check the engineer asked for, as TIA opens
+  // its compile results, and after a Load only when the compiler refused it (a load that went
+  // through says so in the work area). A check made by itself while editing moves no pane.
+  const showChecked = () => {
+    const now = usePrograms.getState().programs.find((d) => d.entry.name === name);
+    if (now?.check && checkIsCurrent(now)) host().showDiagnostics();
+  };
   const showIfRefused = () => {
     const now = usePrograms.getState().programs.find((d) => d.entry.name === name);
     if (now?.check && checkIsCurrent(now) && !now.check.ok) host().showDiagnostics();
@@ -1353,7 +1358,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
           <Undo2 size={13} aria-hidden /> Discard
         </button>
         <span className="toolbar__sep" aria-hidden />
-        <button type="button" className="btn" disabled={working} onClick={() => void check(name).then(showIfRefused)}>
+        <button type="button" className="btn" disabled={working} onClick={() => void check(name).then(showChecked)}>
           <Check size={13} aria-hidden /> Check
         </button>
         <button
