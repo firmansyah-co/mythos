@@ -102,6 +102,9 @@ fn a_retain_instance_retains_its_members_but_not_one_declared_non_retain_nor_an_
             ("r.t.PT", false),
             ("r.t.Q", false),
             ("r.t.ET", false),
+            ("r.t.RUNNING", false),
+            ("r.t.START", false),
+            ("r.t.CLOCK", false),
         ])
     );
 }
@@ -122,6 +125,9 @@ fn a_non_retain_instance_initializes_its_members_but_keeps_one_declared_retain()
             ("n.t.PT", false),
             ("n.t.Q", false),
             ("n.t.ET", false),
+            ("n.t.RUNNING", false),
+            ("n.t.START", false),
+            ("n.t.CLOCK", false),
         ])
     );
 }
@@ -142,6 +148,9 @@ fn an_unqualified_instance_follows_what_its_type_declares_retain() {
             ("u.t.PT", false),
             ("u.t.Q", false),
             ("u.t.ET", false),
+            ("u.t.RUNNING", false),
+            ("u.t.START", false),
+            ("u.t.CLOCK", false),
         ])
     );
 }
@@ -168,6 +177,9 @@ fn an_instance_inside_a_retain_instance_follows_its_own_type_unless_declared_ret
             ("o.inner.t.PT", false),
             ("o.inner.t.Q", false),
             ("o.inner.t.ET", false),
+            ("o.inner.t.RUNNING", false),
+            ("o.inner.t.START", false),
+            ("o.inner.t.CLOCK", false),
             // (a): Outer declares `declared` RETAIN itself, so it is a RETAIN instance.
             ("o.declared.x", true),
             ("o.declared.kept", true),
@@ -177,13 +189,17 @@ fn an_instance_inside_a_retain_instance_follows_its_own_type_unless_declared_ret
             ("o.declared.t.PT", false),
             ("o.declared.t.Q", false),
             ("o.declared.t.ET", false),
+            ("o.declared.t.RUNNING", false),
+            ("o.declared.t.START", false),
+            ("o.declared.t.CLOCK", false),
         ])
     );
 }
 
 #[test]
 fn a_standard_block_in_a_retain_section_retains_its_members() {
-    // Table 40 feature 5a: VAR RETAIN TMR1 : TON; END_VAR.
+    // Table 40 feature 5a: VAR RETAIN TMR1 : TON; END_VAR. Its internal state is variables
+    // of the block since L4, and takes the qualifier as the rest does.
     assert_eq!(
         retained(
             "PROGRAM Main
@@ -196,11 +212,15 @@ fn a_standard_block_in_a_retain_section_retains_its_members() {
             ("tmr.PT", true),
             ("tmr.Q", true),
             ("tmr.ET", true),
+            ("tmr.RUNNING", true),
+            ("tmr.START", true),
+            ("tmr.CLOCK", true),
             ("up.CU", false),
             ("up.R", false),
             ("up.PV", false),
             ("up.Q", false),
             ("up.CV", false),
+            ("up.CU_M", false),
         ])
     );
 }

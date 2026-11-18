@@ -1,0 +1,498 @@
+[
+  {
+    "path": "cnt",
+    "type": "INT",
+    "section": "var",
+    "offset": 0,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s1.run",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 2,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s1.level",
+    "type": "INT",
+    "section": "var",
+    "offset": 3,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s1.done",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 5,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s1.laps",
+    "type": "INT",
+    "section": "var",
+    "offset": 6,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s1.rmp.up",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 8,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s1.rmp.rate",
+    "type": "INT",
+    "section": "var",
+    "offset": 9,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s1.rmp.value",
+    "type": "INT",
+    "section": "var",
+    "offset": 11,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s1.rmp.top",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 13,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s1.rmp.calls",
+    "type": "DINT",
+    "section": "var",
+    "offset": 14,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "s1.edge.CLK",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 18,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s1.edge.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 19,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s1.count.CU",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 21,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s1.count.R",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 22,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s1.count.PV",
+    "type": "INT",
+    "section": "var",
+    "offset": 25,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s1.count.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 23,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s1.count.CV",
+    "type": "INT",
+    "section": "var",
+    "offset": 27,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s1.hold.IN",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 29,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s1.hold.PT",
+    "type": "TIME",
+    "section": "var",
+    "offset": 33,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "s1.hold.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 30,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s1.hold.ET",
+    "type": "TIME",
+    "section": "var",
+    "offset": 41,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "s2.run",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 57,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s2.level",
+    "type": "INT",
+    "section": "var",
+    "offset": 58,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s2.done",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 60,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s2.laps",
+    "type": "INT",
+    "section": "var",
+    "offset": 61,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s2.rmp.up",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 63,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s2.rmp.rate",
+    "type": "INT",
+    "section": "var",
+    "offset": 64,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s2.rmp.value",
+    "type": "INT",
+    "section": "var",
+    "offset": 66,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s2.rmp.top",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 68,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s2.rmp.calls",
+    "type": "DINT",
+    "section": "var",
+    "offset": 69,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "s2.edge.CLK",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 73,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s2.edge.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 74,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s2.count.CU",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 76,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s2.count.R",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 77,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s2.count.PV",
+    "type": "INT",
+    "section": "var",
+    "offset": 80,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s2.count.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 78,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s2.count.CV",
+    "type": "INT",
+    "section": "var",
+    "offset": 82,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s2.hold.IN",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 84,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s2.hold.PT",
+    "type": "TIME",
+    "section": "var",
+    "offset": 88,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "s2.hold.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 85,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "s2.hold.ET",
+    "type": "TIME",
+    "section": "var",
+    "offset": 96,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "r1.up",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 112,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "r1.rate",
+    "type": "INT",
+    "section": "var",
+    "offset": 113,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "r1.value",
+    "type": "INT",
+    "section": "var",
+    "offset": 115,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "r1.top",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 117,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "r1.calls",
+    "type": "DINT",
+    "section": "var",
+    "offset": 118,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "c1",
+    "type": "INT",
+    "section": "var",
+    "offset": 122,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "c2",
+    "type": "INT",
+    "section": "var",
+    "offset": 124,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "c3",
+    "type": "INT",
+    "section": "var",
+    "offset": 126,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "m1",
+    "type": "REAL",
+    "section": "var",
+    "offset": 128,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "m2",
+    "type": "REAL",
+    "section": "var",
+    "offset": 132,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "st",
+    "type": "DINT",
+    "section": "var",
+    "offset": 136,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "l1",
+    "type": "INT",
+    "section": "var",
+    "offset": 140,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "l2",
+    "type": "INT",
+    "section": "var",
+    "offset": 142,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "laps1",
+    "type": "INT",
+    "section": "var",
+    "offset": 144,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "laps2",
+    "type": "INT",
+    "section": "var",
+    "offset": 146,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "direct",
+    "type": "INT",
+    "section": "var",
+    "offset": 148,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "d1",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 150,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "d2",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 151,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t1",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 152,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t2",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 153,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "nested",
+    "type": "INT",
+    "section": "var",
+    "offset": 154,
+    "size": 2,
+    "writable": false
+  }
+]

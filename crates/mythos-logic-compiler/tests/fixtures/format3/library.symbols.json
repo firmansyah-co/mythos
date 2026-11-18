@@ -1,0 +1,266 @@
+[
+  {
+    "path": "n",
+    "type": "INT",
+    "section": "var",
+    "offset": 0,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "angle",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 2,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "s",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 10,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "c",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 18,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 26,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "rs",
+    "type": "REAL",
+    "section": "var",
+    "offset": 34,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "root",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 38,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "lg",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 46,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "ln10",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 54,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "ex",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 62,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "as1",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 70,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "ac1",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 78,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "at1",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 86,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "at2",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 94,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "pw",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 102,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "pwi",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 110,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "pwr",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 118,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "mag",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 126,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "big",
+    "type": "INT",
+    "section": "var",
+    "offset": 134,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "small",
+    "type": "INT",
+    "section": "var",
+    "offset": 136,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "clamped",
+    "type": "INT",
+    "section": "var",
+    "offset": 138,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "pick",
+    "type": "INT",
+    "section": "var",
+    "offset": 140,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "chosen",
+    "type": "INT",
+    "section": "var",
+    "offset": 142,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "hundred",
+    "type": "INT",
+    "section": "var",
+    "offset": 144,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "twice",
+    "type": "INT",
+    "section": "var",
+    "offset": 146,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "flag",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 148,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "absv",
+    "type": "INT",
+    "section": "var",
+    "offset": 149,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "absr",
+    "type": "LREAL",
+    "section": "var",
+    "offset": 151,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "sum",
+    "type": "INT",
+    "section": "var",
+    "offset": 159,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "prod",
+    "type": "INT",
+    "section": "var",
+    "offset": 161,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "ordered",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 163,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "longest",
+    "type": "TIME",
+    "section": "var",
+    "offset": 164,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "grown",
+    "type": "TIME",
+    "section": "var",
+    "offset": 172,
+    "size": 8,
+    "writable": false
+  }
+]

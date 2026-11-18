@@ -1114,6 +1114,146 @@ async fn a_retain_variable_keeps_its_value_across_a_stop_and_a_new_process_and_a
     rig.io.shutdown().await;
 }
 
+/// A program with a RETAIN on-delay timer, `kept`, and one that is not, `plain`, both timing
+/// an hour from the first scan. Since L4 a timer's state (when it started, whether it runs) is
+/// variables of the instance, so RETAIN reaches it (ADR-013 §2.13).
+fn timers() -> Value {
+    const TIMERS: &str = "
+PROGRAM Timers
+VAR RETAIN kept : TON; END_VAR
+VAR plain : TON; END_VAR
+  kept(IN := TRUE, PT := T#1h);
+  plain(IN := TRUE, PT := T#1h);
+END_PROGRAM
+";
+    let compiled = compile(TIMERS, &TargetProfile::pc()).unwrap_or_else(|d| panic!("{d:?}"));
+    let symbols = serde_json::to_value(&compiled.symbols).unwrap();
+    let retained: Vec<&str> = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["retain"] == true)
+        .map(|s| s["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        retained,
+        [
+            "kept.IN",
+            "kept.PT",
+            "kept.Q",
+            "kept.ET",
+            "kept.RUNNING",
+            "kept.START",
+            "kept.CLOCK"
+        ],
+        "every member of the RETAIN instance, its internal state too"
+    );
+    json!({"instances": [{
+        "id": "timers", "module": "vm", "run": true,
+        "program": {
+            "name": compiled.name, "version": "v1", "interval_ms": 20,
+            "code": hex::encode(&compiled.bytecode), "symbols": symbols,
+        }
+    }]})
+}
+
+impl Rig {
+    /// The ET of both timers, in nanoseconds, and the mode.
+    async fn timed(&self) -> (i64, i64, String) {
+        let (status, body) = self
+            .send(
+                &self.viewer,
+                "POST",
+                "/api/v1/runtimes/timers/watch",
+                Some(json!({"variables": ["kept.ET", "plain.ET"]})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        (
+            body["values"][0]["value"].as_i64().unwrap(),
+            body["values"][1]["value"].as_i64().unwrap(),
+            body["state"]["mode"].as_str().unwrap().to_string(),
+        )
+    }
+
+    async fn timed_when(&self, what: &str, holds: impl Fn(i64, i64, &str) -> bool) -> (i64, i64) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let (kept, plain, mode) = self.timed().await;
+            if holds(kept, plain, &mode) {
+                return (kept, plain);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "never: {what}; kept {kept}, plain {plain}, mode {mode}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_retain_timer_keeps_its_elapsed_time_across_a_stop_and_run() {
+    const MS: i64 = 1_000_000;
+    let rig = rig().await;
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/runtimes",
+            Some(timers()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    rig.timed_when("it has timed past 1.5 s", |kept, _, mode| {
+        mode == "run" && kept > 1_500 * MS
+    })
+    .await;
+
+    // Stopped long enough that the core keeps what it last read (every 2 s), and then run
+    // again: a warm restart, on a scan clock that starts again from zero.
+    let (status, _) = rig
+        .send(&rig.engineer, "POST", "/api/v1/runtimes/timers/stop", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (stopped, _) = rig
+        .timed_when("it is stopped", |_, _, mode| mode == "stop")
+        .await;
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    let (status, body) = rig
+        .send(&rig.engineer, "POST", "/api/v1/runtimes/timers/run", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (kept, plain) = rig
+        .timed_when("it runs again", |_, plain, mode| mode == "run" && plain > 0)
+        .await;
+    // The RETAIN timer carries on from its ET; the time the program was stopped is not timed
+    // (the scan clock does not run then), and nothing is negative or past PT.
+    assert!(
+        kept >= stopped + plain && kept < stopped + plain + 500 * MS,
+        "kept went on from {stopped}: {kept}, with plain at {plain}"
+    );
+    // The other timer started again from zero with its IN.
+    assert!(plain < stopped, "plain timed again from 0: {plain}");
+
+    // A cold start resets the RETAIN timer too.
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "POST",
+            "/api/v1/runtimes/timers/cold-start",
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    rig.timed_when("it started cold", |kept, _, mode| {
+        mode == "run" && kept < stopped
+    })
+    .await;
+
+    rig.io.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_program_for_a_runtime_module_that_is_not_installed_is_refused_naming_what_is() {
     let rig = rig().await;

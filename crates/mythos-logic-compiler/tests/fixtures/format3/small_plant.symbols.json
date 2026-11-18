@@ -1,0 +1,450 @@
+[
+  {
+    "path": "start_pb",
+    "type": "BOOL",
+    "section": "input",
+    "offset": 0,
+    "size": 1,
+    "writable": true
+  },
+  {
+    "path": "stop_pb",
+    "type": "BOOL",
+    "section": "input",
+    "offset": 1,
+    "size": 1,
+    "writable": true
+  },
+  {
+    "path": "level_hi",
+    "type": "BOOL",
+    "section": "input",
+    "offset": 2,
+    "size": 1,
+    "writable": true
+  },
+  {
+    "path": "level_lo",
+    "type": "BOOL",
+    "section": "input",
+    "offset": 3,
+    "size": 1,
+    "writable": true
+  },
+  {
+    "path": "pv",
+    "type": "REAL",
+    "section": "input",
+    "offset": 4,
+    "size": 4,
+    "writable": true
+  },
+  {
+    "path": "pump",
+    "type": "BOOL",
+    "section": "output",
+    "offset": 8,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "valve",
+    "type": "BOOL",
+    "section": "output",
+    "offset": 9,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "alarm",
+    "type": "BOOL",
+    "section": "output",
+    "offset": 10,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "cv",
+    "type": "REAL",
+    "section": "output",
+    "offset": 11,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "stage",
+    "type": "INT",
+    "section": "var",
+    "offset": 15,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "t_fill.IN",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 17,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t_fill.PT",
+    "type": "TIME",
+    "section": "var",
+    "offset": 21,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t_fill.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 18,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t_fill.ET",
+    "type": "TIME",
+    "section": "var",
+    "offset": 29,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t_drain.IN",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 45,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t_drain.PT",
+    "type": "TIME",
+    "section": "var",
+    "offset": 49,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t_drain.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 46,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t_drain.ET",
+    "type": "TIME",
+    "section": "var",
+    "offset": 57,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t_alarm.IN",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 73,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t_alarm.PT",
+    "type": "TIME",
+    "section": "var",
+    "offset": 77,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t_alarm.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 74,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t_alarm.ET",
+    "type": "TIME",
+    "section": "var",
+    "offset": 85,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t1.IN",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 101,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t1.PT",
+    "type": "TIME",
+    "section": "var",
+    "offset": 105,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t1.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 102,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t1.ET",
+    "type": "TIME",
+    "section": "var",
+    "offset": 113,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t2.IN",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 129,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t2.PT",
+    "type": "TIME",
+    "section": "var",
+    "offset": 133,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t2.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 130,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t2.ET",
+    "type": "TIME",
+    "section": "var",
+    "offset": 141,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t3.IN",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 157,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t3.PT",
+    "type": "TIME",
+    "section": "var",
+    "offset": 161,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t3.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 158,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t3.ET",
+    "type": "TIME",
+    "section": "var",
+    "offset": 169,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t4.IN",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 185,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t4.PT",
+    "type": "TIME",
+    "section": "var",
+    "offset": 189,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t4.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 186,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t4.ET",
+    "type": "TIME",
+    "section": "var",
+    "offset": 197,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t5.IN",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 213,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t5.PT",
+    "type": "TIME",
+    "section": "var",
+    "offset": 217,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "t5.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 214,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "t5.ET",
+    "type": "TIME",
+    "section": "var",
+    "offset": 225,
+    "size": 8,
+    "writable": false
+  },
+  {
+    "path": "batches.CU",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 241,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "batches.R",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 242,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "batches.PV",
+    "type": "INT",
+    "section": "var",
+    "offset": 245,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "batches.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 243,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "batches.CV",
+    "type": "INT",
+    "section": "var",
+    "offset": 247,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "edge.CLK",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 249,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "edge.Q",
+    "type": "BOOL",
+    "section": "var",
+    "offset": 250,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "sp",
+    "type": "REAL",
+    "section": "var",
+    "offset": 252,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "kp",
+    "type": "REAL",
+    "section": "var",
+    "offset": 256,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "ki",
+    "type": "REAL",
+    "section": "var",
+    "offset": 260,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "err",
+    "type": "REAL",
+    "section": "var",
+    "offset": 264,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "integral",
+    "type": "REAL",
+    "section": "var",
+    "offset": 268,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "i",
+    "type": "INT",
+    "section": "var",
+    "offset": 272,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "total",
+    "type": "DINT",
+    "section": "var",
+    "offset": 274,
+    "size": 4,
+    "writable": false
+  }
+]

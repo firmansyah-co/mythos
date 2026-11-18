@@ -1,8 +1,15 @@
-//! The standard function blocks of IEC 61131-3 (§6.6.3.5), built into the VM.
+//! The standard function blocks of IEC 61131-3 (§6.6.3.5) as formats 1 to 3 run them: native,
+//! in the VM, called by the `FB` and `FBP` instructions.
 //!
-//! An instance is a run of bytes in the program's memory. Its layout is defined here once and
-//! read by the compiler (`FbKind::members`), so a program and the VM cannot disagree on it.
-//! Members a program may not touch (an edge memory, a start time) come after the public ones.
+//! Since format 4 the compiler emits neither: the standard blocks are a library written in
+//! Structured Text, compiled with the program that uses them, their state in variables of
+//! their own (ADR-013 L4). These stay so that a program built before keeps running on a VM
+//! updated since, and `standard_blocks_run_as_the_native_ones.rs` holds the library's blocks
+//! to them, scan for scan.
+//!
+//! An instance is a run of bytes in the program's memory, laid out as `FbKind::members` says
+//! (what the format-3 compiler read). Members a program could not name (an edge memory, a
+//! start time) come after the public ones.
 
 use crate::format::ElemType;
 

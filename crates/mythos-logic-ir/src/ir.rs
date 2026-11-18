@@ -12,7 +12,7 @@
 //! contain itself), which [`Unit::order`] checks; that is what lets a backend give every
 //! variable one fixed place.
 
-use crate::{Retention, Section, StdFb, DEFAULT_STRING_LENGTH, IR_VERSION};
+use crate::{Retention, Section, DEFAULT_STRING_LENGTH, IR_VERSION};
 
 /// The types the IR knows. The user-defined ones are indices into the [`Unit`] that holds them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -30,8 +30,6 @@ pub enum Ty {
     /// declaration gives none. Two strings of different lengths are two types, but a value of
     /// one is assigned to the other (§6.6.1.2.2): truncated when it does not fit.
     String(u16),
-    /// An instance of a standard function block.
-    Fb(StdFb),
     /// A structure: an index into [`Unit::structs`].
     Struct(usize),
     /// An array: an index into [`Unit::arrays`]. Two arrays with the same bounds and element
@@ -42,7 +40,7 @@ pub enum Ty {
 }
 
 impl Ty {
-    /// An elementary type or a standard function block, by its name in upper case.
+    /// An elementary type, by its name in upper case.
     pub fn from_name(upper: &str) -> Option<Ty> {
         Some(match upper {
             "BOOL" => Ty::Bool,
@@ -54,16 +52,11 @@ impl Ty {
             "LREAL" => Ty::Lreal,
             "TIME" => Ty::Time,
             "STRING" => Ty::String(DEFAULT_STRING_LENGTH),
-            _ => {
-                return StdFb::ALL
-                    .into_iter()
-                    .find(|k| k.name() == upper)
-                    .map(Ty::Fb)
-            }
+            _ => return None,
         })
     }
 
-    /// The name of an elementary type or a standard function block; `None` for a user-defined
+    /// The name of an elementary type; `None` for a structure, an array or a function block
     /// type, whose name its [`Unit`] knows ([`Unit::ty_name`]).
     pub fn builtin_name(self) -> Option<&'static str> {
         Some(match self {
@@ -76,7 +69,6 @@ impl Ty {
             Ty::Lreal => "LREAL",
             Ty::Time => "TIME",
             Ty::String(_) => "STRING",
-            Ty::Fb(k) => k.name(),
             Ty::Struct(_) | Ty::Array(_) | Ty::Instance(_) => return None,
         })
     }
@@ -211,8 +203,7 @@ impl ArrayTy {
 /// One step from a variable to a part of it.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Sel {
-    /// A member: an index into the structure's fields, the standard function block's
-    /// `members()`, or the user function block's `vars`.
+    /// A member: an index into the structure's fields or the function block's `vars`.
     Member(usize),
     /// An element: one subscript per range of the array, each an expression of an integer type.
     Index(Vec<Expr>),
@@ -437,6 +428,41 @@ impl StdFn {
     }
 }
 
+/// What the standard library needs of a target that no IEC language can say (ADR-013 L4).
+///
+/// Only the library's own source calls one: its name begins with two underscores, which
+/// IEC 61131-3 ed. 3 §6.1.2 forbids in an identifier, so a program cannot write it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Intrinsic {
+    /// `__NOW()`: the scan clock, a TIME. It is the time since the program was put in RUN,
+    /// the same for the whole of one scan; it starts again from zero at every start, warm or
+    /// cold. The timers (TON, TOF, TP) read it.
+    Now,
+}
+
+impl Intrinsic {
+    pub const ALL: [Intrinsic; 1] = [Intrinsic::Now];
+
+    /// The name the library calls it by.
+    pub fn name(self) -> &'static str {
+        match self {
+            Intrinsic::Now => "__NOW",
+        }
+    }
+
+    /// The type of what it gives.
+    pub fn ty(self) -> Ty {
+        match self {
+            Intrinsic::Now => Ty::Time,
+        }
+    }
+
+    /// By its name in upper case.
+    pub fn by_name(upper: &str) -> Option<Intrinsic> {
+        Intrinsic::ALL.into_iter().find(|i| i.name() == upper)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Logic {
     And,
@@ -472,6 +498,8 @@ pub enum ExprKind {
     Convert(Box<Expr>),
     /// A function of the standard library; see [`StdFn`] for what each takes.
     Std(StdFn, Vec<Expr>),
+    /// An intrinsic, which takes nothing; its value has [`Intrinsic::ty`].
+    Intrinsic(Intrinsic),
     /// A call of the function `pou`, giving its result. Each argument names the input it sets
     /// (an index into the function's `vars`); an input not named starts at its initial value
     /// (IEC 61131-3 ed. 3 §6.6.1.4.2). The function's other variables start at theirs at
@@ -607,7 +635,6 @@ impl Unit {
     pub fn member_ty(&self, of: Ty, member: usize) -> Option<Ty> {
         match of {
             Ty::Struct(i) => self.structs.get(i)?.fields.get(member).map(|f| f.ty),
-            Ty::Fb(k) => k.members().get(member).map(|m| m.ty),
             Ty::Instance(p) => self.pous.get(p)?.vars.get(member).map(|v| v.ty),
             _ => None,
         }
@@ -648,7 +675,7 @@ impl Unit {
     pub fn member_retention(&self, instance: Retention, member: &Var) -> Retention {
         if member.retention != Retention::Unqualified {
             member.retention
-        } else if matches!(self.innermost(member.ty), Ty::Fb(_) | Ty::Instance(_)) {
+        } else if matches!(self.innermost(member.ty), Ty::Instance(_)) {
             Retention::Unqualified
         } else {
             instance
@@ -688,8 +715,6 @@ impl Unit {
                     self.retained_parts(v.ty, self.member_retention(retention, v), seen);
                 }
             }
-            // A standard function block declares no retention of its own: its members take
-            // the instance's.
             _ => seen[retention.retained() as usize] = true,
         }
     }
@@ -740,7 +765,7 @@ impl Unit {
     /// Whether a value of `ty` holds a function block instance, at any depth.
     pub fn holds_instance(&self, ty: Ty) -> bool {
         match ty {
-            Ty::Fb(_) | Ty::Instance(_) => true,
+            Ty::Instance(_) => true,
             Ty::Array(a) => self.holds_instance(self.arrays[a].elem),
             Ty::Struct(i) => self.structs[i]
                 .fields
@@ -803,8 +828,7 @@ impl Unit {
         depth_first(self.structs.len(), held, |_| {}).err()
     }
 
-    /// Every elementary type and standard function block the unit uses, for checking it
-    /// against a target's profile.
+    /// Every elementary type the unit uses, for checking it against a target's profile.
     pub fn types_used(&self) -> Vec<Ty> {
         let mut out: Vec<Ty> = Vec::new();
         let mut add = |t: Ty| {
@@ -814,10 +838,6 @@ impl Unit {
         };
         fn in_ty(u: &Unit, ty: Ty, add: &mut dyn FnMut(Ty)) {
             match ty {
-                Ty::Fb(k) => {
-                    add(ty);
-                    k.members().iter().for_each(|m| add(m.ty));
-                }
                 Ty::Array(a) => in_ty(u, u.arrays[a].elem, add),
                 Ty::Struct(_) | Ty::Instance(_) => {}
                 // A kind of type: one entry for every length.
@@ -909,7 +929,7 @@ pub fn walk_exprs(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
             ExprKind::Load(p) => in_place(p, f),
             ExprKind::Call { args, .. } => args.iter().for_each(|(_, a)| in_expr(a, f)),
             ExprKind::Std(_, args) => args.iter().for_each(|a| in_expr(a, f)),
-            ExprKind::Const(_) | ExprKind::Str(_) => {}
+            ExprKind::Const(_) | ExprKind::Str(_) | ExprKind::Intrinsic(_) => {}
         }
     }
     for st in stmts {

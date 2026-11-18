@@ -168,7 +168,7 @@ fn a_format_newer_than_this_vm_is_refused_not_guessed_at() {
 fn every_format_this_vm_extends_is_read_and_runs_alike() {
     // The literal pins what this VM reads: a change of either constant is a decision, not a
     // side effect (ADR-013, "Format versions").
-    assert_eq!((OLDEST_FORMAT_VERSION, FORMAT_VERSION), (1, 3));
+    assert_eq!((OLDEST_FORMAT_VERSION, FORMAT_VERSION), (1, 4));
     // mem[0] := mem[4] + 1, in instructions every format has.
     let mut code = with_addr(op::LD_I32, 4);
     code.extend(with_addr(op::PUSH32, 1));
@@ -189,11 +189,13 @@ fn every_format_this_vm_extends_is_read_and_runs_alike() {
 
 #[test]
 fn the_format_each_instruction_came_in_is_pinned() {
-    // Format 2 added the instructions on strings, format 3 the numeric functions, and
-    // nothing else; every other opcode this VM knows is format 1's. A literal, so that moving
-    // an opcode between formats is seen.
+    // Format 2 added the instructions on strings, format 3 the numeric functions, format 4
+    // the scan clock, and nothing else; every other opcode this VM knows is format 1's. A
+    // literal, so that moving an opcode between formats is seen.
     for opcode in 0..=u8::MAX {
-        let expected = if (op::SMOVE..=op::STOI).contains(&opcode) {
+        let expected = if opcode == op::NOW {
+            Some(4)
+        } else if (op::SMOVE..=op::STOI).contains(&opcode) {
             Some(2)
         } else if (op::RFN..=op::CHKSEL).contains(&opcode) {
             Some(3)
@@ -206,6 +208,7 @@ fn the_format_each_instruction_came_in_is_pinned() {
     }
     assert_eq!((op::SMOVE, op::STOI), (0xD0, 0xDC));
     assert_eq!((op::RFN, op::CHKSEL), (0xE0, 0xEC));
+    assert_eq!(op::NOW, 0xF0);
 }
 
 #[test]
@@ -252,8 +255,41 @@ fn an_instruction_newer_than_the_programs_format_is_refused_at_load() {
             );
         }
     }
-    // The thirteen on strings and the thirteen numeric ones.
-    assert_eq!(seen, 26);
+    // The thirteen on strings, the thirteen numeric ones and the scan clock.
+    assert_eq!(seen, 27);
+}
+
+#[test]
+fn now_pushes_the_clock_the_host_gave_the_scan() {
+    // mem[0..8] := NOW; mem[8..16] := NOW. Both are what the host passed, for the whole scan.
+    let mut code = vec![op::NOW];
+    code.extend(with_addr(op::ST_64, 0));
+    code.push(op::NOW);
+    code.extend(with_addr(op::ST_64, 8));
+    code.push(op::END);
+    let bytes = build(FORMAT_VERSION, 1, &[0; 16], &code);
+    let p = Program::load(&bytes).unwrap();
+    let mut mem = [0u8; 16];
+    for now in [0i64, 1, 20_000_000, i64::MAX] {
+        scan(&p, &mut mem, &mut [0u64; 1], &mut [], now, 100).unwrap();
+        assert_eq!(i64::from_le_bytes(mem[0..8].try_into().unwrap()), now);
+        assert_eq!(i64::from_le_bytes(mem[8..16].try_into().unwrap()), now);
+    }
+    // A format-3 program cannot hold it: whatever wrote it did not write format 3.
+    assert_eq!(
+        Program::load(&build(3, 1, &[0; 16], &code)).err(),
+        Some(LoadError::NotInFormat(0))
+    );
+}
+
+#[test]
+fn the_native_function_blocks_load_in_every_format() {
+    // FB TON at 0; END. Formats 1 to 3 were compiled to it, and a format only adds to the
+    // one before, so format 4 has it too, though the compiler no longer emits it.
+    let code = [op::FB, 1, 0, 0, 0, 0, op::END];
+    for version in OLDEST_FORMAT_VERSION..=FORMAT_VERSION {
+        assert_eq!(refused(&build(version, 1, &[0; 28], &code)), None);
+    }
 }
 
 #[test]

@@ -659,6 +659,7 @@ impl Parser {
             body: Vec::new(),
             partial_vars: false,
             partial_body: false,
+            library: false,
         });
         if kind == PouKind::Function {
             if self.is_sym(":") {
