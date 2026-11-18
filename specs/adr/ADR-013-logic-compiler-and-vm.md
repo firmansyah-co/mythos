@@ -1215,3 +1215,31 @@ Evidence of the spike (2026-11-17):
   `the_timers_written_in_st_run_as_the_native_ones`; `NOW` taken in a format-3 program turned
   `now_pushes_the_clock_the_host_gave_the_scan` and `the_format_each_instruction_came_in_is_pinned`
   red.
+- **L3b-1** (Ladder Diagram programs in the logic module and the read-only LD view,
+  2026-11-18). Added: `ladder_power_probes.rs` (5) in the compiler; six tests of the logic
+  module's own (LD template, check with its power and hidden variables, a diagnostic at its
+  element, build, a list without a language read as ST, the date of a file header);
+  `a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_plant` and the LD
+  part of `an_agent_writes_checks_and_builds_a_program_over_mcp` in `logic_module.rs`; 11
+  tests in `ladder.test.tsx`, each reading rendered elements by `data-testid`. The e2e adds an
+  LD scenario (an LD program added from the tree, rungs saved over the API, a mistake drawn at
+  its element, bound to the simulator's counter, loaded; its contacts drawn live change state
+  with the counter, the negated one always the opposite, and nothing is drawn live once it is
+  stopped): 132 checks, all passed. Its two "built and loaded" checks had not been changed
+  when C6b put the start sentence after that note, and failed on `dev` as well; they now
+  require it. Mutation-checked in a copy of the tree (`git archive` of the tree this slice
+  commits, its own target directory; the clean copy passed before and after the restores,
+  each restored with `git show`): a negated contact drawn without its negation turned
+  `draws each contact and coil from its variable, a link only where a variable holds its
+  power`, `draws a negated contact as the negation of its variable` and `draws one value the
+  runtime does not have as UNKNOWN, and the others as they are` red; an unknown value drawn
+  as off turned `draws UNKNOWN, never a state, when the values cannot be read` and `draws one
+  value the runtime does not have as UNKNOWN, …` red; an LD program compiled as ST turned the
+  module's `a_new_ladder_diagram_is_a_tc6_document_that_compiles_to_a_program_doing_nothing`,
+  `a_ladder_diagram_is_checked_with_its_variables_and_where_its_power_is_held`,
+  `a_ladder_diagnostic_names_its_element_and_where_it_is_drawn`,
+  `a_ladder_diagram_is_built_into_a_runtime_instance_like_any_program`, and
+  `a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_plant` and
+  `an_agent_writes_checks_and_builds_a_program_over_mcp` red; a `programs.json` without a
+  language refused turned `a_programs_list_written_before_languages_is_structured_text` and
+  `a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_plant` red.
