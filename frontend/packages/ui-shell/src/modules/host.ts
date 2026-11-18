@@ -205,6 +205,20 @@ export function createHost(module: string): WorkbenchHost {
         return { taskCards };
       }),
 
+    setDiagnostics: (owner, panel) =>
+      useModuleUi.setState((state) => {
+        const diagnostics = { ...state.diagnostics };
+        if (panel) diagnostics[owner] = { module, item: panel };
+        else delete diagnostics[owner];
+        return { diagnostics };
+      }),
+
+    showDiagnostics: () => {
+      const workbench = useWorkbench.getState();
+      workbench.setInspectorTab('diagnostics');
+      if (!workbench.panes.inspector) workbench.togglePane('inspector');
+    },
+
     register: {
       treeSection: (section: TreeSection) =>
         claim('treeSections', { module, item: section }, (item) => item.id),

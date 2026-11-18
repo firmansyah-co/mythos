@@ -1,7 +1,9 @@
+import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CheckResult, Variable } from '../bridge';
 import { EDITOR } from '../entry';
-import { ProgramEditor } from '../ProgramEditor';
+import { PANES, ProgramEditor } from '../ProgramEditor';
+import { useModuleUi } from '../../../ui-shell/src/modules/registry';
 import { ProgramsTree } from '../ProgramsTree';
 import { isDirty, usePrograms } from '../programs';
 import {
@@ -14,6 +16,7 @@ import {
   endTest,
   entryOf,
   ioStatus,
+  paneOf,
   project,
   render,
   resetStores,
@@ -129,6 +132,28 @@ describe('reading the programs', () => {
     expect(writes(calls)).toEqual(['POST /projects/plant/logic/programs/Tank/check']);
   });
 
+  it('puts the runtime in the task cards and the program\'s properties in the inspector, and takes them away after', async () => {
+    const { container } = await opened(tank({ runtimes: runtimesOf(runtimeOf('Tank')) }));
+    const editor = byTestId(container, 'program-editor') as HTMLElement;
+    // The work area holds the program and its interface, and nothing else.
+    expect(paneOf(container, 'task-cards', PANES.runtime)?.querySelector('[data-testid="program-runtime"]')).not.toBeNull();
+    expect(editor.querySelector('[data-testid="program-runtime"]')).toBeNull();
+    const properties = paneOf(container, 'inspector', PANES.program);
+    expect(properties?.querySelector('[aria-label="Interval in milliseconds"]')).not.toBeNull();
+    expect(editor.querySelector('[aria-label="Interval in milliseconds"]')).toBeNull();
+    expect(editor.querySelector('[data-testid="program-interface"]')).not.toBeNull();
+    // An ST program has no instructions card: that is the Ladder Diagram's.
+    expect(useModuleUi.getState().taskCards[PANES.instructions]).toBeUndefined();
+    // Opening the program selected its properties; a click in the editor selects them again.
+    expect(useShell.getState().selection).toEqual({ kind: 'module', owner: PANES.program });
+    useShell.getState().select(null);
+    act(() => editor.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
+    expect(useShell.getState().selection).toEqual({ kind: 'module', owner: PANES.program });
+    unmountAll();
+    const ui = useModuleUi.getState();
+    expect([ui.taskCards[PANES.runtime], ui.inspector[PANES.program], ui.diagnostics[PANES.check]]).toEqual([undefined, undefined, undefined]);
+  });
+
   it('says a source that could not be read could not be read, and offers no empty editor', async () => {
     const { container } = await opened(tank({ intercept: (call) => (call.path.endsWith('/programs/Tank') ? new Response('{"error":"gone"}', { status: 500, statusText: 'Internal Server Error' }) : undefined) }));
 
@@ -193,6 +218,13 @@ describe('editing, checking and saving', () => {
     expect(byTestId(container, 'source-error-line')?.textContent).toBe('3');
     expect(byTestId(container, 'source-error-mark')?.textContent).toBe('oops');
     expect(byTestId(container, 'check-ok')).toBeNull();
+    // What the compiler said is in the inspector's Diagnostics tab, counted there, and the Check
+    // the engineer asked for brought that tab forward; the toolbar says it in a word.
+    expect(paneOf(container, 'diagnostics', PANES.check)?.querySelector('[data-testid="diagnostic"]')).not.toBeNull();
+    expect(byTestId(container, 'program-editor')?.querySelector('[data-testid="diagnostic"]')).toBeNull();
+    expect(useModuleUi.getState().diagnostics[PANES.check]?.item.count).toBe(1);
+    expect(useShell.getState().inspectorTab).toBe('diagnostics');
+    expect(byTestId(container, 'check-summary')?.textContent).toBe('1 ERROR');
     // The variables shown are those of the last text that compiled, and said to be.
     expect(byTestId(container, 'variables-stale')).not.toBeNull();
     expect(texts(container, 'variable-row')).toHaveLength(6);
@@ -202,11 +234,22 @@ describe('editing, checking and saving', () => {
     const area = container.querySelector('textarea') as HTMLTextAreaElement;
     expect(area.selectionStart).toBe(wrong.indexOf('oops'));
 
-    // Once the text changes, the diagnostics are of another text: said, and no longer marked.
+    // Once the text changes, the diagnostics are of another text: said, and no longer marked,
+    // nor counted: what the text now holds is not known until it is checked.
     typeSource(container, `${wrong} `);
+    expect(useModuleUi.getState().diagnostics[PANES.check]?.item.count).toBeNull();
+    expect(byTestId(container, 'check-summary')?.textContent).toBe('CHANGED SINCE CHECK');
     expect(byTestId(container, 'check-stale')).not.toBeNull();
     expect(byTestId(container, 'source-error-mark')).toBeNull();
     expect(byTestId(container, 'source-error-line')).toBeNull();
+    // A Check that compiles brings the Diagnostics tab forward too: its COMPILES is the answer.
+    act(() => useShell.getState().setInspectorTab('properties'));
+    typeSource(container, TANK);
+    click(button(container, 'Check'));
+    await settle();
+    expect(useShell.getState().inspectorTab).toBe('diagnostics');
+    expect(paneOf(container, 'diagnostics', PANES.check)?.querySelector('[data-testid="check-ok"]')?.textContent).toBe('COMPILES');
+    expect(useModuleUi.getState().diagnostics[PANES.check]?.item.count).toBe(0);
   });
 
   it('underlines the whole of what each diagnostic is about, over words and lines', async () => {

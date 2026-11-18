@@ -4,12 +4,20 @@
 // compiler says of it, its task settings, its variables with their bindings to tags, and what
 // the controller's runtime is doing with it.
 //
+// The work area holds the program and its interface (the variables and their bindings) and
+// nothing else, as TIA's block editor does. The rest goes where the workbench keeps it for every
+// editor: the Ladder Diagram's instructions and the runtime's state and commands in the task
+// cards, the program's properties (its task, its runtime, removing it) in the inspector, and what
+// the compiler says in the inspector's Diagnostics tab. The workbench draws only the active
+// editor, so these are set while this editor is drawn and taken away when it goes.
+//
 // Three things are kept apart on purpose, because an engineer acts on the difference: the text
 // in the editor, the text that is saved, and the program that runs. Nothing that runs changes
 // until "Load" builds the saved text and puts it into the project's runtimes.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, CirclePlay, CircleStop, Download, Lock, LockOpen, Save, Trash2, Undo2, Upload } from 'lucide-react';
+import type { Panel } from '@mythos/workbench-sdk';
 import { ForcedMark, TagValue } from '@mythos/workbench-sdk/react';
 import {
   addBinding,
@@ -27,6 +35,7 @@ import {
   type Kind,
 } from './bindings';
 import {
+  host,
   mayEngineer,
   useController,
   useProject,
@@ -38,11 +47,13 @@ import {
   type ValueProbe,
   type WatchedValue,
 } from './bridge';
+import { draw } from './draw';
 import { readFbd, type Fbd } from './fbd';
 import { FbdView } from './FbdView';
 import { readLadder, type Ladder } from './ladder';
 import { LadderEditor } from './LadderEditor';
 import { LadderView, type LadderLive } from './LadderView';
+import { InstructionsCard } from './LdInstructions';
 import {
   checkIsCurrent,
   describeStart,
@@ -112,7 +123,6 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
 
   return (
     <section className="logic-panel" data-testid="program-runtime" aria-label="Runtime">
-      <h3 className="logic-panel__title">Runtime</h3>
       {state.kind === 'unknown' && (
         <p>
           <span className="badge badge--neutral" data-testid="runtime-mode">
@@ -595,8 +605,31 @@ function ForceControl({
   );
 }
 
-/** The program's variables, each with its bindings to tags. */
+/** Whether the interface is open, as this viewer last left it. */
+const INTERFACE_KEY = 'mythos.logic.interface-open';
+
+function readOpen(): boolean {
+  try {
+    return window.localStorage.getItem(INTERFACE_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+function saveOpen(open: boolean): void {
+  try {
+    window.localStorage.setItem(INTERFACE_KEY, open ? 'true' : 'false');
+  } catch {
+    // A viewer convenience: without storage it lasts as long as the page.
+  }
+}
+
+/**
+ * The program's interface above its body, as TIA's block interface: its variables, each with its
+ * value and its bindings to tags. Folded away, it says how many there are.
+ */
 function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: boolean; state: RunState }) {
+  const [open, setOpen] = useState(readOpen);
   const watch = usePrograms((s) => s.watches[doc.entry.name]);
   const busy = usePrograms((s) => s.busy !== null);
   const forced = forcedOf(state);
@@ -613,9 +646,29 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
   const tags = [...new Set([...configured, ...(io?.connections.flatMap((c) => c.tags) ?? [])])].sort();
   const lost = variables === null ? rows : orphans(rows, variables);
 
+  const summary =
+    variables === null
+      ? 'variables not known'
+      : `${variables.length} variable${variables.length === 1 ? '' : 's'} · ${rows.length} binding${rows.length === 1 ? '' : 's'}`;
+
   return (
-    <section className="logic-panel" aria-label="Variables">
-      <h3 className="logic-panel__title">Variables and bindings</h3>
+    <details
+      className="logic-interface"
+      aria-label="Variables"
+      data-testid="program-interface"
+      open={open}
+      onToggle={(event) => {
+        const now = (event.currentTarget as HTMLDetailsElement).open;
+        if (now !== open) {
+          setOpen(now);
+          saveOpen(now);
+        }
+      }}
+    >
+      <summary className="logic-interface__summary">
+        Interface <span className="muted">{summary}</span>
+      </summary>
+      <div className="logic-interface__body">
       <datalist id="logic-tags">
         {tags.map((tag) => (
           <option key={tag} value={tag} />
@@ -730,7 +783,8 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
           ))}
         </div>
       )}
-    </section>
+      </div>
+    </details>
   );
 }
 
@@ -1012,6 +1066,96 @@ function StartFacts({ load }: { load: ReturnType<typeof loadOf> }) {
   );
 }
 
+/** Who sets what the program editor shows in the workbench's panes. */
+export const PANES = {
+  instructions: 'logic-instructions',
+  runtime: 'logic-runtime',
+  program: 'logic-program',
+  check: 'logic-check',
+} as const;
+
+const LANGUAGE: Record<string, string> = {
+  st: 'Structured Text (ST)',
+  ld: 'Ladder Diagram (LD)',
+  fbd: 'Function Block Diagram (FBD)',
+};
+
+/** The "Runtime" task card: what the controller's runtime does with the program, and its commands. */
+function RuntimeCard({ name }: { name: string }) {
+  const runtimes = usePrograms((s) => s.runtimes);
+  const busy = usePrograms((s) => s.busy !== null);
+  return <RuntimePanel name={name} state={runState(name, runtimes)} busy={busy} />;
+}
+
+/** The program's properties in the inspector: what it is, its task, and removing it. */
+function ProgramProperties({ name, onRemoved }: { name: string; onRemoved: () => void }) {
+  const doc = usePrograms((s) => s.programs.find((d) => d.entry.name === name));
+  const busy = usePrograms((s) => s.busy !== null);
+  if (!doc) {
+    return (
+      <p className="muted" data-testid="program-properties">
+        The project has no program called {name}.
+      </p>
+    );
+  }
+  const may = mayEngineer();
+  return (
+    <div className="logic-properties" data-testid="program-properties">
+      <dl className="props">
+        <dt>Program</dt>
+        <dd className="mono">{name}</dd>
+        <dt>Language</dt>
+        <dd>{LANGUAGE[doc.entry.language] ?? doc.entry.language}</dd>
+      </dl>
+      <SettingsPanel doc={doc} readOnly={!may} />
+      {may && <RemovePanel name={name} busy={busy} onRemoved={onRemoved} />}
+    </div>
+  );
+}
+
+/** What the compiler said of the program, in the inspector's Diagnostics tab. */
+function CheckCard({ name, goTo }: { name: string; goTo: (diagnostic: Diagnostic) => void }) {
+  const doc = usePrograms((s) => s.programs.find((d) => d.entry.name === name));
+  if (!doc) return null;
+  return <CheckPanel doc={doc} goTo={goTo} />;
+}
+
+/**
+ * How many problems the check of the text now found, for the count on the Diagnostics tab:
+ * `null` when the text now has not been checked, which counts as nothing known, not as none.
+ */
+function problemCount(doc: ProgramDoc | undefined): number | null {
+  if (!doc || doc.check === null || !checkIsCurrent(doc)) return null;
+  return (doc.check.ok ? 0 : doc.check.diagnostics.length) + (doc.check.binding_problems?.length ?? 0);
+}
+
+/** The check of the text, in a word, on the editor's toolbar; it opens the Diagnostics tab. */
+function CheckSummary({ doc }: { doc: ProgramDoc }) {
+  const count = problemCount(doc);
+  const [tone, text, title] =
+    doc.check === null
+      ? ['neutral', 'NOT CHECKED', 'The program has not been checked yet.']
+      : !checkIsCurrent(doc)
+        ? ['neutral', 'CHANGED SINCE CHECK', 'The text has changed since its last check.']
+        : !doc.check.ok
+          ? ['bad', `${count} ${count === 1 ? 'ERROR' : 'ERRORS'}`, 'The program does not compile.']
+          : count !== null && count > 0
+            ? ['warn', `COMPILES · ${count} BINDING ${count === 1 ? 'PROBLEM' : 'PROBLEMS'}`, 'The program compiles; some bindings are wrong.']
+            : ['good', 'COMPILES', 'The program compiles.'];
+  return (
+    <button
+      type="button"
+      className="btn btn--flat"
+      title={`${title} Show what the compiler said (Inspector → Diagnostics).`}
+      onClick={() => host().showDiagnostics()}
+      data-testid="check-summary"
+      data-state={tone}
+    >
+      <span className={`badge badge--${tone}`}>{text}</span>
+    </button>
+  );
+}
+
 export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (name: string) => void }) {
   const phase = usePrograms((s) => s.phase);
   const loadError = usePrograms((s) => s.loadError);
@@ -1082,6 +1226,54 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
     return () => clearInterval(timer);
   }, [runtimeKnown, watched, name, readWatch, dropWatch]);
 
+  // What goes into the workbench's panes, while the program is there to show.
+  const ready = doc !== undefined && doc.source !== null;
+  const instructions = ready && isLadder && ladder?.ok === true && mayEngineer();
+  const goToRef = useRef<(diagnostic: Diagnostic) => void>(() => undefined);
+  const onRemovedRef = useRef(onRemoved);
+  onRemovedRef.current = onRemoved;
+  useEffect(() => {
+    if (!ready) return undefined;
+    const workbench = host();
+    // Set in TIA's order: the instructions first, the online tools after.
+    if (instructions) {
+      workbench.setTaskCard(PANES.instructions, { title: 'Instructions', mount: (card) => draw(card, <InstructionsCard />) });
+    }
+    workbench.setTaskCard(PANES.runtime, { title: 'Runtime', mount: (card) => draw(card, <RuntimeCard name={name} />) });
+    return () => {
+      workbench.setTaskCard(PANES.instructions, null);
+      workbench.setTaskCard(PANES.runtime, null);
+    };
+  }, [ready, instructions, name]);
+  const properties = useMemo<Panel>(
+    () => ({
+      title: 'Program',
+      mount: (panel) => draw(panel, <ProgramProperties name={name} onRemoved={() => onRemovedRef.current?.(name)} />),
+    }),
+    [name]
+  );
+  useEffect(() => {
+    if (!ready) return undefined;
+    host().setInspector(PANES.program, properties);
+    return () => host().setInspector(PANES.program, null);
+  }, [ready, properties]);
+  const checkMount = useMemo<Panel['mount']>(
+    () => (panel) => draw(panel, <CheckCard name={name} goTo={(diagnostic) => goToRef.current(diagnostic)} />),
+    [name]
+  );
+  const count = problemCount(doc);
+  const countRef = useRef(count);
+  countRef.current = count;
+  useEffect(() => {
+    if (!ready) return undefined;
+    host().setDiagnostics(PANES.check, { title: `Compile: ${name}`, mount: checkMount, count: countRef.current });
+    return () => host().setDiagnostics(PANES.check, null);
+  }, [ready, name, checkMount]);
+  // Only the count changes after a check: the same mount, so nothing is drawn again.
+  useEffect(() => {
+    if (ready) host().setDiagnostics(PANES.check, { title: `Compile: ${name}`, mount: checkMount, count });
+  }, [ready, name, checkMount, count]);
+
   if (phase === 'reading' || phase === 'idle') {
     return <p className="editor__loading muted">Reading the project's programs…</p>;
   }
@@ -1123,9 +1315,36 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
   // What runs is another version than the last one built here: said, since the text may differ.
   const differs =
     state.kind === 'loaded' && doc.built !== null && doc.built.version !== state.runtime.version;
+  // What the compiler said is brought forward after a Check the engineer asked for, as TIA opens
+  // its compile results, and after a Load only when the compiler refused it (a load that went
+  // through says so in the work area). A check made by itself while editing moves no pane.
+  const showChecked = () => {
+    const now = usePrograms.getState().programs.find((d) => d.entry.name === name);
+    if (now?.check && checkIsCurrent(now)) host().showDiagnostics();
+  };
+  const showIfRefused = () => {
+    const now = usePrograms.getState().programs.find((d) => d.entry.name === name);
+    if (now?.check && checkIsCurrent(now) && !now.check.ok) host().showDiagnostics();
+  };
+  goToRef.current = (diagnostic: Diagnostic) => {
+    if (!isLadder && !isFbd) {
+      editor.current?.goTo(diagnostic.line, diagnostic.col);
+      return;
+    }
+    const id = diagnostic.element?.local_id;
+    if (id === null || id === undefined) return;
+    const mark = isFbd ? 'fbd-diagnostic' : 'ld-diagnostic';
+    const found = document.querySelector(`[data-testid="${mark}"][data-local-id="${id}"]`);
+    (found as (Element & { scrollIntoView?: (arg?: unknown) => void }) | null)?.scrollIntoView?.({ block: 'center' });
+  };
 
   return (
-    <div className="editor__column" data-testid="program-editor">
+    <div
+      className="editor__column"
+      data-testid="program-editor"
+      // A click in the editor shows the program's properties again, as TIA shows a block's.
+      onMouseDown={() => host().setInspector(PANES.program, properties)}
+    >
       <div className="editor__tools">
         <button
           type="button"
@@ -1139,14 +1358,14 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
           <Undo2 size={13} aria-hidden /> Discard
         </button>
         <span className="toolbar__sep" aria-hidden />
-        <button type="button" className="btn" disabled={working} onClick={() => void check(name)}>
+        <button type="button" className="btn" disabled={working} onClick={() => void check(name).then(showChecked)}>
           <Check size={13} aria-hidden /> Check
         </button>
         <button
           type="button"
           className="btn"
           disabled={!may || working}
-          onClick={() => void download(name)}
+          onClick={() => void download(name).then(showIfRefused)}
           title="Save, check and build the program, and put it into the project's runtimes. A new version of the program while it runs is changed online: it takes over the running variables and scans on."
           data-testid="program-load"
         >
@@ -1163,7 +1382,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
                 `Load ${name} cold? Every variable starts from its initial value, RETAIN variables included, and nothing the running version holds is carried over.`
               )
             ) {
-              void download(name, true);
+              void download(name, true).then(showIfRefused);
             }
           }}
           title="Load the program with every variable from its initial value, RETAIN ones included."
@@ -1171,6 +1390,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
         >
           <Download size={13} aria-hidden /> Load cold
         </button>
+        <CheckSummary doc={doc} />
         {dirty && (
           <span className="badge badge--warn" data-testid="program-unsaved">
             UNSAVED
@@ -1214,46 +1434,21 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
         </div>
       )}
       <div className="logic-editor">
-        <div className="logic-editor__top">
-          <div className="logic-editor__main">
-            <div className="logic-editor__source">
-              {isLadder && ladder !== null ? (
-                <LadderPanel doc={doc} ladder={ladder} state={state} may={may} />
-              ) : isFbd && fbd !== null ? (
-                <FbdPanel doc={doc} fbd={fbd} state={state} />
-              ) : (
-                <SourceEditor
-                  ref={editor}
-                  source={doc.source}
-                  readOnly={!may}
-                  diagnostics={diagnostics}
-                  onChange={(source) => setSource(name, source)}
-                />
-              )}
-            </div>
-            <CheckPanel
-              doc={doc}
-              goTo={(diagnostic) => {
-                if (!isLadder && !isFbd) {
-                  editor.current?.goTo(diagnostic.line, diagnostic.col);
-                  return;
-                }
-                const id = diagnostic.element?.local_id;
-                if (id === null || id === undefined) return;
-                const mark = isFbd ? 'fbd-diagnostic' : 'ld-diagnostic';
-                const found = document.querySelector(`[data-testid="${mark}"][data-local-id="${id}"]`);
-                (found as (Element & { scrollIntoView?: (arg?: unknown) => void }) | null)?.scrollIntoView?.({ block: 'center' });
-              }}
+        <VariablesPanel doc={doc} readOnly={!may} state={state} />
+        <div className="logic-editor__source">
+          {isLadder && ladder !== null ? (
+            <LadderPanel doc={doc} ladder={ladder} state={state} may={may} />
+          ) : isFbd && fbd !== null ? (
+            <FbdPanel doc={doc} fbd={fbd} state={state} />
+          ) : (
+            <SourceEditor
+              ref={editor}
+              source={doc.source}
+              readOnly={!may}
+              diagnostics={diagnostics}
+              onChange={(source) => setSource(name, source)}
             />
-          </div>
-          <div className="logic-editor__side">
-            <RuntimePanel name={name} state={state} busy={working} />
-            <SettingsPanel doc={doc} readOnly={!may} />
-            {may && <RemovePanel name={name} busy={working} onRemoved={() => onRemoved?.(name)} />}
-          </div>
-        </div>
-        <div className="logic-editor__bottom">
-          <VariablesPanel doc={doc} readOnly={!may} state={state} />
+          )}
         </div>
       </div>
     </div>

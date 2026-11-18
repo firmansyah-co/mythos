@@ -10,9 +10,11 @@ import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CheckResult } from '../bridge';
 import { open, type Item } from '../ldmodel';
-import { ProgramEditor } from '../ProgramEditor';
+import { PANES, ProgramEditor } from '../ProgramEditor';
+import { useModuleUi } from '../../../ui-shell/src/modules/registry';
 import { usePrograms } from '../programs';
 import {
+  paneOf,
   byTestId,
   click,
   endTest,
@@ -234,12 +236,13 @@ describe('building rungs', () => {
     click(container.querySelector('[data-testid="ld-favourite"][data-item="contact-p"]'));
     operand('edge');
     expect(source()).toMatch(/<contact localId="\d+" width="30" height="20" edge="rising">/);
-    // The palette can be hidden, so the networks have its width; the viewer's choice is kept.
-    click(byTestId(container, 'ld-palette-toggle'));
-    expect((byTestId(container, 'ld-palette') as HTMLElement).hidden).toBe(true);
-    expect(window.localStorage.getItem('mythos.logic.ld.palette-hidden')).toBe('true');
-    click(byTestId(container, 'ld-palette-toggle'));
-    expect((byTestId(container, 'ld-palette') as HTMLElement).hidden).toBe(false);
+    // The palette is the workbench's Instructions task card, beside the networks, not in them;
+    // it goes when the editor goes.
+    const card = paneOf(container, 'task-cards', PANES.instructions);
+    expect(card?.querySelector('[data-testid="ld-palette"]')).not.toBeNull();
+    expect(byTestId(container, 'ld-editor')?.querySelector('[data-testid="ld-palette"]')).toBeNull();
+    unmountAll();
+    expect(useModuleUi.getState().taskCards[PANES.instructions]).toBeUndefined();
   });
 });
 

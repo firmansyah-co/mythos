@@ -12,27 +12,24 @@
   min-height: 0;
 }
 
-/* The source with the runtime and the task beside it; the variables beneath, across. */
-.logic-editor__top {
-  display: flex;
-  flex: 3;
-  min-height: 0;
-}
-
-.logic-editor__bottom {
-  flex: 2;
-  min-height: 0;
+/* The program's interface above its body, folded or not; the body takes the rest. */
+.logic-interface {
+  flex: none;
+  max-height: 40%;
   overflow: auto;
-  border-top: 1px solid var(--c-chrome-border);
+  border-bottom: 1px solid var(--c-chrome-border);
   background: var(--c-surface-alt);
 }
 
-.logic-editor__main {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-  border-right: 1px solid var(--c-rule);
+.logic-interface__summary {
+  cursor: pointer;
+  padding: 4px 10px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.logic-interface__summary .muted {
+  font-weight: 400;
 }
 
 /* One line under the toolbar: what the last request came to. */
@@ -64,13 +61,6 @@
   min-height: 0;
   overflow: auto;
   background: var(--c-surface);
-}
-
-.logic-editor__side {
-  flex: none;
-  width: 340px;
-  overflow: auto;
-  background: var(--c-surface-alt);
 }
 
 /* The source: a text area over the same text painted in colour. Both use one font and one line
@@ -328,25 +318,12 @@ button.logic-diagnostic:hover {
 }
 
 .ld-editor__body {
-  display: flex;
   min-height: 0;
-  align-items: flex-start;
 }
 
-.ld-editor__networks {
-  flex: 1;
-  min-width: 0;
-}
-
-.ld-editor__palette {
-  flex: none;
-  width: 220px;
-  max-height: 70vh;
-  overflow: auto;
-  padding: 0 8px;
-  border-left: 1px solid var(--c-rule);
-  position: sticky;
-  top: 0;
+/* The Instructions task card. */
+.ld-palette {
+  padding: 4px 8px;
 }
 
 .ld-palette__group summary {
@@ -360,11 +337,11 @@ button.logic-diagnostic:hover {
   align-items: center;
 }
 
-.ld-editor__palette .ld-instruction {
+.ld-palette .ld-instruction {
   display: flex;
 }
 
-.ld-editor__palette .ld-instruction > .btn {
+.ld-palette .ld-instruction > .btn {
   flex: 1;
   justify-content: flex-start;
   gap: 8px;

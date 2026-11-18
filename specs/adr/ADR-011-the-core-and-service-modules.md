@@ -86,8 +86,9 @@ modules after sign-in and takes them down at sign-out.
 
 An entry's default export is a `WorkbenchModule` (`@mythos/workbench-sdk`): an id, which must
 be the module's, and `activate(host)`. Through the host it registers project-tree sections,
-editor kinds, and full-window views (the operator runtime), and sets inspector panels and task
-cards while an editor of its own wants them. The host gives it the open project, the signed-in
+editor kinds, and full-window views (the operator runtime), and sets inspector panels, task
+cards and Diagnostics-tab panels (with the count of problems they show, `null` when not known)
+while an editor of its own wants them, and can bring the Diagnostics tab forward. The host gives it the open project, the signed-in
 user, requests to the controller as that user, the live tag values and the named events of the
 telemetry stream (its own included), and the session log.
 

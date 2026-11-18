@@ -339,6 +339,8 @@ try {
   await evaluate(`__t.type('Reads tag for seconds', 'external.BoilerHouse.Unit1.runtime_s'); true`);
   await evaluate(`__t.type('Bind twice', 'published'); true`); await sleep(200);
   await evaluate(`__t.type('Published as for twice', 'internal.BoilerHouse.Doubler.twice'); true`);
+  // The program's properties are in the inspector; a Check may have brought Diagnostics forward.
+  await evaluate(`__t.click('Properties')`); await sleep(200);
   await evaluate(`__t.type('Interval in milliseconds', '50'); true`);
   await evaluate(`[...document.querySelectorAll('.settings__check')].find((l) => l.textContent.includes('Run when loaded')).querySelector('input').click(); true`);
   check('nothing runs before it is loaded', (await (await api(base + '/api/v1/runtimes')).json()).runtimes.length === 0);
@@ -475,6 +477,8 @@ try {
     JSON.stringify(await evaluate(`__t.text('[data-testid="ld-network-select"]')`)));
   await evaluate(`__t.type('Bind seconds', 'input'); true`); await sleep(200);
   await evaluate(`__t.type('Reads tag for seconds', 'external.BoilerHouse.Unit1.runtime_s'); true`);
+  // The program's properties are in the inspector; a Check may have brought Diagnostics forward.
+  await evaluate(`__t.click('Properties')`); await sleep(200);
   await evaluate(`__t.type('Interval in milliseconds', '50'); true`);
   await evaluate(`[...document.querySelectorAll('.settings__check')].find((l) => l.textContent.includes('Run when loaded')).querySelector('input').click(); true`);
   await evaluate(`__t.clickTestId('program-load')`); await sleep(3000);
@@ -601,6 +605,8 @@ try {
     !(await evaluate(`__t.has('[data-testid="program-unsaved"]')`)) && headerOf(savedSeal) === headerOf(created)
       && savedSeal.includes('title="Motor seal-in"') && /<inputVars><variable name="start">/.test(savedSeal),
     savedSeal.slice(0, 200));
+  // The program's properties are in the inspector; a Check may have brought Diagnostics forward.
+  await evaluate(`__t.click('Properties')`); await sleep(200);
   await evaluate(`__t.type('Interval in milliseconds', '50'); true`);
   await evaluate(`[...document.querySelectorAll('.settings__check')].find((l) => l.textContent.includes('Run when loaded')).querySelector('input').click(); true`);
   await evaluate(`__t.clickTestId('program-load')`); await sleep(3000);
@@ -709,6 +715,8 @@ try {
   check('its networks are numbered in the order they run, the connector joining its line', JSON.stringify(fbdNetworks) === '["1:10,11,12,13","2:20,21,24","3:30,31,32"]', JSON.stringify(fbdNetworks));
   await evaluate(`__t.type('Bind seconds', 'input'); true`); await sleep(200);
   await evaluate(`__t.type('Reads tag for seconds', 'external.BoilerHouse.Unit1.runtime_s'); true`);
+  // The program's properties are in the inspector; a Check may have brought Diagnostics forward.
+  await evaluate(`__t.click('Properties')`); await sleep(200);
   await evaluate(`__t.type('Interval in milliseconds', '50'); true`);
   await evaluate(`[...document.querySelectorAll('.settings__check')].find((l) => l.textContent.includes('Run when loaded')).querySelector('input').click(); true`);
   await evaluate(`__t.clickTestId('program-load')`); await sleep(3000);

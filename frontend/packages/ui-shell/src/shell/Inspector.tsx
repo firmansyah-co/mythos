@@ -8,7 +8,7 @@ import { useProjectIo } from '../data/scope';
 import { useTelemetry } from '../data/telemetry';
 import { useWorkbench, type InspectorTab } from '../data/workbench';
 import { ModuleMount } from '../modules/ModuleMount';
-import { useModuleUi } from '../modules/registry';
+import { moduleProblemCount, useModuleUi } from '../modules/registry';
 import { ConnectionStateBadge } from '../editors/ConnectionStateBadge';
 import { ForcedMark, QualityBadge, TagValue } from './QualityBadge';
 import { RuntimeGate } from './RuntimeGate';
@@ -157,8 +157,37 @@ function InfoTab() {
   );
 }
 
+/** What the modules say of the work open in them (a program that does not compile), each under its title. */
+function ModuleDiagnostics() {
+  const panels = useModuleUi((state) => state.diagnostics);
+  const project = useWorkbench((state) => state.project);
+  if (!project) return null;
+  return (
+    <>
+      {Object.entries(panels).map(([owner, panel]) => (
+        <section key={owner} data-testid="module-diagnostics" aria-label={panel.item.title}>
+          <h3 className="card__title">{panel.item.title}</h3>
+          <ModuleMount
+            mount={panel.item.mount}
+            context={{ project: { id: project.id, name: project.name } }}
+            deps={[project.id, owner]}
+            className="module-mount"
+          />
+        </section>
+      ))}
+    </>
+  );
+}
+
 function DiagnosticsTab() {
-  return <RuntimeGate>{(io) => <Problems io={io} />}</RuntimeGate>;
+  const modules = useModuleUi((state) => Object.keys(state.diagnostics).length);
+  return (
+    <>
+      <ModuleDiagnostics />
+      {modules > 0 && <h3 className="card__title">I/O</h3>}
+      <RuntimeGate>{(io) => <Problems io={io} />}</RuntimeGate>
+    </>
+  );
 }
 
 function Problems({ io }: { io: IoStatus }) {
@@ -221,7 +250,7 @@ export function Inspector({ collapsed }: { collapsed: boolean }) {
   const tab = useWorkbench((state) => state.inspectorTab);
   const setTab = useWorkbench((state) => state.setInspectorTab);
   const togglePane = useWorkbench((state) => state.togglePane);
-  const problemCount = currentProblems(useProjectIo()).length;
+  const problemCount = currentProblems(useProjectIo()).length + useModuleUi(moduleProblemCount);
 
   return (
     <section className="inspector" aria-label="Inspector window">

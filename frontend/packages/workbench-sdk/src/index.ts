@@ -137,6 +137,15 @@ export interface Panel {
   mount: Mount<{ project: Project }>;
 }
 
+/** What a module says is wrong with the work open in it, for the inspector's Diagnostics tab. */
+export interface DiagnosticsPanel extends Panel {
+  /**
+   * How many problems it shows, added to the count on the tab. `null` when it does not know
+   * (nothing was checked yet): nothing is added, and nothing is claimed to be fine.
+   */
+  count: number | null;
+}
+
 export interface WorkbenchHost {
   /** The version of this contract the workbench speaks. */
   readonly sdk: 1;
@@ -208,6 +217,15 @@ export interface WorkbenchHost {
 
   /** Show `panel` above the workbench's own task cards (or take it away, with `null`). */
   setTaskCard(owner: string, panel: Panel | null): void;
+
+  /**
+   * Show `panel` in the inspector's Diagnostics tab, above the controller's I/O problems (or
+   * take it away, with `null`) on behalf of `owner`. Set again with the same `mount` and another
+   * `count`, only the count on the tab changes: what is drawn is not drawn again.
+   */
+  setDiagnostics(owner: string, panel: DiagnosticsPanel | null): void;
+  /** Bring the Diagnostics tab forward, opening the inspector if it is collapsed, as a compile does. */
+  showDiagnostics(): void;
 
   register: {
     treeSection(section: TreeSection): Dispose;

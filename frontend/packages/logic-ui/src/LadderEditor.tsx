@@ -21,10 +21,10 @@
 // In an operand field: ↑/↓ choose a suggestion · Enter take it · Ctrl+Enter take it and
 // declare it as proposed · Escape back to the diagram.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, Plus, Redo, Star, Trash2, Undo, X } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { ArrowDown, ArrowUp, Plus, Redo, Trash2, Undo } from 'lucide-react';
 import type { Diagnostic } from './bridge';
-import { findBox, GROUPS, type BoxDef } from './ldcatalog';
+import { findBox, type BoxDef } from './ldcatalog';
 import {
   addNetwork,
   branch,
@@ -49,95 +49,11 @@ import {
   STANDARD_BOXES,
   type Edited,
   type Sel,
-  type Spec,
 } from './ldedit';
 import { idsFor, open, ownBoxes, write, type DocModel, type Drawn, type El, type Ids, type Item, type Section, type Source, type VarInfo } from './ldmodel';
 import { readLadder, type LdElement, type LdPou } from './ladder';
+import { allInstructions, dragged, Favourites, useLdPalette, type Instruction } from './LdInstructions';
 import { PouView, type LadderLive } from './LadderView';
-
-// ---------------------------------------------------------------------------------------------
-// The instructions
-// ---------------------------------------------------------------------------------------------
-
-/** One instruction of the palette: what it puts, or the branch it opens or closes. */
-export interface Instruction {
-  id: string;
-  /** Its IEC 61131-3 semigraphic form, or its name. */
-  symbol: string;
-  name: string;
-  spec: Spec | 'branch-open' | 'branch-close' | 'label';
-  key?: string;
-}
-
-const BIT_LOGIC: Instruction[] = [
-  { id: 'contact-no', symbol: '-| |-', name: 'Normally open contact', spec: { kind: 'contact' }, key: 'Shift+F2' },
-  { id: 'contact-nc', symbol: '-|/|-', name: 'Normally closed contact', spec: { kind: 'contact', negated: true }, key: 'Shift+F3' },
-  { id: 'contact-p', symbol: '-|P|-', name: 'Positive edge contact', spec: { kind: 'contact', edge: 'rising' } },
-  { id: 'contact-n', symbol: '-|N|-', name: 'Negative edge contact', spec: { kind: 'contact', edge: 'falling' } },
-  { id: 'coil', symbol: '-( )-', name: 'Coil', spec: { kind: 'coil' }, key: 'Shift+F7' },
-  { id: 'coil-negated', symbol: '-(/)-', name: 'Negated coil', spec: { kind: 'coil', negated: true } },
-  { id: 'coil-set', symbol: '-(S)-', name: 'Set coil', spec: { kind: 'coil', storage: 'set' } },
-  { id: 'coil-reset', symbol: '-(R)-', name: 'Reset coil', spec: { kind: 'coil', storage: 'reset' } },
-  { id: 'coil-p', symbol: '-(P)-', name: 'Positive edge coil', spec: { kind: 'coil', edge: 'rising' } },
-  { id: 'coil-n', symbol: '-(N)-', name: 'Negative edge coil', spec: { kind: 'coil', edge: 'falling' } },
-  { id: 'branch-open', symbol: '-+-', name: 'Open branch', spec: 'branch-open', key: 'Shift+F8' },
-  { id: 'branch-close', symbol: '-+=', name: 'Close branch', spec: 'branch-close', key: 'Shift+F9' },
-];
-
-const CONTROL: Instruction[] = [
-  { id: 'jump', symbol: '->>', name: 'Jump to a label', spec: { kind: 'jump' } },
-  { id: 'label', symbol: 'L:', name: 'Label of the network', spec: 'label' },
-  { id: 'return', symbol: '<RET>', name: 'Return', spec: { kind: 'return' } },
-];
-
-const EMPTY_BOX: Instruction = { id: 'box', symbol: '[ ?? ]', name: 'Empty box: any function or function block', spec: { kind: 'box', type: '' }, key: 'Shift+F5' };
-
-const boxInstruction = (def: BoxDef): Instruction => ({
-  id: `box:${def.name}`,
-  symbol: def.name,
-  name: `${def.name} (${def.kind === 'functionBlock' ? 'function block' : 'function'})`,
-  spec: { kind: 'box', type: def.name },
-});
-
-/** The favourites a new viewer starts with, TIA's default set. */
-const DEFAULT_FAVOURITES = ['contact-no', 'contact-nc', 'coil', 'box', 'branch-open', 'branch-close'];
-const FAVOURITES_KEY = 'mythos.logic.ld.favourites';
-/** Whether the palette is hidden, so the networks have its width. */
-const PALETTE_KEY = 'mythos.logic.ld.palette-hidden';
-
-function readFlag(key: string): boolean {
-  try {
-    return window.localStorage.getItem(key) === 'true';
-  } catch {
-    return false;
-  }
-}
-
-function saveFlag(key: string, on: boolean): void {
-  try {
-    window.localStorage.setItem(key, on ? 'true' : 'false');
-  } catch {
-    // A viewer convenience: without storage it lasts as long as the page.
-  }
-}
-
-function readFavourites(): string[] {
-  try {
-    const raw = window.localStorage.getItem(FAVOURITES_KEY);
-    const list = raw ? (JSON.parse(raw) as unknown) : null;
-    return Array.isArray(list) && list.every((x) => typeof x === 'string') ? (list as string[]) : DEFAULT_FAVOURITES;
-  } catch {
-    return DEFAULT_FAVOURITES;
-  }
-}
-
-function saveFavourites(list: string[]): void {
-  try {
-    window.localStorage.setItem(FAVOURITES_KEY, JSON.stringify(list));
-  } catch {
-    // A viewer convenience: without storage the favourites last as long as the page.
-  }
-}
 
 // ---------------------------------------------------------------------------------------------
 // The session: the document as opened, the models it went through, the ids given out
@@ -538,10 +454,7 @@ export function LadderEditor({
   const [message, setMessage] = useState<string | null>(null);
   /** The element whose first field takes the focus: one just put, or the selection on Enter. */
   const [focusReq, setFocusReq] = useState<{ id: number; token: number } | null>(null);
-  const [favourites, setFavourites] = useState<string[]>(readFavourites);
-  const [paletteHidden, setPaletteHidden] = useState(() => readFlag(PALETTE_KEY));
   const root = useRef<HTMLDivElement>(null);
-  const dragging = useRef<Instruction | null>(null);
   const sessionRef = useRef<Session | null>(null);
   sessionRef.current = session;
 
@@ -673,11 +586,21 @@ export function LadderEditor({
     [sel, mark, own, vars, commit]
   );
 
-  const all: Instruction[] = useMemo(
-    () => [...BIT_LOGIC, EMPTY_BOX, ...STANDARD_BOXES.map(boxInstruction), ...own.map(boxInstruction), ...CONTROL],
-    [own]
-  );
-  const byId = (id: string) => all.find((x) => x.id === id);
+  const all: Instruction[] = useMemo(() => allInstructions(own), [own]);
+
+  // The Instructions task card and the favourites bar put through this editor while it is open
+  // and can take an instruction: at the selection, as a click on the diagram would.
+  const placeRef = useRef(place);
+  placeRef.current = place;
+  const editable = session !== null;
+  useEffect(() => {
+    if (!editable) return undefined;
+    useLdPalette.setState({ place: (x) => placeRef.current(x, null) });
+    return () => useLdPalette.setState({ place: null });
+  }, [editable]);
+  useEffect(() => {
+    useLdPalette.setState({ own });
+  }, [own]);
 
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     if (!session || !model || !pou) return;
@@ -756,64 +679,13 @@ export function LadderEditor({
   }
   if (!session || !model || !pou || !pouSource) return <p className="muted">Reading the diagram…</p>;
 
-  const toggleFavourite = (id: string) => {
-    const next = favourites.includes(id) ? favourites.filter((x) => x !== id) : [...favourites, id];
-    setFavourites(next);
-    saveFavourites(next);
-  };
-
-  const onDragStart = (instruction: Instruction) => (e: DragEvent) => {
-    dragging.current = instruction;
-    try {
-      e.dataTransfer?.setData('text/plain', instruction.id);
-    } catch {
-      // The data is for other targets only; this editor keeps what is dragged itself.
-    }
-  };
-
-  const instructionButton = (x: Instruction, where: 'palette' | 'favourites') => (
-    <span key={x.id} className="ld-instruction">
-      <button
-        type="button"
-        className={where === 'favourites' ? 'btn' : 'btn btn--flat'}
-        draggable
-        onDragStart={onDragStart(x)}
-        onClick={() => place(x, null)}
-        data-testid={where === 'favourites' ? 'ld-favourite' : 'ld-palette-item'}
-        data-item={x.id}
-        title={`${x.name}${x.key ? ` (${x.key})` : ''}`}
-        aria-label={x.name}
-      >
-        <span className="mono">{x.symbol}</span>
-        {where === 'palette' && <span className="ld-instruction__name">{x.name}</span>}
-      </button>
-      <button
-        type="button"
-        className="icon-btn"
-        onClick={() => toggleFavourite(x.id)}
-        aria-label={favourites.includes(x.id) ? `Remove ${x.name} from the favourites` : `Add ${x.name} to the favourites`}
-        title={favourites.includes(x.id) ? 'Remove from the favourites' : 'Add to the favourites'}
-        data-testid={where === 'favourites' ? 'ld-favourite-remove' : 'ld-favourite-add'}
-      >
-        {where === 'favourites' ? <X size={11} aria-hidden /> : <Star size={11} aria-hidden fill={favourites.includes(x.id) ? 'currentColor' : 'none'} />}
-      </button>
-    </span>
-  );
-
-  const groups: Array<[string, Instruction[]]> = [
-    ['Bit logic', BIT_LOGIC],
-    ...GROUPS.map((g): [string, Instruction[]] => [g, [...(g === 'Timers' ? [EMPTY_BOX] : []), ...STANDARD_BOXES.filter((d) => d.group === g).map(boxInstruction)]]),
-    ...(own.length > 0 ? [['This document', own.map(boxInstruction)] as [string, Instruction[]]] : []),
-    ['Program control', CONTROL],
-  ];
-
   const isProgram = program !== null ? pou.name.toLowerCase() === program.toLowerCase() : pou.pouType === 'program';
   const drawnOf = session.drawn[pouIndex] ?? [];
 
   return (
     <div className="ld-editor" data-testid="ld-editor" tabIndex={0} ref={root} onKeyDown={onKey} aria-label="Ladder Diagram editor">
       <div className="toolbar ld-editor__bar" role="toolbar" aria-label="Favourites" data-testid="ld-favourites">
-        {favourites.map((id) => byId(id)).filter((x): x is Instruction => x !== undefined).map((x) => instructionButton(x, 'favourites'))}
+        <Favourites />
         <span className="toolbar__sep" aria-hidden />
         <button type="button" className="btn" data-testid="ld-undo" disabled={session.at === 0} onClick={() => travel(-1)} title="Undo (Ctrl+Z)">
           <Undo size={13} aria-hidden /> Undo
@@ -829,19 +701,6 @@ export function LadderEditor({
           title="Add a network after the selected one (Ctrl+R)"
         >
           <Plus size={13} aria-hidden /> Network
-        </button>
-        <button
-          type="button"
-          className="btn btn--flat"
-          data-testid="ld-palette-toggle"
-          aria-pressed={!paletteHidden}
-          onClick={() => {
-            saveFlag(PALETTE_KEY, !paletteHidden);
-            setPaletteHidden(!paletteHidden);
-          }}
-          title="Show or hide the instruction palette: hidden, the networks have its width"
-        >
-          {paletteHidden ? 'Show instructions' : 'Hide instructions'}
         </button>
       </div>
       {message && (
@@ -907,8 +766,8 @@ export function LadderEditor({
                   root.current?.focus();
                 }}
                 onDrop={(s) => {
-                  const x = dragging.current;
-                  dragging.current = null;
+                  const x = dragged.current;
+                  dragged.current = null;
                   if (x) place(x, s);
                 }}
                 onHeader={(what, value) =>
@@ -942,15 +801,6 @@ export function LadderEditor({
             <Plus size={13} aria-hidden /> Add network
           </button>
         </div>
-        <aside className="ld-editor__palette" data-testid="ld-palette" aria-label="Instructions" hidden={paletteHidden}>
-          <h3 className="logic-panel__title">Instructions</h3>
-          {groups.map(([title, items]) => (
-            <details key={title} open={title === 'Bit logic' || title === 'Timers'} className="ld-palette__group">
-              <summary>{title}</summary>
-              {items.map((x) => instructionButton(x, 'palette'))}
-            </details>
-          ))}
-        </aside>
       </div>
     </div>
   );

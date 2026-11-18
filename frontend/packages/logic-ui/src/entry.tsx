@@ -2,10 +2,9 @@
 // project tree and the program editor. Built into `entry.js` (see vite.config.ts) and served by
 // the controller beside the module.
 
-import type { ReactElement } from 'react';
-import { createRoot } from 'react-dom/client';
 import type { Dispose, WorkbenchHost, WorkbenchModule } from '@mythos/workbench-sdk';
 import { bind } from './bridge';
+import { draw } from './draw';
 import { ProgramEditor } from './ProgramEditor';
 import { ProgramsTree } from './ProgramsTree';
 import { anyDirty, usePrograms } from './programs';
@@ -17,24 +16,6 @@ export const MODULE_ID = 'org.mythos.logic';
 export const EDITOR = 'logic-program';
 /** Sent by the logic module when a project's programs change. */
 export const PROGRAMS_CHANGED_EVENT = 'LOGIC_PROGRAMS_CHANGED';
-
-/** Draw `element` into `container` with this module's own React; return what takes it down. */
-function draw(container: HTMLElement, element: ReactElement): Dispose {
-  // Each root gets an element of its own: the workbench may mount again into the same container
-  // before the previous root is gone, and two roots must never share one.
-  const own = document.createElement('div');
-  own.className = 'logic-root';
-  container.append(own);
-  const root = createRoot(own);
-  root.render(element);
-  // Taken down after the workbench's own render has finished: a root cannot be unmounted
-  // synchronously from inside a render.
-  return () =>
-    queueMicrotask(() => {
-      root.unmount();
-      own.remove();
-    });
-}
 
 /** The stylesheet built beside `entry.js`, while the module is active. */
 function stylesheet(): Dispose {

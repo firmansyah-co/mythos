@@ -295,6 +295,46 @@ describe('what a module registered, in the workbench', () => {
     );
   });
 
+  it('shows what a module diagnoses in the Diagnostics tab, counted there, and brings the tab forward when asked', async () => {
+    const record = await loadNotes();
+    const host = record.host as WorkbenchHost;
+    const inspector = render(<Inspector collapsed={false} />);
+    let mounts = 0;
+    const mount = (panel: HTMLElement) => {
+      mounts += 1;
+      panel.textContent = 'note 3 is empty';
+    };
+    const count = () => inspector.querySelector('[data-testid="problem-count"]')?.textContent ?? null;
+
+    // Not known is not counted: nothing is claimed either way.
+    act(() => host.setDiagnostics('note-check', { title: 'Check', mount, count: null }));
+    expect(count()).toBeNull();
+    act(() => host.setDiagnostics('note-check', { title: 'Check', mount, count: 2 }));
+    expect(count()).toBe('2');
+
+    act(() => host.showDiagnostics());
+    expect(useWorkbench.getState().inspectorTab).toBe('diagnostics');
+    expect(inspector.querySelector('[data-testid="module-diagnostics"]')?.textContent).toBe('Checknote 3 is empty');
+    // Only the count changes when the same mount is set again: nothing is drawn twice.
+    act(() => host.setDiagnostics('note-check', { title: 'Check', mount, count: 1 }));
+    expect([count(), mounts]).toEqual(['1', 1]);
+
+    // A collapsed inspector is opened to show them.
+    act(() => useWorkbench.getState().togglePane('inspector'));
+    expect(useWorkbench.getState().panes.inspector).toBe(false);
+    act(() => host.showDiagnostics());
+    expect(useWorkbench.getState().panes.inspector).toBe(true);
+
+    act(() => host.setDiagnostics('note-check', null));
+    expect(count()).toBeNull();
+    expect(inspector.querySelector('[data-testid="module-diagnostics"]')).toBeNull();
+
+    // Unloading the module takes away what it left there.
+    act(() => host.setDiagnostics('note-check', { title: 'Check', mount, count: 3 }));
+    act(() => unloadModuleUis());
+    expect(useModuleUi.getState().diagnostics).toEqual({});
+  });
+
   it('says plainly when no enabled module has an editor that is open', async () => {
     controller({ ...MODULES, modules: [] });
     await loadModuleUis(importer({}));

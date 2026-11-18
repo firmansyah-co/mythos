@@ -100,6 +100,7 @@ export async function loadModuleUis(importer: Importer = browserImport): Promise
           useModuleUi.setState((state) => ({
             inspector: withoutModule(state.inspector, row.id),
             taskCards: withoutModule(state.taskCards, row.id),
+            diagnostics: withoutModule(state.diagnostics, row.id),
             unsaved: Object.fromEntries(
               Object.entries(state.unsaved).filter(([, owner]) => owner !== row.id)
             ),
