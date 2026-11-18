@@ -178,6 +178,8 @@ fn a_diagnostic_about_the_library_never_points_into_the_program() {
         end_line: library::first_line(k) + 11,
         end_col: 9,
         message: "something".into(),
+        source: None,
+        element: None,
     };
     let user = mythos_logic_ir::Diagnostic {
         line: 12,
@@ -185,6 +187,8 @@ fn a_diagnostic_about_the_library_never_points_into_the_program() {
         end_line: 12,
         end_col: 9,
         message: "of the program".into(),
+        source: None,
+        element: None,
     };
     let out = library::as_the_compilers(vec![about, user.clone()]);
     assert_eq!(

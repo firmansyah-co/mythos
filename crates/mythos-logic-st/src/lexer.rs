@@ -122,6 +122,14 @@ pub fn tokens(src: &str) -> Lexed {
     lex_as(src, 1, false)
 }
 
+/// The tokens of a text written inside another language's source, its lines counted from
+/// `first_line`: the variable of a Ladder Diagram contact, the expression of a variable, an
+/// initial value (ADR-013 §2.15). The rules are a program's: a name may not begin with two
+/// underscores. The line says which text it is, so a diagnostic about it finds its element.
+pub fn tokens_at(src: &str, first_line: u32) -> Lexed {
+    lex_as(src, first_line, false)
+}
+
 /// The tokens of a file of the standard library, its lines counted from `first_line`, so that
 /// a place in it can never be taken for a place in a program's source (ADR-013 L4). Only
 /// here may a name begin with two underscores: those are the intrinsics, which a program

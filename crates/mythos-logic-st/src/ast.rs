@@ -114,6 +114,9 @@ pub struct VarDecl {
     pub retention: Retention,
     pub ty: TypeSpec,
     pub init: Option<Init>,
+    /// Made by another front-end for itself, not written by the program: the memory of a
+    /// Ladder Diagram edge contact (`mythos_logic_ir::Var::hidden`). Never from ST text.
+    pub hidden: bool,
 }
 
 /// One step from a variable to a part of it.
