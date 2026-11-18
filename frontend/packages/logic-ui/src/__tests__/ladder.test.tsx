@@ -29,6 +29,7 @@ import {
   texts,
   typeInto,
   unmountAll,
+  until,
   useController,
   useSession,
   useShell,
@@ -145,6 +146,7 @@ async function opened(backend: Backend, name = 'Main') {
   await settle();
   const container = render(<ProgramEditor name={name} />);
   await settle();
+  await until('the Ladder Diagram is drawn', () => byTestId(container, 'ld-view') ?? byTestId(container, 'ld-editor') ?? byTestId(container, 'ld-unreadable'));
   return { calls, container };
 }
 

@@ -224,6 +224,21 @@ export async function settle(): Promise<void> {
   }
 }
 
+/**
+ * Let the event loop turn until `holds` is true, and fail naming `what` when it never is.
+ * `settle` turns it a fixed four times, which is enough on a quiet machine; a response body is
+ * read through a stream, and on a loaded CI runner that takes more turns than timers do.
+ */
+export async function until(what: string, holds: () => unknown, withinMs = 10_000): Promise<void> {
+  const deadline = Date.now() + withinMs;
+  while (!holds()) {
+    if (Date.now() > deadline) throw new Error(`never: ${what}`);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+  }
+}
+
 /** Run something that changes state, and let it finish. */
 export async function doing(action: () => unknown): Promise<void> {
   await act(async () => {
