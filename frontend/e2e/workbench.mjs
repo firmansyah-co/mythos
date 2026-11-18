@@ -639,6 +639,111 @@ try {
   await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
   }
 
+  // 8f. A Function Block Diagram (ADR-013 L3c-1): added from the tree as FBD, its networks saved
+  // over the API as an agent saves them (the FBD editor is L3c-2), checked with a mistake drawn at
+  // its element, bound to the device's counter, loaded, and drawn live: a BOOL line on or off, a
+  // number written at its output, a line through a connector, all following the counter.
+  {
+  await evaluate(`__t.clickTestId('tree-add-program')`); await sleep(200);
+  await evaluate(`__t.type('Program name', 'Blender'); __t.type('Program language', 'fbd'); __t.press('Program name', 'Enter'); true`); await sleep(1500);
+  check('an FBD program added from the tree opens in the read-only Function Block Diagram view, with no text area and no LD editor',
+    (await evaluate(`__t.has('[data-testid="fbd-view"]') && !__t.has('[data-testid="ld-editor"]')`))
+      && !(await evaluate(`__t.has('[aria-label="Structured Text source"]')`)),
+    await evaluate(`__t.text('[data-testid="fbd-panel"]').join(' ')`));
+  const fbdLanguage = await evaluate(`[...document.querySelectorAll('[data-testid="tree-program"]')].filter((n) => n.querySelector('.tree__label').textContent === 'Blender').map((n) => n.querySelector('[data-testid="tree-program-language"]').textContent)`);
+  check('the tree says it is FBD', JSON.stringify(fbdLanguage) === '["FBD"]', JSON.stringify(fbdLanguage));
+  const at = (id, x, y, body) => body.replace('@', `localId="${id}"><position x="${x}" y="${y}"/>`);
+  const line = (from) => `<connectionPointIn><connection refLocalId="${from}"/></connectionPointIn>`;
+  const pin = (formal, inner) => `<variable formalParameter="${formal}">${inner}</variable>`;
+  const box = (id, x, y, type, inputs) => at(id, x, y, `<block typeName="${type}" @<inputVariables>${inputs}</inputVariables><inOutVariables/><outputVariables><variable formalParameter="OUT"><connectionPointOut/></variable></outputVariables></block>`);
+  const literal = (text) => `<connectionPointIn><expression>${text}</expression></connectionPointIn>`;
+  const diagram = (secondsVariable) => `<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <types><dataTypes/><pous>
+    <pou name="Blender" pouType="program">
+      <interface>
+        <inputVars><variable name="seconds"><type><INT/></type></variable></inputVars>
+        <localVars>
+          <variable name="odd"><type><BOOL/></type></variable>
+          <variable name="even"><type><BOOL/></type></variable>
+          <variable name="tenfold"><type><INT/></type></variable>
+        </localVars>
+      </interface>
+      <body><FBD>
+        ${at(10, 0, 20, `<inVariable @<connectionPointOut/><expression>${secondsVariable}</expression></inVariable>`)}
+        ${box(11, 120, 20, 'MOD', pin('IN1', line(10)) + pin('IN2', literal('2')))}
+        ${box(12, 240, 20, 'EQ', pin('IN1', line(11)) + pin('IN2', literal('1')))}
+        ${at(13, 360, 20, `<outVariable @${line(12)}<expression>odd</expression></outVariable>`)}
+        ${at(20, 0, 120, '<inVariable @<connectionPointOut/><expression>seconds</expression></inVariable>')}
+        ${box(21, 120, 120, 'MUL', pin('IN1', line(20)) + pin('IN2', literal('10')))}
+        ${at(22, 240, 120, `<connector name="TEN" @${line(21)}</connector>`)}
+        ${at(23, 0, 180, '<continuation name="TEN" @<connectionPointOut/></continuation>')}
+        ${at(24, 120, 180, `<outVariable @${line(23)}<expression>tenfold</expression></outVariable>`)}
+        ${at(30, 0, 260, '<inVariable @<connectionPointOut/><expression>odd</expression></inVariable>')}
+        ${box(31, 120, 260, 'NOT', pin('IN', line(30)))}
+        ${at(32, 240, 260, `<outVariable @${line(31)}<expression>even</expression></outVariable>`)}
+      </FBD></body>
+    </pou>
+  </pous></types>
+  <instances><configurations/></instances>
+</project>
+`;
+  const saveDiagram = async (secondsVariable) => (await api(`${base}/api/v1/projects/plant_a/logic/programs/Blender/source`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: diagram(secondsVariable) }) })).ok;
+  check('an agent saves networks into it over the API', await saveDiagram('second'));
+  await sleep(1500);
+  check('the open diagram follows what was saved elsewhere',
+    (await evaluate(`document.querySelectorAll('[data-testid="fbd-element"][data-kind="block"]').length`)) === 4,
+    await evaluate(`[...document.querySelectorAll('[data-testid="fbd-element"]')].map((e) => e.getAttribute('data-kind')).join()`));
+  await evaluate(`__t.click('Check')`); await sleep(1200);
+  const fbdDiagnostics = await evaluate(`__t.text('[data-testid="diagnostic"]')`);
+  check('a mistake in a network is told at its element', JSON.stringify(fbdDiagnostics) === '["Blender element 10second is not declared"]', JSON.stringify(fbdDiagnostics));
+  check('and drawn around it in the diagram', (await evaluate(`[...document.querySelectorAll('[data-testid="fbd-diagnostic"]')].map((d) => d.getAttribute('data-local-id')).join()`)) === '10');
+  check('the corrected networks are saved', await saveDiagram('seconds'));
+  await sleep(1500);
+  await evaluate(`__t.click('Check')`); await sleep(1200);
+  check('and compile', (await evaluate(`__t.text('[data-testid="check-ok"]')[0]`)) === 'COMPILES');
+  const fbdRows = await evaluate(`__t.text('[data-testid="variable-row"] td:first-child')`);
+  check('its variables are listed, and none the front-end made for itself', JSON.stringify(fbdRows) === '["seconds","odd","even","tenfold"]', JSON.stringify(fbdRows));
+  const fbdNetworks = await evaluate(`[...document.querySelectorAll('[data-testid="fbd-network"]')].map((n) => n.textContent + ':' + n.getAttribute('data-ids'))`);
+  check('its networks are numbered in the order they run, the connector joining its line', JSON.stringify(fbdNetworks) === '["1:10,11,12,13","2:20,21,24","3:30,31,32"]', JSON.stringify(fbdNetworks));
+  await evaluate(`__t.type('Bind seconds', 'input'); true`); await sleep(200);
+  await evaluate(`__t.type('Reads tag for seconds', 'external.BoilerHouse.Unit1.runtime_s'); true`);
+  await evaluate(`__t.type('Interval in milliseconds', '50'); true`);
+  await evaluate(`[...document.querySelectorAll('.settings__check')].find((l) => l.textContent.includes('Run when loaded')).querySelector('input').click(); true`);
+  await evaluate(`__t.clickTestId('program-load')`); await sleep(3000);
+  const fbdBuilt = await evaluate(`__t.text('[data-testid="program-built"]')[0]`);
+  check('Load builds the Function Block Diagram and loads it into a runtime', /^Version [0-9a-f]{12} was built and loaded\./.test(fbdBuilt ?? ''), fbdBuilt);
+  const fbdRuntime = (await (await api(base + '/api/v1/runtimes')).json()).runtimes.find((r) => r.id === 'Blender');
+  check('the controller runs it in the VM runtime module', fbdRuntime?.mode === 'run' && fbdRuntime.scans > 0, JSON.stringify(fbdRuntime));
+  await sleep(1000);
+  const fbdLive = () => evaluate(`(() => {
+    const value = (from, output) => document.querySelector('[data-testid="fbd-value"][data-from="' + from + '"][data-output="' + output + '"]');
+    const lineState = (from, to) => document.querySelector('[data-testid="fbd-line"][data-from="' + from + '"][data-to="' + to + '"]')?.getAttribute('data-state');
+    return { live: document.querySelector('[data-testid="fbd-live"]')?.getAttribute('data-live'),
+      seconds: value(20, '')?.textContent, tenfold: value(21, 'OUT')?.textContent, tenfoldState: value(21, 'OUT')?.getAttribute('data-state'),
+      continued: value(23, '')?.textContent, mod: value(11, 'OUT')?.textContent,
+      odd: lineState(12, 13), even: lineState(31, 32), through: lineState(23, 24) }; })()`);
+  const fbdSeen = [];
+  for (let i = 0; i < 6; i++) { fbdSeen.push(await fbdLive()); await sleep(450); }
+  check('the diagram is drawn live while its version runs', fbdSeen.every((s) => s.live === 'live'), JSON.stringify(fbdSeen));
+  check('a number is written at its output: MUL gives ten times what its line carries, and the continuation the same',
+    fbdSeen.every((s) => s.tenfoldState === 'value' && Number(s.tenfold) === 10 * Number(s.seconds) && s.continued === s.tenfold && s.through === 'value'),
+    JSON.stringify(fbdSeen));
+  check('a BOOL line is drawn on or off: odd and its negation opposite, as MOD says',
+    fbdSeen.every((s) => (s.odd === 'on' || s.odd === 'off') && s.even === (s.odd === 'on' ? 'off' : 'on') && s.mod === (s.odd === 'on' ? '1' : '0')),
+    JSON.stringify(fbdSeen));
+  check('and they change with the device’s counter', new Set(fbdSeen.map((s) => s.odd)).size === 2 && new Set(fbdSeen.map((s) => s.tenfold)).size > 1,
+    JSON.stringify(fbdSeen.map((s) => `${s.odd}/${s.tenfold}`)));
+  await shot('e2e_6h_fbd');
+  await evaluate(`__t.clickTestId('runtime-stop')`); await sleep(2500);
+  const fbdStopped = await fbdLive();
+  check('a stopped Function Block Diagram is drawn with no values', fbdStopped.live === 'none' && fbdStopped.tenfold === undefined, JSON.stringify(fbdStopped));
+  await evaluate(`__t.clickTestId('runtime-unload')`); await sleep(2500);
+  check('Unload takes it out of the controller’s runtimes', !(await (await api(base + '/api/v1/runtimes')).json()).runtimes.some((r) => r.id === 'Blender'));
+  await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
+  }
+
   // 9. Go offline: values disappear, on the screen as everywhere else.
   await evaluate(`__t.click('Go offline')`); await sleep(500);
   const offline = await evaluate(`__t.text('[data-testid="tag-value"]')`);

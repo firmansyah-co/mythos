@@ -1,4 +1,4 @@
-//! TC6 XML for tests, written element by element as an LD editor would write it.
+//! TC6 XML for tests, written element by element as an LD or FBD editor would write it.
 //!
 //! Connections are named as `"7"` (the one output of element 7) or `"7.Q"` (the output Q of
 //! block 7). Positions are given; the front-end orders by them.
@@ -61,6 +61,8 @@ pub struct Pou {
     result: Option<String>,
     sections: Vec<(String, String)>,
     body: String,
+    /// The body's language as TC6 writes it: `LD` or `FBD`.
+    lang: &'static str,
 }
 
 impl Pou {
@@ -71,7 +73,13 @@ impl Pou {
             result: None,
             sections: Vec::new(),
             body: String::new(),
+            lang: "LD",
         }
+    }
+    /// The body is a Function Block Diagram.
+    pub fn fbd(mut self) -> Pou {
+        self.lang = "FBD";
+        self
     }
     pub fn program(name: &str) -> Pou {
         Pou::new(name, "program")
@@ -231,6 +239,93 @@ impl Pou {
         e.push_str("</outputVariables></block>");
         self.raw(&e)
     }
+    /// A block whose inputs and outputs may be negated: `(formal, input, negated)` and
+    /// `(formal, negated)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn block_neg(
+        self,
+        id: u64,
+        x: i32,
+        y: i32,
+        type_name: &str,
+        instance: Option<&str>,
+        inputs: &[(&str, In, bool)],
+        outputs: &[(&str, bool)],
+    ) -> Pou {
+        let inst = instance
+            .map(|i| format!(" instanceName=\"{}\"", esc(i)))
+            .unwrap_or_default();
+        let mut e = format!(
+            "<block localId=\"{id}\" typeName=\"{type_name}\"{inst}>{}<inputVariables>",
+            pos(x, y)
+        );
+        for (formal, input, negated) in inputs {
+            let neg = if *negated { " negated=\"true\"" } else { "" };
+            e.push_str(&format!("<variable formalParameter=\"{formal}\"{neg}>"));
+            match input {
+                In::From(from) => e.push_str(&conns(from)),
+                In::Expr(text) => e.push_str(&format!(
+                    "<connectionPointIn><expression>{}</expression></connectionPointIn>",
+                    esc(text)
+                )),
+            }
+            e.push_str("</variable>");
+        }
+        e.push_str("</inputVariables><inOutVariables/><outputVariables>");
+        for (o, negated) in outputs {
+            let neg = if *negated { " negated=\"true\"" } else { "" };
+            e.push_str(&format!(
+                "<variable formalParameter=\"{o}\"{neg}><connectionPointOut/></variable>"
+            ));
+        }
+        e.push_str("</outputVariables></block>");
+        self.raw(&e)
+    }
+    /// An input variable whose output is negated.
+    pub fn invar_neg(self, id: u64, x: i32, y: i32, expr: &str) -> Pou {
+        let e = format!(
+            "<inVariable localId=\"{id}\" negated=\"true\">{}<connectionPointOut/><expression>{}</expression></inVariable>",
+            pos(x, y),
+            esc(expr)
+        );
+        self.raw(&e)
+    }
+    /// An output variable that writes the negation of its input.
+    pub fn outvar_neg(self, id: u64, x: i32, y: i32, expr: &str, from: &[&str]) -> Pou {
+        let e = format!(
+            "<outVariable localId=\"{id}\" negated=\"true\">{}{}<expression>{}</expression></outVariable>",
+            pos(x, y),
+            conns(from),
+            esc(expr)
+        );
+        self.raw(&e)
+    }
+    /// An in-out variable: written from its input, then read.
+    pub fn inoutvar(self, id: u64, x: i32, y: i32, expr: &str, from: &[&str]) -> Pou {
+        let e = format!(
+            "<inOutVariable localId=\"{id}\">{}{}<connectionPointOut/><expression>{}</expression></inOutVariable>",
+            pos(x, y),
+            conns(from),
+            esc(expr)
+        );
+        self.raw(&e)
+    }
+    /// A connector: the line from `from` goes on at each continuation of `name`.
+    pub fn connector(self, id: u64, x: i32, y: i32, name: &str, from: &[&str]) -> Pou {
+        let e = format!(
+            "<connector localId=\"{id}\" name=\"{name}\">{}{}</connector>",
+            pos(x, y),
+            conns(from)
+        );
+        self.raw(&e)
+    }
+    pub fn continuation(self, id: u64, x: i32, y: i32, name: &str) -> Pou {
+        let e = format!(
+            "<continuation localId=\"{id}\" name=\"{name}\">{}<connectionPointOut/></continuation>",
+            pos(x, y)
+        );
+        self.raw(&e)
+    }
     pub fn label(self, id: u64, y: i32, name: &str) -> Pou {
         let e = format!(
             "<label localId=\"{id}\" label=\"{name}\">{}</label>",
@@ -283,8 +378,9 @@ impl Pou {
             s.push_str(&format!("<{open}>{vars}</{close}>"));
         }
         s.push_str(&format!(
-            "</interface><body><LD>{}</LD></body></pou>",
-            self.body
+            "</interface><body><{lang}>{}</{lang}></body></pou>",
+            self.body,
+            lang = self.lang
         ));
         s
     }

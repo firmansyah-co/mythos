@@ -50,6 +50,7 @@ pub fn check(src: &ast::Source) -> Result<Unit, Vec<Diagnostic>> {
         cur: 0,
         loops: 0,
         result_assigned: false,
+        untyped: Vec::new(),
     };
     c.names(src);
     c.declarations(src);
@@ -174,6 +175,9 @@ struct Checker {
     cur: usize,
     loops: usize,
     result_assigned: bool,
+    /// The variables typed by their value (`ast::TypeSpecKind::OfValue`) that no statement has
+    /// assigned yet: (POU, variable). Each stands with a type nothing reads until then.
+    untyped: Vec<(usize, usize)>,
 }
 
 /// A literal's value before it knows its type.
@@ -514,6 +518,20 @@ impl Checker {
             self.err(d.span, format!("{} is declared twice", d.name));
             return;
         }
+        if let ast::TypeSpecKind::OfValue = d.ty.kind {
+            // A front-end's own: its type is the value's, given at the first assignment.
+            let at = self.unit.pous[self.cur].vars.len();
+            self.unit.pous[self.cur].vars.push(Var {
+                name: d.name.clone(),
+                ty: Ty::Bool,
+                section: d.section,
+                retention: d.retention,
+                init: None,
+                hidden: d.hidden,
+            });
+            self.untyped.push((self.cur, at));
+            return;
+        }
         // IEC 61131-3 ed. 3 §6.6.3.2 rule 18 advises against an instance named as a function;
         // here no variable may be, so `name(…)` is never two things. A variable named as a
         // type (`pump : Pump`) is no ambiguity: a type is named only in a declaration.
@@ -660,6 +678,15 @@ impl Checker {
                     .map(|(lo, hi)| (*lo as i64, *hi as i64))
                     .collect();
                 Some(self.unit.array(dims, elem))
+            }
+            // Only a variable a front-end declares is typed by its value, and `declare` takes
+            // it before it would come here.
+            ast::TypeSpecKind::OfValue => {
+                self.err(
+                    spec.span,
+                    "a type given by a value is a front-end's own, for its own variables; this is a fault of the compiler, not of the program",
+                );
+                None
             }
         }
     }
@@ -1113,6 +1140,21 @@ impl Checker {
             }
             return None;
         };
+        if self.untyped.contains(&(self.cur, var)) {
+            // Its value could not be typed, and that was said.
+            if self.is_refused(&p.name) {
+                return None;
+            }
+            // Only a front-end declares one, and it assigns it before it reads it.
+            self.err(
+                p.span,
+                format!(
+                    "{} is used before a value gives it its type; this is a fault of the compiler, not of the program",
+                    p.name
+                ),
+            );
+            return None;
+        }
         let pou = &self.unit.pous[self.cur];
         // IEC 61131-3 ed. 3 Figure 7: VAR_INPUT is "not modifiable within the entity"
         // (Figure 13 rule 2a says the same of a function block's inputs). A PROGRAM's too: its
@@ -1412,6 +1454,9 @@ impl Checker {
     }
 
     fn assign_stmt(&mut self, place: &ast::Place, value: &ast::Expr) -> Option<Stmt> {
+        if let Some(stmt) = self.assign_typed_by_value(place, value) {
+            return stmt;
+        }
         let target = self.assign_to(place, true);
         let v = self.expr(value, target.as_ref().map(|t| t.1));
         let (p, ty) = target?;
@@ -1420,6 +1465,33 @@ impl Checker {
         }
         let v = self.coerce(v?, ty, value.span)?;
         Some(Stmt::Assign(p, v))
+    }
+
+    /// The first assignment of a variable typed by its value: the value is typed with nothing
+    /// asked of it, and the variable takes its type. `None` when `place` is not such a
+    /// variable still untyped; `Some(None)` when the value could not be typed (what was wrong
+    /// is said, and the variable is refused, so nothing more is said where it is read).
+    fn assign_typed_by_value(
+        &mut self,
+        place: &ast::Place,
+        value: &ast::Expr,
+    ) -> Option<Option<Stmt>> {
+        if !place.path.is_empty() {
+            return None;
+        }
+        let var = self.find(&place.name)?;
+        let at = self.untyped.iter().position(|u| *u == (self.cur, var))?;
+        let Some(v) = self.expr(value, None) else {
+            self.refuse(&place.name);
+            return Some(None);
+        };
+        self.untyped.remove(at);
+        self.unit.pous[self.cur].vars[var].ty = v.ty;
+        let Some((p, ty)) = self.assign_to(place, true) else {
+            self.refuse(&place.name);
+            return Some(None);
+        };
+        Some(self.coerce(v, ty, value.span).map(|v| Stmt::Assign(p, v)))
     }
 
     fn call_stmt(&mut self, called: &ast::Place, args: &[ast::Arg]) -> Option<Stmt> {

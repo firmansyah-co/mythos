@@ -38,7 +38,9 @@
 //! [`lower_with_probes`] says, per output, junction and network, which variable holds its
 //! power ([`Probe`]).
 
-mod lower;
+mod fbd;
+mod graph;
+mod ld;
 mod read;
 pub mod xml;
 
@@ -178,6 +180,11 @@ pub enum Holds {
     /// The value of a variable, by its path from the POU (for the PROGRAM, the path of its
     /// symbol), negated when `negated`.
     Variable { path: String, negated: bool },
+    /// The value of the variable `path`, computed in a scan only where the BOOL variable `ran`
+    /// is TRUE: a function's result in a Function Block Diagram, where its EN, or the ENO of a
+    /// function whose result it reads, may be FALSE (ADR-013 §2.16). Where `ran` is FALSE the
+    /// function did not run, and `path` holds a value of an earlier scan, not this one's.
+    Guarded { path: String, ran: String },
 }
 
 /// Lower the Ladder Diagram POUs of the documents `ld`, with the POUs of the Structured Text
@@ -227,7 +234,12 @@ pub fn lower_with_probes(
     let known = read::Known::of(&tree, pous.iter());
     let mut probes = Vec::new();
     for pou in &pous {
-        let lowered = lower::pou(pou, &known, &mut places, &mut diags, &mut probes);
+        let lowered = match &pou.body {
+            Some((graph::Lang::Fbd, _)) => {
+                fbd::pou(pou, &known, &mut places, &mut diags, &mut probes)
+            }
+            _ => ld::pou(pou, &known, &mut places, &mut diags, &mut probes),
+        };
         tree.pous.push(lowered);
     }
     let mut out = match mythos_logic_st::lower_tree(tree, diags) {

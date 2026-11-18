@@ -45,10 +45,10 @@ and a GPL-3.0 compiler to ship beside MythOS. Compiling ST to Rust source instea
 ### 2.1 Libraries: one seam, a crate per language, a crate per target kind
 
 ```text
- front-ends (a crate per language)            backends (a crate per target kind)
- mythos-logic-st ─┐                        ┌─► mythos-logic-backend-vm ─► bytecode ─► mythos-logic-vm
- mythos-logic-ld ─┼──► mythos-logic-ir ────┤                                          (PC runner,
- (FBD, SFC later)─┘     (the seam)         └─► (C99 later: MCUs too small for the VM)   ESP32, RP2040)
+ front-ends (a crate per language)                 backends (a crate per target kind)
+ mythos-logic-st ──────┐                        ┌─► mythos-logic-backend-vm ─► bytecode ─► mythos-logic-vm
+ mythos-logic-graphic ─┼──► mythos-logic-ir ────┤                                          (PC runner,
+ (LD, FBD; SFC later) ─┘     (the seam)         └─► (C99 later: MCUs too small for the VM)   ESP32, RP2040)
 
  mythos-logic-compiler: joins a front-end, the target's profile and a backend. Owns neither.
 ```
@@ -58,7 +58,7 @@ and a GPL-3.0 compiler to ship beside MythOS. Compiling ST to Rust source instea
 | `mythos-logic-ir` | nothing of the workspace | The seam. A *unit*: structures, array types and POUs (functions, function block types, one program), every name resolved to an index; no addresses, word sizes or instructions. `serde` data with a version (`IR_VERSION`), so a front-end and a backend need not share a process |
 | `mythos-logic-vm` | nothing at all | Builds for a microcontroller with `core` alone |
 | `mythos-logic-st` (and each later language) | the IR | A language is added without touching a target |
-| `mythos-logic-ld` (and FBD, SFC when built) | the IR, and the ST front-end | A graphical language reads the common elements (declarations, types, literals), the text inside its elements and the standard library through the ST front-end, so that both have one rule for each (§2.15); it reaches no target |
+| `mythos-logic-graphic` (LD and FBD; `mythos-logic-ld` until L3c-1, §2.16) | the IR, and the ST front-end | A graphical language reads the common elements (declarations, types, literals), the text inside its elements and the standard library through the ST front-end, so that both have one rule for each (§2.15); it reaches no target. LD and FBD are one crate because one PLCopen TC6 document holds POUs of both, each calling the others (§2.16) |
 | `mythos-logic-backend-vm` (and each later backend) | the IR, its own target | A target kind is added without touching a language |
 | `mythos-logic-compiler` | all of the above | The one call from source to a program |
 
@@ -68,8 +68,8 @@ the guard each kind of break.
 
 - **Nothing unsupported is compiled into something else.** A construct a front-end does not take
   yet is a diagnostic naming it, with its line and column.
-- **LD and FBD are lowered from their graphs**, not printed as ST text: LD to the ST
-  front-end's syntax tree, built element by element, never through text (§2.15).
+- **LD and FBD are lowered from their graphs**, not printed as ST text: each to the ST
+  front-end's syntax tree, built element by element, never through text (§2.15, §2.16).
 - **Standard function blocks** are a library written in Structured Text (§2.14, L4): a block
   is source compiled with the program that uses it, so adding one needs no new firmware. The
   IR has no catalog of them and the compiler emits no native call; the VM keeps its native
@@ -411,10 +411,15 @@ As built (C3):
   runtime module and the target profile it is built for, whether it runs when loaded, and its
   bindings (inputs, outputs with their safe values, published variables). One program is one
   cyclic task; a task that runs several programs is not built.
-- **Its language** (L3b-1) is `st` or `ld`, chosen when it is created (`create_logic_program`
-  takes `language`, `st` by default) and not changed after. Structured Text is
-  `programs/<name>.st`; a Ladder Diagram is `programs/<name>.xml`, a PLCopen TC6 XML v2.01
-  document holding its POUs (§2.15). An entry without `language`, as C3 wrote them, is `st`,
+- **Its language** (L3b-1; `fbd` since L3c-1) is `st`, `ld` or `fbd`, chosen when it is
+  created (`create_logic_program` takes `language`, `st` by default) and not changed after.
+  Structured Text is `programs/<name>.st`; a Ladder Diagram or a Function Block Diagram is
+  `programs/<name>.xml`, a PLCopen TC6 XML v2.01 document holding its POUs (§2.15, §2.16). A
+  new FBD program is a TC6 project holding the PROGRAM with no variable and an empty `FBD`
+  body, which compiles to a program that does nothing, with the file header an LD program
+  has. One reader takes both languages and each POU's body says its own, so the language of
+  an entry chooses the template and the view; `check` gives `power` for `ld` and `values` for
+  `fbd` (§2.16). An entry without `language`, as C3 wrote them, is `st`,
   and is written back with it. A new LD program is a TC6 project holding the PROGRAM with no
   variable and a body of the two power rails and no rung between them, which compiles to a
   program that does nothing; its file header names no company (who wrote it is not known) and
@@ -452,10 +457,11 @@ As built (C3):
 
 Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (ADR-011 §2.3):
 
-- Programs in the project tree, each with its language (ST, LD), added in the language chosen
-  beside the name, and an editor per program: the Structured Text (a text area
+- Programs in the project tree, each with its language (ST, LD, FBD), added in the language
+  chosen beside the name, and an editor per program: the Structured Text (a text area
   over the same text painted in colour; no editor library), or the Ladder Diagram: its editor
-  for an engineer and the read-only view for everyone else (§2.8), the last check's diagnostics,
+  for an engineer and the read-only view for everyone else (§2.8), or the Function Block
+  Diagram, read-only for everyone until its editor (L3c-2, §2.8), the last check's diagnostics,
   each underlined over the whole range it is about (§2.8) and listed with where it starts, the task settings, and the variables of the last text that
   compiled, each with its bindings to tags and each bound tag's live value.
 - The editor keeps three things apart: the text in the editor, the text that is saved, and the
@@ -494,7 +500,9 @@ Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (A
   place, which would claim nothing is forced). One mark of the SDK (`ForcedMark`) says FORCED
   beside the value in the HMI's I/O field (for the project the controller runs), the tag table,
   the inspector and the editor's bound tags; the online tools card counts the forced tags.
-- Not built: watching an element of an array from the table; editors for FBD and SFC. A Ladder
+- Not built: watching an element of an array from the table; the FBD editor (L3c-2) and SFC.
+  An FBD program is drawn read-only, and follows a source saved through `save_logic_source`
+  elsewhere unless it has changes of its own, as a Ladder Diagram does. A Ladder
   Diagram is edited in the workbench (§2.8, L3b-2b) and can still be saved through
   `save_logic_source`: an open diagram re-reads a source saved elsewhere unless it has changes
   of its own, and the editor then opens it afresh (its undo starts again; the localIds it gave
@@ -656,6 +664,39 @@ past clarity and legibility.
   a box's pin wired to a second rung path (an operand is written there), editing a network kept
   as found, adding a POU to the document.
 
+**The Function Block Diagram view** (L3c-1; `FbdView.tsx`, `fbd.ts`). An FBD program opens in
+the same editor as ST and LD, with the diagram in place of the text; the variables table,
+bindings, Load, Load cold, Run, Stop, Unload, forcing and watching are unchanged. It is read-only
+for everyone, an engineer included, until the FBD editor (L3c-2), and says so. The diagram is
+SVG drawn from the document's `position`s (and `relPosition`s of pins where given): blocks with
+their type, instance and pins (an input's expression written at it, a negated pin with the open
+circle of §6.6.1.4.3 rule 9), input, output and in-out variables (a negated one with its circle),
+connectors and continuations (the arrow shapes of §8.1.3), labels, jumps, returns, comments, and
+every line from the output it starts at to the input it reaches; each network numbered in the
+order it is evaluated (§2.13: the compiler's, a connector joining its line). An element FBD does
+not have (a contact) is listed as not drawn. A diagnostic with an `element` is a mark around it,
+listed as `<pou> element <localId>`. Each POU of the document is drawn; a function's or function
+block's without live state. Workbench tokens only (`--c-good` for a BOOL on, solid;
+`--c-text-muted` dashed for off; `--c-warn` dotted for UNKNOWN; `--c-text-faint` for not
+executed or not computed); its design is the owner's to lead.
+
+Live state, under the same conditions as LD's (the check of the text shown is current, its
+version is the runtime's, in RUN, and the watch answer is of that version in RUN):
+
+- every line carries the value its output had when its network was evaluated in the last scan
+  (`values` of the check, §2.16): a BOOL drawn on or off and written TRUE or FALSE at the
+  output; a number, a TIME or a STRING written at the output as the variables table writes it
+  (`formatVariable`). A line from a continuation carries what its connector's line does;
+- an output of a function that did not run in the last scan (its kept ENO, `ran`, is FALSE) is
+  drawn as *not computed*, and its value of an earlier scan is never shown;
+- a network whose flag says it did not run is drawn as not executed, its lines and outputs
+  without a value; under an input, output or in-out variable its own value, and FORCED where it
+  is forced; a forced output (an engineer may force a hidden variable, §2.13) is marked FORCED
+  where its value is written;
+- a value or a flag that cannot be read is UNKNOWN, never a value; when the runtimes or the
+  values cannot be read every state is UNKNOWN; a line from a literal is drawn without a state,
+  since the literal is written on its element and nothing keeps it.
+
 **What the front-end gives an editor** (L2a; the editor of §2.6 shows it). The spike's parser
 stopped at the first error and recorded only where a construct starts. The ST front-end now:
 
@@ -816,6 +857,14 @@ Adrian, 2026-11-17: where an implementation and the standard differ, follow the 
 | Jumps and returns in LD | §8.1.6, Table 73; §8.1.5.1 rule c: a network is evaluated whole "even if the network contains one of the execution control elements" | after its network is evaluated whole; of several in one network, the first in evaluation order whose condition is TRUE; a jump goes on at the first network at or below its label, back as well as forward (a loop is bounded by the instruction budget, as WHILE is) | not compared |
 | Feedback in LD | §8.1.5.2 rule a: explicit loops only in FBD; rule b: through a feedback variable | a cycle of connections refused, naming the elements on it; feedback through a variable taken (a seal-in) | not compared |
 | Compare contacts | Table 75 features 5a, 5b (new in ed. 3) | not built: TC6 XML v2.01 has no element for them; a comparison is a block (GT, EQ, …) | not compared |
+| The order of FBD networks | §8.3.3: "the Implementer shall provide Implementer specific means by which the user may determine the order of execution of networks"; §8.1.4 as for LD, without rails | as LD's: top to bottom by the topmost element of each network, then the leftmost; the user decides the order by where a network is drawn, as TIA Portal's FBD and LD do (`networks_run_top_to_bottom_whatever_the_order_of_the_document_or_its_execution_order_ids`) | not compared |
+| TC6 `executionOrderId` | not in IEC 61131-3; the schema's optional attribute, which a tool's CFC numbering uses | not read in standard FBD: the order is the rule above, whatever the document numbers. A CFC mode that orders by it is a later slice (§3) | not compared |
+| The order within an FBD network | §8.1.5.1 rules a–c: no element before its inputs; every element evaluated | an element once every element it reads by a line that is not a feedback path is evaluated; of those ready, the topmost, then the leftmost (`a_block_is_evaluated_after_what_it_reads_wherever_it_is_drawn`); every element is evaluated once, its outputs kept (§2.16) | not compared |
+| Lines into one input in FBD | §8.3.2: outputs "shall not be connected together"; no wired-OR, an OR block instead | two or more lines into one input refused, naming the element and the input; a line and an expression at one input refused (`two_lines_into_one_input_are_refused_there_is_no_wired_or`) | not compared |
+| Connectors and continuations | §8.1.3: a line extended by a connector; no storage associated with it; an error if its name is another named element's of the POU | a continuation goes on with its connector's line, so the two are one line and join their networks. Refused, naming the element: a name that is a variable's, the POU's or a label's; two connectors of one name; a continuation no connector names; connectors that only continue one another; a connector with no line or with an expression. Read in FBD; LD still refuses them | not compared |
+| Feedback in FBD | §8.1.5.2: rule a, explicit loops only in FBD; rule b, an implementer specific means for the user to determine the order in an explicit loop; rule c, a feedback variable initialized, its initial value used at the first evaluation; rule d, the new value used until the element is evaluated again | rule b's means: a line that closes a loop and runs from right to left (the element it reaches stands at or left of the one it comes from) is a feedback path, so the user decides where a loop starts by where the line back is drawn. It carries its output's value of the last evaluation; at the first, the kept variable's initial value, its type's default (§6.5.1.3 item 1, rule c). Refused, naming the elements: a line back that does not run from a block's output to a block's input (§8.1.5.2's definition of a feedback path); one from an output whose type is known only once the loop is checked (ADD, SEL, MAX, …: write it to a variable, an implicit loop, rule b's example b); a loop with no line drawn back. An implicit loop through a variable is taken as in LD (`feedback_paths_equal_their_st_twin`: example a, a function block's output, a block's own output, example b) | not compared |
+| EN, ENO and a function not run, in FBD | §6.6.1.5 rules 1–4 | as LD (the row above): EN evaluated outside; a function not run computes nothing, so what reads its result is not evaluated (an output variable keeps its value, a function is not called, a function block's input is not set); its ENO is kept and is the AND of its EN and the ENO of each function it reads | not compared |
+| The type of a block's output in FBD | §6.6.2.5 (overloaded functions take the type of their inputs); Figure 11 | the type the checker gives the call by its inputs alone, with nothing asked of it from where the line goes. A literal input takes the type of the input beside it, as in ST; a function of literals alone takes a literal's own (DINT, LREAL), so ADD of two literals into an INT output variable is refused as a narrowing (an input variable naming a variable gives the type) | not compared |
 
 Three places where the standard leaves a choice or we go beyond it:
 
@@ -962,7 +1011,7 @@ unchanged for every language; where implementations differ, the standard.
     `expression`; `position`. Refused: `connector` and `continuation`, `error`, a block's
     in-out parameters, `edge` or `storage` on a block's parameter or on a variable, and a body in
     IL, ST, FBD or SFC.
-- **How it is lowered.** `mythos-logic-ld` reads the document with `quick-xml` (MIT) into a
+- **How it is lowered.** `mythos-logic-graphic` (`mythos-logic-ld` until L3c-1) reads the document with `quick-xml` (MIT) into a
   tree, the graph into one element per `localId`, checks the graph, and lowers each network to
   statements of the ST front-end's syntax tree, built element by element: never ST text (§2.1).
   The text inside elements (a contact's variable, a variable's expression, an initial value,
@@ -1020,7 +1069,7 @@ unchanged for every language; where implementations differ, the standard.
   in a hidden private variable at the moment it is evaluated, in every build: there is no
   build for monitoring. A flag per network says whether it ran in the scan, so that a network
   a jump skipped shows as not executed. The cost is accepted: about one byte and one store per
-  element. FBD and SFC are to do the same in their own slices. (L3b-1 published only the
+  element. FBD does the same since L3c-1 (§2.16); SFC is to in its own slice. (L3b-1 published only the
   outputs some variable happened to hold, none in a body with a jump or a return; this
   replaces it.)
   - **What is kept**: the output of every contact, coil and BOOL variable read (`inVariable`,
@@ -1094,6 +1143,105 @@ unchanged for every language; where implementations differ, the standard.
   owner's design pass before both. Undo is the editor's own; the module keeps one version.
   Power for monitoring is the compiler's (above): the editor writes no variable for it.
 
+### 2.16 The Function Block Diagram front-end (L3c-1)
+
+**Decided by the owner (2026-11-18):** standard FBD first (a CFC mode, with free placement,
+explicit execution order and feedback paths, is a medium-term item, §3); online monitoring as TIA
+Portal gives it, so the compiler always stores each element's output (every block output, ENO
+and every line's value) in a hidden private variable at the moment it is evaluated, in every
+build, and a flag per network; the editor follows TIA's workflow and is the next slice (L3c-2);
+where implementations differ, the standard.
+
+- **One crate for both graphical languages.** `mythos-logic-ld` is renamed
+  `mythos-logic-graphic` and reads LD and FBD; `layers.rs` gives it the layer LD had (the IR and
+  the ST front-end), and still refuses a new `mythos-logic-*` crate without a layer. *Why one
+  crate and not `mythos-logic-fbd` beside it:* a TC6 document is one `project` whose POUs each
+  have a body in a language of their own, and a POU of one may call a POU of the other in the
+  same document (`fbd_pous_are_called_from_fbd_and_from_ld_and_ld_from_fbd`): reading the
+  interfaces of every POU before any body, the places of diagnostics, what a body may call
+  (`Known`) and the order of networks, labels, jumps and returns (§8.1.4, §8.1.6) are one
+  pass over one document. A separate FBD crate would have to depend on the LD crate and have LD
+  call back into it for a document that holds both. Inside it: `graph.rs` (the elements of
+  both, their reading, the checks of a whole graph, and `body`, which arranges networks, labels,
+  jumps, returns and flags for either language), `ld.rs` (the LD lowering, unchanged in what it
+  does: `ladder_equals_st.rs` still holds 1,020,000 values equal), `fbd.rs` (the FBD lowering),
+  `read.rs`, `xml.rs`. The compiler's `Sources` names its TC6 documents `tc6` (was `ld`), and
+  `Language::Fbd` compiles a document as `Language::Ld` does: the body says its language.
+- **The subset taken.** A body `FBD` with: `block` (a function or a function block, the standard
+  library's or the project's in LD, FBD or ST; EN and ENO; a negated input or output; an input's
+  `expression` in place of a line), `inVariable`, `outVariable` (each `negated`),
+  `inOutVariable` (`negatedIn`, `negatedOut`), `connector` and `continuation` (§8.1.3), `label`,
+  `jump`, `return`, `comment`, connections by `refLocalId` (and `formalParameter`). Refused by
+  name with the element: `leftPowerRail`, `rightPowerRail`, `contact` and `coil` (LD's), and
+  anything else of the schema (`actionBlock`, `vendorElement`, …), as in LD; a block's in-out
+  parameters; `edge` or `storage` on a block's parameter or on a variable. `executionOrderId` is
+  not read (§2.13).
+- **The semantics** are the rows of §2.13 for FBD: networks top to bottom, data flow within one,
+  no wired-OR, connectors, feedback paths drawn back from right to left, EN and ENO as in LD,
+  jumps and returns after their network.
+- **Values kept for monitoring.** Every output an element gives is evaluated once, when the
+  element is, into a hidden private variable of the POU, and every element that reads it reads
+  the variable: so the value a line carries is the value kept, by construction, not a second
+  computation. `__FBD_<localId>`: a function's result, an input variable read, an in-out
+  variable read back; `__FBD_<localId>_<formal>`: a function block's output, read from the
+  instance after its call; `__FBD_<localId>_ENO`: ENO, kept wherever the block may not run (its
+  EN is connected, or it reads a function that may not run), shown or not; `__NET_<localId>`:
+  the network's flag, as in LD; `__JUMP`. A negated output keeps its negation (the line carries
+  it). A literal input variable is a constant and keeps nothing: its line carries the literal
+  written on the element. An ENO that is always TRUE is published as ON and kept nowhere.
+- **A number is kept in its own type.** The variable of a block's output has the type the
+  checker gives the call: the ST front-end takes a declaration *typed by its value*
+  (`ast::TypeSpecKind::OfValue`, only for a hidden variable, never from ST text), whose type is
+  the type of the first value assigned to it, typed with nothing asked of it from outside. So
+  ADD of two INTs keeps an INT, of two REALs a REAL, INT_TO_REAL a REAL, a timer's ET a TIME, by
+  the one rule of typing there is, not a second one in the FBD front-end. A read of such a
+  variable before its first assignment would be a fault of the compiler and is said to be one.
+  A feedback path's source is read before it is assigned in the scan, so it is declared with its
+  type, which must be known before checking (a function block output's declaration, a
+  comparison, a Boolean operator, a conversion, a function of the project); otherwise the loop is
+  refused (§2.13). *How a number is shown:* written at the output it comes from, as the
+  variables table writes it (an INT `7`, a REAL to seven digits, a TIME in milliseconds, a
+  STRING quoted), coloured as a value; a BOOL as TRUE or FALSE, its lines on or off.
+- **Where a value was not computed.** A function that may not run keeps its result only where
+  it runs, and its probe says under which BOOL (`Holds::Guarded { path, ran }`, `"ran"` in the
+  check's JSON): where `ran` is FALSE the variable holds an earlier scan's value, which the view
+  draws as *not computed*, never as a value.
+- **Probes.** `lower_with_probes` (and so `Compiled::probes`) names, for every output of every
+  element (`At::Output`: a block's formal parameter, `""` for a variable's or a continuation's)
+  and every network (`At::Network`, its elements' `localId`s in order), the variable keeping it,
+  or ON. A continuation is published with what its line comes from. The logic module gives the
+  PROGRAM's in `check` as `values` (§2.6), in the shape of LD's `power`.
+- **Places.** As LD's (§2.15): a diagnostic names the element, its position and the characters
+  of its text. What a line brings is told at the input it reaches (an INT into a BOOL output
+  variable is told at the output variable).
+- **Cost, measured** (bytes, `pc` profile; kept is the number of `__FBD_`/`__NET_` variables;
+  each kept value is its type's size in memory and one store of ten to fifteen bytes of code, as
+  in LD; there is no FBD build without them to compare with, since FBD is new):
+
+  | Program | Code | Memory | Kept |
+  | :--- | ---: | ---: | ---: |
+  | functions (`fbd_equals_st.rs`) | 409 | 57 | 18 |
+  | function blocks, EN and ENO | 945 | 109 | 24 |
+  | lines, jumps and a return | 755 | 44 | 20 |
+  | feedback paths | 449 | 43 | 21 |
+  | FBD and LD POUs called from FBD | 373 | 41 | 8 |
+  | blinker (`tests/fbd/blinker.xml`) | 1,134 | 129 | 25 |
+
+  The VM is unchanged, so its firmware is too. The blinker runs on both emulated instruction
+  sets with every scan equal to the host's (all 26 runs of the corpus equal, rustc 1.100.0,
+  QEMU 8.2.2, in the CI runner's image).
+- **What the FBD editor (L3c-2) needs.** Placing, moving, wiring and deleting blocks,
+  variables, connectors and continuations, labels, jumps and returns, as TIA's FBD editor does
+  (networks with titles and comments, the instruction palette and favourites, symbolic operands
+  with completion), writing TC6 back through `save_logic_source` and keeping every `localId` it
+  does not change (online change carries `__FBD_<localId>` by its path) and what it does not
+  draw, as LD's editor does (§2.15). It must never write a second line into one input (§8.3.2),
+  and should offer an OR block where TIA would; it decides where a line back is drawn, which is
+  the order of a loop (§2.13), so it should show a feedback path as such. A box's output type is
+  the checker's: the editor shows the compiler's, not its own. A grid and rules for where a new
+  element goes, and the owner's design pass, before both. `executionOrderId` stays the CFC
+  mode's (§3).
+
 ## 3. Order of work
 
 Two tracks. The core path comes first because Adrian asked for logic that runs end to end
@@ -1146,7 +1294,7 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   name; the VM's own real functions; bytecode format 3. Not built: the bit strings and their
   shifts (§2.13).
 - L3. **LD, FBD, SFC** (not IL, §2.1), each a front-end crate and an editor kind. **L3a**
-  (done, §2.15): the Ladder Diagram front-end, `mythos-logic-ld`, reading PLCopen TC6 XML
+  (done, §2.15): the Ladder Diagram front-end, `mythos-logic-ld` (now `mythos-logic-graphic`), reading PLCopen TC6 XML
   v2.01; an LD program compiled with the project's ST POUs and the standard library.
   **L3b-1** (done): the logic module stores, checks and builds LD programs, each an MCP tool,
   and the workbench draws an LD program read-only with its live state (§2.6, §2.8, §2.15).
@@ -1155,8 +1303,14 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   rung not run as not executed (§2.8, §2.15, power for monitoring).
   **L3b-2b** (done): an engineer edits a Ladder Diagram in the workbench, as TIA's editor works
   (the owner's decision of 2026-11-18), and the editor writes TC6 back keeping every localId,
-  its header and what it does not draw (§2.8, §2.15, what the editor writes). Then FBD (the same TC6 reader; FBD's own order of
-  evaluation, §8.3.3, and explicit feedback, §8.1.5.2) and SFC.
+  its header and what it does not draw (§2.8, §2.15, what the editor writes).
+  **L3c-1** (done, §2.16): Function Block Diagram programs: the front-end, in the one graphical
+  crate with LD and the same TC6 reader (FBD's order of networks, §8.3.3, data flow within one,
+  no wired-OR, connectors, explicit feedback by a line drawn back, §8.1.5.2), every output's
+  value and every network's flag kept in every build, a number in its own type; the logic
+  module stores, checks and builds them (`language: "fbd"`); the workbench draws them
+  read-only with their live values (§2.6, §2.8, §2.13). **L3c-2** (next): the FBD editor, as
+  TIA's works (§2.16, what the FBD editor needs). Then SFC.
 - L4. **The standard library in ST** (done, §2.14): the standard function blocks written in
   Structured Text, with intrinsics for what ST cannot say (the scan clock, bytecode format 4);
   their state retained like any variable's. Next: OSCAT, once its license is checked.
@@ -1186,19 +1340,20 @@ Each step leaves `dev` working.
 
 | Part | Built |
 | :--- | :--- |
-| 2.1 Crates and layers | `mythos-logic-ir`, `-st`, `-ld` (L3a), `-vm`, `-backend-vm`, `-compiler`; `layers.rs` guards them |
+| 2.1 Crates and layers | `mythos-logic-ir`, `-st`, `-graphic` (LD since L3a, FBD since L3c-1; `-ld` until then), `-vm`, `-backend-vm`, `-compiler`; `layers.rs` guards them |
 | 2.1 ST front-end | Several POUs in any order: TYPE (STRUCT, named ARRAY), FUNCTION (VAR_INPUT, VAR; positional and formal calls), FUNCTION_BLOCK (VAR_INPUT, VAR_OUTPUT, VAR; nesting; arrays of instances), one PROGRAM; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME, STRING (`STRING[n]`, `STRING(n)`, 254 by default; literals with `$` combinations; assignment that cuts; comparison; LEN, LEFT, RIGHT, MID, CONCAT, INSERT, DELETE, REPLACE, FIND; integer to and from STRING; in functions, function blocks, arrays, structures and a TYPE name); ABS, SQRT, LN, LOG, EXP, SIN, COS, TAN, ASIN, ACOS, ATAN, ATAN2, EXPT and `**`, TRUNC_*, SEL, MAX, MIN, LIMIT, MUX, and ADD, SUB, MUL, DIV, MOVE, GT, GE, EQ, LE, LT, NE by name; arrays of any dimensions with initial value lists; whole-structure and whole-array assignment; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between the elementary types; implicit widening per Figure 11; recursion refused naming the cycle; a keyword of the standard refused as a name; RETAIN and NON_RETAIN on VAR, VAR_INPUT and VAR_OUTPUT of a PROGRAM and a FUNCTION_BLOCK, each symbol saying whether it is retained (`Symbol::retain`, `"retain": true` or absent; C7b-1, §2.13; `retentive_variables.rs`), refused where nothing can be retained; kept across a warm restart by the runtime and the core (§2.5, C7b-2); the standard function blocks from a library written in ST, only those a program uses (§2.14, L4); a name with two underscores together or one at its end refused (§6.1.2); diagnostics for everything else (enumerations, subranges, WSTRING, CHAR, VAR_IN_OUT, methods, and more: each refused by name); every independent mistake of a source in one pass, each once, with the range it is about (§2.8); a body or a type nested more than 100 deep refused, a structure that contains itself told before anything follows it (§2.8) |
 | 2.2 Profiles | `serde` data with a format version (4 since L4; a profile of another is refused, naming both); `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format, stack depth, call depth) proven with profiles read from JSON; a profile written before the depths existed still loads and states no limit |
 | 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 4 (format 1 with strings and the numeric functions, L2c, with its own real functions, §2.3, and the scan clock `NOW`, L4), and formats 1, 2 and 3 read as they were written, their native standard blocks included (a VM reads every format it extends; an instruction newer than a program's format refused at load): bodies, call frames, instance-relative and region-confined addressing; loader checks, with every jump landing on an instruction of its body, and `load_within` a host's limits; run-time checks, budget; the stack and the calls stop at the depths the program declares; faults, with `IndexOutOfRange`, `CallDepthExceeded`, `StackOverflow`, for strings `StringTooLong`, `StringArgument`, `BadString`, `BadNumber`, and `SelectorOutOfRange` |
 | 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
 | 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Forcing is built (`Call::Force`, `Call::Unforce`, C5c): `runtime_api.rs` forces an output, a setpoint and an input of the running module process over the API and watches the device follow, refuses an operator and a viewer, refuses what cannot be forced, and sees every force released by a stop and by loading the program again. The watchdog is built (C7a): a program in RUN that completes no scan within ten intervals (never less than two seconds), or whose scan thread has ended, is put in FAULT at the next exchange with the reason (`watchdog: …`), every force released, so the core writes the safe values; a scan itself is bounded by the instruction budget. Proven by the module's own tests: a healthy program runs past the limit untouched, and one whose scan thread ends is faulted and asks for no write. RETAIN is built in the runtime and the core (C7b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter and proves that it goes on after a stop and run, after the program is loaded again, after its module process is killed and started again (from the values kept last, not those it was loaded with), and after a load in STOP, while the other counter starts from zero each time, and that a cold start resets it; the module's tests prove that a value is taken only into a variable of the same name, type and size. Since L4 a standard block's state is variables of its own: `runtime_api.rs` runs a RETAIN TON beside a plain one through the real module process, and after a stop and run the RETAIN one carries on from its ET (the time stopped not timed) while the plain one times again from 0, and a cold start resets both. Online change is built (C6b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter, a plain counter, a TON and an output bound to a Modbus simulator, loads a build with one variable added and one removed while it runs, and proves that both counters and the timer go on without resetting, the added variable starts from its initial value, the removed one is reported as dropped, and the device's register, sampled about every millisecond through the load, never holds the safe value nor drops below what the old build commanded before the load; that a cold load resets both counters and what is kept; that a program of another name starts as before; and that an unknown `start` is refused. The module's tests prove the carry rule (same path, type and size; an array of structures or instances not carried; a value given twice taken once; what is not carried listed with why), and that a program started into RUN holds the carried values and clock before its first scan while one loaded in STOP takes none |
 | 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run` (a warm restart), `/cold-start`, `/stop`, `/watch`, `/force` and `/release`, `GET`/`PUT /api/v1/projects/:id/runtimes` (`?start=cold`, and `changes.runtimes` saying how each runtime started: C6b), each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; what is forced in each, a FORCED badge with each variable and its value (`forced UNKNOWN` when the controller does not say), and "Release all" for an engineer, asked first, with the controller's answer shown as it gave it; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
-| 2.6 The logic module | Built: `plugins/logic` (programs in ST or LD, bindings, check, build; eight MCP tools, each saying which languages it takes; module version 0.3.0, its UI's the same), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes, an LD program among them (created as a TC6 document, a diagnostic at its element, built, loaded, and running a Modbus simulator; an ST program saved without a language beside it, unchanged); its workbench UI `frontend/packages/logic-ui` (tree section with each program's language, program editor, the LD editor for an engineer and the read-only LD view for everyone else, both with the live state, load, load cold, how a load started, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus, and an LD program added from the tree, given rungs over the API, checked with a mistake drawn at its element, bound, loaded and run shows its contacts change state with the device's counter, and an LD program built in the editor from the keyboard and the palette is checked, saved, loaded and run, its motor coil following a start and a stop forced as a pushbutton would set them (L3b-2b). Not built: unit tests in ST, a library of POUs shared by a project's programs |
-| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); the read-only LD view with each diagnostic at its element and its live state from watched values (L3b-1, `ladder.test.tsx`), each element, link and junction with the power the compiler kept and a rung not run as not executed (L3b-2a); the LD editor, as TIA's works (L3b-2b, `ladder-editor.test.tsx`, `ldmodel.test.ts`); editors for FBD, SFC are not built. 2.10: not built |
-| 2.9 Emulators | Built: eight programs (`strings.st` since L2c-1, `library.st` since L2c-2), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else. Since L4 the timers and counters in them are the library's, in ST: all 16 runs equal Since L3a a Ladder Diagram joins them (`tests/ladder/oscillator.xml`: two TON, a CTU, rising and falling contacts, a set coil, a jump): all 18 runs equal (rustc 1.100.0, QEMU 8.2.2, run in the CI runner's image) |
+| 2.6 The logic module | Built: `plugins/logic` (programs in ST, LD or FBD, bindings, check, build; eight MCP tools, each saying which languages it takes; module version 0.4.0, its UI's the same), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes, an LD program among them (created as a TC6 document, a diagnostic at its element, built, loaded, and running a Modbus simulator; an ST program saved without a language beside it, unchanged); its workbench UI `frontend/packages/logic-ui` (tree section with each program's language, program editor, the LD editor for an engineer and the read-only LD view for everyone else, both with the live state, load, load cold, how a load started, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus, and an LD program added from the tree, given rungs over the API, checked with a mistake drawn at its element, bound, loaded and run shows its contacts change state with the device's counter, and an LD program built in the editor from the keyboard and the palette is checked, saved, loaded and run, its motor coil following a start and a stop forced as a pushbutton would set them (L3b-2b). Not built: unit tests in ST, a library of POUs shared by a project's programs |
+| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); the read-only LD view with each diagnostic at its element and its live state from watched values (L3b-1, `ladder.test.tsx`), each element, link and junction with the power the compiler kept and a rung not run as not executed (L3b-2a); the LD editor, as TIA's works (L3b-2b, `ladder-editor.test.tsx`, `ldmodel.test.ts`); the read-only FBD view with each diagnostic at its element and every line's value live, a function not run as not computed and a network not run as not executed (L3c-1, `fbd.test.tsx`); editors for FBD (L3c-2) and SFC are not built. 2.10: not built |
+| 2.9 Emulators | Built: eight programs (`strings.st` since L2c-1, `library.st` since L2c-2), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else. Since L4 the timers and counters in them are the library's, in ST: all 16 runs equal Since L3a a Ladder Diagram joins them (`tests/ladder/oscillator.xml`: two TON, a CTU, rising and falling contacts, a set coil, a jump): all 18 runs equal (rustc 1.100.0, QEMU 8.2.2, run in the CI runner's image). Since L3c-1 the ladder documents of the editor (L3b-2b) and a Function Block Diagram (`tests/fbd/blinker.xml`: two TON, a CTU reset by its own output, a block's output drawn back, a connector, a jump, a function under EN, a REAL) join them: all 26 runs equal (rustc 1.100.0, QEMU 8.2.2, in the CI runner's image with podman) |
 | 2.12 Oracle | `differential_strucpp.rs`: 8 programs, 60 cycles, 9,480 values, all agree except the five deliberate rows of §2.13 (287 values: 167 of the first three, 60 each of INSERT's position and a based literal read as an integer). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE. Unchanged by L4 (the standard blocks in ST): the same 9,480 values, the same 287 |
 | 2.14 Standard library in ST (L4) | `crates/mythos-logic-st/src/library/`: SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD and their INT, DINT and LINT variants, TP, TON, TOF and their TIME variants (22 POUs in 4 files, an index); the intrinsic `__NOW()`; names of the library refused to a program's POUs and types; the library's names resolved among its own; no diagnostic pointing into it. Proven by `standard_library.rs` (14) and `standard_blocks_run_as_the_native_ones.rs` (4: every native block against the library's, 400 sequences of 150 scans each, 540,000 scans in all) |
-| 2.15 Ladder Diagram (L3a) | `crates/mythos-logic-ld`: PLCopen TC6 XML v2.01 read with `quick-xml` (MIT); the subset of §2.15; the graph checked and lowered to the ST front-end's syntax tree; edges, values used twice and jumps in hidden private variables (`Var::hidden`, `IR_VERSION` 6); diagnostics naming the element (`element`) and the source (`source`); `compile_sources` and `Language::Ld` in the compiler; `layers.rs` gives LD its layer (the IR and the ST front-end) and feeds the guard an LD crate reaching the VM and an ST crate reaching LD. Proven by `ladder_runs_on_the_vm.rs` (26: every element, its table's behaviour scan by scan, EN and ENO, a function of ST and the standard functions as blocks, LD function blocks and functions, jumps both ways, a return, RETAIN and the edge memory of a RETAIN instance, 300 contacts in series and in parallel, the emulator's program), `refusals.rs` (28: every refusal of §2.15 with its message and its element, the JSON of a place, the sources named), `ladder_equals_st.rs` (4 LD programs and their ST twins, 200 random sequences of 100 scans each, every shared variable equal after every scan: 51 variables, 1,020,000 values compared) and `damaged_ladder_never_panics.rs` (3,000 damaged documents, each compiled or refused with a place). Mutation-checked in a copy of the tree (`git archive`, its own target directory; the clean copy passed before and after the restores): parallel branches made AND turned `series_is_and_and_parallel_is_or`, `a_long_series_and_a_wide_parallel_compile_and_run`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program` and `contacts_and_coils_equal_their_st_twin` red; a negated contact's negation dropped turned `a_normally_closed_contact_passes_power_when_its_variable_is_off`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program`, `the_oscillator_the_emulators_run_does_what_its_rungs_say` and `contacts_and_coils_equal_their_st_twin` red; an edge contact never writing its memory turned `a_rising_contact_is_on_for_one_scan_after_its_variable_goes_on`, `a_rising_contact_senses_its_variable_while_its_input_is_off`, `a_falling_contact_is_on_for_one_scan_after_its_variable_goes_off` and `contacts_and_coils_equal_their_st_twin` red; a dangling connection let through turned `a_dangling_connection_is_refused_naming_its_element_and_the_missing_id` and `a_damaged_ladder_document_is_compiled_or_refused_with_places_never_a_panic` red. Since L3b-1 the logic module stores, checks and builds LD programs (2.6). Since L3b-2a every element's output, every junction and every network's flag is kept in a hidden private variable in every build (`Compiled::probes`, §2.15, power for monitoring), proven by `ladder_power_probes.rs` (9) and `a_long_series_of_functions_compiles_and_runs`. Not built: editing LD in the workbench (L3b-2b) |
+| 2.15 Ladder Diagram (L3a) | `crates/mythos-logic-ld` (`crates/mythos-logic-graphic` since L3c-1, §2.16): PLCopen TC6 XML v2.01 read with `quick-xml` (MIT); the subset of §2.15; the graph checked and lowered to the ST front-end's syntax tree; edges, values used twice and jumps in hidden private variables (`Var::hidden`, `IR_VERSION` 6); diagnostics naming the element (`element`) and the source (`source`); `compile_sources` and `Language::Ld` in the compiler; `layers.rs` gives LD its layer (the IR and the ST front-end) and feeds the guard an LD crate reaching the VM and an ST crate reaching LD. Proven by `ladder_runs_on_the_vm.rs` (26: every element, its table's behaviour scan by scan, EN and ENO, a function of ST and the standard functions as blocks, LD function blocks and functions, jumps both ways, a return, RETAIN and the edge memory of a RETAIN instance, 300 contacts in series and in parallel, the emulator's program), `refusals.rs` (28: every refusal of §2.15 with its message and its element, the JSON of a place, the sources named), `ladder_equals_st.rs` (4 LD programs and their ST twins, 200 random sequences of 100 scans each, every shared variable equal after every scan: 51 variables, 1,020,000 values compared) and `damaged_ladder_never_panics.rs` (3,000 damaged documents, each compiled or refused with a place). Mutation-checked in a copy of the tree (`git archive`, its own target directory; the clean copy passed before and after the restores): parallel branches made AND turned `series_is_and_and_parallel_is_or`, `a_long_series_and_a_wide_parallel_compile_and_run`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program` and `contacts_and_coils_equal_their_st_twin` red; a negated contact's negation dropped turned `a_normally_closed_contact_passes_power_when_its_variable_is_off`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program`, `the_oscillator_the_emulators_run_does_what_its_rungs_say` and `contacts_and_coils_equal_their_st_twin` red; an edge contact never writing its memory turned `a_rising_contact_is_on_for_one_scan_after_its_variable_goes_on`, `a_rising_contact_senses_its_variable_while_its_input_is_off`, `a_falling_contact_is_on_for_one_scan_after_its_variable_goes_off` and `contacts_and_coils_equal_their_st_twin` red; a dangling connection let through turned `a_dangling_connection_is_refused_naming_its_element_and_the_missing_id` and `a_damaged_ladder_document_is_compiled_or_refused_with_places_never_a_panic` red. Since L3b-1 the logic module stores, checks and builds LD programs (2.6). Since L3b-2a every element's output, every junction and every network's flag is kept in a hidden private variable in every build (`Compiled::probes`, §2.15, power for monitoring), proven by `ladder_power_probes.rs` (9) and `a_long_series_of_functions_compiles_and_runs`. Not built: editing LD in the workbench (L3b-2b) |
+| 2.16 Function Block Diagram (L3c-1) | `crates/mythos-logic-graphic`: `fbd.rs`, with `graph.rs` shared with LD; the subset and the semantics of §2.16 and §2.13; every output's value kept in a hidden private variable typed by its value (`ast::TypeSpecKind::OfValue` in the ST front-end), every network's flag; `Holds::Guarded` for a function's result; `Language::Fbd`; `Sources::tc6`. Proven by `fbd_runs_on_the_vm.rs` (13), `fbd_refusals.rs` (15), `fbd_equals_st.rs` (5 FBD programs and their ST twins, 200 random sequences of 100 scans each: every shared variable and every kept value, by the element and output it is about, equal to its twin's after every scan, 3,560,000 values), `damaged_ladder_never_panics.rs` (3,000 damaged FBD documents besides the LD ones), the logic module's own tests (3) and `logic_module.rs` through the real module processes; the emulators (2.9). The workbench: `fbd.test.tsx` (11). Not built: the FBD editor (L3c-2); a CFC mode (§3) |
 
 Evidence of the spike (2026-11-17):
 
@@ -1473,3 +1628,35 @@ Evidence of the spike (2026-11-17):
   parallel, never as series`, `opens a branch at one element and closes it after another, and
   parallels coils`, `keeps an empty branch as a wire, and says so` and `writes the seal-in and
   timer rungs the compiler tests run (editor_seal_in.xml)` red.
+- **L3c-1** (Function Block Diagram programs, 2026-11-18). The crate `mythos-logic-ld` became
+  `mythos-logic-graphic` (§2.16); every LD test passed unchanged through the move of its reading
+  and arrangement into `graph.rs`, `ladder_equals_st.rs` among them (1,020,000 values). Added:
+  `fbd_runs_on_the_vm.rs` (13), `fbd_refusals.rs` (15), `fbd_equals_st.rs` (5 programs, 3,560,000
+  values), an FBD half of `damaged_ladder_never_panics.rs` (3,000 documents: 2,678 refused, 322
+  compiled), three tests of the logic module's own, `a_function_block_diagram_program_is_written_checked_built_loaded_and_runs_the_plant`
+  in `logic_module.rs` (the MUL's result read from the running module process as an INT, 200),
+  `fbd.test.tsx` (11; its mock `values` checked against what the compiler gives for the same
+  document, probe for probe and type for type), and an FBD scenario in the e2e (an FBD program
+  added from the tree, networks saved over the API, a mistake drawn at its element, bound to the
+  device's counter, loaded, every line drawn live: the MUL's output ten times its input, the
+  continuation the same, `odd` and its negation opposite, both changing with the counter; nothing
+  live once stopped): 173 checks, all passed. Writing the mock against the compiler found a
+  connector named as a variable in it (refused, §8.1.3) told twice; a refused connector's
+  continuations are now not told again. Mutation-checked in a copy of the tree (`git archive` of
+  the commit, its own target directory; each injection grepped as landed; each file restored with
+  `git show`; the clean copy passed before and after the restores; the frontend copy with its own
+  `pnpm install --frozen-lockfile` and `pnpm lint` before its tests): no element waiting for what
+  it reads (data flow ordered by position alone) turned 24 tests red, among them
+  `a_block_is_evaluated_after_what_it_reads_wherever_it_is_drawn`, the five `…_equal_their_st_twin`,
+  `the_blinker_the_emulators_run_does_what_its_networks_say`, `the_base_lowers` and the logic
+  module's two FBD checks (a block before its input reads a variable not yet typed, which the
+  checker calls a fault of the compiler); a negated input pin's negation dropped turned
+  `a_negated_input_and_a_negated_output_are_negated_outside_the_block`,
+  `functions_negation_and_numbers_equal_their_st_twin` and
+  `the_blinker_the_emulators_run_does_what_its_networks_say` red; a continuation published as
+  holding another line's value turned `a_connector_and_its_continuations_are_one_line` and
+  `lines_jumps_and_a_return_equal_their_st_twin` red (at first only the first: the equivalence
+  test mapped each probe to its twin by the variable the probe names, which cannot catch a probe
+  naming the wrong one; it now maps by the element and output); the view drawing a value it
+  cannot read as FALSE turned `draws UNKNOWN, never a value, when one value or all values cannot
+  be read` red. The emulators: all 26 runs equal.

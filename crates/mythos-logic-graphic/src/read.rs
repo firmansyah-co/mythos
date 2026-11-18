@@ -18,23 +18,24 @@
 //!     type). `enum`, `struct`, the subranges, `pointer` and the generic types are refused.
 //!   - `initialValue`: `simpleValue` (its `value` read as ST reads an initial value) and
 //!     `arrayValue` (with `repetitionValue`); `structValue` is refused.
-//!   - one `body` holding `LD` (lowered by `lower`); `actions` and `transitions` must be
-//!     empty, and a body in IL, ST, FBD or SFC is refused.
+//!   - one `body` holding `LD` (lowered by `ld`) or `FBD` (lowered by `fbd`); `actions` and
+//!     `transitions` must be empty, and a body in IL, ST or SFC is refused.
 
+use crate::graph::Lang;
 use crate::xml::Node;
 use crate::{expression, Place, Places, TC6_NAMESPACE};
 use mythos_logic_ir::{is_keyword, Diagnostic, Retention, Section};
 use mythos_logic_st::ast::{self, ArrayInit, Init, PouKind, TypeSpec, TypeSpecKind, VarDecl};
 use mythos_logic_st::lexer::{self, Tok};
 
-/// An LD POU whose interface has been read, and the LD body it has.
+/// A POU of a TC6 document whose interface has been read, and the graphical body it has.
 #[derive(Debug, Clone)]
-pub(crate) struct LdPou {
+pub(crate) struct GPou {
     pub doc: usize,
     /// Its name, kind, result type and variables; no statements.
     pub tree: ast::Pou,
-    /// Its `LD` element, when it has one that can be lowered.
-    pub body: Option<Node>,
+    /// Its `LD` or `FBD` element, when it has one that can be lowered, with its language.
+    pub body: Option<(Lang, Node)>,
     /// The keywords its interface declared as names.
     pub keywords_as_names: Vec<String>,
 }
@@ -44,27 +45,31 @@ pub(crate) struct LdPou {
 pub(crate) struct Known {
     functions: Vec<(String, Option<TypeSpec>)>,
     blocks: Vec<String>,
-    /// The BOOL outputs of the function block types of the sources, by type and formal
-    /// parameter in upper case.
-    bool_outputs: Vec<(String, String)>,
+    /// The outputs of the function block types of the sources, by type and formal parameter
+    /// in upper case, each with its declared type.
+    outputs: Vec<Output>,
     /// Those of the standard library's, read from it when a body first asks.
-    library_bool_outputs: std::cell::OnceCell<Vec<(String, String)>>,
+    library_outputs: std::cell::OnceCell<Vec<Output>>,
 }
 
+/// An output of a function block type: the type's name and the output's, in upper case, and
+/// the output's declared type.
+type Output = (String, String, TypeSpec);
+
 impl Known {
-    pub fn of<'a>(st: &ast::Source, ld: impl Iterator<Item = &'a LdPou>) -> Known {
+    pub fn of<'a>(st: &ast::Source, ld: impl Iterator<Item = &'a GPou>) -> Known {
         let mut k = Known {
             functions: Vec::new(),
             blocks: Vec::new(),
-            bool_outputs: Vec::new(),
-            library_bool_outputs: std::cell::OnceCell::new(),
+            outputs: Vec::new(),
+            library_outputs: std::cell::OnceCell::new(),
         };
         for p in st.pous.iter().chain(ld.map(|p| &p.tree)) {
             let upper = p.name.to_ascii_uppercase();
             match p.kind {
                 PouKind::Function => k.functions.push((upper, p.result.clone())),
                 PouKind::FunctionBlock => {
-                    k.bool_outputs.extend(bool_outputs(p));
+                    k.outputs.extend(outputs(p));
                     k.blocks.push(upper);
                 }
                 PouKind::Program => {}
@@ -76,20 +81,29 @@ impl Known {
     /// Whether the output `formal` (upper case) of the function block type `upper` is
     /// declared BOOL: the project's type, or else the standard library's.
     pub fn output_is_bool(&self, upper: &str, formal: &str) -> bool {
-        let wanted = |(t, f): &(String, String)| t == upper && f == formal;
+        self.output_type(upper, formal).is_some_and(
+            |t| matches!(&t.kind, ast::TypeSpecKind::Named(n) if n.eq_ignore_ascii_case("BOOL")),
+        )
+    }
+
+    /// The declared type of the output `formal` (upper case) of the function block type
+    /// `upper`: the project's type, or else the standard library's.
+    pub fn output_type(&self, upper: &str, formal: &str) -> Option<TypeSpec> {
+        let wanted = |(t, f, _): &&Output| t == upper && f == formal;
         if self.blocks.iter().any(|b| b == upper) {
-            return self.bool_outputs.iter().any(wanted);
+            return self.outputs.iter().find(wanted).map(|o| o.2.clone());
         }
-        self.library_bool_outputs
+        self.library_outputs
             .get_or_init(|| {
                 (0..mythos_logic_st::library::FILES.len())
                     .flat_map(|file| mythos_logic_st::library::read(file).0.pous)
                     .filter(|p| p.kind == PouKind::FunctionBlock)
-                    .flat_map(|p| bool_outputs(&p))
+                    .flat_map(|p| outputs(&p))
                     .collect()
             })
             .iter()
-            .any(wanted)
+            .find(wanted)
+            .map(|o| o.2.clone())
     }
 
     /// A function block type: the project's or the standard library's.
@@ -110,15 +124,19 @@ impl Known {
     }
 }
 
-/// The BOOL outputs of function block `p`: its name and each output's, in upper case.
-fn bool_outputs(p: &ast::Pou) -> Vec<(String, String)> {
+/// The outputs of function block `p`: its name and each output's, in upper case, with the
+/// output's type.
+fn outputs(p: &ast::Pou) -> Vec<Output> {
     p.vars
         .iter()
         .filter(|v| v.section == mythos_logic_ir::Section::Output)
-        .filter(
-            |v| matches!(&v.ty.kind, ast::TypeSpecKind::Named(n) if n.eq_ignore_ascii_case("BOOL")),
-        )
-        .map(|v| (p.name.to_ascii_uppercase(), v.name.to_ascii_uppercase()))
+        .map(|v| {
+            (
+                p.name.to_ascii_uppercase(),
+                v.name.to_ascii_uppercase(),
+                v.ty.clone(),
+            )
+        })
         .collect()
 }
 
@@ -186,7 +204,7 @@ pub(crate) fn document(
     doc: usize,
     places: &mut Places,
     diags: &mut Vec<Diagnostic>,
-) -> Option<Vec<LdPou>> {
+) -> Option<Vec<GPou>> {
     let at = places.add(Place {
         doc,
         pou: String::new(),
@@ -258,7 +276,7 @@ fn read_pou(
     doc: usize,
     places: &mut Places,
     diags: &mut Vec<Diagnostic>,
-) -> Option<LdPou> {
+) -> Option<GPou> {
     let pou_name = node.attr("name").unwrap_or("").to_string();
     places.keywords_as_names.clear();
     let line = places.add(Place {
@@ -326,11 +344,12 @@ fn read_pou(
                 .iter()
                 .find(|c| matches!(c.name.as_str(), "IL" | "ST" | "FBD" | "LD" | "SFC"));
             match lang {
-                Some(l) if l.name == "LD" => body = Some(l.clone()),
+                Some(l) if l.name == "LD" => body = Some((Lang::Ld, l.clone())),
+                Some(l) if l.name == "FBD" => body = Some((Lang::Fbd, l.clone())),
                 Some(l) => diags.push(places.diag(
                     line,
                     format!(
-                        "{pou_name} has a body in {}; this front-end reads LD (write ST in a .st source)",
+                        "{pou_name} has a body in {}; this front-end reads LD and FBD (write ST in a .st source)",
                         l.name
                     ),
                 )),
@@ -345,7 +364,7 @@ fn read_pou(
     if body.is_none() {
         tree.partial_body = true;
     }
-    Some(LdPou {
+    Some(GPou {
         doc,
         tree,
         body,

@@ -11,8 +11,8 @@ import { anyDirty, isDirty, usePrograms } from './programs';
 export const NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 /** A language as the tree names it. */
-export const LANGUAGE_LABEL: Record<string, string> = { st: 'ST', ld: 'LD' };
-const LANGUAGE_TITLE: Record<string, string> = { st: 'Structured Text', ld: 'Ladder Diagram' };
+export const LANGUAGE_LABEL: Record<string, string> = { st: 'ST', ld: 'LD', fbd: 'FBD' };
+const LANGUAGE_TITLE: Record<string, string> = { st: 'Structured Text', ld: 'Ladder Diagram', fbd: 'Function Block Diagram' };
 
 interface NodeProps {
   depth: number;
@@ -126,10 +126,14 @@ function AddProgram({ openEditor }: { openEditor: (name: string) => void }) {
           aria-label="Program language"
           value={language}
           disabled={busy === 'creating'}
-          onChange={(event) => setLanguage(event.target.value === 'ld' ? 'ld' : 'st')}
+          onChange={(event) => {
+            const chosen = event.target.value;
+            setLanguage(chosen === 'ld' || chosen === 'fbd' ? chosen : 'st');
+          }}
         >
           <option value="st">ST</option>
           <option value="ld">LD</option>
+          <option value="fbd">FBD</option>
         </select>
       </div>
       {invalid && (

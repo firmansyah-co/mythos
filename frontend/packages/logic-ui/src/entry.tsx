@@ -76,9 +76,11 @@ export function activate(host: WorkbenchHost): Dispose {
       if (state.projectId === null || project !== state.projectId) return;
       const program = (data as { program?: unknown }).program;
       const what = (data as { what?: unknown }).what;
-      // A Ladder Diagram is not edited here (ADR-013 L3b-1): its view follows what an agent or
-      // another workbench saved, unless it has changes here.
-      const ladder = state.programs.find((doc) => doc.entry.name === program && doc.entry.language === 'ld');
+      // A diagram's view follows what an agent or another workbench saved, unless it has changes
+      // here (a Function Block Diagram is not edited here yet, ADR-013 L3c-1).
+      const ladder = state.programs.find(
+        (doc) => doc.entry.name === program && (doc.entry.language === 'ld' || doc.entry.language === 'fbd')
+      );
       if (what === 'source' && ladder && ladder.source !== null) {
         void state.reread(ladder.entry.name);
         return;

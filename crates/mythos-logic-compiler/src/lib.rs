@@ -2,23 +2,24 @@
 //! runs. It owns no language and no target; it joins the crates that do.
 //!
 //! ```text
-//! mythos-logic-st ──► mythos-logic-ir ──► target profile check ──► mythos-logic-backend-vm
-//! mythos-logic-ld ─┘     (the seam)        (this crate)             (a backend per
-//!  (a front-end                                                       target kind)
-//!   per language)
+//! mythos-logic-st ──────► mythos-logic-ir ──► target profile check ──► mythos-logic-backend-vm
+//! mythos-logic-graphic ─┘   (the seam)         (this crate)             (a backend per
+//!  (a front-end per language; LD and FBD                                  target kind)
+//!   share one, as they share the TC6 document)
 //! ```
 //!
 //! A program is compiled from one source ([`compile`], [`compile_in`]) or from several in
 //! different languages ([`compile_sources`]): a Structured Text source with types, functions
-//! and function blocks, and Ladder Diagram documents, one POU of all of them the PROGRAM.
-//! Each POU may call those of the others and the standard library (ADR-013 §2.15).
+//! and function blocks, and PLCopen TC6 documents whose POUs are Ladder Diagrams or Function
+//! Block Diagrams, one POU of all of them the PROGRAM. Each POU may call those of the others
+//! and the standard library (ADR-013 §2.15, §2.16).
 
 pub mod profile;
 
 pub use mythos_logic_backend_vm::{ArrayInfo, MemberLayout, Symbol, TypeLayout};
+pub use mythos_logic_graphic::{At, Holds, Probe};
 use mythos_logic_ir::Ty;
 pub use mythos_logic_ir::{Diagnostic, Element, Span, TextRange};
-pub use mythos_logic_ld::{At, Holds, Probe};
 pub use profile::TargetProfile;
 
 /// The languages a program may be written in. One front-end crate each.
@@ -29,17 +30,20 @@ pub enum Language {
     St,
     /// Ladder Diagram, as a PLCopen TC6 XML v2.01 document (ADR-013 §2.15).
     Ld,
+    /// Function Block Diagram, as a PLCopen TC6 XML v2.01 document (ADR-013 §2.16).
+    Fbd,
 }
 
-/// The sources of one program: at most one Structured Text source, and Ladder Diagram
+/// The sources of one program: at most one Structured Text source, and PLCopen TC6
 /// documents. Each is named for the diagnostics, which say which source a line is in when
 /// there is more than one.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Sources<'a> {
     /// `(name, text)` of the Structured Text source.
     pub st: Option<(&'a str, &'a str)>,
-    /// `(name, text)` of each Ladder Diagram document.
-    pub ld: &'a [(&'a str, &'a str)],
+    /// `(name, text)` of each TC6 document: its POUs' bodies are in LD or in FBD, one
+    /// document may hold both, and a POU of either may call one of the other.
+    pub tc6: &'a [(&'a str, &'a str)],
 }
 
 /// A compiled program.
@@ -58,8 +62,10 @@ pub struct Compiled {
     /// How deep the program's calls nest; the VM is given that many call frames.
     pub call_depth: u16,
     /// For each output, junction and network of a Ladder Diagram, the hidden variable that
-    /// keeps its power, assigned when it is evaluated in the scan (ADR-013 §2.15): what an
-    /// editor shows power flow from. Empty for a program of Structured Text alone.
+    /// keeps its power, and for each output and network of a Function Block Diagram, the one
+    /// that keeps its value, each assigned when it is evaluated in the scan (ADR-013 §2.15,
+    /// §2.16): what an editor shows power flow and values from. Empty for a program of
+    /// Structured Text alone.
     pub probes: Vec<Probe>,
 }
 
@@ -75,8 +81,8 @@ impl Compiled {
 pub fn lower(source: &str, language: Language) -> Result<mythos_logic_ir::Unit, Vec<Diagnostic>> {
     match language {
         Language::St => mythos_logic_st::lower(source),
-        Language::Ld => mythos_logic_ld::lower(
-            &[mythos_logic_ld::Source {
+        Language::Ld | Language::Fbd => mythos_logic_graphic::lower(
+            &[mythos_logic_graphic::Source {
                 name: "",
                 text: source,
             }],
@@ -90,24 +96,24 @@ pub fn lower_sources(sources: &Sources) -> Result<mythos_logic_ir::Unit, Vec<Dia
     lower_sources_with_probes(sources).map(|(unit, _)| unit)
 }
 
-/// [`lower_sources`], with the probes of the Ladder Diagram POUs
-/// ([`mythos_logic_ld::lower_with_probes`]).
+/// [`lower_sources`], with the probes of the graphical POUs
+/// ([`mythos_logic_graphic::lower_with_probes`]).
 fn lower_sources_with_probes(
     sources: &Sources,
 ) -> Result<(mythos_logic_ir::Unit, Vec<Probe>), Vec<Diagnostic>> {
-    let ld: Vec<mythos_logic_ld::Source> = sources
-        .ld
+    let ld: Vec<mythos_logic_graphic::Source> = sources
+        .tc6
         .iter()
-        .map(|(name, text)| mythos_logic_ld::Source { name, text })
+        .map(|(name, text)| mythos_logic_graphic::Source { name, text })
         .collect();
     let st = sources
         .st
-        .map(|(name, text)| mythos_logic_ld::Source { name, text });
+        .map(|(name, text)| mythos_logic_graphic::Source { name, text });
     if ld.is_empty() {
         let (_, text) = sources.st.unwrap_or(("", ""));
         return mythos_logic_st::lower(text).map(|unit| (unit, Vec::new()));
     }
-    mythos_logic_ld::lower_with_probes(&ld, st.as_ref())
+    mythos_logic_graphic::lower_with_probes(&ld, st.as_ref())
 }
 
 /// Compile a program from `sources` for `target`.
@@ -134,10 +140,10 @@ pub fn compile_in(
 ) -> Result<Compiled, Vec<Diagnostic>> {
     match language {
         Language::St => compile_unit(lower(source, language)?, target),
-        Language::Ld => compile_sources(
+        Language::Ld | Language::Fbd => compile_sources(
             &Sources {
                 st: None,
-                ld: &[("", source)],
+                tc6: &[("", source)],
             },
             target,
         ),

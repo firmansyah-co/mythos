@@ -74,13 +74,16 @@ export interface PublishedBinding {
   writable?: boolean;
 }
 
-/** The languages a program is written in: Structured Text, or a Ladder Diagram stored as a PLCopen TC6 XML document. */
-export type Language = 'st' | 'ld';
+/**
+ * The languages a program is written in: Structured Text, or a Ladder Diagram or a Function
+ * Block Diagram, each stored as a PLCopen TC6 XML document.
+ */
+export type Language = 'st' | 'ld' | 'fbd';
 
 /** A program's settings, as the logic module stores them. */
 export interface ProgramEntry {
   name: string;
-  /** `st` or `ld`; set when the program is created. */
+  /** `st`, `ld` or `fbd`; set when the program is created. */
   language: string;
   interval_ms: number;
   runtime: string;
@@ -128,7 +131,7 @@ export interface Variable {
   /** `input`, `output`, `local`, … as the compiler names the section. */
   section: string;
   bindable: boolean;
-  /** Made by the Ladder Diagram front-end for itself (`__LD_…`, `__EDGE_…`), not declared. */
+  /** Made by the diagram front-end for itself (`__LD_…`, `__FBD_…`, `__EDGE_…`), not declared. */
   hidden?: boolean;
 }
 
@@ -151,6 +154,17 @@ export interface PowerProbe {
   negated?: boolean;
 }
 
+/**
+ * Where the value of one output of a Function Block Diagram is kept (ADR-013 §2.16), in the shape
+ * of a {@link PowerProbe}: the hidden variable assigned when the element is evaluated in the scan,
+ * of the output's own type (or `on`: an ENO always TRUE); `ran`, where given, the BOOL that is TRUE
+ * where the value was computed in the scan, which is not this scan's where it is FALSE. A network's
+ * flag as in LD. A line from an output with none carries a literal, written on its element.
+ */
+export interface ValueProbe extends PowerProbe {
+  ran?: string;
+}
+
 /** The answer of a check: the diagnostics, or what compiled. */
 export interface CheckResult {
   ok: boolean;
@@ -165,6 +179,8 @@ export interface CheckResult {
   binding_problems?: string[];
   /** A Ladder Diagram's: where the power of each output, junction and rung is kept. */
   power?: PowerProbe[];
+  /** A Function Block Diagram's: where the value of each output and each network's flag is kept. */
+  values?: ValueProbe[];
 }
 
 export interface BuildResult {

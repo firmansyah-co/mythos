@@ -5,7 +5,7 @@
 //! afterwards; and a network a jump or a return skipped reads as not run.
 
 mod support;
-#[path = "../../mythos-logic-ld/tests/support/tc6.rs"]
+#[path = "../../mythos-logic-graphic/tests/support/tc6.rs"]
 mod tc6;
 
 use mythos_logic_compiler::{
@@ -415,7 +415,7 @@ fn structured_text_alone_publishes_nothing_and_an_st_function_block_is_not_probe
                 "pous.st",
                 "FUNCTION_BLOCK Twice VAR_INPUT x : BOOL; END_VAR VAR_OUTPUT y : BOOL; END_VAR y := x; END_FUNCTION_BLOCK",
             )),
-            ld: &ld,
+            tc6: &ld,
         },
         &TargetProfile::pc(),
     )
