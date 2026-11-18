@@ -26,6 +26,17 @@
 //! text when it is about them. The syntax tree carries this as lines of its own: each place
 //! of a document is a line from [`FIRST_LINE`] up, which no source and no file of the library
 //! reaches, and a diagnostic on such a line is mapped back to its place.
+//!
+//! **Power flow for an editor.** [`lower_with_probes`] also says, per output of an element,
+//! which variable holds the state of that output once a scan is over ([`Probe`]), wherever
+//! one holds it exactly: the hidden `__LD_<localId>` variables of values used more than once,
+//! and an output of a function block instance called by one block alone. Every other link's
+//! state is an expression evaluated inside the scan and kept nowhere, so it is not published:
+//! working it out afterwards from the variables it reads would use the values they have at
+//! the end of the scan, not those the expression read (a seal-in contact reads its coil's
+//! variable before the coil writes it). A body with a jump or a return publishes none: which
+//! of its networks ran in a scan is not kept, and a network a jump skipped keeps the state of
+//! the last scan that ran it.
 
 mod lower;
 mod read;
@@ -132,6 +143,29 @@ pub(crate) fn expression(
     expr
 }
 
+/// What holds the state of one output of an element when a scan is over (ADR-013 §2.15).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Probe {
+    /// The POU the element is in.
+    pub pou: String,
+    pub local_id: u64,
+    /// The output: a block's formal parameter in upper case; empty for the one output of any
+    /// other element.
+    pub output: String,
+    pub holds: Holds,
+}
+
+/// What an output's state is, when it is known after a scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Holds {
+    /// ON whenever the POU runs: the left rail, and what it reaches through nothing that can
+    /// switch it off (§8.2.1).
+    On,
+    /// The value of a variable, by its path from the POU (for the PROGRAM, the path of its
+    /// symbol), negated when `negated`.
+    Variable { path: String, negated: bool },
+}
+
 /// Lower the Ladder Diagram POUs of the documents `ld`, with the POUs of the Structured Text
 /// source `st`, into one unit: one of all of them is the PROGRAM, and each may call the
 /// functions and function blocks of the others and of the standard library.
@@ -141,6 +175,15 @@ pub(crate) fn expression(
 /// ([`mythos_logic_ir::Element`]). When there is more than one source, each diagnostic with
 /// a line names its source.
 pub fn lower(ld: &[Source], st: Option<&Source>) -> Result<Unit, Vec<Diagnostic>> {
+    lower_with_probes(ld, st).map(|(unit, _)| unit)
+}
+
+/// [`lower`], with the [`Probe`] of every output of an element whose state a variable holds
+/// exactly once a scan is over, in every LD POU.
+pub fn lower_with_probes(
+    ld: &[Source],
+    st: Option<&Source>,
+) -> Result<(Unit, Vec<Probe>), Vec<Diagnostic>> {
     let several = ld.len() + st.is_some() as usize > 1;
     let (mut tree, mut diags) = match st {
         Some(st) => parser::Parser::new(lexer::tokens(st.text)).source(),
@@ -169,12 +212,13 @@ pub fn lower(ld: &[Source], st: Option<&Source>) -> Result<Unit, Vec<Diagnostic>
         }
     }
     let known = read::Known::of(&tree, pous.iter());
+    let mut probes = Vec::new();
     for pou in &pous {
-        let lowered = lower::pou(pou, &known, &mut places, &mut diags);
+        let lowered = lower::pou(pou, &known, &mut places, &mut diags, &mut probes);
         tree.pous.push(lowered);
     }
     let mut out = match mythos_logic_st::lower_tree(tree, diags) {
-        Ok(unit) if said_about_documents.is_empty() => return Ok(unit),
+        Ok(unit) if said_about_documents.is_empty() => return Ok((unit, probes)),
         Ok(_) => Vec::new(),
         Err(diags) => diags,
     };

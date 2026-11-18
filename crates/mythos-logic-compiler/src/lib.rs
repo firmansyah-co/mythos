@@ -18,6 +18,7 @@ pub mod profile;
 pub use mythos_logic_backend_vm::{ArrayInfo, MemberLayout, Symbol, TypeLayout};
 use mythos_logic_ir::Ty;
 pub use mythos_logic_ir::{Diagnostic, Element, Span, TextRange};
+pub use mythos_logic_ld::{Holds, Probe};
 pub use profile::TargetProfile;
 
 /// The languages a program may be written in. One front-end crate each.
@@ -56,6 +57,10 @@ pub struct Compiled {
     pub stack_depth: u16,
     /// How deep the program's calls nest; the VM is given that many call frames.
     pub call_depth: u16,
+    /// For each output of a Ladder Diagram element whose state a variable holds exactly once
+    /// a scan is over, that variable (ADR-013 §2.15): what an editor shows power flow from.
+    /// Empty for a program of Structured Text alone.
+    pub probes: Vec<Probe>,
 }
 
 impl Compiled {
@@ -82,6 +87,14 @@ pub fn lower(source: &str, language: Language) -> Result<mythos_logic_ir::Unit, 
 
 /// Parse and check `sources` into one unit of the IR.
 pub fn lower_sources(sources: &Sources) -> Result<mythos_logic_ir::Unit, Vec<Diagnostic>> {
+    lower_sources_with_probes(sources).map(|(unit, _)| unit)
+}
+
+/// [`lower_sources`], with the probes of the Ladder Diagram POUs
+/// ([`mythos_logic_ld::lower_with_probes`]).
+fn lower_sources_with_probes(
+    sources: &Sources,
+) -> Result<(mythos_logic_ir::Unit, Vec<Probe>), Vec<Diagnostic>> {
     let ld: Vec<mythos_logic_ld::Source> = sources
         .ld
         .iter()
@@ -92,9 +105,9 @@ pub fn lower_sources(sources: &Sources) -> Result<mythos_logic_ir::Unit, Vec<Dia
         .map(|(name, text)| mythos_logic_ld::Source { name, text });
     if ld.is_empty() {
         let (_, text) = sources.st.unwrap_or(("", ""));
-        return mythos_logic_st::lower(text);
+        return mythos_logic_st::lower(text).map(|unit| (unit, Vec::new()));
     }
-    mythos_logic_ld::lower(&ld, st.as_ref())
+    mythos_logic_ld::lower_with_probes(&ld, st.as_ref())
 }
 
 /// Compile a program from `sources` for `target`.
@@ -102,7 +115,10 @@ pub fn compile_sources(
     sources: &Sources,
     target: &TargetProfile,
 ) -> Result<Compiled, Vec<Diagnostic>> {
-    compile_unit(lower_sources(sources)?, target)
+    let (unit, probes) = lower_sources_with_probes(sources)?;
+    let mut compiled = compile_unit(unit, target)?;
+    compiled.probes = probes;
+    Ok(compiled)
 }
 
 /// Compile Structured Text `source` for `target`.
@@ -116,7 +132,16 @@ pub fn compile_in(
     language: Language,
     target: &TargetProfile,
 ) -> Result<Compiled, Vec<Diagnostic>> {
-    compile_unit(lower(source, language)?, target)
+    match language {
+        Language::St => compile_unit(lower(source, language)?, target),
+        Language::Ld => compile_sources(
+            &Sources {
+                st: None,
+                ld: &[("", source)],
+            },
+            target,
+        ),
+    }
 }
 
 /// Compile a unit of the IR for `target`.
@@ -206,5 +231,6 @@ fn compile_unit(
         code_size: out.code_size,
         stack_depth: out.stack_depth,
         call_depth: out.call_depth,
+        probes: Vec::new(),
     })
 }

@@ -45,7 +45,7 @@
 
 use crate::read::{flag, name, Known, LdPou};
 use crate::xml::Node;
-use crate::{expression, Place, Places};
+use crate::{expression, Holds, Place, Places, Probe};
 use mythos_logic_ir::{Diagnostic, Retention, Section, Span};
 use mythos_logic_st::ast::{
     self, Arg, BinOp, CallArg, Expr, ExprKind, PouKind, Stmt, TypeSpec, TypeSpecKind, VarDecl,
@@ -296,6 +296,7 @@ pub(crate) fn pou(
     known: &Known,
     places: &mut Places,
     diags: &mut Vec<Diagnostic>,
+    probes: &mut Vec<Probe>,
 ) -> ast::Pou {
     let mut tree = p.tree.clone();
     let Some(body) = &p.body else {
@@ -307,9 +308,11 @@ pub(crate) fn pou(
     if diags.len() == before && check_graph(&elems, places, diags) {
         let mut l = Lowering::new(&elems, &tree, known, places);
         let stmts = l.body();
+        let found = l.probes(&tree.name);
         let (hidden, said) = (l.hidden, l.diags);
         diags.extend(said);
         if diags.len() == before {
+            probes.extend(found);
             tree.body = stmts;
             tree.vars.extend(hidden);
             return tree;
@@ -1700,6 +1703,78 @@ impl<'a> Lowering<'a> {
                 guard,
             },
         );
+    }
+
+    /// Every output whose state a variable holds exactly once the body has run: a value kept
+    /// in a hidden `__LD_` variable (assigned whenever its network runs, never under a
+    /// condition), ON, or an output of a function block instance named plainly and called by
+    /// this block alone (nothing else writes it: §6.6.3.2, Figure 13 rule 4b). None when the
+    /// body jumps or returns: a network a jump skipped keeps an earlier scan's state.
+    fn probes(&self, pou: &str) -> Vec<Probe> {
+        if self
+            .elems
+            .iter()
+            .any(|e| matches!(e.kind, Kind::Jump(_) | Kind::Return))
+        {
+            return Vec::new();
+        }
+        let calls = |name: &str| {
+            self.elems
+                .iter()
+                .filter(|e| {
+                    matches!(&e.kind, Kind::Block { instance: Some(i), .. }
+                        if i.path.is_empty() && i.name.eq_ignore_ascii_case(name))
+                })
+                .count()
+        };
+        let mut out = Vec::new();
+        for ((k, output), v) in &self.values {
+            if v.guard.is_some() {
+                continue;
+            }
+            let (tree, negated) = match &v.tree {
+                Tree::Not(inner) => (inner.as_ref(), true),
+                t => (t, false),
+            };
+            let holds = match tree {
+                Tree::On if !negated => Holds::On,
+                Tree::Leaf(Expr {
+                    kind: ExprKind::Var(place),
+                    ..
+                }) => {
+                    let hidden = place.path.is_empty() && place.name.starts_with("__LD_");
+                    let member = match &self.elems[*k].kind {
+                        Kind::Block {
+                            instance: Some(i), ..
+                        } => {
+                            i.path.is_empty()
+                                && output != "ENO"
+                                && calls(&i.name) == 1
+                                && place.name == i.name
+                                && matches!(place.path.as_slice(),
+                                    [ast::Selector::Member(m, _)] if m == output)
+                        }
+                        _ => false,
+                    };
+                    if !(hidden || member) {
+                        continue;
+                    }
+                    Holds::Variable {
+                        path: place.text(),
+                        negated,
+                    }
+                }
+                _ => continue,
+            };
+            out.push(Probe {
+                pou: pou.to_string(),
+                local_id: self.elems[*k].id,
+                output: output.clone(),
+                holds,
+            });
+        }
+        out.sort_by(|a, b| (a.local_id, &a.output).cmp(&(b.local_id, &b.output)));
+        out
     }
 
     /// The statements of the whole body.

@@ -10,6 +10,7 @@ import {
   type ApplyAnswer,
   type BuildResult,
   type CheckResult,
+  type Language,
   type ProgramEntry,
   type RuntimeLoad,
   type RuntimeStatus,
@@ -77,7 +78,9 @@ export interface ProgramsState {
 
   load: (projectId: string) => Promise<void>;
   reset: () => void;
-  create: (name: string) => Promise<string | null>;
+  create: (name: string, language?: Language) => Promise<string | null>;
+  /** Read the program's source again, unless it has changes here: someone else saved it. */
+  reread: (name: string) => Promise<void>;
   remove: (name: string) => Promise<boolean>;
   open: (name: string) => Promise<void>;
   setSource: (name: string, source: string) => void;
@@ -271,12 +274,12 @@ export const usePrograms = create<ProgramsState>((set, get) => {
 
     reset: () => set({ ...EMPTY }),
 
-    create: async (name) => {
+    create: async (name, language = 'st') => {
       const projectId = get().projectId;
       if (!projectId) return null;
       set({ busy: 'creating', error: null });
       try {
-        const made = await api.create(projectId, name);
+        const made = await api.create(projectId, name, language);
         if (!still(projectId)) return null;
         set((state) => ({
           busy: null,
@@ -326,6 +329,24 @@ export const usePrograms = create<ProgramsState>((set, get) => {
         );
       } catch (cause) {
         change(name, (d) => ({ ...d, readError: message(cause) }));
+      }
+    },
+
+    reread: async (name) => {
+      const projectId = get().projectId;
+      const doc = find(name);
+      if (!projectId || !doc || doc.source === null || isDirty(doc)) return;
+      try {
+        const read = await api.read(projectId, name);
+        if (!still(projectId)) return;
+        change(name, (d) =>
+          // An edit made here while the read was on its way is kept.
+          isDirty(d) || d.source === null
+            ? d
+            : { ...d, source: read.source, savedSource: read.source, readError: null }
+        );
+      } catch (cause) {
+        log.error(`Program ${name} could not be read again: ${message(cause)}`);
       }
     },
 

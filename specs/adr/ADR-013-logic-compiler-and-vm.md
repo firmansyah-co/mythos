@@ -407,14 +407,38 @@ are part of its slice (ADR-012 §2.5).
 
 As built (C3):
 
-- A program is its source (`programs/<name>.st`) and an entry in `programs.json`: its interval,
-  the runtime module and the target profile it is built for, whether it runs when loaded, and
-  its bindings (inputs, outputs with their safe values, published variables). One program is
-  one cyclic task; a task that runs several programs is not built.
+- A program is its source and an entry in `programs.json`: its language, its interval, the
+  runtime module and the target profile it is built for, whether it runs when loaded, and its
+  bindings (inputs, outputs with their safe values, published variables). One program is one
+  cyclic task; a task that runs several programs is not built.
+- **Its language** (L3b-1) is `st` or `ld`, chosen when it is created (`create_logic_program`
+  takes `language`, `st` by default) and not changed after. Structured Text is
+  `programs/<name>.st`; a Ladder Diagram is `programs/<name>.xml`, a PLCopen TC6 XML v2.01
+  document holding its POUs (§2.15). An entry without `language`, as C3 wrote them, is `st`,
+  and is written back with it. A new LD program is a TC6 project holding the PROGRAM with no
+  variable and a body of the two power rails and no rung between them, which compiles to a
+  program that does nothing; its file header names no company (who wrote it is not known) and
+  gives the module's name, version and the time it was made. The source routes take and give
+  the document's text as they take ST.
+- **Each program is compiled from its own source alone**, through `compile_sources` with that
+  one source. A project's programs share no POU: every source holds a PROGRAM and a unit has
+  exactly one, so another program's functions and function blocks could not be compiled in
+  without taking its PROGRAM out of its file; and a build that took another program's POUs
+  would change, and get a new version, when that other program is edited, so a running
+  program would be changed online by an edit nobody made to it. What a program calls is in
+  its own source: in an LD document, function and function block POUs beside its PROGRAM, in
+  LD; in ST, before it. A library of the project's (sources with no PROGRAM, given to every
+  build) is not built; `compile_sources` already takes one ST source and many LD documents, so
+  it needs storage and routes, not a compiler change.
 - `check` compiles the saved source, or a text sent with the request and not saved, and answers
-  with the diagnostics (each with the range it is about, §2.8), or with the variables and every
-  binding that names a variable the program does not have or one that cannot be bound (an
-  array, a TIME, a STRING). A STRING cannot be bound because a tag holds no text: a tag's
+  with the diagnostics (each with the range it is about, §2.8; in a Ladder Diagram also the
+  element, §2.15), or with the variables and every binding that names a variable the program
+  does not have or one that cannot be bound (an array, a TIME, a STRING). It also gives the
+  version a build of that text with the saved settings would have (the hash `build` gives), so
+  an editor knows whether what it shows is what a runtime runs; each variable whether the LD
+  front-end made it for itself (`hidden`: a part of its path begins with two underscores, which
+  §6.1.2 forbids in every name a program declares); and for a Ladder Diagram `power`, where the
+  power of each element output is held (§2.15, power flow). A STRING cannot be bound because a tag holds no text: a tag's
   value is a BOOL or a number (`mythos_plugin_sdk::SampleValue`, and the tag bus's slot);
   it is watched instead.
 - `build` compiles the saved source and answers with the runtime instance of §2.4, its version
@@ -423,12 +447,15 @@ As built (C3):
   the instance into the project's runtimes, and the core loads it. An edit therefore changes
   nothing that runs until it is built and loaded. A bound tag that no connection provides now
   is a warning of the build, not a refusal.
-- Not built: unit tests in ST. A device's slice carries its programs (C6a, §3).
+- Not built: unit tests in ST; a library of POUs shared by a project's programs (above). A
+  device's slice carries its programs (C6a, §3), LD documents as any file of `logic/`.
 
 Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (ADR-011 §2.3):
 
-- Programs in the project tree, and an editor per program: the Structured Text (a text area
-  over the same text painted in colour; no editor library), the last check's diagnostics,
+- Programs in the project tree, each with its language (ST, LD), added in the language chosen
+  beside the name, and an editor per program: the Structured Text (a text area
+  over the same text painted in colour; no editor library), or the Ladder Diagram drawn
+  read-only (§2.8), the last check's diagnostics,
   each underlined over the whole range it is about (§2.8) and listed with where it starts, the task settings, and the variables of the last text that
   compiled, each with its bindings to tags and each bound tag's live value.
 - The editor keeps three things apart: the text in the editor, the text that is saved, and the
@@ -467,8 +494,9 @@ Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (A
   place, which would claim nothing is forced). One mark of the SDK (`ForcedMark`) says FORCED
   beside the value in the HMI's I/O field (for the project the controller runs), the tag table,
   the inspector and the editor's bound tags; the online tools card counts the forced tags.
-- Not built: watching an element of an array from the table; an editor for LD, FBD, SFC. The
-  LD front-end is built (§2.15); the module does not yet store or build an LD program (L3b).
+- Not built: watching an element of an array from the table; editing a Ladder Diagram in the
+  workbench (L3b-2: until then it is changed through `save_logic_source`, and an open diagram
+  re-reads a source saved elsewhere unless it has changes of its own); editors for FBD and SFC.
 
 ### 2.7 The HMI is not a runtime
 
@@ -489,6 +517,45 @@ making it a `runtime` would add a process that does nothing.
 The logic module's workbench UI (ADR-011 §2.3): a POU tree, the ST editor with diagnostics, the
 variable table, task settings, check and test, and live values beside the code. Each later
 language brings its editor as an editor kind.
+
+**The Ladder Diagram view** (L3b-1; `LadderView.tsx`, `ladder.ts`). An LD program opens in the
+same editor as ST, with the diagram in place of the text; the variables table, bindings, Load,
+Load cold, Run, Stop, Unload, forcing and watching are the ST editor's, unchanged. The diagram
+is SVG, read-only, drawn from the document's own `position`s (and `relPosition`s of pins where
+the document gives them): the power rails; each rung numbered in the order it is evaluated
+(the front-end's rule, §2.13: connected elements without the rails, top to bottom by the
+topmost, then the leftmost); contacts (normally open, negated, P and N for rising and falling),
+coils (plain, negated, S, R, P, N), blocks with their type, instance and pins (an input's
+expression written at it, a negated pin marked), in, out and in-out variables, jumps, labels,
+returns and comments. An element it does not know (a connector) is listed as not drawn. Each
+POU of the document is drawn; a function's or function block's has no live state, since each
+call or instance has its own. A diagnostic with an `element` is drawn as a mark around it and
+listed as `<pou> element <localId>` (or `variable <name>`). It uses the workbench's tokens
+only (`--c-good` for ON, `--c-text-muted` for OFF, `--c-warn` dashed for UNKNOWN); its visual
+design is the owner's to lead.
+
+**Live state is drawn only from watched values, and only of the version on screen**: while the
+check of the text shown is current, its `version` equals the runtime's, the runtime is in RUN
+and the watch answer is of that version in RUN. Otherwise nothing is drawn live and the view
+says why (another version runs, the program is in STOP, it is not loaded, the text does not
+compile). Then:
+
+- a normally open contact is its variable's watched value, a negated one the negation; a
+  transition-sensing contact is not coloured, since it conducts for one scan only and its
+  variable does not say which;
+- a coil shows its variable's value (a negated, set or reset coil's variable, not the power
+  reaching it);
+- a link carries the power of the output it starts from where `power` names what holds it: ON
+  (from the left rail), or a variable's watched value. A link whose source no variable holds is
+  drawn with no state, never one worked out (§2.15, power flow);
+- a value that cannot be read (the watch fails, the runtime does not have the variable, it is
+  not a BOOL) is UNKNOWN, written under the element, never ON or OFF; when the runtimes can no
+  longer be read every state is UNKNOWN; a forced variable is marked FORCED under its element
+  (`variable-forced`), as in the table.
+
+The front-end's hidden variables are watched for the links and not listed in the table. An
+element's variable that is not a variable of the program by itself (an element of an array) is
+watched as well.
 
 **What the front-end gives an editor** (L2a; the editor of §2.6 shows it). The spike's parser
 stopped at the first error and recorded only where a construct starts. The ST front-end now:
@@ -848,16 +915,37 @@ unchanged for every language; where implementations differ, the standard.
   input variable read by more than one input that is not a variable by its name: each refused
   with what to write instead. Connectors, compare contacts (§2.13), in-out parameters, edges on
   a block's parameters, types declared in a document.
-- **What the editor slice (L3b) needs.** The logic module stores one `.st` per program
-  (`programs/<name>.st`, §2.6): an LD program needs its own file (`programs/<name>.xml`), its
-  language in `programs.json`, and `check` and `build` through `compile_sources` with the
-  project's ST POUs, each an MCP tool as before. The workbench needs an LD editor kind that
-  draws the TC6 elements by their positions and writes TC6 back, keeping the `localId` of an
-  element it does not change (online change and the edge memories follow it), and draws each
-  diagnostic at its `element`. The variable table should show the hidden variables apart, or
-  not at all. Showing power flow live needs each link's state, which no variable holds: the
-  editor works it out from the watched variables, or the front-end publishes, per element, the
-  variable or the expression its output is.
+- **Power flow for an editor** (L3b-1). `mythos_logic_ld::lower_with_probes` (and so
+  `compile_sources` and `compile_in` for LD, as `Compiled::probes`) says, for each output of an
+  element, what holds its state once a scan is over, wherever something holds it exactly:
+  `Holds::On` (the left rail, and what reaches it unchanged), or `Holds::Variable` with a path,
+  which is a hidden `__LD_<localId>` (or `_ENO`) variable assigned unconditionally whenever its
+  network runs (a branch point, a coil whose output goes on, an edge contact's output, a typed
+  value used twice; and a coil fed by such a value alone, which passes it on), or an output of a function block instance
+  named plainly (not an element of an array) and called by that block alone (nothing else
+  writes it, Figure 13 rule 4b). Nothing else is published: every other link's state is an
+  expression evaluated inside the scan and kept nowhere, and working it out afterwards from the
+  variables it reads would use their values at the end of the scan, not those it read (a
+  seal-in contact reads its coil's variable before the coil writes it), which would draw a
+  guess as a state. A body with a jump or a return publishes nothing: which networks ran in a
+  scan is not kept, and a network a jump skipped keeps the hidden variables of the last scan
+  that ran it. The front-end was not changed to keep more: keeping every element's output
+  would cost a byte and a store per element in every program to serve a view, and would still
+  say nothing of a skipped network. The logic module gives the PROGRAM's probes as `power` in
+  `check` (§2.6); `ladder_power_probes.rs` holds what is published, that a published variable
+  after a scan equals the power its output carried in it, and that a body with a jump or
+  return, or an instance called twice, publishes nothing of it.
+- **What the editor slice (L3b-2) needs.** Editing in the workbench: placing, moving, wiring
+  and deleting elements, and the text of each, writing TC6 back through `save_logic_source`.
+  It must keep the `localId` of every element it does not change (online change carries
+  `__LD_<localId>` and `__EDGE_<localId>` by their path, §2.5), give a new element an id no
+  element of the document has had in this edit, and keep what it does not draw (the file
+  header, `addData`, `documentation`) as it found it. A document the editor writes must be read
+  by this front-end alone, as now; nothing of another tool's is copied. The view of L3b-1 draws
+  from positions, so the editor needs a grid and a rule for where a new element goes, and the
+  owner's design pass before both. Undo is the editor's own; the module keeps one version.
+  Links stay without power where no variable holds it (above), unless the owner decides the
+  front-end should keep each element's output while monitoring, at its cost.
 
 ## 3. Order of work
 
@@ -913,8 +1001,9 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
 - L3. **LD, FBD, SFC** (not IL, §2.1), each a front-end crate and an editor kind. **L3a**
   (done, §2.15): the Ladder Diagram front-end, `mythos-logic-ld`, reading PLCopen TC6 XML
   v2.01; an LD program compiled with the project's ST POUs and the standard library.
-  **L3b** next: the LD editor and the logic module storing, checking and building LD programs
-  (§2.15, what the editor slice needs). Then FBD (the same TC6 reader; FBD's own order of
+  **L3b-1** (done): the logic module stores, checks and builds LD programs, each an MCP tool,
+  and the workbench draws an LD program read-only with its live state (§2.6, §2.8, §2.15).
+  **L3b-2** next: editing a Ladder Diagram in the workbench (§2.15, what L3b-2 needs). Then FBD (the same TC6 reader; FBD's own order of
   evaluation, §8.3.3, and explicit feedback, §8.1.5.2) and SFC.
 - L4. **The standard library in ST** (done, §2.14): the standard function blocks written in
   Structured Text, with intrinsics for what ST cannot say (the scan clock, bytecode format 4);
@@ -952,12 +1041,12 @@ Each step leaves `dev` working.
 | 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
 | 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Forcing is built (`Call::Force`, `Call::Unforce`, C5c): `runtime_api.rs` forces an output, a setpoint and an input of the running module process over the API and watches the device follow, refuses an operator and a viewer, refuses what cannot be forced, and sees every force released by a stop and by loading the program again. The watchdog is built (C7a): a program in RUN that completes no scan within ten intervals (never less than two seconds), or whose scan thread has ended, is put in FAULT at the next exchange with the reason (`watchdog: …`), every force released, so the core writes the safe values; a scan itself is bounded by the instruction budget. Proven by the module's own tests: a healthy program runs past the limit untouched, and one whose scan thread ends is faulted and asks for no write. RETAIN is built in the runtime and the core (C7b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter and proves that it goes on after a stop and run, after the program is loaded again, after its module process is killed and started again (from the values kept last, not those it was loaded with), and after a load in STOP, while the other counter starts from zero each time, and that a cold start resets it; the module's tests prove that a value is taken only into a variable of the same name, type and size. Since L4 a standard block's state is variables of its own: `runtime_api.rs` runs a RETAIN TON beside a plain one through the real module process, and after a stop and run the RETAIN one carries on from its ET (the time stopped not timed) while the plain one times again from 0, and a cold start resets both. Online change is built (C6b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter, a plain counter, a TON and an output bound to a Modbus simulator, loads a build with one variable added and one removed while it runs, and proves that both counters and the timer go on without resetting, the added variable starts from its initial value, the removed one is reported as dropped, and the device's register, sampled about every millisecond through the load, never holds the safe value nor drops below what the old build commanded before the load; that a cold load resets both counters and what is kept; that a program of another name starts as before; and that an unknown `start` is refused. The module's tests prove the carry rule (same path, type and size; an array of structures or instances not carried; a value given twice taken once; what is not carried listed with why), and that a program started into RUN holds the carried values and clock before its first scan while one loaded in STOP takes none |
 | 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run` (a warm restart), `/cold-start`, `/stop`, `/watch`, `/force` and `/release`, `GET`/`PUT /api/v1/projects/:id/runtimes` (`?start=cold`, and `changes.runtimes` saying how each runtime started: C6b), each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; what is forced in each, a FORCED badge with each variable and its value (`forced UNKNOWN` when the controller does not say), and "Release all" for an engineer, asked first, with the controller's answer shown as it gave it; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
-| 2.6 The logic module | Built: `plugins/logic` (programs, bindings, check, build; eight MCP tools), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes; its workbench UI `frontend/packages/logic-ui` (tree section, program editor, load, load cold, how a load started, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus. Not built: unit tests in ST, programs in a device's slice |
-| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); the places of an LD diagnostic (§2.15); editors for LD, FBD, SFC are not built. 2.10: not built |
+| 2.6 The logic module | Built: `plugins/logic` (programs in ST or LD, bindings, check, build; eight MCP tools, each saying which languages it takes; module version 0.2.0), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes, an LD program among them (created as a TC6 document, a diagnostic at its element, built, loaded, and running a Modbus simulator; an ST program saved without a language beside it, unchanged); its workbench UI `frontend/packages/logic-ui` (tree section with each program's language, program editor, the read-only LD view with its live state, load, load cold, how a load started, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus, and an LD program added from the tree, given rungs over the API, checked with a mistake drawn at its element, bound, loaded and run shows its contacts change state with the device's counter. Not built: unit tests in ST, a library of POUs shared by a project's programs |
+| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); the read-only LD view with each diagnostic at its element and its live state from watched values (L3b-1, `ladder.test.tsx`); editing LD (L3b-2), editors for FBD, SFC are not built. 2.10: not built |
 | 2.9 Emulators | Built: eight programs (`strings.st` since L2c-1, `library.st` since L2c-2), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else. Since L4 the timers and counters in them are the library's, in ST: all 16 runs equal Since L3a a Ladder Diagram joins them (`tests/ladder/oscillator.xml`: two TON, a CTU, rising and falling contacts, a set coil, a jump): all 18 runs equal (rustc 1.100.0, QEMU 8.2.2, run in the CI runner's image) |
 | 2.12 Oracle | `differential_strucpp.rs`: 8 programs, 60 cycles, 9,480 values, all agree except the five deliberate rows of §2.13 (287 values: 167 of the first three, 60 each of INSERT's position and a based literal read as an integer). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE. Unchanged by L4 (the standard blocks in ST): the same 9,480 values, the same 287 |
 | 2.14 Standard library in ST (L4) | `crates/mythos-logic-st/src/library/`: SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD and their INT, DINT and LINT variants, TP, TON, TOF and their TIME variants (22 POUs in 4 files, an index); the intrinsic `__NOW()`; names of the library refused to a program's POUs and types; the library's names resolved among its own; no diagnostic pointing into it. Proven by `standard_library.rs` (14) and `standard_blocks_run_as_the_native_ones.rs` (4: every native block against the library's, 400 sequences of 150 scans each, 540,000 scans in all) |
-| 2.15 Ladder Diagram (L3a) | `crates/mythos-logic-ld`: PLCopen TC6 XML v2.01 read with `quick-xml` (MIT); the subset of §2.15; the graph checked and lowered to the ST front-end's syntax tree; edges, values used twice and jumps in hidden private variables (`Var::hidden`, `IR_VERSION` 6); diagnostics naming the element (`element`) and the source (`source`); `compile_sources` and `Language::Ld` in the compiler; `layers.rs` gives LD its layer (the IR and the ST front-end) and feeds the guard an LD crate reaching the VM and an ST crate reaching LD. Proven by `ladder_runs_on_the_vm.rs` (26: every element, its table's behaviour scan by scan, EN and ENO, a function of ST and the standard functions as blocks, LD function blocks and functions, jumps both ways, a return, RETAIN and the edge memory of a RETAIN instance, 300 contacts in series and in parallel, the emulator's program), `refusals.rs` (28: every refusal of §2.15 with its message and its element, the JSON of a place, the sources named), `ladder_equals_st.rs` (4 LD programs and their ST twins, 200 random sequences of 100 scans each, every shared variable equal after every scan: 51 variables, 1,020,000 values compared) and `damaged_ladder_never_panics.rs` (3,000 damaged documents, each compiled or refused with a place). Mutation-checked in a copy of the tree (`git archive`, its own target directory; the clean copy passed before and after the restores): parallel branches made AND turned `series_is_and_and_parallel_is_or`, `a_long_series_and_a_wide_parallel_compile_and_run`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program` and `contacts_and_coils_equal_their_st_twin` red; a negated contact's negation dropped turned `a_normally_closed_contact_passes_power_when_its_variable_is_off`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program`, `the_oscillator_the_emulators_run_does_what_its_rungs_say` and `contacts_and_coils_equal_their_st_twin` red; an edge contact never writing its memory turned `a_rising_contact_is_on_for_one_scan_after_its_variable_goes_on`, `a_rising_contact_senses_its_variable_while_its_input_is_off`, `a_falling_contact_is_on_for_one_scan_after_its_variable_goes_off` and `contacts_and_coils_equal_their_st_twin` red; a dangling connection let through turned `a_dangling_connection_is_refused_naming_its_element_and_the_missing_id` and `a_damaged_ladder_document_is_compiled_or_refused_with_places_never_a_panic` red. Not built: the LD editor and the logic module's LD programs (L3b) |
+| 2.15 Ladder Diagram (L3a) | `crates/mythos-logic-ld`: PLCopen TC6 XML v2.01 read with `quick-xml` (MIT); the subset of §2.15; the graph checked and lowered to the ST front-end's syntax tree; edges, values used twice and jumps in hidden private variables (`Var::hidden`, `IR_VERSION` 6); diagnostics naming the element (`element`) and the source (`source`); `compile_sources` and `Language::Ld` in the compiler; `layers.rs` gives LD its layer (the IR and the ST front-end) and feeds the guard an LD crate reaching the VM and an ST crate reaching LD. Proven by `ladder_runs_on_the_vm.rs` (26: every element, its table's behaviour scan by scan, EN and ENO, a function of ST and the standard functions as blocks, LD function blocks and functions, jumps both ways, a return, RETAIN and the edge memory of a RETAIN instance, 300 contacts in series and in parallel, the emulator's program), `refusals.rs` (28: every refusal of §2.15 with its message and its element, the JSON of a place, the sources named), `ladder_equals_st.rs` (4 LD programs and their ST twins, 200 random sequences of 100 scans each, every shared variable equal after every scan: 51 variables, 1,020,000 values compared) and `damaged_ladder_never_panics.rs` (3,000 damaged documents, each compiled or refused with a place). Mutation-checked in a copy of the tree (`git archive`, its own target directory; the clean copy passed before and after the restores): parallel branches made AND turned `series_is_and_and_parallel_is_or`, `a_long_series_and_a_wide_parallel_compile_and_run`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program` and `contacts_and_coils_equal_their_st_twin` red; a negated contact's negation dropped turned `a_normally_closed_contact_passes_power_when_its_variable_is_off`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program`, `the_oscillator_the_emulators_run_does_what_its_rungs_say` and `contacts_and_coils_equal_their_st_twin` red; an edge contact never writing its memory turned `a_rising_contact_is_on_for_one_scan_after_its_variable_goes_on`, `a_rising_contact_senses_its_variable_while_its_input_is_off`, `a_falling_contact_is_on_for_one_scan_after_its_variable_goes_off` and `contacts_and_coils_equal_their_st_twin` red; a dangling connection let through turned `a_dangling_connection_is_refused_naming_its_element_and_the_missing_id` and `a_damaged_ladder_document_is_compiled_or_refused_with_places_never_a_panic` red. Since L3b-1 the front-end publishes where an element output's power is held (`Compiled::probes`), proven by `ladder_power_probes.rs` (5), and the logic module stores, checks and builds LD programs (2.6). Not built: editing LD in the workbench (L3b-2) |
 
 Evidence of the spike (2026-11-17):
 
@@ -1126,3 +1215,31 @@ Evidence of the spike (2026-11-17):
   `the_timers_written_in_st_run_as_the_native_ones`; `NOW` taken in a format-3 program turned
   `now_pushes_the_clock_the_host_gave_the_scan` and `the_format_each_instruction_came_in_is_pinned`
   red.
+- **L3b-1** (Ladder Diagram programs in the logic module and the read-only LD view,
+  2026-11-18). Added: `ladder_power_probes.rs` (5) in the compiler; six tests of the logic
+  module's own (LD template, check with its power and hidden variables, a diagnostic at its
+  element, build, a list without a language read as ST, the date of a file header);
+  `a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_plant` and the LD
+  part of `an_agent_writes_checks_and_builds_a_program_over_mcp` in `logic_module.rs`; 11
+  tests in `ladder.test.tsx`, each reading rendered elements by `data-testid`. The e2e adds an
+  LD scenario (an LD program added from the tree, rungs saved over the API, a mistake drawn at
+  its element, bound to the simulator's counter, loaded; its contacts drawn live change state
+  with the counter, the negated one always the opposite, and nothing is drawn live once it is
+  stopped): 132 checks, all passed. Its two "built and loaded" checks had not been changed
+  when C6b put the start sentence after that note, and failed on `dev` as well; they now
+  require it. Mutation-checked in a copy of the tree (`git archive` of the tree this slice
+  commits, its own target directory; the clean copy passed before and after the restores,
+  each restored with `git show`): a negated contact drawn without its negation turned
+  `draws each contact and coil from its variable, a link only where a variable holds its
+  power`, `draws a negated contact as the negation of its variable` and `draws one value the
+  runtime does not have as UNKNOWN, and the others as they are` red; an unknown value drawn
+  as off turned `draws UNKNOWN, never a state, when the values cannot be read` and `draws one
+  value the runtime does not have as UNKNOWN, …` red; an LD program compiled as ST turned the
+  module's `a_new_ladder_diagram_is_a_tc6_document_that_compiles_to_a_program_doing_nothing`,
+  `a_ladder_diagram_is_checked_with_its_variables_and_where_its_power_is_held`,
+  `a_ladder_diagnostic_names_its_element_and_where_it_is_drawn`,
+  `a_ladder_diagram_is_built_into_a_runtime_instance_like_any_program`, and
+  `a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_plant` and
+  `an_agent_writes_checks_and_builds_a_program_over_mcp` red; a `programs.json` without a
+  language refused turned `a_programs_list_written_before_languages_is_structured_text` and
+  `a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_plant` red.

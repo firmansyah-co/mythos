@@ -74,9 +74,13 @@ export interface PublishedBinding {
   writable?: boolean;
 }
 
+/** The languages a program is written in: Structured Text, or a Ladder Diagram stored as a PLCopen TC6 XML document. */
+export type Language = 'st' | 'ld';
+
 /** A program's settings, as the logic module stores them. */
 export interface ProgramEntry {
   name: string;
+  /** `st` or `ld`; set when the program is created. */
   language: string;
   interval_ms: number;
   runtime: string;
@@ -99,6 +103,23 @@ export interface Diagnostic {
   end_line: number;
   end_col: number;
   message: string;
+  /**
+   * In a Ladder Diagram, the element it is about (ADR-013 §2.15): its POU, its `localId` and
+   * position as the document gives them, or the interface's variable, and the characters of
+   * its text the message is about. Absent for Structured Text.
+   */
+  element?: DiagnosticElement | null;
+  /** The source it is in, when a program is compiled from more than one. */
+  source?: string | null;
+}
+
+export interface DiagnosticElement {
+  pou: string;
+  local_id?: number | null;
+  x?: number | null;
+  y?: number | null;
+  variable?: string | null;
+  text?: { field: string; col: number; end_col: number } | null;
 }
 
 export interface Variable {
@@ -107,16 +128,37 @@ export interface Variable {
   /** `input`, `output`, `local`, … as the compiler names the section. */
   section: string;
   bindable: boolean;
+  /** Made by the Ladder Diagram front-end for itself (`__LD_…`, `__EDGE_…`), not declared. */
+  hidden?: boolean;
+}
+
+/**
+ * Where the power of one output of a Ladder Diagram element is held once a scan is over: ON
+ * always, or a variable (negated when `negated`). An output with none is held by nothing.
+ */
+export interface PowerProbe {
+  local_id: number;
+  /** A block's formal parameter in upper case; empty for the one output of any other element. */
+  output: string;
+  on?: boolean;
+  variable?: string;
+  negated?: boolean;
 }
 
 /** The answer of a check: the diagnostics, or what compiled. */
 export interface CheckResult {
   ok: boolean;
   diagnostics: Diagnostic[];
+  /** The PROGRAM's name. */
+  program?: string;
+  /** The version a build of the checked text with the saved settings would have. */
+  version?: string;
   variables?: Variable[];
   code_size?: number;
   memory_size?: number;
   binding_problems?: string[];
+  /** A Ladder Diagram's: where each element output's power is held. */
+  power?: PowerProbe[];
 }
 
 export interface BuildResult {
@@ -256,10 +298,10 @@ const name = encodeURIComponent;
 
 export const api = {
   list: (projectId: string) => host().api<{ programs: ProgramEntry[] }>(logicOf(projectId)),
-  create: (projectId: string, program: string) =>
+  create: (projectId: string, program: string, language: Language = 'st') =>
     host().api<{ program: ProgramEntry; source: string }>(
       logicOf(projectId),
-      json('POST', { name: program })
+      json('POST', language === 'st' ? { name: program } : { name: program, language })
     ),
   read: (projectId: string, program: string) =>
     host().api<{ program: ProgramEntry; source: string }>(`${logicOf(projectId)}/${name(program)}`),
