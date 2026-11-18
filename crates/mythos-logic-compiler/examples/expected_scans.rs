@@ -1,19 +1,20 @@
 //! What a program gives on a PC, in the form the `on_target` firmware prints it, for
 //! `scripts/logic-vm-on-emulators.sh` to compare with what an emulated microcontroller gives.
 //!
-//!   expected_scans <program.st> <profile> <bytecode out>
+//!   expected_scans <program.st | program.xml> <profile> <bytecode out>
 //!
-//! Compiles the program for the profile, writes its bytecode, and prints, for 60 scans 20 ms
+//! A `.st` program is Structured Text; an `.xml` one a Ladder Diagram in PLCopen TC6 XML
+//! (ADR-013 §2.15). Compiles the program for the profile, writes its bytecode, and prints, for 60 scans 20 ms
 //! apart, `scan <n> <crc32 of the whole memory> <instructions>`, then `done`.
 
-use mythos_logic_compiler::{compile, TargetProfile};
+use mythos_logic_compiler::{compile_in, Language, TargetProfile};
 use mythos_logic_vm::{cold_start, crc32, scan, Frame, Program};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let [_, source, profile, out] = args.as_slice() else {
-        eprintln!("usage: expected_scans <program.st> <profile> <bytecode out>");
+        eprintln!("usage: expected_scans <program.st | program.xml> <profile> <bytecode out>");
         return ExitCode::from(2);
     };
     let Some(profile) = TargetProfile::by_name(profile) else {
@@ -27,7 +28,12 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let compiled = match compile(&text, &profile) {
+    let language = if source.ends_with(".xml") {
+        Language::Ld
+    } else {
+        Language::St
+    };
+    let compiled = match compile_in(&text, language, &profile) {
         Ok(c) => c,
         Err(diags) => {
             for d in diags {

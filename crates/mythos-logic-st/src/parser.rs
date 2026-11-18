@@ -428,6 +428,34 @@ impl Parser {
         }
     }
 
+    /// Keywords that a declaration outside this text named a variable with (and was told so
+    /// there): where they stand as names here they are taken as those names, so that the one
+    /// mistake is told once.
+    pub fn with_named_keywords(mut self, upper: &[String]) -> Self {
+        self.named_keywords.extend(upper.iter().cloned());
+        self
+    }
+
+    /// One expression and nothing after it: the text of a graphical element (the variable of
+    /// a contact, the expression of a variable, an initial value; ADR-013 §2.15). `None` when
+    /// it could not be read; the diagnostics say why.
+    pub fn expression_alone(mut self) -> (Option<Expr>, Vec<Diagnostic>) {
+        if self.at_eof() {
+            let _ = self.unexpected::<()>("an expression");
+            return (None, self.diags);
+        }
+        let read = self.expr();
+        let read = match read {
+            Ok(e) if self.at_eof() => Some(e),
+            Ok(_) => {
+                let _ = self.unexpected::<()>("the end of the text");
+                None
+            }
+            Err(_) => None,
+        };
+        (read, self.diags)
+    }
+
     /// A source: any number of TYPE blocks, functions and function block types, and the
     /// program, in any order; with everything that could not be read of it.
     pub fn source(mut self) -> (Source, Vec<Diagnostic>) {
@@ -992,6 +1020,7 @@ impl Parser {
                 retention: Retention::Unqualified,
                 ty: ty.clone(),
                 init: init.clone(),
+                hidden: false,
             });
         }
         Ok(())

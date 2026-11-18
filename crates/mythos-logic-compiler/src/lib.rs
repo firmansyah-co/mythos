@@ -3,15 +3,21 @@
 //!
 //! ```text
 //! mythos-logic-st ──► mythos-logic-ir ──► target profile check ──► mythos-logic-backend-vm
-//!  (a front-end           (the seam)        (this crate)             (a backend per
-//!   per language)                                                      target kind)
+//! mythos-logic-ld ─┘     (the seam)        (this crate)             (a backend per
+//!  (a front-end                                                       target kind)
+//!   per language)
 //! ```
+//!
+//! A program is compiled from one source ([`compile`], [`compile_in`]) or from several in
+//! different languages ([`compile_sources`]): a Structured Text source with types, functions
+//! and function blocks, and Ladder Diagram documents, one POU of all of them the PROGRAM.
+//! Each POU may call those of the others and the standard library (ADR-013 §2.15).
 
 pub mod profile;
 
 pub use mythos_logic_backend_vm::{ArrayInfo, MemberLayout, Symbol, TypeLayout};
 use mythos_logic_ir::Ty;
-pub use mythos_logic_ir::{Diagnostic, Span};
+pub use mythos_logic_ir::{Diagnostic, Element, Span, TextRange};
 pub use profile::TargetProfile;
 
 /// The languages a program may be written in. One front-end crate each.
@@ -20,6 +26,19 @@ pub use profile::TargetProfile;
 pub enum Language {
     /// Structured Text.
     St,
+    /// Ladder Diagram, as a PLCopen TC6 XML v2.01 document (ADR-013 §2.15).
+    Ld,
+}
+
+/// The sources of one program: at most one Structured Text source, and Ladder Diagram
+/// documents. Each is named for the diagnostics, which say which source a line is in when
+/// there is more than one.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Sources<'a> {
+    /// `(name, text)` of the Structured Text source.
+    pub st: Option<(&'a str, &'a str)>,
+    /// `(name, text)` of each Ladder Diagram document.
+    pub ld: &'a [(&'a str, &'a str)],
 }
 
 /// A compiled program.
@@ -51,7 +70,39 @@ impl Compiled {
 pub fn lower(source: &str, language: Language) -> Result<mythos_logic_ir::Unit, Vec<Diagnostic>> {
     match language {
         Language::St => mythos_logic_st::lower(source),
+        Language::Ld => mythos_logic_ld::lower(
+            &[mythos_logic_ld::Source {
+                name: "",
+                text: source,
+            }],
+            None,
+        ),
     }
+}
+
+/// Parse and check `sources` into one unit of the IR.
+pub fn lower_sources(sources: &Sources) -> Result<mythos_logic_ir::Unit, Vec<Diagnostic>> {
+    let ld: Vec<mythos_logic_ld::Source> = sources
+        .ld
+        .iter()
+        .map(|(name, text)| mythos_logic_ld::Source { name, text })
+        .collect();
+    let st = sources
+        .st
+        .map(|(name, text)| mythos_logic_ld::Source { name, text });
+    if ld.is_empty() {
+        let (_, text) = sources.st.unwrap_or(("", ""));
+        return mythos_logic_st::lower(text);
+    }
+    mythos_logic_ld::lower(&ld, st.as_ref())
+}
+
+/// Compile a program from `sources` for `target`.
+pub fn compile_sources(
+    sources: &Sources,
+    target: &TargetProfile,
+) -> Result<Compiled, Vec<Diagnostic>> {
+    compile_unit(lower_sources(sources)?, target)
 }
 
 /// Compile Structured Text `source` for `target`.
@@ -65,7 +116,14 @@ pub fn compile_in(
     language: Language,
     target: &TargetProfile,
 ) -> Result<Compiled, Vec<Diagnostic>> {
-    let unit = lower(source, language)?;
+    compile_unit(lower(source, language)?, target)
+}
+
+/// Compile a unit of the IR for `target`.
+fn compile_unit(
+    unit: mythos_logic_ir::Unit,
+    target: &TargetProfile,
+) -> Result<Compiled, Vec<Diagnostic>> {
     let mut diags = Vec::new();
     if target.format_version != mythos_logic_backend_vm::FORMAT_VERSION {
         diags.push(Diagnostic::whole(format!(

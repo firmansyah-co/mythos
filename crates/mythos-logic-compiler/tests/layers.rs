@@ -4,7 +4,9 @@
 //!
 //! - the IR depends on nothing of the workspace: no language, no backend, no VM;
 //! - the VM depends on nothing at all, so it builds for a microcontroller with `core` alone;
-//! - a front-end (a language) depends on the IR only;
+//! - a front-end (a language) depends on the IR only; a graphical one (Ladder Diagram) also
+//!   on the Structured Text front-end, whose declarations, types, literals, text and
+//!   standard library it shares (ADR-013 §2.15), and never on a backend or the VM;
 //! - a backend depends on the IR and on its own target only.
 //!
 //! Every `mythos-logic-*` crate must be listed here with its layer; a new one that is not is a
@@ -20,6 +22,7 @@ const LAYERS: &[(&str, &[&str])] = &[
     ("mythos-logic-ir", &[]),
     ("mythos-logic-vm", &[]),
     ("mythos-logic-st", &["mythos-logic-ir"]),
+    ("mythos-logic-ld", &["mythos-logic-ir", "mythos-logic-st"]),
     (
         "mythos-logic-backend-vm",
         &["mythos-logic-ir", "mythos-logic-vm"],
@@ -29,6 +32,7 @@ const LAYERS: &[(&str, &[&str])] = &[
         &[
             "mythos-logic-ir",
             "mythos-logic-st",
+            "mythos-logic-ld",
             "mythos-logic-backend-vm",
             "mythos-logic-vm",
         ],
@@ -212,10 +216,31 @@ fn the_guard_sees_every_kind_of_break() {
         ["mythos-logic-vm has 1 dependencies; it must have none to build for bare metal"]
     );
 
-    let v = violations(&fake(&[("mythos-logic-ld", &["mythos-logic-ir"], 1)]));
+    let v = violations(&fake(&[("mythos-logic-fbd", &["mythos-logic-ir"], 1)]));
     assert_eq!(
         v,
-        ["mythos-logic-ld has no layer: list it in LAYERS with what it may depend on"]
+        ["mythos-logic-fbd has no layer: list it in LAYERS with what it may depend on"]
+    );
+
+    // A graphical front-end reads ST's common elements, never a target; and ST never
+    // depends on a graphical language.
+    let v = violations(&fake(&[(
+        "mythos-logic-ld",
+        &["mythos-logic-ir", "mythos-logic-st", "mythos-logic-vm"],
+        3,
+    )]));
+    assert_eq!(
+        v,
+        ["mythos-logic-ld depends on mythos-logic-vm, which its layer does not allow"]
+    );
+    let v = violations(&fake(&[(
+        "mythos-logic-st",
+        &["mythos-logic-ir", "mythos-logic-ld"],
+        2,
+    )]));
+    assert_eq!(
+        v,
+        ["mythos-logic-st depends on mythos-logic-ld, which its layer does not allow"]
     );
 
     let v = violations(&fake(&[("mythos-logic-st", &["mythos-core"], 1)]));

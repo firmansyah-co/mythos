@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 mythos-logic-ir.workspace = true
 mythos-logic-st.workspace = true
+mythos-logic-ld.workspace = true
 mythos-logic-backend-vm.workspace = true
 serde.workspace = true
 

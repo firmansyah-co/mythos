@@ -48,7 +48,9 @@ pub struct Symbol {
     pub retain: bool,
     /// Inside a function block instance, and not one of its inputs: an internal variable or an
     /// output of the block, or part of one. Only the block writes it (IEC 61131-3 ed. 3
-    /// §6.6.3.2, Figure 13): a host may read it, never bind a tag to write it.
+    /// §6.6.3.2, Figure 13): a host may read it, never bind a tag to write it. A variable the
+    /// front-end made for itself ([`mythos_logic_ir::Var::hidden`], the memory of a Ladder
+    /// Diagram edge contact) is private for the same reason: only its POU writes it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub private: bool,
 }
@@ -472,7 +474,8 @@ pub fn emit(u: &Unit) -> Result<Output, Diagnostic> {
             v.retention,
             e.lay.pous[u.entry].offsets[i],
             v.section == Section::Input,
-            false,
+            // A variable the front-end made (an edge memory) is its POU's alone to write.
+            v.hidden,
         );
     }
     let types = e.lay.types();
@@ -1729,6 +1732,7 @@ mod tests {
                 section: Section::Var,
                 retention: Retention::Unqualified,
                 init: None,
+                hidden: false,
             }],
             body: vec![Stmt::Assign(
                 Place::var(0),
@@ -1773,6 +1777,7 @@ mod tests {
             section: Section::Var,
             retention,
             init: None,
+            hidden: false,
         };
         let block = Pou {
             name: "cell".into(),

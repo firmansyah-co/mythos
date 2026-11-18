@@ -162,6 +162,14 @@ pub struct Var {
     #[serde(default)]
     pub retention: Retention,
     pub init: Option<Init>,
+    /// Made by the front-end, not declared by the program: the memory of a Ladder Diagram
+    /// edge contact or coil (ADR-013 §2.15). Its name begins with two underscores, which IEC
+    /// 61131-3 ed. 3 §6.1.2 forbids in an identifier, so it never meets a name of the
+    /// program. It is a variable like any other (laid out, retained by the rules of its
+    /// section, carried by an online change), but only its POU writes it: a host may read it,
+    /// never bind a tag to write it.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 /// A structure type.
@@ -999,6 +1007,7 @@ mod tests {
             section: Section::Var,
             retention: Retention::Unqualified,
             init: None,
+            hidden: false,
         }
     }
     fn call(pou: usize) -> Stmt {

@@ -14,6 +14,7 @@ members = [
     "crates/mythos-logic-vm",
     "crates/mythos-logic-backend-vm",
     "crates/mythos-logic-compiler",
+    "crates/mythos-logic-ld",
     "plugins/drivers/driver-modbus",
     "plugins/hmi",
     "plugins/discovery",
@@ -45,6 +46,7 @@ mythos-logic-st = { path = "crates/mythos-logic-st" }
 mythos-logic-vm = { path = "crates/mythos-logic-vm" }
 mythos-logic-backend-vm = { path = "crates/mythos-logic-backend-vm" }
 mythos-logic-compiler = { path = "crates/mythos-logic-compiler" }
+mythos-logic-ld = { path = "crates/mythos-logic-ld" }
 driver-modbus = { path = "plugins/drivers/driver-modbus" }
 
 # Concurrency and Async
@@ -68,6 +70,8 @@ tempfile = "3.10"
 # Serialization, CRDT and Collaboration
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# PLCopen TC6 XML, read by the Ladder Diagram front-end. MIT.
+quick-xml = "0.42"
 bytemuck = { version = "1.18", features = ["derive"] }
 ts-rs = "10.0"
 yrs = { version = "0.21", features = ["sync"] }

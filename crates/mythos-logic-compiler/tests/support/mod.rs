@@ -20,7 +20,11 @@ pub struct Run {
 
 impl Run {
     pub fn new(src: &str) -> Run {
-        let c = compile(src, &TargetProfile::pc()).unwrap_or_else(|d| {
+        Run::of(compile(src, &TargetProfile::pc()))
+    }
+    /// A program compiled some other way (from Ladder Diagram, with ST POUs).
+    pub fn of(compiled: Result<Compiled, Vec<mythos_logic_compiler::Diagnostic>>) -> Run {
+        let c = compiled.unwrap_or_else(|d| {
             panic!(
                 "{}",
                 d.iter()
