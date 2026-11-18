@@ -355,7 +355,7 @@ As built (C3):
   the instance into the project's runtimes, and the core loads it. An edit therefore changes
   nothing that runs until it is built and loaded. A bound tag that no connection provides now
   is a warning of the build, not a refusal.
-- Not built: unit tests in ST, and programs in a device's slice (C6).
+- Not built: unit tests in ST. A device's slice carries its programs (C6a, §3).
 
 Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (ADR-011 §2.3):
 
@@ -633,7 +633,11 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   project's programs publish are offered wherever a binding names a tag), force (done: the API
   and the protocol, §2.5; the editor, the Runtimes page and the FORCED mark wherever a tag's
   value is shown, §2.6).
-- C6. **Swap and online change; programs in a device's slice.**
+- C6. **Swap and online change; programs in a device's slice.** C6a (done): a device's slice
+  carries its programs (`logic/`, `runtimes.json`) like the rest of its project's files, and the
+  node checks the slice before installing it: a program whose runtime module it lacks is
+  refused, naming it, and nothing changes (ADR-012 §2.5). Online change, a new version taking
+  the running one's variables without a cold start, is not built.
 - C7. **Hardening**: watchdog (done, §5), RETAIN variables across restarts (done: the compiler
   reads RETAIN and NON_RETAIN and each symbol says whether it is retained, §2.13, C7b-1; the
   runtime and the core keep them across a warm restart, §2.5, C7b-2).
