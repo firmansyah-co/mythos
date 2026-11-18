@@ -3,7 +3,7 @@
 - **Document Identifier**: MYTHOS-PLAN-001
 - **Controlled Language**: ASD-STE100 Simplified Technical English
 - **Standard Reference**: ISO/IEC/IEEE 29148 & Agile Scrum Enterprise Delivery
-- **Version**: 1.4.0
+- **Version**: 1.5.0
 - **Status**: APPROVED / MASTER ROADMAP
 - **Author**: Scribe (VP of Publication & Technical Documentation)
 - **Approved by**: Adrian (Board of Commissioners), Aria (Chief Executive Officer)
@@ -85,6 +85,8 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 > **Recommended replacement, FOR BOARD SIGN-OFF, not adopted here.** Gate on a best-batch bound in the regime that TSK-002 already uses, which measures uncontended atomic swap cost (now $< 300\,\text{ns}$, was $< 50\,\text{ns}$). Retain the 16-thread p99 as a report-only CI measurement so that a real regression stays visible without a gate that reddens on unrelated changes. Selecting the exact bound is a board decision.
 >
 > The measurement harness introduced by PR #25 is retained. Only its gate status changes.
+>
+> **Owner decision, 2026-11-18 (read).** The owner extended TSK-002's 300 ns to a tag read ("berlaku untuk baca juga"), which `specs/spec.md` 1.4.0 records in NFR-001, IF-001 and the SYS-REQ-002 acceptance criterion. That adopts the recommended replacement above for reads: the gate is the best of five rounds of 1,000,000 uncontended reads at an average under 300 ns with zero corruption (`test_tag_read_latency_under_300ns`, release), and the 16-thread p99 stays report-only, now compared against 300 ns for a read (still NOT MET: measured 1.2-4.1 µs across the recorded runs, 3.0 µs on 2026-11-18 at load 6.5). No bound is decided for a write; its p99 is still reported against the original 100 ns.
 >
 > **CI wiring, shipped as of `333d199`.** PR #25 merged the report-only step (`Report SHM p99 under 16 threads (TSK-010, non-gating)`) and replaced the former compile-only step with an executed criterion benchmark (`Run SHM Micro-Benchmark (criterion, executed)`). Both run on every CI build; the p99 number is reported and logged, never gated.
 
@@ -371,3 +373,4 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 | 1.2.0 | — | Scribe (VP Publication & Documentation) | Baseline approved by Adrian (Board of Commissioners) and Aria (CEO). |
 | 1.3.0 | 2026-10-23 | Scribe (VP Publication & Documentation) | ADR-008 propagation. TSK-001 and TSK-004 now name `crates/mythos-plugin-sdk` and the real workspace members. TSK-005 now names `plugins/drivers/driver-modbus/`. GATE 3 status recorded as REOPENED: TSK-309 was not delivered and had no mechanical evidence. |
 | 1.4.0 | 2026-10-26 | Scribe (VP Publication & Technical Documentation) | TSK-010 criterion revised: the $< 100\,\text{ns}$ p99-under-16-threads acceptance criterion is withdrawn as a merge gate and recorded as not met, with the measurement preserved (PR #25, run 40089446143, merged at `333d199`) and the 16-thread step reduced to report-only. No replacement bound is selected; that is a board decision. New Sprint 8 records TSK-801 as a pre-committed prerequisite: the live-telemetry consumer plus the SYS-REQ-096 device-mode end-to-end path. `DeviceExecutionMode` duplication recorded as accepted and temporary; its real cost is a serde wire-name divergence between the two definitions, with the canonical ownership decision as a precondition on TSK-801. |
+| 1.5.0 | 2026-11-18 | Adrian (owner); recorded by Claude | TSK-002's atomic swap bound is 300 ns (was 50 ns; owner, 2026-11-17). The owner extended 300 ns to a tag read on 2026-11-18; the TSK-010 STATUS note records how that is gated (best of five rounds of 1,000,000 uncontended reads) and that the 16-thread p99 stays report-only. No write bound is decided. |
