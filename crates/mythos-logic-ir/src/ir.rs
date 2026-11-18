@@ -12,7 +12,7 @@
 //! contain itself), which [`Unit::order`] checks; that is what lets a backend give every
 //! variable one fixed place.
 
-use crate::{Section, StdFb, DEFAULT_STRING_LENGTH, IR_VERSION};
+use crate::{Retention, Section, StdFb, DEFAULT_STRING_LENGTH, IR_VERSION};
 
 /// The types the IR knows. The user-defined ones are indices into the [`Unit`] that holds them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -166,6 +166,9 @@ pub struct Var {
     pub name: String,
     pub ty: Ty,
     pub section: Section,
+    /// The retentive qualifier of the section it is declared in.
+    #[serde(default)]
+    pub retention: Retention,
     pub init: Option<Init>,
 }
 
@@ -634,6 +637,106 @@ impl Unit {
         ty
     }
 
+    /// The retention of `member`, a variable of a function block type, in an instance of the
+    /// type whose own retention is `instance`.
+    ///
+    /// IEC 61131-3 ed. 3 §6.5.6.2: every variable of a RETAIN or NON_RETAIN instance takes its
+    /// qualifier, except one the type declares RETAIN or NON_RETAIN itself, and one that is a
+    /// function block instance, which follows its own type's declarations. An array of
+    /// instances is instances too: each element follows its type. In an unqualified instance,
+    /// every member follows the type's declarations.
+    pub fn member_retention(&self, instance: Retention, member: &Var) -> Retention {
+        if member.retention != Retention::Unqualified {
+            member.retention
+        } else if matches!(self.innermost(member.ty), Ty::Fb(_) | Ty::Instance(_)) {
+            Retention::Unqualified
+        } else {
+            instance
+        }
+    }
+
+    /// Whether a value of `ty`, declared with `retention`, keeps its value across a warm
+    /// restart (IEC 61131-3 ed. 3 §6.5.6): `Some` when all of it does or none of it does,
+    /// `None` when only part of it does. Only an array of function block instances can be in
+    /// part: one whose type declares a member RETAIN or NON_RETAIN, or holds an instance
+    /// (which follows its own type, [`Unit::member_retention`]).
+    pub fn retained(&self, ty: Ty, retention: Retention) -> Option<bool> {
+        let mut seen = [false; 2];
+        self.retained_parts(ty, retention, &mut seen);
+        match seen {
+            [true, true] => None,
+            [false, true] => Some(true),
+            [true, false] => Some(false),
+            // Nothing in it: an instance of a block without variables.
+            [false, false] => Some(retention.retained()),
+        }
+    }
+
+    /// Marks in `seen` whether some elementary part of a value of `ty` is kept (`seen[1]`)
+    /// and whether some part is not (`seen[0]`).
+    fn retained_parts(&self, ty: Ty, retention: Retention, seen: &mut [bool; 2]) {
+        match ty {
+            Ty::Array(a) => self.retained_parts(self.arrays[a].elem, retention, seen),
+            // §6.5.6.2: every element of a structure, nested ones too, takes its qualifier.
+            Ty::Struct(i) => {
+                for f in &self.structs[i].fields {
+                    self.retained_parts(f.ty, retention, seen);
+                }
+            }
+            Ty::Instance(p) => {
+                for v in &self.pous[p].vars {
+                    self.retained_parts(v.ty, self.member_retention(retention, v), seen);
+                }
+            }
+            // A standard function block declares no retention of its own: its members take
+            // the instance's.
+            _ => seen[retention.retained() as usize] = true,
+        }
+    }
+
+    /// Every array among the program's variables, at any depth, that would be kept across a
+    /// warm restart in part ([`Unit::retained`] is `None`). An array is one symbol, kept or
+    /// not as a whole, so such an array cannot be laid out. Each is given by its path from
+    /// the program and where it is declared: a POU and the index of its variable.
+    pub fn arrays_retained_in_part(&self) -> Vec<(String, usize, usize)> {
+        let mut out = Vec::new();
+        for (k, v) in self.program().vars.iter().enumerate() {
+            self.find_retained_in_part(v.ty, v.retention, &v.name, (self.entry, k), &mut out);
+        }
+        out
+    }
+
+    fn find_retained_in_part(
+        &self,
+        ty: Ty,
+        retention: Retention,
+        path: &str,
+        decl: (usize, usize),
+        out: &mut Vec<(String, usize, usize)>,
+    ) {
+        match ty {
+            Ty::Array(_) => {
+                if self.retained(ty, retention).is_none() {
+                    out.push((path.to_string(), decl.0, decl.1));
+                }
+            }
+            Ty::Struct(i) => {
+                for f in &self.structs[i].fields {
+                    let path = format!("{path}.{}", f.name);
+                    self.find_retained_in_part(f.ty, retention, &path, decl, out);
+                }
+            }
+            Ty::Instance(p) => {
+                for (k, v) in self.pous[p].vars.iter().enumerate() {
+                    let path = format!("{path}.{}", v.name);
+                    let retention = self.member_retention(retention, v);
+                    self.find_retained_in_part(v.ty, retention, &path, (p, k), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Whether a value of `ty` holds a function block instance, at any depth.
     pub fn holds_instance(&self, ty: Ty) -> bool {
         match ty {
@@ -874,6 +977,7 @@ mod tests {
             name: name.into(),
             ty,
             section: Section::Var,
+            retention: Retention::Unqualified,
             init: None,
         }
     }

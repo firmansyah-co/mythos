@@ -110,6 +110,27 @@ const UNSUPPORTED: [(&str, &str); 9] = [
 
 /// A keyword that can follow the name of a POU, so that standing in the name's place it is
 /// not a name: the name was left out.
+/// Why a RETAIN or NON_RETAIN qualifier is not allowed on the section `keyword` of a POU of
+/// `kind`; `None` where it may be (IEC 61131-3 ed. 3 §6.5.6.2 and Annex A: the static
+/// VAR, VAR_INPUT and VAR_OUTPUT of programs and function blocks, and VAR_GLOBAL).
+fn no_retention(kind: PouKind, keyword: &str) -> Option<&'static str> {
+    Some(match keyword {
+        "VAR_IN_OUT" => {
+            "on VAR_IN_OUT: the variable is the caller's, and has no storage of its own to retain (IEC 61131-3 ed. 3 §6.5.6.2)"
+        }
+        "VAR_TEMP" => {
+            "on VAR_TEMP: the variable starts afresh at each call, so there is nothing to retain (IEC 61131-3 ed. 3 Annex A, Temp_Var_Decls)"
+        }
+        "VAR_EXTERNAL" => {
+            "on VAR_EXTERNAL: the variable is retained or not where VAR_GLOBAL declares it (IEC 61131-3 ed. 3 Annex A, External_Var_Decls)"
+        }
+        _ if kind == PouKind::Function => {
+            "in a FUNCTION: a function keeps nothing from one call to the next, so there is nothing to retain (IEC 61131-3 ed. 3 §6.5.6.1, §6.6.2.1)"
+        }
+        _ => return None,
+    })
+}
+
 fn follows_a_pou_name(upper: &str) -> bool {
     upper.starts_with("VAR")
         || upper.starts_with("END_")
@@ -662,29 +683,60 @@ impl Parser {
                 return self.not_yet(kw);
             }
         }
-        loop {
-            let section = if self.is_kw("VAR") {
-                Section::Var
-            } else if self.is_kw("VAR_INPUT") {
-                Section::Input
-            } else if self.is_kw("VAR_OUTPUT") {
-                if kind == PouKind::Function {
+        while let Tok::Word(keyword, written) = self.peek().clone() {
+            if keyword != "VAR" && !keyword.starts_with("VAR_") {
+                break;
+            }
+            // A retentive qualifier where nothing can be retained is wrong whether or not the
+            // section is supported, and is told as such.
+            if let Some(Tok::Word(q, written)) = self.peek2().cloned() {
+                if q == "RETAIN" || q == "NON_RETAIN" {
+                    if let Some(why) = no_retention(kind, &keyword) {
+                        self.bump();
+                        let _ = self.refuse::<()>(format!("{written} is not allowed {why}"));
+                        self.skip_section();
+                        continue;
+                    }
+                }
+            }
+            let section = match keyword.as_str() {
+                "VAR" => Section::Var,
+                "VAR_INPUT" => Section::Input,
+                "VAR_OUTPUT" if kind == PouKind::Function => {
                     let _ = self.not_yet::<()>("VAR_OUTPUT on a function");
                     self.skip_section();
                     continue;
                 }
-                Section::Output
-            } else if let Tok::Word(u, w) = self.peek().clone() {
-                if u.starts_with("VAR_") {
-                    let _ = self.not_yet::<()>(w);
+                "VAR_OUTPUT" => Section::Output,
+                _ => {
+                    let _ = self.not_yet::<()>(written);
                     self.skip_section();
                     continue;
                 }
-                break;
-            } else {
-                break;
             };
             self.bump();
+            let retention = if self.is_kw("RETAIN") {
+                Retention::Retain
+            } else if self.is_kw("NON_RETAIN") {
+                Retention::NonRetain
+            } else {
+                Retention::Unqualified
+            };
+            let qualified = retention != Retention::Unqualified;
+            if qualified {
+                self.bump();
+            }
+            // IEC 61131-3 ed. 3 Annex A (Loc_Var_Decls, Global_Var_Decls): a section takes
+            // one of CONSTANT, RETAIN and NON_RETAIN, not two. A constant has nothing to keep.
+            let constant_then_retain = self.is_kw("CONSTANT")
+                && matches!(self.peek2(), Some(Tok::Word(q, _)) if q == "RETAIN" || q == "NON_RETAIN");
+            if constant_then_retain || (qualified && self.is_kw("CONSTANT")) {
+                let _ = self.refuse::<()>(
+                    "CONSTANT does not combine with RETAIN or NON_RETAIN: a section takes one of the three (IEC 61131-3 ed. 3 Annex A)".into(),
+                );
+                self.skip_section();
+                continue;
+            }
             let qualifier = [
                 "CONSTANT",
                 "RETAIN",
@@ -703,7 +755,11 @@ impl Parser {
                 continue;
             }
             // A section never closed is told; what follows is read as the POU goes on.
+            let from = pou.vars.len();
             let _ = self.decls("END_VAR", section, &mut pou.vars);
+            for d in &mut pou.vars[from..] {
+                d.retention = retention;
+            }
         }
         pou.partial_vars = self.failures != before;
         for kw in ["METHOD", "ACTION", "PROPERTY"] {
@@ -932,6 +988,7 @@ impl Parser {
                 name,
                 span,
                 section,
+                retention: Retention::Unqualified,
                 ty: ty.clone(),
                 init: init.clone(),
             });

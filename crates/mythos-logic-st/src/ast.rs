@@ -1,7 +1,7 @@
 //! The syntax tree of Structured Text, as written: names unresolved, types unchecked.
 
-pub use mythos_logic_ir::Section;
 use mythos_logic_ir::Span;
+pub use mythos_logic_ir::{Retention, Section};
 
 /// Everything one source declares, in the order written.
 ///
@@ -107,6 +107,8 @@ pub struct VarDecl {
     pub name: String,
     pub span: Span,
     pub section: Section,
+    /// The retentive qualifier of its section; a structure's member has none.
+    pub retention: Retention,
     pub ty: TypeSpec,
     pub init: Option<Init>,
 }

@@ -65,6 +65,10 @@ pub struct Symbol {
     pub writable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub array: Option<ArrayInfo>,
+    /// Whether the variable keeps its value across a warm restart (IEC 61131-3 §6.5.6): declared
+    /// in a RETAIN section, or a member of an instance or structure that is, as the rules say.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retain: bool,
 }
 
 /// What an array symbol or member holds.
@@ -361,6 +365,13 @@ fn plan(u: &Unit) -> Result<Plan<'_>, Diagnostic> {
             names.join(", ")
         ))
     })?;
+    // An array is one symbol, retained or not as a whole. A front-end refuses one that would
+    // be retained in part with the place; this is the backstop.
+    if let Some((path, _, _)) = u.arrays_retained_in_part().into_iter().next() {
+        return Err(Diagnostic::whole(format!(
+            "{path} would be retained in part; an array is retained or not as a whole"
+        )));
+    }
     // The program is last: a scan starts at the last body.
     order.retain(|p| *p != u.entry);
     order.push(u.entry);
@@ -478,6 +489,7 @@ pub fn emit(u: &Unit) -> Result<Output, Diagnostic> {
             &v.name,
             v.ty,
             v.section,
+            v.retention,
             e.lay.pous[u.entry].offsets[i],
             v.section == Section::Input,
         );
@@ -619,40 +631,44 @@ impl Layouts<'_> {
     }
 
     /// The symbols of a variable of the program at `offset`: itself, or each of its parts.
+    /// `retention` is the variable's own, or for a part, what the part takes from the rules
+    /// of IEC 61131-3 ed. 3 §6.5.6.2 ([`Unit::member_retention`]).
+    #[allow(clippy::too_many_arguments)]
     fn symbols(
         &self,
         out: &mut Vec<Symbol>,
         path: &str,
         ty: Ty,
         section: Section,
+        retention: Retention,
         offset: u64,
         writable: bool,
     ) {
         match ty {
+            // Every element of a structure, nested ones too, takes its qualifier.
             Ty::Struct(i) => {
                 for (k, f) in self.u.structs[i].fields.iter().enumerate() {
                     let at = offset + self.structs[i].offsets[k];
-                    self.symbols(
-                        out,
-                        &format!("{path}.{}", f.name),
-                        f.ty,
-                        section,
-                        at,
-                        writable,
-                    );
+                    let path = format!("{path}.{}", f.name);
+                    self.symbols(out, &path, f.ty, section, retention, at, writable);
                 }
             }
             // The members of an instance are the block's to set: the host sets none of them.
             Ty::Instance(p) => {
                 for (k, v) in self.u.pous[p].vars.iter().enumerate() {
                     let at = offset + self.pous[p].offsets[k];
-                    self.symbols(out, &format!("{path}.{}", v.name), v.ty, section, at, false);
+                    let path = format!("{path}.{}", v.name);
+                    let retention = self.u.member_retention(retention, v);
+                    self.symbols(out, &path, v.ty, section, retention, at, false);
                 }
             }
+            // A standard function block declares no retention of its own: its members take
+            // the instance's.
             Ty::Fb(k) => {
                 for (i, m) in k.members().iter().enumerate() {
                     let at = offset + member_offset(k, i) as u64;
-                    self.symbols(out, &format!("{path}.{}", m.name), m.ty, section, at, false);
+                    let path = format!("{path}.{}", m.name);
+                    self.symbols(out, &path, m.ty, section, retention, at, false);
                 }
             }
             ty => out.push(Symbol {
@@ -663,6 +679,12 @@ impl Layouts<'_> {
                 size: self.size(ty) as u32,
                 writable,
                 array: self.array_info(ty),
+                // An array is retained or not as a whole: `plan` refused one that would be
+                // retained in part, so all of it is one or the other.
+                retain: self
+                    .u
+                    .retained(ty, retention)
+                    .expect("an array retained in part is refused before it is laid out"),
             }),
         }
     }
@@ -1784,6 +1806,7 @@ mod tests {
                 name: name.into(),
                 ty: Ty::Int,
                 section: Section::Var,
+                retention: Retention::Unqualified,
                 init: None,
             }],
             body: vec![Stmt::Assign(
@@ -1817,5 +1840,49 @@ mod tests {
         u.ir_version = IR_VERSION + 1;
         let message = emit(&u).err().expect("another version is refused").message;
         assert!(message.contains("IR version"), "{message}");
+    }
+
+    /// A unit that did not come through the ST checker (which refuses it with the place) is
+    /// refused here too: an array symbol cannot say "retained in part".
+    #[test]
+    fn a_unit_with_an_array_retained_in_part_is_refused_not_laid_out() {
+        let var = |name: &str, ty: Ty, retention: Retention| Var {
+            name: name.into(),
+            ty,
+            section: Section::Var,
+            retention,
+            init: None,
+        };
+        let block = Pou {
+            name: "cell".into(),
+            kind: PouKind::FunctionBlock,
+            vars: vec![
+                var("kept", Ty::Int, Retention::Retain),
+                var("plain", Ty::Int, Retention::Unqualified),
+            ],
+            body: Vec::new(),
+        };
+        let mut u = Unit::new();
+        let cells = u.array(vec![(1, 2)], Ty::Instance(1));
+        let program = |retention| Pou {
+            name: "main".into(),
+            kind: PouKind::Program,
+            vars: vec![var("cells", cells, retention)],
+            body: Vec::new(),
+        };
+        u.pous = vec![program(Retention::Unqualified), block.clone()];
+        let message = emit(&u).err().expect("retained in part is refused").message;
+        assert_eq!(
+            message,
+            "cells would be retained in part; an array is retained or not as a whole"
+        );
+        // NON_RETAIN on the array does not override `kept`, which its type declares RETAIN.
+        u.pous = vec![program(Retention::NonRetain), block.clone()];
+        assert!(emit(&u).is_err());
+        // RETAIN makes every member retained: the array is, as a whole.
+        u.pous = vec![program(Retention::Retain), block];
+        let out = emit(&u).expect("retained as a whole");
+        assert_eq!(out.symbols.len(), 1);
+        assert!(out.symbols[0].retain);
     }
 }
