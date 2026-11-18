@@ -307,3 +307,185 @@ button.logic-diagnostic:hover {
   gap: 8px;
   align-items: baseline;
 }
+
+/* The Ladder Diagram editor (L3b-2b): the favourites above, the networks and the instruction
+   palette beside them. Layout only: its visual design is the owner's to lead. */
+
+.ld-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  outline: none;
+}
+
+.ld-editor:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--c-focus);
+}
+
+.ld-editor__bar {
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ld-editor__body {
+  display: flex;
+  min-height: 0;
+  align-items: flex-start;
+}
+
+.ld-editor__networks {
+  flex: 1;
+  min-width: 0;
+}
+
+.ld-editor__palette {
+  flex: none;
+  width: 220px;
+  max-height: 70vh;
+  overflow: auto;
+  padding: 0 8px;
+  border-left: 1px solid var(--c-rule);
+  position: sticky;
+  top: 0;
+}
+
+.ld-palette__group summary {
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  padding: 2px 0;
+}
+
+.ld-instruction {
+  display: inline-flex;
+  align-items: center;
+}
+
+.ld-editor__palette .ld-instruction {
+  display: flex;
+}
+
+.ld-editor__palette .ld-instruction > .btn {
+  flex: 1;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.ld-instruction__name {
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ld-network {
+  border-bottom: 1px solid var(--c-rule);
+  padding: 6px 0;
+}
+
+.ld-network.is-selected {
+  border-left: 3px solid var(--c-focus);
+  padding-left: 4px;
+}
+
+.ld-network__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ld-network__title {
+  flex: 1;
+  min-width: 120px;
+}
+
+.ld-network__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ld-network__actions {
+  display: inline-flex;
+}
+
+.ld-network__comment {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  margin: 4px 0;
+  font-size: var(--fs-sm);
+}
+
+.ld-network__diagram {
+  position: relative;
+  overflow-x: auto;
+}
+
+/* Each network is numbered in its header: the viewer's own number of a single rung is not shown. */
+.ld-network__diagram [data-testid='ld-rung'] {
+  display: none;
+}
+
+.ld-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+}
+
+.ld-overlay .ld-gap {
+  pointer-events: all;
+  cursor: pointer;
+}
+
+.ld-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 4px 0;
+}
+
+.ld-fields .form__error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.ld-pin,
+.ld-declare {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ld-operand {
+  position: relative;
+  display: inline-block;
+}
+
+.ld-suggestions {
+  position: absolute;
+  z-index: 10;
+  left: 0;
+  top: 100%;
+  min-width: 100%;
+  max-height: 200px;
+  overflow: auto;
+  margin: 0;
+  padding: 2px 0;
+  list-style: none;
+  background: var(--c-surface);
+  border: 1px solid var(--c-chrome-border);
+  font-size: var(--fs-sm);
+}
+
+.ld-suggestions li {
+  padding: 2px 8px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ld-suggestions li.is-picked {
+  background: var(--c-select);
+}

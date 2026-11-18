@@ -8,7 +8,7 @@ import { vi } from 'vitest';
 import { activate, MODULE_ID } from '../entry';
 import type { CheckResult, ProgramEntry, RuntimesAnswer, RuntimeStatus, WatchAnswer, WatchedValue } from '../bridge';
 import { createHost } from '../../../ui-shell/src/modules/host';
-import { resetStores as resetShell } from '../../../ui-shell/src/__tests__/harness';
+import { resetStores as resetShell, unmountAll } from '../../../ui-shell/src/__tests__/harness';
 
 export {
   connection,
@@ -224,6 +224,21 @@ export async function settle(): Promise<void> {
   }
 }
 
+/**
+ * Let the event loop turn until `holds` is true, and fail naming `what` when it never is.
+ * `settle` turns it a fixed four times, which is enough on a quiet machine; a response body is
+ * read through a stream, and on a loaded CI runner that takes more turns than timers do.
+ */
+export async function until(what: string, holds: () => unknown, withinMs = 10_000): Promise<void> {
+  const deadline = Date.now() + withinMs;
+  while (!holds()) {
+    if (Date.now() > deadline) throw new Error(`never: ${what}`);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+  }
+}
+
 /** Run something that changes state, and let it finish. */
 export async function doing(action: () => unknown): Promise<void> {
   await act(async () => {
@@ -241,6 +256,23 @@ export function typeSource(container: HTMLElement, value: string): void {
     setter?.call(area, value);
     area.dispatchEvent(new Event('input', { bubbles: true }));
   });
+}
+
+/**
+ * End a test: unmount what it rendered, take its controller away, and leave a `fetch` that
+ * refuses at once. A test that timed out goes on running after it is reported; without this it
+ * would reach the real network (happy-dom's localhost:3000), where a connection can hang for
+ * minutes on a CI runner, and every test after it in the file would fail with it.
+ */
+export function endTest(): void {
+  unmountAll();
+  vi.unstubAllGlobals();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => {
+      throw new Error('no controller: the test that asked has ended');
+    })
+  );
 }
 
 export function click(element: Element | null): void {

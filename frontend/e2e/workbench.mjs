@@ -419,9 +419,9 @@ try {
   {
   await evaluate(`__t.clickTestId('tree-add-program')`); await sleep(200);
   await evaluate(`__t.type('Program name', 'Ladder'); __t.type('Program language', 'ld'); __t.press('Program name', 'Enter'); true`); await sleep(1500);
-  check('an LD program added from the tree opens as a diagram, with its two rails and no text area',
-    (await evaluate(`__t.text('[data-testid="ld-element"]').length`)) === 2
-      && (await evaluate(`[...document.querySelectorAll('[data-testid="ld-element"]')].map((e) => e.getAttribute('data-kind')).join()`)) === 'leftPowerRail,rightPowerRail'
+  // Since L3b-2b an engineer gets the editor: a new diagram has its rails and no network yet.
+  check('an LD program added from the tree opens in the Ladder Diagram editor, with no network and no text area',
+    (await evaluate(`__t.has('[data-testid="ld-editor"]') && __t.has('[data-testid="ld-no-networks"]')`))
       && !(await evaluate(`__t.has('[aria-label="Structured Text source"]')`)),
     await evaluate(`__t.text('[data-testid="ld-panel"]').join(' ')`));
   const languages = await evaluate(`[...document.querySelectorAll('[data-testid="tree-program"]')].map((n) => n.querySelector('.tree__label').textContent + ':' + n.querySelector('[data-testid="tree-program-language"]').textContent)`);
@@ -471,7 +471,8 @@ try {
   check('and compile', (await evaluate(`__t.text('[data-testid="check-ok"]')[0]`)) === 'COMPILES');
   const ldRows = await evaluate(`__t.text('[data-testid="variable-row"] td:first-child')`);
   check('its variables are listed, and none the front-end made for itself', JSON.stringify(ldRows) === '["seconds","odd","lamp","dark"]', JSON.stringify(ldRows));
-  check('its rungs are numbered in the order they run', JSON.stringify(await evaluate(`__t.text('[data-testid="ld-rung"]')`)) === '["1","2","3"]');
+  check('its rungs are numbered in the order they run, a network each', JSON.stringify(await evaluate(`__t.text('[data-testid="ld-network-select"]')`)) === '["Network 1","Network 2","Network 3"]',
+    JSON.stringify(await evaluate(`__t.text('[data-testid="ld-network-select"]')`)));
   await evaluate(`__t.type('Bind seconds', 'input'); true`); await sleep(200);
   await evaluate(`__t.type('Reads tag for seconds', 'external.BoilerHouse.Unit1.runtime_s'); true`);
   await evaluate(`__t.type('Interval in milliseconds', '50'); true`);
@@ -500,6 +501,141 @@ try {
   check('a stopped Ladder Diagram is drawn with no power', (await live()).live === 'none' && (await live()).no === 'none', JSON.stringify(await live()));
   await evaluate(`__t.clickTestId('runtime-unload')`); await sleep(2500);
   check('Unload takes it out of the controller’s runtimes', !(await (await api(base + '/api/v1/runtimes')).json()).runtimes.some((r) => r.id === 'Ladder'));
+  await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
+  }
+
+  // 8e. Editing a Ladder Diagram (ADR-013 L3b-2b): an engineer builds a seal-in rung from the
+  // keyboard (start, stop, the motor coil, the motor contact in a branch around start) and a
+  // timer rung from the palette, checks, saves, loads and runs it, and watches the motor coil
+  // follow a simulated start and stop button: each forced over the API, as a pushbutton wired
+  // to the input would set it.
+  {
+  await evaluate(`__t.clickTestId('tree-add-program')`); await sleep(200);
+  await evaluate(`__t.type('Program name', 'Seal'); __t.type('Program language', 'ld'); __t.press('Program name', 'Enter'); true`); await sleep(1500);
+  const sealUrl = `${base}/api/v1/projects/plant_a/logic/programs/Seal`;
+  const created = (await (await api(sealUrl)).json()).source;
+  check('an engineer gets the Ladder Diagram editor, with no network yet', await evaluate(`__t.has('[data-testid="ld-editor"]') && __t.has('[data-testid="ld-no-networks"]')`));
+  // DOM tests cannot see a control pushed off screen: the real browser's rectangles are read.
+  const onScreen = (sel) => evaluate(`(() => { const r = __t.rect(${JSON.stringify(sel)});
+    return { ...r, inside: r.width > 0 && r.height > 0 && r.x >= 0 && r.y >= 0 && r.x + r.width <= innerWidth + 1 && r.y < innerHeight }; })()`);
+  const palette = await onScreen('[data-testid="ld-palette"]');
+  const networkList = await onScreen('[data-testid="ld-networks"]');
+  const favouritesBar = await onScreen('[data-testid="ld-favourites"]');
+  check('the instruction palette, the favourites and the network list are on screen, the palette beside the networks',
+    palette.inside && networkList.inside && favouritesBar.inside && palette.width >= 180 && networkList.width >= 300 && palette.x >= networkList.x + networkList.width - 1,
+    JSON.stringify({ palette, networkList, favouritesBar }));
+  await evaluate(`(() => {
+    const keyAt = (key, m = {}) => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey: !!m.shift, ctrlKey: !!m.ctrl, altKey: !!m.alt, bubbles: true, cancelable: true }));
+    window.__ld = {
+      focus() { document.querySelector('[data-testid="ld-editor"]').focus(); },
+      key: keyAt,
+      operand(text, declare) {
+        const el = document.activeElement;
+        if (!el || el.getAttribute('role') !== 'combobox') throw new Error('no operand field has the focus: ' + (el ? el.outerHTML.slice(0, 80) : 'nothing'));
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, text);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        keyAt('Enter', { ctrl: declare });
+      },
+      element(kind, operand) {
+        return [...document.querySelectorAll('[data-testid="ld-element"][data-kind="' + kind + '"]')].find((e) => (e.querySelector('title')?.textContent ?? '').endsWith(': ' + operand));
+      },
+      select(kind, operand) {
+        const g = window.__ld.element(kind, operand);
+        if (!g) throw new Error('no ' + kind + ' ' + operand);
+        g.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      },
+      palette(id) { document.querySelector('[data-testid="ld-palette-item"][data-item="' + id + '"]').click(); },
+    }; return true; })()`);
+  // Ctrl+R a network; Shift+F2 start, Shift+F3 stop, Shift+F7 the coil motor, each operand typed
+  // where the focus lands and declared with Ctrl+Enter as the editor proposes (inputs for the
+  // contacts, an output for the coil).
+  await evaluate(`__ld.focus(); __ld.key('r', { ctrl: true }); true`); await sleep(300);
+  await evaluate(`__ld.key('F2', { shift: true }); true`); await sleep(300);
+  const operandField = await onScreen('[data-testid="ld-operand"]');
+  check('a new contact’s operand field has the focus, on screen',
+    (await evaluate(`document.activeElement?.getAttribute('data-testid')`)) === 'ld-operand' && operandField.inside, JSON.stringify(operandField));
+  await evaluate(`__ld.operand('start', true); true`); await sleep(300);
+  await evaluate(`__ld.key('F3', { shift: true }); true`); await sleep(300);
+  await evaluate(`__ld.operand('stop', true); true`); await sleep(300);
+  await evaluate(`__ld.key('F7', { shift: true }); true`); await sleep(300);
+  await evaluate(`__ld.operand('motor', true); true`); await sleep(300);
+  // The seal: a branch opened at start (Shift+F8) and closed there (Shift+F9), the motor contact in it.
+  // One action a call: what React does with an event shows after it, not within the same script.
+  await evaluate(`__ld.select('contact', 'start'); true`); await sleep(300);
+  await evaluate(`__ld.focus(); __ld.key('F8', { shift: true }); true`); await sleep(300);
+  check('a branch is open at start', await evaluate(`__t.has('[data-testid="ld-branch-open"]')`));
+  await evaluate(`__ld.key('F9', { shift: true }); true`); await sleep(300);
+  await evaluate(`__ld.key('F2', { shift: true }); true`); await sleep(300);
+  await evaluate(`__ld.operand('motor', false); true`); await sleep(300);
+  await evaluate(`document.querySelector('[aria-label="Title of network 1"]').focus(); __t.type('Title of network 1', 'Motor seal-in'); true`); await sleep(300);
+  await evaluate(`__ld.focus(); true`); await sleep(300);
+  // The timer rung from the palette: a network after it, a contact on motor, a TON whose
+  // instance is proposed and declared with Enter, its PT, and the coil lamp.
+  await evaluate(`__t.clickTestId('ld-add-network'); true`); await sleep(300);
+  await evaluate(`__ld.palette('contact-no'); true`); await sleep(300);
+  await evaluate(`__ld.operand('motor', false); true`); await sleep(300);
+  await evaluate(`__ld.palette('box:TON'); true`); await sleep(300);
+  const instance = await evaluate(`[document.activeElement?.getAttribute('data-testid'), document.activeElement?.value]`);
+  check('a TON from the palette asks for its instance with a name proposed', JSON.stringify(instance) === '["ld-box-instance","ton1"]', JSON.stringify(instance));
+  await evaluate(`__ld.key('Enter'); true`); await sleep(300);
+  await evaluate(`(() => { const pt = document.querySelector('[data-testid="ld-pin"][data-formal="PT"] input'); pt.focus(); __ld.operand('T#2s', false); return true; })()`); await sleep(300);
+  await evaluate(`__ld.focus(); true`); await sleep(300);
+  await evaluate(`__ld.key('F7', { shift: true }); true`); await sleep(300);
+  await evaluate(`__ld.operand('lamp', true); true`); await sleep(300);
+  const drawn = await evaluate(`[...document.querySelectorAll('[data-testid="ld-network"]')].map((n) =>
+    [...n.querySelectorAll('[data-testid="ld-element"]')].filter((e) => !/PowerRail/.test(e.getAttribute('data-kind'))).map((e) => e.querySelector('title').textContent.replace(/ [0-9]+/, '')).join(', '))`);
+  check('the two rungs are drawn as built', JSON.stringify(drawn) === JSON.stringify([
+    'contact: start, contact: motor, contact: stop, coil: motor', 'contact: motor, block, coil: lamp']), JSON.stringify(drawn));
+  check('the program is unsaved until it is saved', await evaluate(`__t.has('[data-testid="program-unsaved"]')`));
+  await shot('e2e_6f_ladder_editor');
+  await evaluate(`__t.click('Check')`); await sleep(1500);
+  check('what the editor built compiles', (await evaluate(`__t.text('[data-testid="check-ok"]')[0]`)) === 'COMPILES',
+    JSON.stringify(await evaluate(`__t.text('[data-testid="diagnostic"]')`)));
+  const sealRows = await evaluate(`__t.text('[data-testid="variable-row"] td:first-child')`);
+  // The timer's instance is listed by its members (ton1.Q, ton1.ET, …).
+  check('its variables are the ones declared where they were typed', ['start', 'stop', 'motor', 'lamp', 'ton1.Q', 'ton1.ET'].every((v) => sealRows.includes(v)), JSON.stringify(sealRows));
+  await evaluate(`__t.click('Save')`); await sleep(1500);
+  const savedSeal = (await (await api(sealUrl)).json()).source;
+  const headerOf = (text) => text.slice(0, text.indexOf('<types>')) + text.slice(text.indexOf('</types>'));
+  check('Save writes the TC6 document through the source route, its header as the module made it',
+    !(await evaluate(`__t.has('[data-testid="program-unsaved"]')`)) && headerOf(savedSeal) === headerOf(created)
+      && savedSeal.includes('title="Motor seal-in"') && /<inputVars><variable name="start">/.test(savedSeal),
+    savedSeal.slice(0, 200));
+  await evaluate(`__t.type('Interval in milliseconds', '50'); true`);
+  await evaluate(`[...document.querySelectorAll('.settings__check')].find((l) => l.textContent.includes('Run when loaded')).querySelector('input').click(); true`);
+  await evaluate(`__t.clickTestId('program-load')`); await sleep(3000);
+  const sealBuilt = await evaluate(`__t.text('[data-testid="program-built"]')[0]`);
+  check('Load builds the edited diagram and loads it', /^Version [0-9a-f]{12} was built and loaded\./.test(sealBuilt ?? ''), sealBuilt);
+  const sealRuntime = (await (await api(base + '/api/v1/runtimes')).json()).runtimes.find((r) => r.id === 'Seal');
+  check('the controller runs it', sealRuntime?.mode === 'run' && sealRuntime.scans > 0, JSON.stringify(sealRuntime));
+  const force = async (variable, value) => (await api(`${base}/api/v1/runtimes/Seal/force`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ variable, value }) })).ok;
+  const sealLive = () => evaluate(`(() => {
+    const at = (kind, operand) => window.__ld.element(kind, operand)?.getAttribute('data-state');
+    return { live: [...document.querySelectorAll('[data-testid="ld-live"]')].map((e) => e.getAttribute('data-live')).join(), motor: at('coil', 'motor'), lamp: at('coil', 'lamp') }; })()`);
+  await sleep(1000);
+  const idle = await sealLive();
+  check('drawn live, the motor coil is off before start is pressed', idle.live === 'live' && idle.motor === 'off' && idle.lamp === 'off', JSON.stringify(idle));
+  check('start is pressed', await force('start', true)); await sleep(1500);
+  const pressed = await sealLive();
+  check('the motor coil goes on', pressed.motor === 'on', JSON.stringify(pressed));
+  check('start is let go', await force('start', false)); await sleep(1500);
+  const sealed = await sealLive();
+  check('the motor coil stays on through its own contact', sealed.motor === 'on', JSON.stringify(sealed));
+  await sleep(1000);
+  const timed = await sealLive();
+  check('and the lamp comes on two seconds after the motor', timed.motor === 'on' && timed.lamp === 'on', JSON.stringify(timed));
+  check('stop is pressed', await force('stop', true)); await sleep(1500);
+  const stopped = await sealLive();
+  check('the motor coil goes off, and the lamp with it', stopped.motor === 'off' && stopped.lamp === 'off', JSON.stringify(stopped));
+  check('stop is let go', await force('stop', false)); await sleep(1500);
+  const after = await sealLive();
+  check('the motor coil stays off', after.motor === 'off', JSON.stringify(after));
+  await shot('e2e_6g_ladder_editor_live');
+  await api(`${base}/api/v1/runtimes/Seal/release`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  await evaluate(`__t.clickTestId('runtime-stop')`); await sleep(2500);
+  await evaluate(`__t.clickTestId('runtime-unload')`); await sleep(2500);
+  check('Unload takes the edited program out of the controller’s runtimes', !(await (await api(base + '/api/v1/runtimes')).json()).runtimes.some((r) => r.id === 'Seal'));
   await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
   }
 

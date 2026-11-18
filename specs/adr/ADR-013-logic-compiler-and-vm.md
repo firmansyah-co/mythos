@@ -454,8 +454,8 @@ Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (A
 
 - Programs in the project tree, each with its language (ST, LD), added in the language chosen
   beside the name, and an editor per program: the Structured Text (a text area
-  over the same text painted in colour; no editor library), or the Ladder Diagram drawn
-  read-only (§2.8), the last check's diagnostics,
+  over the same text painted in colour; no editor library), or the Ladder Diagram: its editor
+  for an engineer and the read-only view for everyone else (§2.8), the last check's diagnostics,
   each underlined over the whole range it is about (§2.8) and listed with where it starts, the task settings, and the variables of the last text that
   compiled, each with its bindings to tags and each bound tag's live value.
 - The editor keeps three things apart: the text in the editor, the text that is saved, and the
@@ -494,9 +494,11 @@ Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (A
   place, which would claim nothing is forced). One mark of the SDK (`ForcedMark`) says FORCED
   beside the value in the HMI's I/O field (for the project the controller runs), the tag table,
   the inspector and the editor's bound tags; the online tools card counts the forced tags.
-- Not built: watching an element of an array from the table; editing a Ladder Diagram in the
-  workbench (L3b-2: until then it is changed through `save_logic_source`, and an open diagram
-  re-reads a source saved elsewhere unless it has changes of its own); editors for FBD and SFC.
+- Not built: watching an element of an array from the table; editors for FBD and SFC. A Ladder
+  Diagram is edited in the workbench (§2.8, L3b-2b) and can still be saved through
+  `save_logic_source`: an open diagram re-reads a source saved elsewhere unless it has changes
+  of its own, and the editor then opens it afresh (its undo starts again; the localIds it gave
+  out are not given out again).
 
 ### 2.7 The HMI is not a runtime
 
@@ -562,6 +564,97 @@ compile). Then:
 The front-end's hidden variables are watched for the diagram and not listed in the table. An
 element's variable that is not a variable of the program by itself (an element of an array) is
 watched as well.
+
+**The Ladder Diagram editor** (L3b-2b; `LadderEditor.tsx` beside the view, and `ldmodel.ts`,
+`ldedit.ts`, `ldcatalog.ts`, `ldxml.ts`; what it writes is in §2.15). **Decided by the owner
+(2026-11-18):** the IEC 61131-3 editors follow the TIA Portal's workflow and conventions as
+closely as they can: networks, each with a title and a comment; an instruction palette and a
+favourites bar; symbolic operands with completion; online monitoring with power-flow colours.
+Its artwork is our own, never Siemens' (no artwork, icon or branding of it), and no code of TIA
+Portal, CODESYS, Beremiz, OpenPLC or any other tool was read or copied; the palette's symbols
+are IEC 61131-3's semigraphic forms (`-| |-`, `-|/|-`, `-( )-`, …). The visual design pass is
+the owner's to lead: the editor uses the workbench's classes and tokens and decides nothing
+past clarity and legibility.
+
+- **Who.** An engineer gets the editor in place of the read-only view; a viewer and an
+  operator get the view, as for ST. The program is unsaved until Save (or Ctrl+S), as ST is;
+  Load saves first, as for ST.
+- **What is drawn is what is saved.** Every edit changes the editor's model, which is written
+  back into the TC6 text at once (§2.15); each network is drawn by the view's `PouView` from
+  that text as the view reads it, moved to the top of its own drawing, with the body's rails.
+  The live state is the view's (§2.8 above), drawn only on the PROGRAM; the rung number the
+  view draws is hidden, as the network's header numbers it. Over the drawing the editor draws
+  the selection, its own marks of what is wrong, and the insertion points (small squares on
+  the rung).
+- **Networks**: a list in the order of evaluation; added after the selected one (or at the
+  end), inserted above one, deleted, moved up and down; each with its number, a title, a label
+  (§8.1.4, what a jump names) and a comment. A network another tool wrote that is not a series
+  of contacts, boxes and coils with parallel branches is kept as it is (§2.15) and says why: it
+  can be moved, deleted, titled, labelled and commented, and nothing is put into it.
+- **Instructions**, from the palette (grouped: bit logic; timers; counters; edges and
+  bistables; compare; math; move; strings; the document's own function and function block
+  POUs; program control) or from the favourites bar above the networks, by click or by drag:
+  contacts normally open, normally closed, positive and negative edge; coils plain, negated,
+  set, reset, positive and negative edge; open and close a parallel branch; a box of any
+  function or function block, the standard library's (TON, TOF, TP, CTU, CTD, CTUD, R_TRIG,
+  F_TRIG, SR, RS, the comparisons, ADD … MOVE, SEL, the numeric and string functions, a
+  conversion `X_TO_Y` typed into an empty box) or the document's own, with its pins; a jump,
+  the network's label, a return. A program compiles from its own source alone (§2.6), so the
+  POUs a box can call are the library's and the document's: an ST POU of the project is not
+  among them. The favourites start as TIA's set (normally open, normally closed, coil, empty
+  box, open branch, close branch); any instruction is added or removed with its star, and the
+  set is kept per viewer in the browser, as is whether the palette is shown: hidden, the
+  networks have its width.
+- **Where an instruction goes**, as TIA inserts: after the selected element in its series; at
+  a selected insertion point; with only the network selected, a contact or a box before the
+  coils at the end of its rung, and a coil, jump or return at its end. Dropped on an element it
+  goes after it; on an insertion point, there; on the network, as with the network selected.
+  A jump or a return ends its rung: nothing is put after one, and one is put only at the end.
+- **A parallel branch** is opened at an element and closed at an element of the same series
+  (Close alone wraps the selection, which Shift+click or Shift+←/→ widens along its series):
+  that run becomes the upper branch and a new, empty branch below it gets the insertion point.
+  Branches are always closed in the model, so a parallel coil is a branch around a coil.
+- **Boxes.** A box's pins are its declaration's (§2.14 for the library; the interface for the
+  document's POUs). Which pin carries the rung (§8.2.6): a function block whose first input is
+  a BOOL takes it there (IN, CU, CLK, S1) and gives it from its first output when that is a
+  BOOL (Q, QU, Q1); any other box takes it at EN and gives it from ENO, except a function whose
+  result is a BOOL (the comparisons), which gives it as OUT, so a comparison passes power while
+  it holds. Every other input takes an operand written at the pin (a TC6 `expression`); every
+  other output an operand written by an output variable wired to it. A function block gets an
+  instance, as TIA asks for an instance DB: a name no variable has (its type in lower case and
+  a number, `ton1`) is proposed in the instance field, and Enter there declares it in VAR.
+- **Operands** are typed with completion from the POU's variables (name and type; a contact or
+  coil is offered BOOL ones; an instance's outputs as `ton1.Q`). Enter takes what was typed,
+  or the suggestion the arrows went to. What is wrong is shown at once, from the editor's own
+  check, written under the element's fields and marked around it: a name not declared; a value
+  of another family than the place takes (BOOL, TIME, STRING, number); a coil writing an input
+  of the POU; an input of a function block read from outside; a function's input with no
+  operand; a box with no type or one nothing declares; a function block with no instance, one
+  of another type, or one called twice in a network; a jump to a label no network has; an
+  empty branch (a wire: what is in parallel with it is bypassed); a rung ending in a contact.
+  Then the compiler's: 700 ms after the last edit the editor checks the text by itself (a
+  quiet check, which neither marks the editor busy nor reports a failure as an error, and
+  whose answer for an older text is dropped), and each diagnostic is drawn at its element and
+  written under it. A plain name that is not declared is offered to be declared there, in a
+  section chosen (Input, Output or Local) with a type: proposed BOOL input for a contact, BOOL
+  output for a coil, the block's type in VAR for an instance, the pin's type where it is
+  concrete and chosen where it is generic; Ctrl+Enter takes the operand and declares it as
+  proposed.
+- **Undo and redo** cover every edit, headers and declarations among them. A localId given out
+  is not taken back by undo (§2.15).
+- **Keys**, while the editor has the focus (TIA's for the favourites): Shift+F2 normally open
+  contact, Shift+F3 normally closed contact, Shift+F7 coil, Shift+F5 empty box, Shift+F8 open
+  a branch, Shift+F9 close it; Ctrl+R a network after the selected one; Alt+↑ and Alt+↓ move
+  the selected network; ← and → the previous and next element, Shift+← and Shift+→ widen the
+  selection along its series; ↑ and ↓ the previous and next network; Enter the first field of
+  the selected element; Delete what is selected (an element, a run of them, an empty branch at
+  its insertion point, or a network); Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo; Ctrl+S save. In
+  an operand field: ↑ and ↓ choose a suggestion, Enter takes it (or what was typed), Ctrl+Enter
+  takes it and declares it as proposed, Escape goes back to the diagram without it. The
+  browser's own Ctrl+R is taken only while the editor has the focus.
+- Not built: moving an element by dragging it (it is deleted and put again), copy and paste,
+  a box's pin wired to a second rung path (an operand is written there), editing a network kept
+  as found, adding a POU to the document.
 
 **What the front-end gives an editor** (L2a; the editor of §2.6 shows it). The spike's parser
 stopped at the first error and recorded only where a construct starts. The ST front-end now:
@@ -1060,7 +1153,9 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   **L3b-2a** (done): every element's output and every junction kept for monitoring in every
   build, a flag per network, and the view drawing each element and link with its power and a
   rung not run as not executed (§2.8, §2.15, power for monitoring).
-  **L3b-2b** next: editing a Ladder Diagram in the workbench (§2.15, what L3b-2 needs). Then FBD (the same TC6 reader; FBD's own order of
+  **L3b-2b** (done): an engineer edits a Ladder Diagram in the workbench, as TIA's editor works
+  (the owner's decision of 2026-11-18), and the editor writes TC6 back keeping every localId,
+  its header and what it does not draw (§2.8, §2.15, what the editor writes). Then FBD (the same TC6 reader; FBD's own order of
   evaluation, §8.3.3, and explicit feedback, §8.1.5.2) and SFC.
 - L4. **The standard library in ST** (done, §2.14): the standard function blocks written in
   Structured Text, with intrinsics for what ST cannot say (the scan clock, bytecode format 4);
@@ -1098,8 +1193,8 @@ Each step leaves `dev` working.
 | 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
 | 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Forcing is built (`Call::Force`, `Call::Unforce`, C5c): `runtime_api.rs` forces an output, a setpoint and an input of the running module process over the API and watches the device follow, refuses an operator and a viewer, refuses what cannot be forced, and sees every force released by a stop and by loading the program again. The watchdog is built (C7a): a program in RUN that completes no scan within ten intervals (never less than two seconds), or whose scan thread has ended, is put in FAULT at the next exchange with the reason (`watchdog: …`), every force released, so the core writes the safe values; a scan itself is bounded by the instruction budget. Proven by the module's own tests: a healthy program runs past the limit untouched, and one whose scan thread ends is faulted and asks for no write. RETAIN is built in the runtime and the core (C7b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter and proves that it goes on after a stop and run, after the program is loaded again, after its module process is killed and started again (from the values kept last, not those it was loaded with), and after a load in STOP, while the other counter starts from zero each time, and that a cold start resets it; the module's tests prove that a value is taken only into a variable of the same name, type and size. Since L4 a standard block's state is variables of its own: `runtime_api.rs` runs a RETAIN TON beside a plain one through the real module process, and after a stop and run the RETAIN one carries on from its ET (the time stopped not timed) while the plain one times again from 0, and a cold start resets both. Online change is built (C6b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter, a plain counter, a TON and an output bound to a Modbus simulator, loads a build with one variable added and one removed while it runs, and proves that both counters and the timer go on without resetting, the added variable starts from its initial value, the removed one is reported as dropped, and the device's register, sampled about every millisecond through the load, never holds the safe value nor drops below what the old build commanded before the load; that a cold load resets both counters and what is kept; that a program of another name starts as before; and that an unknown `start` is refused. The module's tests prove the carry rule (same path, type and size; an array of structures or instances not carried; a value given twice taken once; what is not carried listed with why), and that a program started into RUN holds the carried values and clock before its first scan while one loaded in STOP takes none |
 | 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run` (a warm restart), `/cold-start`, `/stop`, `/watch`, `/force` and `/release`, `GET`/`PUT /api/v1/projects/:id/runtimes` (`?start=cold`, and `changes.runtimes` saying how each runtime started: C6b), each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; what is forced in each, a FORCED badge with each variable and its value (`forced UNKNOWN` when the controller does not say), and "Release all" for an engineer, asked first, with the controller's answer shown as it gave it; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
-| 2.6 The logic module | Built: `plugins/logic` (programs in ST or LD, bindings, check, build; eight MCP tools, each saying which languages it takes; module version 0.2.0), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes, an LD program among them (created as a TC6 document, a diagnostic at its element, built, loaded, and running a Modbus simulator; an ST program saved without a language beside it, unchanged); its workbench UI `frontend/packages/logic-ui` (tree section with each program's language, program editor, the read-only LD view with its live state, load, load cold, how a load started, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus, and an LD program added from the tree, given rungs over the API, checked with a mistake drawn at its element, bound, loaded and run shows its contacts change state with the device's counter. Not built: unit tests in ST, a library of POUs shared by a project's programs |
-| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); the read-only LD view with each diagnostic at its element and its live state from watched values (L3b-1, `ladder.test.tsx`), each element, link and junction with the power the compiler kept and a rung not run as not executed (L3b-2a); editing LD (L3b-2b), editors for FBD, SFC are not built. 2.10: not built |
+| 2.6 The logic module | Built: `plugins/logic` (programs in ST or LD, bindings, check, build; eight MCP tools, each saying which languages it takes; module version 0.3.0, its UI's the same), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes, an LD program among them (created as a TC6 document, a diagnostic at its element, built, loaded, and running a Modbus simulator; an ST program saved without a language beside it, unchanged); its workbench UI `frontend/packages/logic-ui` (tree section with each program's language, program editor, the LD editor for an engineer and the read-only LD view for everyone else, both with the live state, load, load cold, how a load started, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus, and an LD program added from the tree, given rungs over the API, checked with a mistake drawn at its element, bound, loaded and run shows its contacts change state with the device's counter, and an LD program built in the editor from the keyboard and the palette is checked, saved, loaded and run, its motor coil following a start and a stop forced as a pushbutton would set them (L3b-2b). Not built: unit tests in ST, a library of POUs shared by a project's programs |
+| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); the read-only LD view with each diagnostic at its element and its live state from watched values (L3b-1, `ladder.test.tsx`), each element, link and junction with the power the compiler kept and a rung not run as not executed (L3b-2a); the LD editor, as TIA's works (L3b-2b, `ladder-editor.test.tsx`, `ldmodel.test.ts`); editors for FBD, SFC are not built. 2.10: not built |
 | 2.9 Emulators | Built: eight programs (`strings.st` since L2c-1, `library.st` since L2c-2), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else. Since L4 the timers and counters in them are the library's, in ST: all 16 runs equal Since L3a a Ladder Diagram joins them (`tests/ladder/oscillator.xml`: two TON, a CTU, rising and falling contacts, a set coil, a jump): all 18 runs equal (rustc 1.100.0, QEMU 8.2.2, run in the CI runner's image) |
 | 2.12 Oracle | `differential_strucpp.rs`: 8 programs, 60 cycles, 9,480 values, all agree except the five deliberate rows of §2.13 (287 values: 167 of the first three, 60 each of INSERT's position and a based literal read as an integer). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE. Unchanged by L4 (the standard blocks in ST): the same 9,480 values, the same 287 |
 | 2.14 Standard library in ST (L4) | `crates/mythos-logic-st/src/library/`: SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD and their INT, DINT and LINT variants, TP, TON, TOF and their TIME variants (22 POUs in 4 files, an index); the intrinsic `__NOW()`; names of the library refused to a program's POUs and types; the library's names resolved among its own; no diagnostic pointing into it. Proven by `standard_library.rs` (14) and `standard_blocks_run_as_the_native_ones.rs` (4: every native block against the library's, 400 sequences of 150 scans each, 540,000 scans in all) |
@@ -1330,3 +1425,51 @@ Evidence of the spike (2026-11-17):
   as not powered turned `draws UNKNOWN, never a state, when the values cannot be read` and
   `draws one value the runtime does not have as UNKNOWN, and the others as they are` red.
   The emulators: all 18 runs equal, the oscillator with its stores among them.
+- **L3b-2b** (editing a Ladder Diagram in the workbench, 2026-11-18). Added: `ldmodel.test.ts`
+  (15: every edit, each step checked on the TC6 it writes, that every element it did not delete
+  keeps its localId and kind, that a new id was never held in the run, that the bytes before
+  and after `<types>` are the document's; networks with titles, comments, labels, moved and
+  deleted; every contact and coil; boxes of the library, a comparison and a block of the
+  document with their pins; branches opened and closed, parallel coils, an empty branch kept as
+  a wire; ids never given out twice, after a deletion, an undo, or a save and a new session; a
+  document written back byte for byte when nothing changed; declarations; another tool's
+  document read, edited without losing an element, its unchanged rung moved down whole and its
+  network kept as found; the oscillator of the emulators read, and written back unchanged
+  after an edit undone), `ladder-editor.test.tsx` (9, through the workbench's real host: a
+  seal-in rung built from the keyboard and saved with Ctrl+S; the palette by click and by drag,
+  a TON with its instance proposed and declared; the favourites and the palette shown or
+  hidden, kept per viewer; titles, comments, moves, deletes, undo and redo; a network kept as
+  found; a wrong operand told at once and then by the compiler at its element, and declared
+  from where it was typed; completion by name and type; a document the editor cannot open
+  drawn read-only with why; a viewer and an operator given the read-only view) and
+  `ladder_from_the_editor.rs` (3) in the compiler, which compiles and runs the documents the
+  editor wrote (`tests/ladder/editor_seal_in.xml`, `editor_foreign_edited.xml`, each held equal
+  by `ldmodel.test.ts` to what the editor writes now): the seal-in latches on start and drops
+  on stop, the timer lights the lamp 50 ms after the motor starts, with `waited` its ET, and
+  another tool's document (`foreign.xml`) runs as before after the editor changed one rung,
+  over 400 scans of the same inputs. Two of L3b-1's tests in `ladder.test.tsx` now sign in as a
+  viewer: they hold the read-only view's positions, which an engineer no longer sees. The e2e
+  adds an editing scenario (an LD program added from the tree; the palette, the favourites and
+  the network list on screen by their rectangles in the real browser; a seal-in rung built with
+  Ctrl+R, Shift+F2, Shift+F3, Shift+F7, Shift+F8 and Shift+F9, each operand declared with
+  Ctrl+Enter; a timer rung from the palette; checked, saved with its header as the module made
+  it, loaded and run; the motor coil drawn live going on with start, staying on through its
+  own contact, the lamp on two seconds later, and both off with stop); two checks of L3b-1's
+  scenario changed with it (an engineer's new diagram opens in the editor; rungs are numbered
+  by network): 155 checks, all passed. Mutation-checked in a copy of the tree (`git archive`,
+  its own `pnpm install --frozen-lockfile`; each mutation grepped as landed and the copy's
+  `pnpm lint` passed before its tests; each file restored with `git show`; the clean copy
+  passed before and after the restores): an insertion renumbering the other elements of its
+  series turned nine tests of `ldmodel.test.ts` red, among them `writes a branch around a
+  selection as parallel, never as series`, `writes the seal-in and timer rungs the compiler
+  tests run (editor_seal_in.xml)` and `opens, edits and saves without losing an element, and
+  leaves what it did not change as it was`; the next id taken as the highest an element has
+  now, plus one, turned seven red, among them `never gives out an id twice, after a deletion,
+  an undo, or a save and a new session` and `adds, titles, comments, labels, moves and deletes
+  networks, each kept in TC6`; a write stamping the content header with `modificationDateTime`
+  turned twelve red, every test of `ldmodel.test.ts` that edits; each branch of a parallel fed
+  from the end of the one above it turned `builds a seal-in rung from the keyboard, declares its
+  variables where they are typed, and saves it`, `writes a branch around a selection as
+  parallel, never as series`, `opens a branch at one element and closes it after another, and
+  parallels coils`, `keeps an empty branch as a wire, and says so` and `writes the seal-in and
+  timer rungs the compiler tests run (editor_seal_in.xml)` red.

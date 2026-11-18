@@ -16,6 +16,7 @@ import {
   byTestId,
   click,
   doing,
+  endTest,
   entryOf,
   ladderOf,
   project,
@@ -28,7 +29,9 @@ import {
   texts,
   typeInto,
   unmountAll,
+  until,
   useController,
+  useSession,
   useShell,
   watchOf,
   type Backend,
@@ -143,6 +146,7 @@ async function opened(backend: Backend, name = 'Main') {
   await settle();
   const container = render(<ProgramEditor name={name} />);
   await settle();
+  await until('the Ladder Diagram is drawn', () => byTestId(container, 'ld-view') ?? byTestId(container, 'ld-editor') ?? byTestId(container, 'ld-unreadable'));
   return { calls, container };
 }
 
@@ -166,8 +170,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  unmountAll();
-  vi.unstubAllGlobals();
+  endTest();
 });
 
 describe('a Ladder Diagram in the tree', () => {
@@ -191,8 +194,13 @@ describe('a Ladder Diagram in the tree', () => {
   });
 });
 
+/** Signed in as a viewer: the read-only view, drawn where the document puts each element. */
+const asViewer = () =>
+  useSession.setState({ phase: 'signed-in', user: { username: 'vera', display_name: 'Vera', role: 'viewer', via: 'session' } });
+
 describe('drawing a Ladder Diagram', () => {
   it('draws every kind of element where the document puts it, and numbers the rungs in evaluation order', async () => {
+    asViewer();
     const shapes = ladderOf(
       'Shapes',
       [
@@ -273,6 +281,7 @@ describe('drawing a Ladder Diagram', () => {
   });
 
   it('draws each diagnostic at the element it names, and lists where it is', async () => {
+    asViewer();
     const { container } = await opened(
       main({
         check: () => ({
@@ -313,6 +322,9 @@ describe('drawing a Ladder Diagram', () => {
 
 describe('the live state of a running Ladder Diagram', () => {
   it('draws each element and link with the power its rung kept, and each contact and coil with its variable', async () => {
+    // The read-only view numbers rungs through the program; an engineer's editor numbers them per
+    // network (L3b-2b), so this reads the view as a viewer sees it.
+    asViewer();
     const { calls, container } = await opened(main());
 
     expect(byTestId(container, 'ld-live')?.getAttribute('data-live')).toBe('live');

@@ -1,6 +1,7 @@
-// The editor of one control program: its Structured Text, or its Ladder Diagram drawn read-only
-// with its live state (LadderView), what the compiler says of it, its task settings, its
-// variables with their bindings to tags, and what the controller's runtime is doing with it.
+// The editor of one control program: its Structured Text, or its Ladder Diagram with its live
+// state (LadderEditor for an engineer, LadderView read-only for everyone else), what the
+// compiler says of it, its task settings, its variables with their bindings to tags, and what
+// the controller's runtime is doing with it.
 //
 // Three things are kept apart on purpose, because an engineer acts on the difference: the text
 // in the editor, the text that is saved, and the program that runs. Nothing that runs changes
@@ -36,6 +37,7 @@ import {
   type WatchedValue,
 } from './bridge';
 import { readLadder, type Ladder } from './ladder';
+import { LadderEditor } from './LadderEditor';
 import { LadderView, type LadderLive } from './LadderView';
 import {
   checkIsCurrent,
@@ -863,8 +865,25 @@ function liveOf(doc: ProgramDoc, state: RunState, watch: WatchView | undefined):
   };
 }
 
-/** The Ladder Diagram of the program, read-only, with its live state. */
-function LadderPanel({ doc, ladder, state }: { doc: ProgramDoc; ladder: Ladder; state: RunState }) {
+/** How long after the last edit of a Ladder Diagram the editor checks it by itself. */
+const LD_CHECK_AFTER_MS = 700;
+
+/**
+ * The Ladder Diagram of the program with its live state: the editor for an engineer, read-only
+ * for everyone else (L3b-2b).
+ */
+function LadderPanel({ doc, ladder, state, may }: { doc: ProgramDoc; ladder: Ladder; state: RunState; may: boolean }) {
+  const name = doc.entry.name;
+  const setSource = usePrograms((s) => s.setSource);
+  const save = usePrograms((s) => s.save);
+  const checkNow = usePrograms((s) => s.check);
+  const current = checkIsCurrent(doc);
+  // What the compiler says of an edit follows it by itself, after the editor's own check.
+  useEffect(() => {
+    if (!may || current || doc.source === null) return undefined;
+    const timer = setTimeout(() => void checkNow(name, true), LD_CHECK_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [may, current, doc.source, name, checkNow]);
   const watch = usePrograms((s) => s.watches[doc.entry.name]);
   const { live, why } = liveOf(doc, state, watch);
   const check = checkIsCurrent(doc) ? doc.check : null;
@@ -875,8 +894,18 @@ function LadderPanel({ doc, ladder, state }: { doc: ProgramDoc; ladder: Ladder; 
       <p className="muted" data-testid="ld-live" data-live={live === null ? 'none' : live.values === null ? 'unknown' : 'live'}>
         {why}
       </p>
-      <p className="muted">Read-only: a Ladder Diagram is changed through save_logic_source until its editor is built.</p>
-      {ladder.ok ? (
+      {!may && <p className="muted">Read-only: only an engineer changes a program.</p>}
+      {may && ladder.ok && doc.source !== null ? (
+        <LadderEditor
+          text={doc.source}
+          onText={(text) => setSource(name, text)}
+          onSave={() => void save(name)}
+          live={live}
+          program={program}
+          diagnostics={diagnostics}
+          fallback={<LadderView pous={ladder.pous} program={program} live={live} diagnostics={diagnostics} />}
+        />
+      ) : ladder.ok ? (
         <LadderView pous={ladder.pous} program={program} live={live} diagnostics={diagnostics} />
       ) : (
         <div className="notice notice--bad" role="alert" data-testid="ld-unreadable">
@@ -1138,7 +1167,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
           <div className="logic-editor__main">
             <div className="logic-editor__source">
               {isLadder && ladder !== null ? (
-                <LadderPanel doc={doc} ladder={ladder} state={state} />
+                <LadderPanel doc={doc} ladder={ladder} state={state} may={may} />
               ) : (
                 <SourceEditor
                   ref={editor}

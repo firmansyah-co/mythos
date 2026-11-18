@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ppx:project xmlns:ppx="http://www.plcopen.org/xml/tc6_0201" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <ppx:fileHeader companyName="Another tool" productName="A TC6 writer" productVersion="9.1" creationDateTime="2026-01-02T03:04:05"/>
+  <ppx:contentHeader name="Foreign" modificationDateTime="2026-01-02T03:04:05">
+    <ppx:coordinateInfo>
+      <ppx:fbd><ppx:scaling x="10" y="10"/></ppx:fbd>
+      <ppx:ld><ppx:scaling x="10" y="10"/></ppx:ld>
+      <ppx:sfc><ppx:scaling x="10" y="10"/></ppx:sfc>
+    </ppx:coordinateInfo>
+  </ppx:contentHeader>
+  <ppx:types>
+    <ppx:dataTypes/>
+    <ppx:pous>
+      <ppx:pou name="Foreign" pouType="program">
+        <ppx:interface>
+          <ppx:inputVars>
+            <ppx:variable name="a"><ppx:type><ppx:BOOL/></ppx:type></ppx:variable>
+            <ppx:variable name="b"><ppx:type><ppx:BOOL/></ppx:type></ppx:variable>
+            <ppx:variable name="c"><ppx:type><ppx:BOOL/></ppx:type></ppx:variable>
+            <ppx:variable name="level"><ppx:type><ppx:INT/></ppx:type></ppx:variable>
+          </ppx:inputVars>
+          <ppx:outputVars>
+            <ppx:variable name="q"><ppx:type><ppx:BOOL/></ppx:type></ppx:variable>
+            <ppx:variable name="r"><ppx:type><ppx:BOOL/></ppx:type></ppx:variable>
+            <ppx:variable name="high"><ppx:type><ppx:BOOL/></ppx:type></ppx:variable>
+          </ppx:outputVars>
+          <ppx:localVars>
+            <ppx:variable name="t"><ppx:type><ppx:derived name="TON"/></ppx:type></ppx:variable>
+            <ppx:variable name="elapsed"><ppx:type><ppx:TIME/></ppx:type></ppx:variable>
+          </ppx:localVars>
+        </ppx:interface>
+        <ppx:body>
+          <ppx:LD>
+            <!-- Written by another tool: a rail pair for each rung, wires with their points. -->
+            <ppx:comment localId="90" height="40" width="300">
+              <ppx:position x="20" y="40"/>
+              <ppx:content><xhtml:p>Rung one: a and not b drive q.</xhtml:p></ppx:content>
+            </ppx:comment>
+            <ppx:coil localId="103" width="21" height="20" executionOrderId="3">
+              <ppx:position x="400" y="110"/>
+              <ppx:connectionPointIn>
+                <ppx:relPosition x="0" y="10"/>
+                <ppx:connection refLocalId="102">
+                  <ppx:position x="400" y="120"/>
+                  <ppx:position x="261" y="120"/>
+                </ppx:connection>
+              </ppx:connectionPointIn>
+              <ppx:connectionPointOut><ppx:relPosition x="21" y="10"/></ppx:connectionPointOut>
+              <ppx:variable>q</ppx:variable>
+            </ppx:coil>
+            <ppx:contact localId="102" width="21" height="20" negated="true" executionOrderId="2">
+              <ppx:position x="240" y="110"/>
+              <ppx:connectionPointIn>
+                <ppx:relPosition x="0" y="10"/>
+                <ppx:connection refLocalId="101">
+                  <ppx:position x="240" y="120"/>
+                  <ppx:position x="171" y="120"/>
+                </ppx:connection>
+              </ppx:connectionPointIn>
+              <ppx:connectionPointOut><ppx:relPosition x="21" y="10"/></ppx:connectionPointOut>
+              <ppx:variable>b</ppx:variable>
+            </ppx:contact>
+            <ppx:contact localId="101" width="21" height="20" executionOrderId="1">
+              <ppx:position x="150" y="110"/>
+              <ppx:connectionPointIn>
+                <ppx:relPosition x="0" y="10"/>
+                <ppx:connection refLocalId="100">
+                  <ppx:position x="150" y="120"/>
+                  <ppx:position x="53" y="120"/>
+                </ppx:connection>
+              </ppx:connectionPointIn>
+              <ppx:connectionPointOut><ppx:relPosition x="21" y="10"/></ppx:connectionPointOut>
+              <ppx:variable>a</ppx:variable>
+              <ppx:addData><ppx:data name="https://example.org/another-tool/contact" handleUnknown="preserve"><colour xmlns="https://example.org/another-tool/contact" value="blue"/></ppx:data></ppx:addData>
+            </ppx:contact>
+            <ppx:leftPowerRail localId="100" width="3" height="40">
+              <ppx:position x="50" y="100"/>
+              <ppx:connectionPointOut formalParameter=""><ppx:relPosition x="3" y="20"/></ppx:connectionPointOut>
+            </ppx:leftPowerRail>
+            <ppx:rightPowerRail localId="199" width="3" height="40">
+              <ppx:position x="500" y="100"/>
+              <ppx:connectionPointIn>
+                <ppx:relPosition x="0" y="20"/>
+                <ppx:connection refLocalId="103"><ppx:position x="500" y="120"/><ppx:position x="421" y="120"/></ppx:connection>
+              </ppx:connectionPointIn>
+            </ppx:rightPowerRail>
+            <ppx:leftPowerRail localId="200" width="3" height="80">
+              <ppx:position x="50" y="300"/>
+              <ppx:connectionPointOut formalParameter=""><ppx:relPosition x="3" y="30"/></ppx:connectionPointOut>
+            </ppx:leftPowerRail>
+            <ppx:contact localId="201" width="21" height="20">
+              <ppx:position x="120" y="320"/>
+              <ppx:connectionPointIn><ppx:relPosition x="0" y="10"/><ppx:connection refLocalId="200"/></ppx:connectionPointIn>
+              <ppx:connectionPointOut><ppx:relPosition x="21" y="10"/></ppx:connectionPointOut>
+              <ppx:variable>c</ppx:variable>
+            </ppx:contact>
+            <ppx:inVariable localId="203" width="70" height="20">
+              <ppx:position x="120" y="350"/>
+              <ppx:connectionPointOut><ppx:relPosition x="70" y="10"/></ppx:connectionPointOut>
+              <ppx:expression>T#50ms</ppx:expression>
+            </ppx:inVariable>
+            <ppx:block localId="202" width="60" height="60" typeName="TON" instanceName="t">
+              <ppx:position x="220" y="310"/>
+              <ppx:inputVariables>
+                <ppx:variable formalParameter="IN"><ppx:connectionPointIn><ppx:relPosition x="0" y="20"/><ppx:connection refLocalId="201"/></ppx:connectionPointIn></ppx:variable>
+                <ppx:variable formalParameter="PT"><ppx:connectionPointIn><ppx:relPosition x="0" y="50"/><ppx:connection refLocalId="203"/></ppx:connectionPointIn></ppx:variable>
+              </ppx:inputVariables>
+              <ppx:inOutVariables/>
+              <ppx:outputVariables>
+                <ppx:variable formalParameter="Q"><ppx:connectionPointOut><ppx:relPosition x="60" y="20"/></ppx:connectionPointOut></ppx:variable>
+                <ppx:variable formalParameter="ET"><ppx:connectionPointOut><ppx:relPosition x="60" y="50"/></ppx:connectionPointOut></ppx:variable>
+              </ppx:outputVariables>
+              <ppx:documentation><xhtml:p>The timer of rung two.</xhtml:p></ppx:documentation>
+            </ppx:block>
+            <ppx:coil localId="204" width="21" height="20">
+              <ppx:position x="400" y="320"/>
+              <ppx:connectionPointIn><ppx:relPosition x="0" y="10"/><ppx:connection refLocalId="202" formalParameter="Q"/></ppx:connectionPointIn>
+              <ppx:connectionPointOut><ppx:relPosition x="21" y="10"/></ppx:connectionPointOut>
+              <ppx:variable>r</ppx:variable>
+            </ppx:coil>
+            <ppx:outVariable localId="205" width="70" height="20">
+              <ppx:position x="320" y="350"/>
+              <ppx:connectionPointIn><ppx:relPosition x="0" y="10"/><ppx:connection refLocalId="202" formalParameter="ET"/></ppx:connectionPointIn>
+              <ppx:expression>elapsed</ppx:expression>
+            </ppx:outVariable>
+            <ppx:rightPowerRail localId="299" width="3" height="80">
+              <ppx:position x="500" y="300"/>
+              <ppx:connectionPointIn><ppx:relPosition x="0" y="30"/><ppx:connection refLocalId="204"/></ppx:connectionPointIn>
+            </ppx:rightPowerRail>
+            <ppx:inVariable localId="301" width="90" height="20">
+              <ppx:position x="120" y="500"/>
+              <ppx:connectionPointOut><ppx:relPosition x="90" y="10"/></ppx:connectionPointOut>
+              <ppx:expression>level &gt; 10</ppx:expression>
+            </ppx:inVariable>
+            <ppx:outVariable localId="302" width="60" height="20">
+              <ppx:position x="300" y="500"/>
+              <ppx:connectionPointIn><ppx:relPosition x="0" y="10"/><ppx:connection refLocalId="301"/></ppx:connectionPointIn>
+              <ppx:expression>high</ppx:expression>
+            </ppx:outVariable>
+          </ppx:LD>
+        </ppx:body>
+        <ppx:documentation><xhtml:p>A program another tool wrote.</xhtml:p></ppx:documentation>
+      </ppx:pou>
+    </ppx:pous>
+  </ppx:types>
+  <ppx:instances>
+    <ppx:configurations/>
+  </ppx:instances>
+</ppx:project>
