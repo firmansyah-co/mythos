@@ -4,23 +4,30 @@
 // Editing it is the next slice (L3b-2).
 //
 // **Live state** is drawn only from what was watched, and only while the runtime runs the very
-// version this text builds (the check's version equals the runtime's) in RUN:
-// - a normally open or negated contact: its variable's value, negated when it is negated
-//   (a transition-sensing contact conducts for one scan only, which its variable does not say,
-//   so it is not coloured);
-// - a coil: its variable's value;
-// - a link: the power its source element's output carried, where the logic module says which
-//   variable holds it once a scan is over (`power` of the check); any other link has no state
-//   anything holds, and is drawn without one.
-// A value that cannot be read is UNKNOWN, never a state; a forced variable is marked FORCED.
+// version this text builds (the check's version equals the runtime's) in RUN. The compiler keeps
+// the power of every element's output and of every junction of links in a variable assigned
+// when the element is evaluated, and whether each rung ran (`power` of the check, §2.15):
+// - an element (a contact, a coil, a BOOL variable) and a link: the power its output carried
+//   when its rung was evaluated in the last scan; where several links join, the joined part
+//   carries the junction's power;
+// - a rung whose flag says it did not run in the last scan (a jump or a return skipped it) is
+//   drawn as not executed, and none of its elements or links shows a power state: what they
+//   keep is from a scan that ran it;
+// - powered is drawn solid, not powered dashed (the meaning of TIA Portal's convention);
+// - a value that cannot be read is UNKNOWN, never a state; an output that carries no power (a
+//   value that is not a BOOL) is drawn without one;
+// - under a contact or a coil, its variable's value; a forced variable is marked FORCED.
 
 import type { ReactNode } from 'react';
 import type { Diagnostic, PowerProbe, WatchedValue } from './bridge';
 import { networks, type LdElement, type LdPou } from './ladder';
 import { formatVariable } from './values';
 
-/** `on`/`off`: a state read; `unknown`: one should be read and cannot be; `none`: none is claimed. */
-export type LiveState = 'on' | 'off' | 'unknown' | 'none';
+/**
+ * `on`/`off`: a power read; `unknown`: one should be read and cannot be; `none`: none is
+ * claimed; `not-executed`: its rung did not run in the last scan.
+ */
+export type LiveState = 'on' | 'off' | 'unknown' | 'none' | 'not-executed';
 
 /**
  * What the view draws live: the watched values by variable in lower case, or `null` when
@@ -36,6 +43,15 @@ const STROKE: Record<LiveState, string> = {
   off: 'var(--c-text-muted)',
   unknown: 'var(--c-warn)',
   none: 'var(--c-text)',
+  'not-executed': 'var(--c-text-faint)',
+};
+/** Powered solid, not powered dashed; UNKNOWN dotted, so it is never read as either. */
+const DASH: Record<LiveState, string | undefined> = {
+  on: undefined,
+  off: '6 4',
+  unknown: '2 3',
+  none: undefined,
+  'not-executed': undefined,
 };
 const TEXT = { fill: 'var(--c-text)', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)' } as const;
 
@@ -57,28 +73,60 @@ function boolOf(live: LadderLive | null, path: string | null): { state: LiveStat
 
 const not = (state: LiveState): LiveState => (state === 'on' ? 'off' : state === 'off' ? 'on' : state);
 
-/** The state of an element's symbol: a contact's or a coil's; `none` for the others. */
-export function elementState(e: LdElement, live: LadderLive | null): { state: LiveState; forced: boolean } {
-  if (e.kind === 'coil') return boolOf(live, e.variable);
-  if (e.kind === 'contact') {
-    if (e.edge !== null) return { state: 'none', forced: boolOf(live, e.variable).forced };
-    const read = boolOf(live, e.variable);
-    return { ...read, state: e.negated ? not(read.state) : read.state };
-  }
-  return { state: 'none', forced: false };
-}
-
-/**
- * The power a link carries: that of output `output` (a block's formal parameter in upper case,
- * `''` for any other element's one output) of element `from`, where a variable holds it.
- */
-export function linkState(from: number, output: string, live: LadderLive | null): LiveState {
-  if (live === null) return 'none';
-  const probe = live.power.find((p) => p.local_id === from && p.output === output);
-  if (!probe) return 'none';
+/** The power a probe names: ON, or its variable's value. */
+function probeState(live: LadderLive, probe: PowerProbe): LiveState {
   if (probe.on === true) return 'on';
   const read = boolOf(live, probe.variable ?? null);
   return probe.negated ? not(read.state) : read.state;
+}
+
+/**
+ * Whether the rung element `id` is in ran in the last scan: `on` it ran, `not-executed` it did
+ * not, `unknown` when its flag cannot be read or the check names none; `none` for an element
+ * of no rung (a rail, a label, a comment) or when nothing is drawn live.
+ */
+export function rungState(id: number | null, live: LadderLive | null): LiveState {
+  if (live === null || id === null) return 'none';
+  const flag = live.power.find((p) => p.network?.includes(id) === true);
+  if (!flag) return 'unknown';
+  const state = probeState(live, flag);
+  return state === 'off' ? 'not-executed' : state;
+}
+
+/**
+ * The power of a point of rung `rung` (the rung of element `rung`, `null` for none): of the
+ * output `output` of element `from` (a block's formal parameter in upper case, `''` for the one
+ * output of any other element), or of the junction at input `input` of element `from`.
+ */
+export function powerState(
+  live: LadderLive | null,
+  rung: number | null,
+  from: number,
+  point: { output: string } | { input: string }
+): LiveState {
+  if (live === null) return 'none';
+  const ran = rungState(rung, live);
+  if (ran === 'not-executed') return 'not-executed';
+  const probe = live.power.find(
+    (p) => p.local_id === from && ('output' in point ? p.output === point.output : p.input === point.input)
+  );
+  // A point no variable keeps carries no power: a value that is not a BOOL.
+  if (!probe) return 'none';
+  if (ran === 'unknown') return 'unknown';
+  return probeState(live, probe);
+}
+
+/** The value under a contact or a coil: its variable's, with whether it is forced. */
+export function variableState(e: LdElement, live: LadderLive | null): { state: LiveState; forced: boolean } {
+  if (e.kind !== 'contact' && e.kind !== 'coil') return { state: 'none', forced: false };
+  const read = boolOf(live, e.variable);
+  return e.kind === 'contact' && e.negated && e.edge === null ? { ...read, state: not(read.state) } : read;
+}
+
+/** What an element is drawn with: the power of its output; for a block, only whether its rung ran. */
+export function elementState(e: LdElement, rung: number | null, live: LadderLive | null): LiveState {
+  if (e.kind === 'leftPowerRail' || e.kind === 'rightPowerRail' || rung === null) return 'none';
+  return powerState(live, rung, e.localId, { output: '' });
 }
 
 /** The size of an element: the document's, or one that holds what is drawn in it. */
@@ -148,15 +196,20 @@ function ElementView({
   w,
   h,
   live,
+  rung,
 }: {
   e: LdElement;
   w: number;
   h: number;
   live: LadderLive | null;
+  /** The element's own `localId` when it is in a rung; `null` for a rail, a label, a comment. */
+  rung: number | null;
 }) {
-  const { state, forced } = elementState(e, live);
+  const state = elementState(e, rung, live);
+  const own = variableState(e, live);
+  const forced = own.forced;
   const stroke = STROKE[state];
-  const dash = state === 'unknown' ? '4 3' : undefined;
+  const dash = DASH[state];
   let symbol: ReactNode = null;
   let caption: string | null = null;
   switch (e.kind) {
@@ -238,13 +291,14 @@ function ElementView({
       );
       break;
   }
-  const value = valueText(e, live, state);
+  const value = state === 'not-executed' ? null : valueText(e, live, own.state);
   return (
     <g
       data-testid="ld-element"
       data-local-id={e.localId}
       data-kind={e.kind}
       data-state={state}
+      data-variable-state={live !== null && (e.kind === 'contact' || e.kind === 'coil') ? own.state : undefined}
       data-forced={forced ? 'true' : undefined}
       strokeDasharray={dash}
     >
@@ -256,7 +310,7 @@ function ElementView({
         </text>
       )}
       {value !== null && (
-        <text data-testid="ld-value" x={e.x + w / 2} y={e.y + h + 12} textAnchor="middle" style={{ ...TEXT, fill: STROKE[state] }}>
+        <text data-testid="ld-value" x={e.x + w / 2} y={e.y + h + 12} textAnchor="middle" style={{ ...TEXT, fill: STROKE[own.state === 'none' ? state : own.state] }}>
           {value}
         </text>
       )}
@@ -269,7 +323,7 @@ function ElementView({
   );
 }
 
-/** What is written under an element while live: a contact's or coil's state, a variable's value. */
+/** What is written under an element while live: a contact's or coil's variable, a variable's value. */
 function valueText(e: LdElement, live: LadderLive | null, state: LiveState): string | null {
   if (live === null) return null;
   if (e.kind === 'contact' || e.kind === 'coil') {
@@ -330,9 +384,17 @@ function PouView({
     return { x: e.x + w, y: e.y + h / 2 };
   };
 
+  const order = networks(pou);
+  const inRung = new Set(order.flat());
+  const rungOf = (id: number): number | null => (inRung.has(id) ? id : null);
+
   const links: ReactNode[] = [];
+  const junctions: ReactNode[] = [];
   for (const e of elements) {
     e.inputs.forEach((input, index) => {
+      // Where the links into this input join: the right-most point where one turns to it.
+      let joinX = Number.NEGATIVE_INFINITY;
+      const ends: Point[] = [];
       for (const c of input.connections) {
         const from = byId.get(c.from);
         if (!from) continue;
@@ -345,12 +407,16 @@ function PouView({
           start.y === end.y
             ? `M${start.x} ${start.y}H${end.x}`
             : `M${start.x} ${start.y}H${mid}V${end.y}H${end.x}`;
+        joinX = Math.max(joinX, start.y === end.y ? start.x : mid);
+        ends.push(end);
         // The output a connection without a formal parameter takes from a block: its first but ENO.
         const output =
           from.kind === 'block'
             ? (c.formal ?? from.outputs.find((o) => o.formal.toUpperCase() !== 'ENO')?.formal ?? '').toUpperCase()
             : '';
-        const state = linkState(c.from, output, live);
+        // A link is of the rung of the element it reaches, or, to the right rail, of its source.
+        const rung = rungOf(e.localId) ?? rungOf(c.from);
+        const state = powerState(live, rung, c.from, { output });
         links.push(
           <path
             key={`${c.from}.${output}>${e.localId}.${index}`}
@@ -363,14 +429,33 @@ function PouView({
             fill="none"
             stroke={STROKE[state]}
             strokeWidth={state === 'on' ? 3 : 1.5}
-            strokeDasharray={state === 'unknown' ? '4 3' : undefined}
+            strokeDasharray={DASH[state]}
+          />
+        );
+      }
+      // Past the point where they join, the links carry the junction's power (§8.2.3).
+      const end = ends[0];
+      if (end !== undefined && ends.length > 1 && e.kind !== 'rightPowerRail') {
+        const formal = (input.formal ?? '').toUpperCase();
+        const state = powerState(live, rungOf(e.localId), e.localId, { input: formal });
+        junctions.push(
+          <path
+            key={`junction>${e.localId}.${index}`}
+            data-testid="ld-junction"
+            data-to={e.localId}
+            data-input={formal}
+            data-state={state}
+            d={`M${joinX} ${end.y}H${end.x}`}
+            fill="none"
+            stroke={STROKE[state]}
+            strokeWidth={state === 'on' ? 3 : 1.5}
+            strokeDasharray={DASH[state]}
           />
         );
       }
     });
   }
 
-  const order = networks(pou);
   const left = Math.min(0, ...elements.map((e) => e.x)) - 30;
   const right = Math.max(200, ...elements.map((e) => e.x + at(e).w)) + 20;
   const marked = diagnostics.filter((d) => d.element?.pou === pou.name && d.element.local_id != null);
@@ -386,24 +471,28 @@ function PouView({
       height={bottom - top + 40}
     >
       {links}
+      {junctions}
       {elements.map((e) => (
-        <ElementView key={e.localId} e={e} w={at(e).w} h={at(e).h} live={live} />
+        <ElementView key={e.localId} e={e} w={at(e).w} h={at(e).h} live={live} rung={rungOf(e.localId)} />
       ))}
       {order.map((ids, index) => {
         const first = byId.get(ids[0] ?? -1);
         if (!first) return null;
         const y = Math.min(...ids.map((id) => byId.get(id)?.y ?? first.y));
+        const ran = rungState(first.localId, live);
         return (
           <text
             key={ids.join(',')}
             data-testid="ld-rung"
             data-rung={index + 1}
             data-ids={ids.join(',')}
+            data-state={ran}
             x={left + 4}
             y={y + 14}
-            style={{ ...TEXT, fill: 'var(--c-text-muted)' }}
+            style={{ ...TEXT, fill: ran === 'not-executed' ? STROKE[ran] : 'var(--c-text-muted)' }}
           >
             {index + 1}
+            {ran === 'not-executed' && <title>Not executed in the last scan</title>}
           </text>
         );
       })}

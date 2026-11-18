@@ -579,8 +579,14 @@ async fn a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_p
     assert_eq!(checked["binding_problems"], json!([]), "{checked}");
     assert_eq!(
         checked["power"],
-        json!([{"local_id": 1, "output": "", "on": true}]),
-        "the contact and the coil are used once: no variable holds their output"
+        json!([
+            {"local_id": 1, "output": "", "on": true},
+            {"local_id": 10, "output": "", "variable": "__LD_10", "negated": false},
+            {"local_id": 10, "network": [10, 11], "variable": "__NET_10", "negated": false},
+            {"local_id": 11, "output": "", "variable": "__LD_11", "negated": false},
+            {"local_id": 20, "network": [20, 21, 22], "variable": "__NET_20", "negated": false},
+        ]),
+        "each contact's and coil's power, and each rung's flag; the MUL rung carries values"
     );
     rig.eng(
         "PUT",
@@ -610,6 +616,19 @@ async fn a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_p
         .await;
     assert_eq!(watched["values"][0]["value"], true, "{watched}");
     assert_eq!(watched["values"][1]["value"], true, "{watched}");
+    // The power the check named, read from the running module process as any variable is.
+    let power = rig
+        .eng(
+            "POST",
+            "/api/v1/runtimes/Mixer/watch",
+            Some(json!({"variables": ["__NET_10", "__LD_10", "__LD_11", "__NET_20"]})),
+            200,
+        )
+        .await;
+    for k in 0..4 {
+        assert_eq!(power["values"][k]["type"], "BOOL", "{power}");
+        assert_eq!(power["values"][k]["value"], true, "{power}");
+    }
 
     // The ST program is untouched by all of it, and is still written back as ST.
     let checked = rig

@@ -27,16 +27,16 @@
 //! of a document is a line from [`FIRST_LINE`] up, which no source and no file of the library
 //! reaches, and a diagnostic on such a line is mapped back to its place.
 //!
-//! **Power flow for an editor.** [`lower_with_probes`] also says, per output of an element,
-//! which variable holds the state of that output once a scan is over ([`Probe`]), wherever
-//! one holds it exactly: the hidden `__LD_<localId>` variables of values used more than once,
-//! and an output of a function block instance called by one block alone. Every other link's
-//! state is an expression evaluated inside the scan and kept nowhere, so it is not published:
-//! working it out afterwards from the variables it reads would use the values they have at
-//! the end of the scan, not those the expression read (a seal-in contact reads its coil's
-//! variable before the coil writes it). A body with a jump or a return publishes none: which
-//! of its networks ran in a scan is not kept, and a network a jump skipped keeps the state of
-//! the last scan that ran it.
+//! **Power flow for an editor.** Every output of an element that carries power (a contact, a
+//! coil, a block's BOOL output and ENO, a BOOL variable read) and every junction of links is
+//! kept in a hidden BOOL of the POU, `__LD_<localId>` or `__LD_<localId>_<pin>`, assigned when
+//! the element is evaluated in the scan; each network keeps `__NET_<localId>`, TRUE once it
+//! runs, and, where a jump or a return can skip it, FALSE when it does not. This is so in
+//! every build (the owner, 2026-11-18): there is no build for monitoring. Only a value is
+//! stored, never a guess: the lowering evaluates each element once, and the variable is
+//! assigned at that moment, so storing it changes nothing the program does.
+//! [`lower_with_probes`] says, per output, junction and network, which variable holds its
+//! power ([`Probe`]).
 
 mod lower;
 mod read;
@@ -143,23 +143,37 @@ pub(crate) fn expression(
     expr
 }
 
-/// What holds the state of one output of an element when a scan is over (ADR-013 §2.15).
+/// Where the power of one point of a diagram is kept (ADR-013 §2.15): of an output of an
+/// element, of a junction of links, or whether a network ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Probe {
     /// The POU the element is in.
     pub pou: String,
+    /// The element; for a network, its first element in the order of evaluation.
     pub local_id: u64,
-    /// The output: a block's formal parameter in upper case; empty for the one output of any
-    /// other element.
-    pub output: String,
+    pub at: At,
     pub holds: Holds,
 }
 
-/// What an output's state is, when it is known after a scan.
+/// The point of an element a [`Probe`] is about.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum At {
+    /// An output: a block's formal parameter in upper case; empty for the one output of any
+    /// other element.
+    Output(String),
+    /// An input where several links join, a vertical link (§8.2.3): the OR of them. A
+    /// block's formal parameter in upper case; empty for the one input of any other element.
+    Input(String),
+    /// The network of these elements, by `localId` in the order they are evaluated: whether it
+    /// ran in the last scan.
+    Network(Vec<u64>),
+}
+
+/// What holds a point's power.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Holds {
-    /// ON whenever the POU runs: the left rail, and what it reaches through nothing that can
-    /// switch it off (§8.2.1).
+    /// ON whenever its network runs: the left rail, and what it reaches through nothing that
+    /// can switch it off (§8.2.1).
     On,
     /// The value of a variable, by its path from the POU (for the PROGRAM, the path of its
     /// symbol), negated when `negated`.
@@ -178,8 +192,7 @@ pub fn lower(ld: &[Source], st: Option<&Source>) -> Result<Unit, Vec<Diagnostic>
     lower_with_probes(ld, st).map(|(unit, _)| unit)
 }
 
-/// [`lower`], with the [`Probe`] of every output of an element whose state a variable holds
-/// exactly once a scan is over, in every LD POU.
+/// [`lower`], with the [`Probe`] of every output, junction and network of every LD POU.
 pub fn lower_with_probes(
     ld: &[Source],
     st: Option<&Source>,
