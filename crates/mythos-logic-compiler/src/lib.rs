@@ -18,7 +18,7 @@ pub mod profile;
 pub use mythos_logic_backend_vm::{ArrayInfo, MemberLayout, Symbol, TypeLayout};
 use mythos_logic_ir::Ty;
 pub use mythos_logic_ir::{Diagnostic, Element, Span, TextRange};
-pub use mythos_logic_ld::{Holds, Probe};
+pub use mythos_logic_ld::{At, Holds, Probe};
 pub use profile::TargetProfile;
 
 /// The languages a program may be written in. One front-end crate each.
@@ -57,9 +57,9 @@ pub struct Compiled {
     pub stack_depth: u16,
     /// How deep the program's calls nest; the VM is given that many call frames.
     pub call_depth: u16,
-    /// For each output of a Ladder Diagram element whose state a variable holds exactly once
-    /// a scan is over, that variable (ADR-013 §2.15): what an editor shows power flow from.
-    /// Empty for a program of Structured Text alone.
+    /// For each output, junction and network of a Ladder Diagram, the hidden variable that
+    /// keeps its power, assigned when it is evaluated in the scan (ADR-013 §2.15): what an
+    /// editor shows power flow from. Empty for a program of Structured Text alone.
     pub probes: Vec<Probe>,
 }
 

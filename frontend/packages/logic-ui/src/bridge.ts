@@ -133,13 +133,19 @@ export interface Variable {
 }
 
 /**
- * Where the power of one output of a Ladder Diagram element is held once a scan is over: ON
- * always, or a variable (negated when `negated`). An output with none is held by nothing.
+ * Where the power of one point of a Ladder Diagram is kept (ADR-013 §2.15): of an output of an
+ * element (`output`), of a junction of links (`input`), each a variable assigned when it is
+ * evaluated in the scan, or ON whenever its rung runs; or whether a rung ran in the last scan
+ * (`network`). A point with none carries no power.
  */
 export interface PowerProbe {
   local_id: number;
-  /** A block's formal parameter in upper case; empty for the one output of any other element. */
-  output: string;
+  /** An output: a block's formal parameter in upper case; empty for the one output of any other element. */
+  output?: string;
+  /** An input where links join: a block's formal parameter in upper case; empty for the one input of any other element. */
+  input?: string;
+  /** A rung: its elements by `localId`, in the order they run. */
+  network?: number[];
   on?: boolean;
   variable?: string;
   negated?: boolean;
@@ -157,7 +163,7 @@ export interface CheckResult {
   code_size?: number;
   memory_size?: number;
   binding_problems?: string[];
-  /** A Ladder Diagram's: where each element output's power is held. */
+  /** A Ladder Diagram's: where the power of each output, junction and rung is kept. */
   power?: PowerProbe[];
 }
 

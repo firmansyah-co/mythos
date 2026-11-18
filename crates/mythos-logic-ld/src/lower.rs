@@ -42,10 +42,27 @@
 //! evaluation order whose condition is TRUE wins. They are lowered with a hidden DINT,
 //! `__JUMP` (0: go on; -1: return; k: to the k-th label), each network guarded by
 //! `__JUMP = 0`, each label clearing it, and the whole in a REPEAT when a jump goes back.
+//!
+//! **Monitoring** (ADR-013 §2.15, the owner's decision of 2026-11-18). Every output that carries
+//! power (a contact's, a coil's, a block's BOOL output and ENO, a BOOL variable read) and every
+//! junction of links is kept in a hidden BOOL, `__LD_<localId>` or `__LD_<localId>_<pin>`,
+//! in every build. Each is assigned where the lowering evaluates the value: at once where it
+//! keeps a value (a branch point, a coil), and otherwise by a statement of its own just before
+//! the first statement that reads it, where the expression it stands for was evaluated before.
+//! Only these hidden variables are written between, so every element reads what it read
+//! without them and the program does what it did. An output nothing reads is stored when its
+//! network ends. A power read inside an IF (a block's input under its EN) is stored before the
+//! IF, so it is the element's power whether or not the block ran; a function's result is
+//! stored only where the function runs, and FALSE where it does not. So an element that feeds
+//! nothing, or feeds a block whose EN is FALSE, is now evaluated, as §8.1.5.1 rule c says
+//! every element is: what it reads is read, and an index out of range there faults where
+//! before it was never read. Each network sets
+//! `__NET_<localId>` (its first element's) TRUE as it starts; in a body with a jump or a return
+//! every flag is set FALSE first in the scan, so a network that did not run reads FALSE.
 
 use crate::read::{flag, name, Known, LdPou};
 use crate::xml::Node;
-use crate::{expression, Holds, Place, Places, Probe};
+use crate::{expression, At, Holds, Place, Places, Probe};
 use mythos_logic_ir::{Diagnostic, Retention, Section, Span};
 use mythos_logic_st::ast::{
     self, Arg, BinOp, CallArg, Expr, ExprKind, PouKind, Stmt, TypeSpec, TypeSpecKind, VarDecl,
@@ -186,6 +203,13 @@ enum Tree {
     Not(Box<Tree>),
     And(Vec<Tree>),
     Or(Vec<Tree>),
+    /// A call of a function by its formal parameters, each argument a tree.
+    Call(String, Vec<(String, Tree, Span)>, Span),
+    /// A Boolean or MOD block: its operator over its inputs, left to right.
+    Op(BinOp, Vec<Tree>, Span),
+    /// The power of an output or of a junction, kept in a hidden variable: the k-th of
+    /// [`Lowering::marks`], stored by the first statement that reads it.
+    Mark(usize),
 }
 
 impl Tree {
@@ -224,49 +248,52 @@ impl Tree {
             t => Tree::Not(Box::new(t)),
         }
     }
+}
 
-    /// The tree as an expression. A series or a parallel of many is balanced, so that its
-    /// depth grows with the logarithm of its length (`mythos_logic_ir::MAX_NESTING`).
-    fn expr(self, span: Span) -> Expr {
-        fn balanced(op: BinOp, mut items: Vec<Expr>, span: Span) -> Expr {
-            while items.len() > 1 {
-                let mut next = Vec::with_capacity(items.len().div_ceil(2));
-                let mut it = items.into_iter();
-                while let Some(a) = it.next() {
-                    match it.next() {
-                        Some(b) => next.push(Expr {
-                            kind: ExprKind::Binary(op, Box::new(a), Box::new(b)),
-                            span,
-                        }),
-                        None => next.push(a),
-                    }
-                }
-                items = next;
+/// A series or a parallel of many, balanced, so that its depth grows with the logarithm of
+/// its length (`mythos_logic_ir::MAX_NESTING`).
+fn balanced(op: BinOp, mut items: Vec<Expr>, span: Span) -> Expr {
+    while items.len() > 1 {
+        let mut next = Vec::with_capacity(items.len().div_ceil(2));
+        let mut it = items.into_iter();
+        while let Some(a) = it.next() {
+            match it.next() {
+                Some(b) => next.push(Expr {
+                    kind: ExprKind::Binary(op, Box::new(a), Box::new(b)),
+                    span,
+                }),
+                None => next.push(a),
             }
-            items.pop().expect("at least one item")
         }
-        match self {
-            Tree::On => Expr {
-                kind: ExprKind::Bool(true),
-                span,
-            },
-            Tree::Leaf(e) => e,
-            Tree::Not(t) => Expr {
-                kind: ExprKind::Not(Box::new(t.expr(span))),
-                span,
-            },
-            Tree::And(items) => balanced(
-                BinOp::And,
-                items.into_iter().map(|t| t.expr(span)).collect(),
-                span,
-            ),
-            Tree::Or(items) => balanced(
-                BinOp::Or,
-                items.into_iter().map(|t| t.expr(span)).collect(),
-                span,
-            ),
-        }
+        items = next;
     }
+    items.pop().expect("at least one item")
+}
+
+/// The power of an output or of a junction, kept in a hidden BOOL (ADR-013 §2.15).
+#[derive(Debug)]
+struct Mark {
+    place: ast::Place,
+    /// What is stored, until a statement has stored it: the power, and the power under which
+    /// it is defined (a function's EN and those before it; FALSE is stored where it is not).
+    pending: Option<(Tree, Option<Tree>)>,
+}
+
+/// The marks `tree` reads directly, in the order it reads them; not those a mark reads.
+fn marks_in(tree: &Tree, out: &mut Vec<usize>) {
+    match tree {
+        Tree::Mark(m) => out.push(*m),
+        Tree::Not(t) => marks_in(t, out),
+        Tree::And(items) | Tree::Or(items) | Tree::Op(_, items, _) => {
+            items.iter().for_each(|t| marks_in(t, out))
+        }
+        Tree::Call(_, args, _) => args.iter().for_each(|(_, t, _)| marks_in(t, out)),
+        Tree::On | Tree::Leaf(_) => {}
+    }
+}
+
+fn is_bool(ty: &TypeSpec) -> bool {
+    matches!(&ty.kind, TypeSpecKind::Named(n) if n.eq_ignore_ascii_case("BOOL"))
 }
 
 /// What an output gives: a value, and the power under which it is defined (`None`: always).
@@ -901,6 +928,14 @@ struct Lowering<'a> {
     labels: Vec<String>,
     /// The instances called by a block of the network being lowered.
     called: Vec<(String, u64)>,
+    /// Every power kept in a hidden variable, by [`Tree::Mark`].
+    marks: Vec<Mark>,
+    /// The power of each junction (element, input), once worked out.
+    junctions: BTreeMap<(usize, usize), Tree>,
+    /// Each function's call, once worked out; `None` when it was refused.
+    functions: BTreeMap<usize, Option<Val>>,
+    /// What holds the power of each output, junction and network: what is published.
+    published: BTreeMap<(u64, At), Holds>,
 }
 
 const JUMP: &str = "__JUMP";
@@ -934,6 +969,10 @@ impl<'a> Lowering<'a> {
             diags: Vec::new(),
             labels: Vec::new(),
             called: Vec::new(),
+            marks: Vec::new(),
+            junctions: BTreeMap::new(),
+            functions: BTreeMap::new(),
+            published: BTreeMap::new(),
         }
     }
 
@@ -985,53 +1024,214 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    fn assign(place: &ast::Place, tree: Tree) -> Stmt {
-        let span = place.span;
-        Stmt::Assign(place.clone(), tree.expr(span))
-    }
-
-    fn when(cond: Tree, span: Span, then: Vec<Stmt>) -> Vec<Stmt> {
-        match cond {
-            Tree::On => then,
-            c => vec![Stmt::If(vec![(c.expr(span), then)], None)],
+    fn bool_expr(value: bool, span: Span) -> Expr {
+        Expr {
+            kind: ExprKind::Bool(value),
+            span,
         }
     }
 
-    /// A BOOL kept in a hidden variable named for element `k`: assigned now, read after.
-    fn keep(&mut self, k: usize, suffix: &str, tree: Tree) -> Tree {
-        if let Tree::On = tree {
+    /// The tree as an expression, each power it reads stored first: every [`Tree::Mark`] in
+    /// it not stored yet is assigned to its variable by a statement of its own, emitted now,
+    /// so before the statement this expression goes into, and read from there. The statements
+    /// are emitted where the expression is built, so a power read inside an IF is stored
+    /// before that IF, whatever its condition.
+    fn expr(&mut self, tree: Tree, span: Span) -> Expr {
+        match tree {
+            Tree::On => Self::bool_expr(true, span),
+            Tree::Leaf(e) => e,
+            Tree::Not(t) => Expr {
+                kind: ExprKind::Not(Box::new(self.expr(*t, span))),
+                span,
+            },
+            Tree::And(items) => {
+                let items = items.into_iter().map(|t| self.expr(t, span)).collect();
+                balanced(BinOp::And, items, span)
+            }
+            Tree::Or(items) => {
+                let items = items.into_iter().map(|t| self.expr(t, span)).collect();
+                balanced(BinOp::Or, items, span)
+            }
+            Tree::Call(name, args, at) => {
+                let args = args
+                    .into_iter()
+                    .map(|(formal, t, pin_span)| CallArg {
+                        name: Some((formal, pin_span)),
+                        value: self.expr(t, pin_span),
+                    })
+                    .collect();
+                Expr {
+                    kind: ExprKind::Call(name, args),
+                    span: at,
+                }
+            }
+            Tree::Op(op, items, at) => {
+                let mut it = items.into_iter();
+                let first = it.next().map(|t| self.expr(t, at));
+                let rest: Vec<Expr> = it.map(|t| self.expr(t, at)).collect();
+                let first = first.unwrap_or_else(|| Self::bool_expr(false, at));
+                rest.into_iter().fold(first, |a, b| Expr {
+                    kind: ExprKind::Binary(op, Box::new(a), Box::new(b)),
+                    span: at,
+                })
+            }
+            Tree::Mark(m) => {
+                self.store_mark(m);
+                let place = &self.marks[m].place;
+                Expr {
+                    kind: ExprKind::Var(place.clone()),
+                    span: place.span,
+                }
+            }
+        }
+    }
+
+    /// Emit the statement storing mark `m`, after those of every mark it reads that is not
+    /// stored yet. Without recursion: a series of contacts is a chain of marks as long as the
+    /// series.
+    fn store_mark(&mut self, m: usize) {
+        let mut stack = vec![(m, false)];
+        while let Some((m, ready)) = stack.pop() {
+            if self.marks[m].pending.is_none() {
+                continue;
+            }
+            if !ready {
+                stack.push((m, true));
+                let mut read = Vec::new();
+                if let Some((value, guard)) = &self.marks[m].pending {
+                    marks_in(value, &mut read);
+                    if let Some(g) = guard {
+                        marks_in(g, &mut read);
+                    }
+                }
+                // The first read is stored first.
+                stack.extend(read.into_iter().rev().map(|r| (r, false)));
+                continue;
+            }
+            let Some((value, guard)) = self.marks[m].pending.take() else {
+                continue;
+            };
+            let place = self.marks[m].place.clone();
+            let at = place.span;
+            let value = self.expr(value, at);
+            let assign = Stmt::Assign(place.clone(), value);
+            let stmt = match guard {
+                None => assign,
+                Some(g) => {
+                    let g = self.expr(g, at);
+                    Stmt::If(
+                        vec![(g, vec![assign])],
+                        Some(vec![Stmt::Assign(place, Self::bool_expr(false, at))]),
+                    )
+                }
+            };
+            self.stmts.push(stmt);
+        }
+    }
+
+    /// Store now every power `tree` reads that is not stored yet.
+    fn settle(&mut self, tree: Tree, span: Span) {
+        let _ = self.expr(tree, span);
+    }
+
+    fn assign(&mut self, place: &ast::Place, tree: Tree) -> Stmt {
+        let span = place.span;
+        Stmt::Assign(place.clone(), self.expr(tree, span))
+    }
+
+    fn when(&mut self, cond: Tree, span: Span, then: Vec<Stmt>) -> Vec<Stmt> {
+        match cond {
+            Tree::On => then,
+            c => vec![Stmt::If(vec![(self.expr(c, span), then)], None)],
+        }
+    }
+
+    fn publish(&mut self, k: usize, at: At, holds: Holds) {
+        self.published.insert((self.elems[k].id, at), holds);
+    }
+
+    /// The power `tree` of `at` of element `k`, kept in the hidden BOOL `name`, which is
+    /// published as holding it (ADR-013 §2.15). Stored now (`now`), where the lowering keeps a
+    /// value at once, or else by the first statement that reads it, which is where the
+    /// lowering evaluates a value it does not keep: either way when the element is evaluated,
+    /// so storing it changes nothing the program does. With a `guard`, FALSE is stored where
+    /// the guard is FALSE. ON is published as ON and stored nowhere.
+    fn store(
+        &mut self,
+        k: usize,
+        at: At,
+        name: String,
+        tree: Tree,
+        guard: Option<Tree>,
+        now: bool,
+    ) -> Tree {
+        if guard.is_none() && matches!(tree, Tree::On) {
+            self.publish(k, at, Holds::On);
             return Tree::On;
         }
         let span = self.span(k);
-        let place = self.hidden_var(
+        let place = self.hidden_var(k, name, Self::bool_ty(span));
+        self.publish(
             k,
-            format!("__LD_{}{suffix}", self.elems[k].id),
-            Self::bool_ty(span),
+            at,
+            Holds::Variable {
+                path: place.text(),
+                negated: false,
+            },
         );
-        self.stmts.push(Self::assign(&place, tree));
-        Self::load(&place)
+        self.marks.push(Mark {
+            place,
+            pending: Some((tree, guard)),
+        });
+        let mark = Tree::Mark(self.marks.len() - 1);
+        if now {
+            self.settle(mark.clone(), span);
+        }
+        mark
+    }
+
+    /// The name of the variable keeping the power of the one output of element `k`, or a
+    /// function's OUT: `__LD_<localId>`; of a block's other output or input `formal`:
+    /// `__LD_<localId>_<formal>`; of the one input of another element: `__LD_<localId>_IN`.
+    fn power_name(&self, k: usize, formal: &str) -> String {
+        let id = self.elems[k].id;
+        if formal.is_empty() {
+            format!("__LD_{id}")
+        } else {
+            format!("__LD_{id}_{formal}")
+        }
     }
 
     /// The power reaching input `pin` of element `k`: the OR of what is connected to it.
+    /// Where several links join (a vertical link, §8.2.3), the OR is a junction of its own,
+    /// kept in `__LD_<localId>_IN`, or `__LD_<localId>_<formal>` at a block's input.
     fn power_in(&mut self, k: usize, pin: usize) -> Tree {
+        if let Some(t) = self.junctions.get(&(k, pin)) {
+            return t.clone();
+        }
         let p = &self.elems[k].inputs[pin];
         let conns = p.conns.clone();
         let mut items = Vec::new();
         for c in &conns {
             items.push(self.value_of(c).power());
         }
-        if let Some(e) = p.expr.clone() {
+        if let Some(e) = self.elems[k].inputs[pin].expr.clone() {
             items.push(Tree::Leaf(e));
         }
         if items.is_empty() {
             // An input with nothing connected: the checks before refuse it where it is needed.
             let span = self.span(k);
-            return Tree::Leaf(Expr {
-                kind: ExprKind::Bool(false),
-                span,
-            });
+            return Tree::Leaf(Self::bool_expr(false, span));
         }
-        Tree::or(items)
+        if items.len() == 1 || matches!(self.elems[k].kind, Kind::RightRail) {
+            return Tree::or(items);
+        }
+        let formal = self.elems[k].inputs[pin].formal.clone();
+        let name = self.power_name(k, formal.as_deref().unwrap_or("IN"));
+        let at = At::Input(formal.unwrap_or_default());
+        let t = self.store(k, at, name, Tree::or(items), None, false);
+        self.junctions.insert((k, pin), t.clone());
+        t
     }
 
     /// What reaches input `pin` of element `k` as a value: one connection's value, the OR of
@@ -1069,17 +1269,22 @@ impl<'a> Lowering<'a> {
             return v.clone();
         }
         let span = self.span(k);
+        let here = At::Output(String::new());
         let v = match self.elems[k].kind.clone() {
-            Kind::LeftRail => Val::plain(Tree::On),
+            Kind::LeftRail => {
+                self.publish(k, here, Holds::On);
+                Val::plain(Tree::On)
+            }
             Kind::Contact { var, negated, .. } => {
+                self.inputs_first(k);
                 let input = self.power_in(k, 0);
                 let var = Tree::Leaf(var);
                 let tree = Tree::and(vec![input, if negated { Tree::not(var) } else { var }]);
-                if self.uses(k, "") > 1 {
-                    Val::plain(self.keep(k, "", tree))
-                } else {
-                    Val::plain(tree)
-                }
+                // Kept at once when more than one input reads it, as a branch point is;
+                // otherwise where the one input that reads it does.
+                let now = self.uses(k, "") > 1;
+                let name = self.power_name(k, "");
+                Val::plain(self.store(k, here, name, tree, None, now))
             }
             Kind::InVar { expr, negated } => {
                 let literal = matches!(
@@ -1092,16 +1297,24 @@ impl<'a> Lowering<'a> {
                 );
                 let tree = Tree::Leaf(expr.clone());
                 let tree = if negated { Tree::not(tree) } else { tree };
-                if self.uses(k, "") > 1 && !literal {
-                    match self.type_of_read(&expr) {
-                        Some(ty) if !negated => {
-                            let place =
-                                self.hidden_var(k, format!("__LD_{}", self.elems[k].id), ty);
-                            self.stmts.push(Self::assign(&place, tree));
+                let ty = self.type_of_read(&expr);
+                let boolean = negated || ty.as_ref().is_some_and(is_bool);
+                let name = self.power_name(k, "");
+                if literal {
+                    Val::plain(tree)
+                } else if boolean {
+                    // A BOOL read is power: kept, at once when more than one input reads it.
+                    let now = self.uses(k, "") > 1;
+                    Val::plain(self.store(k, here, name, tree, None, now))
+                } else if self.uses(k, "") > 1 {
+                    match ty {
+                        Some(ty) => {
+                            let place = self.hidden_var(k, name, ty);
+                            let s = self.assign(&place, tree);
+                            self.stmts.push(s);
                             Val::plain(Self::load(&place))
                         }
-                        _ if negated => Val::plain(self.keep(k, "", tree)),
-                        _ => {
+                        None => {
                             self.err(
                                 k,
                                 format!(
@@ -1120,18 +1333,88 @@ impl<'a> Lowering<'a> {
             // A call that was refused: what was wrong has been said.
             Kind::Block {
                 instance: Some(_), ..
-            } => Val::plain(Tree::Leaf(Expr {
-                kind: ExprKind::Bool(false),
-                span,
-            })),
+            } => Val::plain(Tree::Leaf(Self::bool_expr(false, span))),
             Kind::Block { .. } => self.function_output(k, out),
-            _ => Val::plain(Tree::Leaf(Expr {
-                kind: ExprKind::Bool(false),
-                span,
-            })),
+            _ => Val::plain(Tree::Leaf(Self::bool_expr(false, span))),
         };
         self.values.insert((k, out.to_string()), v.clone());
         v
+    }
+
+    /// Whether working out the output of element `k` only works out its inputs, each in a
+    /// fixed order, and then it: a contact that senses no edge, and a function evaluated
+    /// where it is read (its result taken once, its ENO not taken).
+    fn reads_inputs_only(&self, k: usize) -> bool {
+        match &self.elems[k].kind {
+            Kind::Contact {
+                edge: Edge::None, ..
+            } => true,
+            // One showing another output is refused before its inputs are read.
+            Kind::Block {
+                type_name,
+                instance: None,
+                outputs,
+            } => {
+                !self.known.is_block(&type_name.to_ascii_uppercase())
+                    && outputs.iter().all(|(o, _)| o == "OUT" || o == "ENO")
+                    && self.uses(k, "OUT") <= 1
+                    && self.uses(k, "ENO") == 0
+            }
+            _ => false,
+        }
+    }
+
+    /// The connections into element `k`, in the order working out its output reads them: a
+    /// function's EN first, then each other input (§6.6.1.5).
+    fn conns_in_order(&self, k: usize) -> Vec<Conn> {
+        let inputs = &self.elems[k].inputs;
+        let en = inputs.iter().filter(|p| p.formal.as_deref() == Some("EN"));
+        let rest = inputs.iter().filter(|p| p.formal.as_deref() != Some("EN"));
+        en.chain(rest)
+            .flat_map(|p| p.conns.iter().cloned())
+            .collect()
+    }
+
+    /// Work out what element `k` reads before it, one element at a time and the first first,
+    /// in the order [`Lowering::output`] would reach them through its inputs, when every
+    /// element before it reads its inputs only ([`Lowering::reads_inputs_only`]), is the left
+    /// rail, or is worked out already: so that a series of contacts or of functions takes no
+    /// stack for its length. Anything else before it is left to `output`, which works it out
+    /// as it comes.
+    fn inputs_first(&mut self, k: usize) {
+        let mut order: Vec<(usize, String)> = Vec::new();
+        let mut seen = vec![false; self.elems.len()];
+        // Each element on the way, its connections, and how many of them are followed.
+        let mut trail = vec![(k, String::new(), self.conns_in_order(k), 0usize)];
+        seen[k] = true;
+        while let Some(top) = trail.last_mut() {
+            let Some(c) = top.2.get(top.3).cloned() else {
+                let (at, out, _, _) = trail.pop().expect("a step");
+                order.push((at, out));
+                continue;
+            };
+            top.3 += 1;
+            let from = self.index[&c.from];
+            let out = self.elems[from]
+                .output(c.formal.as_deref())
+                .unwrap_or_default();
+            if seen[from] || self.values.contains_key(&(from, out.clone())) {
+                continue;
+            }
+            if matches!(self.elems[from].kind, Kind::LeftRail) {
+                continue;
+            }
+            if !self.reads_inputs_only(from) {
+                return;
+            }
+            seen[from] = true;
+            let conns = self.conns_in_order(from);
+            trail.push((from, out, conns, 0));
+        }
+        order.pop();
+        for (at, out) in order {
+            self.output(at, &out);
+        }
     }
 
     /// The declared type of what `expr` reads, when it is a variable of the POU by its name.
@@ -1156,6 +1439,7 @@ impl<'a> Lowering<'a> {
         self.done[k] = true;
         let span = self.span(k);
         let id = self.elems[k].id;
+        let here = At::Output(String::new());
         match self.elems[k].kind.clone() {
             Kind::Contact { var, edge, .. } if edge != Edge::None => {
                 if self.pou.kind == PouKind::Function {
@@ -1169,8 +1453,10 @@ impl<'a> Lowering<'a> {
                     _ => Tree::not(Tree::Leaf(var)),
                 };
                 let q = Tree::and(vec![input, clk.clone(), Tree::not(Self::load(&memory))]);
-                let out = self.keep(k, "", q);
-                self.stmts.push(Self::assign(&memory, clk));
+                let name = self.power_name(k, "");
+                let out = self.store(k, here, name, q, None, true);
+                let s = self.assign(&memory, clk);
+                self.stmts.push(s);
                 self.values.insert((k, String::new()), Val::plain(out));
             }
             Kind::Coil {
@@ -1179,35 +1465,22 @@ impl<'a> Lowering<'a> {
                 storage,
                 edge,
             } => {
-                let mut input = self.power_in(k, 0);
-                if self.uses(k, "") > 0 || edge != Edge::None {
-                    input = self.keep(k, "", input);
-                }
+                let input = self.power_in(k, 0);
+                // A coil passes on the power that reaches it (Table 76): kept, read by the
+                // coil's own statement and by what follows it.
+                let name = self.power_name(k, "");
+                let input = self.store(k, here, name, input, None, true);
                 self.values
                     .insert((k, String::new()), Val::plain(input.clone()));
                 let s = match (negated, storage, edge) {
-                    (_, Storage::Set, _) => Self::when(
-                        input,
-                        span,
-                        vec![Self::assign(
-                            &var,
-                            Tree::Leaf(Expr {
-                                kind: ExprKind::Bool(true),
-                                span,
-                            }),
-                        )],
-                    ),
-                    (_, Storage::Reset, _) => Self::when(
-                        input,
-                        span,
-                        vec![Self::assign(
-                            &var,
-                            Tree::Leaf(Expr {
-                                kind: ExprKind::Bool(false),
-                                span,
-                            }),
-                        )],
-                    ),
+                    (_, Storage::Set, _) => {
+                        let set = vec![Stmt::Assign(var.clone(), Self::bool_expr(true, span))];
+                        self.when(input, span, set)
+                    }
+                    (_, Storage::Reset, _) => {
+                        let reset = vec![Stmt::Assign(var.clone(), Self::bool_expr(false, span))];
+                        self.when(input, span, reset)
+                    }
                     (_, _, Edge::Rising | Edge::Falling) => {
                         if self.pou.kind == PouKind::Function {
                             self.err(k, format!("coil {id} senses an edge, which needs a memory; a function keeps nothing from one call to the next (IEC 61131-3 ed. 3 §6.6.2.1)"));
@@ -1221,15 +1494,15 @@ impl<'a> Lowering<'a> {
                             Tree::not(input)
                         };
                         vec![
-                            Self::assign(
+                            self.assign(
                                 &var,
                                 Tree::and(vec![clk.clone(), Tree::not(Self::load(&memory))]),
                             ),
-                            Self::assign(&memory, clk),
+                            self.assign(&memory, clk),
                         ]
                     }
-                    (true, _, _) => vec![Self::assign(&var, Tree::not(input))],
-                    (false, _, _) => vec![Self::assign(&var, input)],
+                    (true, _, _) => vec![self.assign(&var, Tree::not(input))],
+                    (false, _, _) => vec![self.assign(&var, input)],
                 };
                 self.stmts.extend(s);
             }
@@ -1240,9 +1513,9 @@ impl<'a> Lowering<'a> {
                 } else {
                     v
                 };
-                let s = vec![Self::assign(&target, v.tree)];
+                let s = vec![self.assign(&target, v.tree)];
                 let s = match v.guard {
-                    Some(g) => Self::when(g, span, s),
+                    Some(g) => self.when(g, span, s),
                     None => s,
                 };
                 self.stmts.extend(s);
@@ -1258,24 +1531,31 @@ impl<'a> Lowering<'a> {
                     } else {
                         v
                     };
-                    let s = vec![Self::assign(&target, v.tree)];
+                    let s = vec![self.assign(&target, v.tree)];
                     let s = match v.guard {
-                        Some(g) => Self::when(g, span, s),
+                        Some(g) => self.when(g, span, s),
                         None => s,
                     };
                     self.stmts.extend(s);
                 }
                 let read = Self::load(&target);
                 let read = if negated_out { Tree::not(read) } else { read };
-                // Read after it is written, wherever it is used: kept when used more than once.
-                let read = if self.uses(k, "") > 1 && !negated_out {
-                    match self.type_of_read(&Expr {
-                        kind: ExprKind::Var(target.clone()),
-                        span,
-                    }) {
+                let ty = self.type_of_read(&Expr {
+                    kind: ExprKind::Var(target.clone()),
+                    span,
+                });
+                let name = self.power_name(k, "");
+                // Read after it is written, wherever it is used: kept when used more than once,
+                // and kept as power when it is a BOOL.
+                let read = if negated_out || ty.as_ref().is_some_and(is_bool) {
+                    let now = self.uses(k, "") > 1 && !negated_out;
+                    self.store(k, here, name, read, None, now)
+                } else if self.uses(k, "") > 1 {
+                    match ty {
                         Some(ty) => {
-                            let place = self.hidden_var(k, format!("__LD_{id}"), ty);
-                            self.stmts.push(Self::assign(&place, read));
+                            let place = self.hidden_var(k, name, ty);
+                            let s = self.assign(&place, read);
+                            self.stmts.push(s);
                             Self::load(&place)
                         }
                         None => read,
@@ -1320,12 +1600,14 @@ impl<'a> Lowering<'a> {
                     return;
                 };
                 let s = self.set_jump((at + 1) as i128, span);
-                self.stmts.extend(Self::when(cond, span, s));
+                let s = self.when(cond, span, s);
+                self.stmts.extend(s);
             }
             Kind::Return => {
                 let cond = self.power_in(k, 0);
                 let s = self.set_jump(-1, span);
-                self.stmts.extend(Self::when(cond, span, s));
+                let s = self.when(cond, span, s);
+                self.stmts.extend(s);
             }
             Kind::Contact { .. }
             | Kind::InVar { .. }
@@ -1333,6 +1615,60 @@ impl<'a> Lowering<'a> {
             | Kind::RightRail
             | Kind::Label(_)
             | Kind::Comment => {}
+        }
+    }
+
+    /// Store, once the statements of the network are emitted, every power of element `k`
+    /// that nothing read: an output connected to nothing but the right rail, a junction into
+    /// a function whose result nothing takes. Each element is evaluated (§8.1.5.1 rule c),
+    /// and these, read by nothing, are evaluated last.
+    fn settle_element(&mut self, k: usize) {
+        let span = self.span(k);
+        match self.elems[k].kind.clone() {
+            Kind::Contact { .. } | Kind::InVar { .. } | Kind::InOutVar { .. } => {
+                let v = self.output(k, "");
+                self.settle(v.tree, span);
+            }
+            Kind::Block {
+                instance: Some(_),
+                outputs,
+                ..
+            } => {
+                for (formal, _) in outputs {
+                    if let Some(v) = self.values.get(&(k, formal)).cloned() {
+                        self.settle(v.tree, span);
+                    }
+                }
+            }
+            Kind::Block {
+                type_name,
+                instance: None,
+                outputs,
+            } => {
+                if self.known.is_block(&type_name.to_ascii_uppercase()) {
+                    return;
+                }
+                let boolean = self
+                    .result_type(&type_name, span)
+                    .is_some_and(|t| is_bool(&t));
+                for (formal, _) in outputs {
+                    if formal == "ENO" || (formal == "OUT" && boolean) {
+                        let v = self.output(k, &formal);
+                        self.settle(v.tree, span);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if matches!(self.elems[k].kind, Kind::RightRail) {
+            return;
+        }
+        for pin in 0..self.elems[k].inputs.len() {
+            let p = &self.elems[k].inputs[pin];
+            if p.conns.len() + p.expr.is_some() as usize > 1 {
+                let t = self.power_in(k, pin);
+                self.settle(t, span);
+            }
         }
     }
 
@@ -1481,41 +1817,59 @@ impl<'a> Lowering<'a> {
             return;
         }
         self.called.push((key, id));
+        let shows_eno = outputs.iter().any(|(o, _)| o == "ENO");
         let mut enable = self.enable(k);
-        if enable.is_some() && self.uses(k, "ENO") > 0 {
-            enable = Some(self.keep(k, "_ENO", enable.expect("checked")));
+        if shows_eno {
+            // ENO is the power at EN (§6.6.1.5): kept at once when something takes it, as
+            // before; otherwise where the call's condition reads it.
+            if let Some(en) = enable.take() {
+                let name = self.power_name(k, "ENO");
+                let now = self.uses(k, "ENO") > 0;
+                enable = Some(self.store(k, At::Output("ENO".into()), name, en, None, now));
+            }
         }
         let inputs = self.block_inputs(k);
         let mut inner = Vec::new();
         let mut args = Vec::new();
         for (formal, v, pin_span) in inputs {
-            let value = v.tree.expr(pin_span);
+            let value = self.expr(v.tree, pin_span);
             match v.guard {
                 // Set apart from the call, only where it is defined.
                 Some(g) => {
                     let mut member = instance.clone();
                     member.path.push(ast::Selector::Member(formal, pin_span));
-                    inner.extend(Self::when(g, pin_span, vec![Stmt::Assign(member, value)]));
+                    let s = self.when(g, pin_span, vec![Stmt::Assign(member, value)]);
+                    inner.extend(s);
                 }
                 None => args.push(Arg::In(formal, value, pin_span)),
             }
         }
         inner.push(Stmt::Call(instance.clone(), args));
-        match &enable {
-            Some(en) => self.stmts.extend(Self::when(en.clone(), span, inner)),
-            None => self.stmts.extend(inner),
-        }
+        let s = match &enable {
+            Some(en) => self.when(en.clone(), span, inner),
+            None => inner,
+        };
+        self.stmts.extend(s);
         for (formal, negated) in outputs {
             let v = if formal == "ENO" {
-                enable.clone().unwrap_or(Tree::On)
+                match &enable {
+                    Some(en) => en.clone(),
+                    None => {
+                        self.publish(k, At::Output("ENO".into()), Holds::On);
+                        Tree::On
+                    }
+                }
             } else {
                 let mut member = instance.clone();
                 member
                     .path
                     .push(ast::Selector::Member(formal.clone(), span));
                 let read = Self::load(&member);
-                if *negated {
-                    Tree::not(read)
+                let read = if *negated { Tree::not(read) } else { read };
+                // A BOOL output is power: kept where it is first read after the call.
+                if *negated || self.known.output_is_bool(&upper, formal) {
+                    let name = self.power_name(k, formal);
+                    self.store(k, At::Output(formal.clone()), name, read, None, false)
                 } else {
                     read
                 }
@@ -1524,8 +1878,18 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// The call of function `k` as an expression, with the power under which it runs.
+    /// The call of function `k` as a tree, with the power under which it runs; worked out
+    /// once.
     fn function_call(&mut self, k: usize) -> Option<Val> {
+        if let Some(v) = self.functions.get(&k) {
+            return v.clone();
+        }
+        let v = self.function_call_once(k);
+        self.functions.insert(k, v.clone());
+        v
+    }
+
+    fn function_call_once(&mut self, k: usize) -> Option<Val> {
         let span = self.span(k);
         let id = self.elems[k].id;
         let Kind::Block {
@@ -1546,17 +1910,9 @@ impl<'a> Lowering<'a> {
             if let Some(g) = v.guard {
                 guards.push(g);
             }
-            values.push((formal, v.tree.expr(pin_span), pin_span));
+            values.push((formal, v.tree, pin_span));
         }
         let upper = type_name.to_ascii_uppercase();
-        let binary = |op: BinOp, values: Vec<(String, Expr, Span)>| -> Option<Expr> {
-            let mut it = values.into_iter().map(|(_, e, _)| e);
-            let first = it.next()?;
-            Some(it.fold(first, |a, b| Expr {
-                kind: ExprKind::Binary(op, Box::new(a), Box::new(b)),
-                span,
-            }))
-        };
         // AND, OR, XOR, NOT and MOD are operators of ST, not functions (ADR-013 §2.13); as
         // blocks they take IN1, IN2, … (NOT takes IN).
         let operator = match upper.as_str() {
@@ -1582,7 +1938,7 @@ impl<'a> Lowering<'a> {
                 );
                 return None;
             }
-            binary(op, values)?
+            Tree::Op(op, values.into_iter().map(|(_, t, _)| t).collect(), span)
         } else if upper == "NOT" {
             if values.len() != 1 {
                 self.err(
@@ -1594,41 +1950,63 @@ impl<'a> Lowering<'a> {
                 );
                 return None;
             }
-            let (_, e, _) = values.pop().expect("one input");
-            Expr {
-                kind: ExprKind::Not(Box::new(e)),
-                span,
-            }
+            let (_, t, _) = values.pop().expect("one input");
+            Tree::Not(Box::new(t))
         } else {
-            let args = values
-                .into_iter()
-                .map(|(formal, value, pin_span)| CallArg {
-                    name: Some((formal, pin_span)),
-                    value,
-                })
-                .collect();
-            Expr {
-                kind: ExprKind::Call(type_name.clone(), args),
-                span,
-            }
+            Tree::Call(type_name.clone(), values, span)
         };
-        let guard = (!guards.is_empty()).then(|| Tree::and(guards));
-        Some(Val {
-            tree: Tree::Leaf(call),
-            guard,
-        })
+        let mut guard = (!guards.is_empty()).then(|| Tree::and(guards));
+        if outputs.iter().any(|(o, _)| o == "ENO") {
+            // ENO is the power under which the function runs (§6.6.1.5).
+            guard = match guard {
+                Some(g) => {
+                    let name = self.power_name(k, "ENO");
+                    Some(self.store(k, At::Output("ENO".into()), name, g, None, false))
+                }
+                None => {
+                    self.publish(k, At::Output("ENO".into()), Holds::On);
+                    None
+                }
+            };
+        }
+        Some(Val { tree: call, guard })
+    }
+
+    /// Whether function `k`'s result is a BOOL, as far as it is known before checking.
+    fn bool_result(&self, k: usize) -> bool {
+        match &self.elems[k].kind {
+            Kind::Block { type_name, .. } => self
+                .result_type(type_name, self.span(k))
+                .is_some_and(|t| is_bool(&t)),
+            _ => false,
+        }
     }
 
     fn function_output(&mut self, k: usize, out: &str) -> Val {
         let span = self.span(k);
+        self.inputs_first(k);
         let Some(v) = self.function_call(k) else {
-            return Val::plain(Tree::Leaf(Expr {
-                kind: ExprKind::Bool(false),
-                span,
-            }));
+            return Val::plain(Tree::Leaf(Self::bool_expr(false, span)));
         };
         if out == "ENO" {
             return Val::plain(v.guard.unwrap_or(Tree::On));
+        }
+        if self.bool_result(k) {
+            // A BOOL result is power: kept where it is first read, FALSE where the function
+            // does not run.
+            let name = self.power_name(k, "");
+            let tree = self.store(
+                k,
+                At::Output(out.to_string()),
+                name,
+                v.tree,
+                v.guard.clone(),
+                false,
+            );
+            return Val {
+                tree,
+                guard: v.guard,
+            };
         }
         v
     }
@@ -1665,19 +2043,38 @@ impl<'a> Lowering<'a> {
         let Some(v) = self.function_call(k) else {
             return;
         };
-        let guard = v.guard.map(|g| self.keep(k, "_ENO", g));
+        // The power under which it runs is kept at once in `__LD_<localId>_ENO`.
+        let guard = match v.guard {
+            Some(g @ Tree::Mark(_)) => {
+                self.settle(g.clone(), span);
+                Some(g)
+            }
+            Some(g) => {
+                let name = self.power_name(k, "ENO");
+                Some(self.store(k, At::Output("ENO".into()), name, g, None, true))
+            }
+            None => None,
+        };
         self.values.insert(
             (k, "ENO".into()),
             Val::plain(guard.clone().unwrap_or(Tree::On)),
         );
+        let boolean = self.bool_result(k);
         if self.uses(k, "OUT") <= 1 {
-            self.values.insert(
-                (k, "OUT".into()),
-                Val {
-                    tree: v.tree,
-                    guard,
-                },
-            );
+            let tree = if boolean {
+                let name = self.power_name(k, "");
+                self.store(
+                    k,
+                    At::Output("OUT".into()),
+                    name,
+                    v.tree,
+                    guard.clone(),
+                    false,
+                )
+            } else {
+                v.tree
+            };
+            self.values.insert((k, "OUT".into()), Val { tree, guard });
             return;
         }
         let Some(ty) = self.result_type(type_name, span) else {
@@ -1690,12 +2087,26 @@ impl<'a> Lowering<'a> {
             );
             return;
         };
-        let place = self.hidden_var(k, format!("__LD_{id}"), ty);
-        let s = vec![Self::assign(&place, v.tree)];
-        match &guard {
-            Some(g) => self.stmts.extend(Self::when(g.clone(), span, s)),
-            None => self.stmts.extend(s),
+        let name = self.power_name(k, "");
+        if boolean {
+            let tree = self.store(
+                k,
+                At::Output("OUT".into()),
+                name,
+                v.tree,
+                guard.clone(),
+                true,
+            );
+            self.values.insert((k, "OUT".into()), Val { tree, guard });
+            return;
         }
+        let place = self.hidden_var(k, name, ty);
+        let s = vec![self.assign(&place, v.tree)];
+        let s = match &guard {
+            Some(g) => self.when(g.clone(), span, s),
+            None => s,
+        };
+        self.stmts.extend(s);
         self.values.insert(
             (k, "OUT".into()),
             Val {
@@ -1705,76 +2116,18 @@ impl<'a> Lowering<'a> {
         );
     }
 
-    /// Every output whose state a variable holds exactly once the body has run: a value kept
-    /// in a hidden `__LD_` variable (assigned whenever its network runs, never under a
-    /// condition), ON, or an output of a function block instance named plainly and called by
-    /// this block alone (nothing else writes it: §6.6.3.2, Figure 13 rule 4b). None when the
-    /// body jumps or returns: a network a jump skipped keeps an earlier scan's state.
+    /// What holds the power of every output, junction and network of the body: each a
+    /// hidden variable assigned when it is evaluated, or ON (ADR-013 §2.15).
     fn probes(&self, pou: &str) -> Vec<Probe> {
-        if self
-            .elems
+        self.published
             .iter()
-            .any(|e| matches!(e.kind, Kind::Jump(_) | Kind::Return))
-        {
-            return Vec::new();
-        }
-        let calls = |name: &str| {
-            self.elems
-                .iter()
-                .filter(|e| {
-                    matches!(&e.kind, Kind::Block { instance: Some(i), .. }
-                        if i.path.is_empty() && i.name.eq_ignore_ascii_case(name))
-                })
-                .count()
-        };
-        let mut out = Vec::new();
-        for ((k, output), v) in &self.values {
-            if v.guard.is_some() {
-                continue;
-            }
-            let (tree, negated) = match &v.tree {
-                Tree::Not(inner) => (inner.as_ref(), true),
-                t => (t, false),
-            };
-            let holds = match tree {
-                Tree::On if !negated => Holds::On,
-                Tree::Leaf(Expr {
-                    kind: ExprKind::Var(place),
-                    ..
-                }) => {
-                    let hidden = place.path.is_empty() && place.name.starts_with("__LD_");
-                    let member = match &self.elems[*k].kind {
-                        Kind::Block {
-                            instance: Some(i), ..
-                        } => {
-                            i.path.is_empty()
-                                && output != "ENO"
-                                && calls(&i.name) == 1
-                                && place.name == i.name
-                                && matches!(place.path.as_slice(),
-                                    [ast::Selector::Member(m, _)] if m == output)
-                        }
-                        _ => false,
-                    };
-                    if !(hidden || member) {
-                        continue;
-                    }
-                    Holds::Variable {
-                        path: place.text(),
-                        negated,
-                    }
-                }
-                _ => continue,
-            };
-            out.push(Probe {
+            .map(|((local_id, at), holds)| Probe {
                 pou: pou.to_string(),
-                local_id: self.elems[*k].id,
-                output: output.clone(),
-                holds,
-            });
-        }
-        out.sort_by(|a, b| (a.local_id, &a.output).cmp(&(b.local_id, &b.output)));
-        out
+                local_id: *local_id,
+                at: at.clone(),
+                holds: holds.clone(),
+            })
+            .collect()
     }
 
     /// The statements of the whole body.
@@ -1878,6 +2231,7 @@ impl<'a> Lowering<'a> {
             .any(|e| matches!(e.kind, Kind::Jump(_) | Kind::Return));
         let mut backward = false;
         let mut seen_labels: Vec<String> = Vec::new();
+        let mut flags: Vec<ast::Place> = Vec::new();
         let mut out: Vec<Stmt> = Vec::new();
         for (_, item) in &items {
             match item {
@@ -1912,6 +2266,27 @@ impl<'a> Lowering<'a> {
                 Item::Network(members) => {
                     self.called.clear();
                     self.stmts.clear();
+                    // The network's flag, `__NET_<localId>` of its first element: TRUE once it
+                    // runs in a scan. Where a jump or a return can skip it, every flag is set
+                    // FALSE first in the scan, so one skipped reads FALSE.
+                    let first = members[0];
+                    let span = self.span(first);
+                    let flag = self.hidden_var(
+                        first,
+                        format!("__NET_{}", elems[first].id),
+                        Self::bool_ty(span),
+                    );
+                    self.publish(
+                        first,
+                        At::Network(members.iter().map(|k| elems[*k].id).collect()),
+                        Holds::Variable {
+                            path: flag.text(),
+                            negated: false,
+                        },
+                    );
+                    self.stmts
+                        .push(Stmt::Assign(flag.clone(), Self::bool_expr(true, span)));
+                    flags.push(flag);
                     for &k in members {
                         if let Kind::Jump(l) = &elems[k].kind {
                             if seen_labels.contains(l) {
@@ -1920,12 +2295,14 @@ impl<'a> Lowering<'a> {
                         }
                         self.emit(k);
                     }
+                    for &k in members {
+                        self.settle_element(k);
+                    }
                     let mut stmts = std::mem::take(&mut self.stmts);
                     let returns = members
                         .iter()
                         .any(|k| matches!(elems[*k].kind, Kind::Return));
                     if transfers {
-                        let span = self.span(members[0]);
                         let jump = self.jump_var(span);
                         if returns {
                             stmts.push(Stmt::If(
@@ -1945,19 +2322,23 @@ impl<'a> Lowering<'a> {
         }
         let span = self.span(0);
         let jump = self.jump_var(span);
-        let reset = Stmt::Assign(
+        let mut all = vec![Stmt::Assign(
             jump.clone(),
             Expr {
                 kind: ExprKind::Int(0),
                 span,
             },
+        )];
+        all.extend(
+            flags
+                .into_iter()
+                .map(|f| Stmt::Assign(f, Self::bool_expr(false, span))),
         );
         if backward {
-            vec![reset, Stmt::Repeat(out, Self::jump_is(&jump, 0, span))]
+            all.push(Stmt::Repeat(out, Self::jump_is(&jump, 0, span)));
         } else {
-            let mut all = vec![reset];
             all.extend(out);
-            all
         }
+        all
     }
 }

@@ -23,7 +23,9 @@
 //! project's runtimes.
 
 use async_trait::async_trait;
-use mythos_logic_compiler::{compile_sources, Diagnostic, Holds, Sources, Symbol, TargetProfile};
+use mythos_logic_compiler::{
+    compile_sources, At, Diagnostic, Holds, Sources, Symbol, TargetProfile,
+};
 use mythos_module::protocol::{
     HttpCall, HttpReply, InputBinding, InputOf, ModuleKind, ModuleManifest, OutputBinding,
     PublishedBinding, RouteDecl, RouteScope, RuntimeProgram, PROTOCOL_VERSION,
@@ -434,20 +436,30 @@ fn compile_entry(
     }
 }
 
-/// Where the editor reads the power of each output of an element of the PROGRAM: ON, or a
-/// variable that holds it exactly once a scan is over (`mythos_logic_compiler::Probe`). An
-/// output that is not listed has no state anything holds, and is shown as unknown.
+/// Where the editor reads the power of the PROGRAM's diagram (`mythos_logic_compiler::Probe`):
+/// for each output of an element and each junction of links, the hidden variable assigned
+/// when it is evaluated in the scan (or on: always ON while its network runs), and for each
+/// network the variable that says whether it ran in the last scan. What is not listed carries
+/// no power (a value that is not a BOOL), and is shown without a state.
 fn power(compiled: &mythos_logic_compiler::Compiled) -> Vec<Value> {
     compiled
         .probes
         .iter()
         .filter(|p| p.pou.eq_ignore_ascii_case(&compiled.name))
-        .map(|p| match &p.holds {
-            Holds::On => json!({"local_id": p.local_id, "output": p.output, "on": true}),
-            Holds::Variable { path, negated } => json!({
-                "local_id": p.local_id, "output": p.output,
-                "variable": path, "negated": negated,
-            }),
+        .map(|p| {
+            let mut entry = match &p.at {
+                At::Output(output) => json!({"local_id": p.local_id, "output": output}),
+                At::Input(input) => json!({"local_id": p.local_id, "input": input}),
+                At::Network(members) => json!({"local_id": p.local_id, "network": members}),
+            };
+            match &p.holds {
+                Holds::On => entry["on"] = json!(true),
+                Holds::Variable { path, negated } => {
+                    entry["variable"] = json!(path);
+                    entry["negated"] = json!(negated);
+                }
+            }
+            entry
         })
         .collect()
 }
@@ -685,7 +697,7 @@ pub fn manifest() -> ModuleManifest {
                 "Remove a program and its source from a project. A runtime that already runs it is not touched.",
                 None, &[]),
             route("POST", "/programs/:program/check", "viewer", "check_logic_program",
-                "Compile a program, Structured Text or Ladder Diagram, without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program; in a Ladder Diagram the range is the element's tag in the document and 'element' names it: pou, local_id, x, y, or the interface's variable, and the characters of its text), or its variables (hidden: made by the Ladder Diagram front-end for itself), what its bindings get wrong and the version a build of it would have. A Ladder Diagram that compiles also gives 'power': for each output of an element whose state a variable holds once a scan is over, that variable (or on: always ON), to watch for power flow. With 'source' it checks that text instead of the saved one.",
+                "Compile a program, Structured Text or Ladder Diagram, without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program; in a Ladder Diagram the range is the element's tag in the document and 'element' names it: pou, local_id, x, y, or the interface's variable, and the characters of its text), or its variables (hidden: made by the Ladder Diagram front-end for itself), what its bindings get wrong and the version a build of it would have. A Ladder Diagram that compiles also gives 'power', to watch for power flow: for each output of an element that carries power ('output') and each input where links join ('input'), the hidden variable assigned when it is evaluated in the scan (or on: ON whenever its network runs); for each network ('network': its elements' local_ids), the variable that is TRUE when it ran in the last scan. With 'source' it checks that text instead of the saved one.",
                 Some(json!({
                     "type": "object",
                     "properties": { "source": { "type": "string" } }
@@ -1033,16 +1045,21 @@ mod tests {
         };
         assert_eq!(var("level")["hidden"], false);
         assert_eq!(var("motor")["bindable"], true);
-        // The branch point's state, kept by the front-end: hidden, and private.
-        assert_eq!(var("__LD_10")["hidden"], true);
-        assert_eq!(var("__LD_10")["private"], true);
+        // The contact's power and the rung's flag, kept by the front-end: hidden, and private.
+        for kept in ["__LD_10", "__NET_10"] {
+            assert_eq!(var(kept)["hidden"], true);
+            assert_eq!(var(kept)["private"], true);
+        }
+        // Each element's power, and each network's flag; the MUL rung carries values, no power.
         assert_eq!(
             checked["power"],
             json!([
                 {"local_id": 1, "output": "", "on": true},
                 {"local_id": 10, "output": "", "variable": "__LD_10", "negated": false},
-                {"local_id": 11, "output": "", "variable": "__LD_10", "negated": false},
-                {"local_id": 12, "output": "", "variable": "__LD_10", "negated": false},
+                {"local_id": 10, "network": [10, 11, 12], "variable": "__NET_10", "negated": false},
+                {"local_id": 11, "output": "", "variable": "__LD_11", "negated": false},
+                {"local_id": 12, "output": "", "variable": "__LD_12", "negated": false},
+                {"local_id": 20, "network": [20, 21, 22], "variable": "__NET_20", "negated": false},
             ])
         );
     }

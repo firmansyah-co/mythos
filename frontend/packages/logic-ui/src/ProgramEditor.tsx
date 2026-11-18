@@ -35,7 +35,7 @@ import {
   type Variable,
   type WatchedValue,
 } from './bridge';
-import { readLadder, transfers, type Ladder } from './ladder';
+import { readLadder, type Ladder } from './ladder';
 import { LadderView, type LadderLive } from './LadderView';
 import {
   checkIsCurrent,
@@ -859,7 +859,7 @@ function liveOf(doc: ProgramDoc, state: RunState, watch: WatchView | undefined):
   const values = new Map(watch.answer.values.map((value) => [value.variable.toLowerCase(), value]));
   return {
     live: { values, power },
-    why: 'Live, as the last scan left it: each contact and coil from its variable; a link only where a variable holds its power, and no other.',
+    why: 'Live, as the last scan left it: the power each element and link had when its rung ran; a rung the scan did not run is drawn as not executed.',
   };
 }
 
@@ -870,17 +870,11 @@ function LadderPanel({ doc, ladder, state }: { doc: ProgramDoc; ladder: Ladder; 
   const check = checkIsCurrent(doc) ? doc.check : null;
   const diagnostics = check && !check.ok ? check.diagnostics : [];
   const program = check?.ok ? (check.program ?? null) : null;
-  const jumps = ladder.ok && ladder.pous.some((pou) => pou.pouType === 'program' && transfers(pou));
   return (
     <div className="logic-panel" data-testid="ld-panel">
       <p className="muted" data-testid="ld-live" data-live={live === null ? 'none' : live.values === null ? 'unknown' : 'live'}>
         {why}
       </p>
-      {live !== null && jumps && (
-        <p className="muted" data-testid="ld-live-jumps">
-          This body jumps or returns: which rungs ran in a scan is not kept, so no link shows power.
-        </p>
-      )}
       <p className="muted">Read-only: a Ladder Diagram is changed through save_logic_source until its editor is built.</p>
       {ladder.ok ? (
         <LadderView pous={ladder.pous} program={program} live={live} diagnostics={diagnostics} />
