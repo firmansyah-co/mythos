@@ -7,7 +7,7 @@
 // until "Load" builds the saved text and puts it into the project's runtimes.
 
 import { useEffect, useRef, useState } from 'react';
-import { Check, CirclePlay, CircleStop, Download, Save, Trash2, Undo2, Upload } from 'lucide-react';
+import { Check, CirclePlay, CircleStop, Download, Lock, LockOpen, Save, Trash2, Undo2, Upload } from 'lucide-react';
 import { TagValue } from '@mythos/workbench-sdk/react';
 import {
   addBinding,
@@ -29,6 +29,7 @@ import {
   useController,
   useProject,
   useTelemetry,
+  type ForcedValue,
   type ProgramEntry,
   type Variable,
   type WatchedValue,
@@ -42,7 +43,7 @@ import {
   type RunState,
   type WatchView,
 } from './programs';
-import { formatVariable, hasOneValue } from './values';
+import { forceable, formatVariable, hasOneValue, parseForced, shownForced } from './values';
 import { SourceEditor, type SourceEditorHandle } from './SourceEditor';
 
 /** How often the controller's runtimes are read while an editor is open. */
@@ -53,8 +54,45 @@ export const WATCH_POLL_MS = 500;
 const MODE_TONE: Record<string, string> = { run: 'good', stop: 'neutral', fault: 'bad', unreachable: 'bad' };
 
 /** What the controller's runtime of this program is doing, or that it is not known. */
+/** The variables the runtime says are forced, by name as the program compares them. */
+function forcedOf(state: RunState): Map<string, ForcedValue> | null {
+  if (state.kind !== 'loaded' || state.stale) return null;
+  const forced = state.runtime.forced;
+  if (!Array.isArray(forced)) return null;
+  return new Map(forced.map((f) => [f.variable.replace(/\s+/g, '').toLowerCase(), f]));
+}
+
+/** What is forced, as the controller last said: UNKNOWN when it did not say. */
+function ForcedFacts({ state }: { state: RunState & { kind: 'loaded' } }) {
+  const forced = state.runtime.forced;
+  if (!Array.isArray(forced)) {
+    return (
+      <dd className="mono" data-testid="runtime-forced" data-missing="true">
+        UNKNOWN
+      </dd>
+    );
+  }
+  if (forced.length === 0) {
+    return (
+      <dd data-testid="runtime-forced" data-count="0">
+        none
+      </dd>
+    );
+  }
+  return (
+    <dd data-testid="runtime-forced" data-count={forced.length}>
+      {forced.map((f) => (
+        <div key={f.variable} className="mono" data-testid="runtime-forced-variable">
+          {f.variable} = {shownForced(f.value)}
+        </div>
+      ))}
+    </dd>
+  );
+}
+
 function RuntimePanel({ name, state, busy }: { name: string; state: RunState; busy: boolean }) {
   const command = usePrograms((s) => s.command);
+  const release = usePrograms((s) => s.release);
   const unload = usePrograms((s) => s.unload);
   const project = useProject((s) => s.project);
   const active = useController((s) => s.activeProjectId);
@@ -94,6 +132,15 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
             {state.stale && (
               <span className="badge badge--warn" data-testid="runtime-stale">
                 LAST KNOWN
+              </span>
+            )}{' '}
+            {Array.isArray(state.runtime.forced) && state.runtime.forced.length > 0 && (
+              <span
+                className="badge badge--warn"
+                data-testid="runtime-forced-badge"
+                title="An engineer holds variables of this program at a value: they are not what the program computes."
+              >
+                FORCED {state.runtime.forced.length}
               </span>
             )}{' '}
             <span className="mono" data-testid="runtime-version">
@@ -141,6 +188,10 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
                     ? 'at their safe values'
                     : 'NOT CONFIRMED at their safe values'}
             </dd>
+            <dt title="Variables an engineer holds at a value. Stopping the program or loading it again releases every one.">
+              Forced
+            </dt>
+            <ForcedFacts state={state} />
           </dl>
         </>
       )}
@@ -191,6 +242,31 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
           data-testid="runtime-unload"
         >
           <Upload size={13} aria-hidden /> Unload
+        </button>
+        <button
+          type="button"
+          className="btn btn--flat"
+          disabled={
+            !may ||
+            busy ||
+            state.kind !== 'loaded' ||
+            state.stale ||
+            !Array.isArray(state.runtime.forced) ||
+            state.runtime.forced.length === 0
+          }
+          title="Release every forced variable: the program decides their values again from its next scan."
+          onClick={() => {
+            if (
+              window.confirm(
+                `Release every forced variable of ${name}? The program decides their values again from its next scan, so an output bound to one may change at once.`
+              )
+            ) {
+              void release(name, null);
+            }
+          }}
+          data-testid="runtime-release-all"
+        >
+          <LockOpen size={13} aria-hidden /> Release all
         </button>
       </div>
     </section>
@@ -409,14 +485,108 @@ function VariableValue({
   }
   const text = formatVariable(found.type, found.value);
   if (text === null) return cell('none', '—', 'The runtime sent something that is not a value of its type.');
+  if (found.forced === true && watch.answer.state.mode === 'run') {
+    return (
+      <span
+        className="tagvalue mono tagvalue--live"
+        data-testid="variable-value"
+        data-state="live"
+        data-forced="true"
+        title="An engineer holds this variable at this value: it is not what the program computes."
+      >
+        {text}
+        <span className="tagvalue__flag" data-testid="variable-forced">
+          FORCED
+        </span>
+      </span>
+    );
+  }
   return watch.answer.state.mode === 'run'
     ? cell('live', text)
     : cell('stopped', text, 'The program is not running: this is the value it stopped with.', watch.answer.state.mode);
 }
 
+/**
+ * Force or release one variable of the running program: an engineer's, while the runtime is
+ * known to run it. Forcing asks for the value, which is the confirmation: it holds against the
+ * program and the field until released, or until the program stops or is loaded again.
+ */
+function ForceControl({
+  name,
+  variable,
+  state,
+  forced,
+  busy,
+}: {
+  name: string;
+  variable: Variable;
+  state: RunState;
+  forced: Map<string, ForcedValue> | null;
+  busy: boolean;
+}) {
+  const force = usePrograms((s) => s.force);
+  const release = usePrograms((s) => s.release);
+  if (!mayEngineer() || !forceable(variable.type)) return null;
+  if (state.kind !== 'loaded' || state.stale || state.runtime.mode !== 'run' || forced === null) return null;
+  const held = forced.get(variable.path.replace(/\s+/g, '').toLowerCase());
+  if (held) {
+    return (
+      <>
+        {' '}
+        <button
+          type="button"
+          className="btn btn--flat"
+          disabled={busy}
+          aria-label={`Release ${variable.path}`}
+          title="Release the force: the program decides the value again from its next scan."
+          onClick={() => {
+            if (window.confirm(`Release ${variable.path} of ${name}? The program decides its value again from its next scan.`)) {
+              void release(name, variable.path);
+            }
+          }}
+          data-testid="variable-release"
+        >
+          <LockOpen size={12} aria-hidden /> Release
+        </button>
+      </>
+    );
+  }
+  return (
+    <>
+      {' '}
+      <button
+        type="button"
+        className="btn btn--flat"
+        disabled={busy}
+        aria-label={`Force ${variable.path}`}
+        title="Hold the variable at a value, whatever the program and its inputs say."
+        onClick={() => {
+          const text = window.prompt(
+            `Force ${variable.path} (${variable.type}) of ${name} to what value?${variable.type === 'BOOL' ? ' TRUE or FALSE.' : ''} It holds against the program and the field until it is released or the program stops: an output bound to it is written this value.`
+          );
+          if (text === null) return;
+          const value = parseForced(variable.type, text);
+          if (value === null) {
+            usePrograms.setState({
+              error: `${text.trim() || 'Nothing'} is not a value of ${variable.path}, a ${variable.type}: nothing was forced.`,
+            });
+            return;
+          }
+          void force(name, variable.path, value);
+        }}
+        data-testid="variable-force"
+      >
+        <Lock size={12} aria-hidden /> Force…
+      </button>
+    </>
+  );
+}
+
 /** The program's variables, each with its bindings to tags. */
 function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: boolean; state: RunState }) {
   const watch = usePrograms((s) => s.watches[doc.entry.name]);
+  const busy = usePrograms((s) => s.busy !== null);
+  const forced = forcedOf(state);
   const setSettings = usePrograms((s) => s.setSettings);
   const configured = useController((s) => s.configuredTags);
   const io = useController((s) => s.io);
@@ -470,6 +640,13 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
                       <td>{variable.section}</td>
                       <td>
                         <VariableValue variable={variable} state={state} watch={watch} />
+                        <ForceControl
+                          name={entry.name}
+                          variable={variable}
+                          state={state}
+                          forced={forced}
+                          busy={busy}
+                        />
                       </td>
                       <td className="grow">
                         {own.map((row) => (

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Play, Square } from 'lucide-react';
+import { LockOpen, Play, Square } from 'lucide-react';
 import {
   api,
   hasRole,
@@ -149,6 +149,47 @@ function Scan({ runtime }: { runtime: RuntimeStatus }) {
         {' · '}max {micros(runtime.max_scan_us, 'runtime-max-scan')}
       </div>
     </>
+  );
+}
+
+/**
+ * The variables an engineer holds at a value, as the controller last said. A server that does
+ * not say (an older one, or a module that does not answer) leaves it UNKNOWN, never "none".
+ */
+function Forced({ runtime, stale }: { runtime: RuntimeStatus; stale: boolean }) {
+  const forced: unknown = runtime.forced;
+  if (!Array.isArray(forced)) {
+    return (
+      <div className="muted" data-testid="runtime-forced" data-missing="true">
+        forced {UNKNOWN}
+      </div>
+    );
+  }
+  if (forced.length === 0) {
+    return (
+      <div className="muted" data-testid="runtime-forced" data-count="0">
+        nothing forced
+      </div>
+    );
+  }
+  return (
+    <div data-testid="runtime-forced" data-count={forced.length}>
+      <span
+        className={`badge ${stale ? 'badge--neutral' : 'badge--warn'} settings__whole`}
+        title="An engineer holds these variables at a value: they are not what the program computes. Stopping the program or loading it again releases every one."
+      >
+        FORCED {forced.length}
+      </span>
+      {(forced as unknown[]).map((entry, index) => {
+        const f = (typeof entry === 'object' && entry !== null ? entry : {}) as { variable?: unknown; value?: unknown };
+        return (
+          <div key={index} className="muted" data-testid="runtime-forced-variable">
+            <Name value={f.variable} testId="runtime-forced-name" mono /> ={' '}
+            {sent(f.value) ? <span className="mono">{shown(f.value)}</span> : <Missing />}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -326,8 +367,12 @@ interface Reading {
   atMs: number;
 }
 
-type Verb = 'run' | 'stop';
-type Commanded = { id: string; verb: Verb } & ({ answer: RuntimeCommandAnswer } | { error: string });
+type Verb = 'run' | 'stop' | 'release';
+type Commanded = { id: string; verb: Verb } & (
+  | { answer: RuntimeCommandAnswer }
+  | { released: { state?: { forced?: unknown } } }
+  | { error: string }
+);
 
 /**
  * Every runtime of this node (ADR-013 §2.5): the program each executes, what it is doing, its scan
@@ -408,7 +453,11 @@ export function RuntimesSettings() {
     setCommanded(null);
     let result: Commanded;
     try {
-      result = { id, verb, answer: await (verb === 'run' ? api.runRuntime(id) : api.stopRuntime(id)) };
+      if (verb === 'release') {
+        result = { id, verb, released: (await api.releaseRuntimeForces(id)) as { state?: { forced?: unknown } } };
+      } else {
+        result = { id, verb, answer: await (verb === 'run' ? api.runRuntime(id) : api.stopRuntime(id)) };
+      }
     } catch (cause) {
       result = { id, verb, error: describeError(cause) };
     }
@@ -438,7 +487,7 @@ export function RuntimesSettings() {
       </p>
       {!mayCommand && (
         <p className="muted" data-testid="runtimes-who-may">
-          Only an engineer or an administrator runs or stops a program.
+          Only an engineer or an administrator runs or stops a program, or releases its forced variables.
         </p>
       )}
 
@@ -467,9 +516,21 @@ export function RuntimesSettings() {
           </p>
         </div>
       )}
+      {commanded && 'released' in commanded && (
+        <div className="notice" data-testid="runtime-release-answer">
+          <p>
+            The controller released the forces of <span className="mono">{commanded.id}</span>
+            {Array.isArray(commanded.released?.state?.forced)
+              ? commanded.released.state.forced.length === 0
+                ? '; nothing is forced now.'
+                : `; ${commanded.released.state.forced.length} still forced.`
+              : `; it did not say what is forced now (${UNKNOWN}).`}
+          </p>
+        </div>
+      )}
       {commanded && 'error' in commanded && (
         <p className="form__error" role="alert" data-testid="runtime-command-error">
-          {commanded.verb === 'run' ? 'Run' : 'Stop'} was not taken for <span className="mono">{commanded.id}</span>:{' '}
+          {commanded.verb === 'run' ? 'Run' : commanded.verb === 'stop' ? 'Stop' : 'Release'} was not taken for <span className="mono">{commanded.id}</span>:{' '}
           {commanded.error}
         </p>
       )}
@@ -556,6 +617,7 @@ export function RuntimesSettings() {
                       </td>
                       <td>
                         <Mode runtime={runtime} stale={stale} />
+                        <Forced runtime={runtime} stale={stale} />
                       </td>
                       <td>
                         <Scan runtime={runtime} />
@@ -596,6 +658,27 @@ export function RuntimesSettings() {
                           >
                             <Square size={13} aria-hidden /> Stop
                           </button>
+                          {Array.isArray(runtime.forced) && runtime.forced.length > 0 && (
+                            <button
+                              type="button"
+                              className="btn"
+                              disabled={!mayCommand || !named || stale || asking?.id === id}
+                              aria-label={`Release the forces of ${named ? id : UNKNOWN}`}
+                              title="Release every forced variable: the program decides their values again from its next scan."
+                              onClick={() => {
+                                if (
+                                  named &&
+                                  window.confirm(
+                                    `Release every forced variable of ${id}? The program decides their values again from its next scan, so an output bound to one may change at once.`
+                                  )
+                                ) {
+                                  void command(id, 'release');
+                                }
+                              }}
+                            >
+                              <LockOpen size={13} aria-hidden /> Release all
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

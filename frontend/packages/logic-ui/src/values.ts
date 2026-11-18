@@ -54,3 +54,35 @@ export function formatVariable(type: string, value: unknown): string | null {
   if (type === 'TIME') return Number.isInteger(value) ? `${Number((value / 1e6).toFixed(3))} ms` : null;
   return null;
 }
+
+/** The types an engineer may force: a BOOL or a number (not a TIME, not a STRING). */
+export function forceable(type: string): boolean {
+  return type === 'BOOL' || type === 'REAL' || type === 'LREAL' || INTEGERS.has(type);
+}
+
+/**
+ * What an engineer typed to force a variable of `type` to, as the value sent, or `null` when it
+ * is not one: TRUE/FALSE (or 1/0) for a BOOL, a whole number for an integer, a number for a
+ * REAL. The range of the type is the runtime's to check, and it says so.
+ */
+export function parseForced(type: string, text: string): number | boolean | null {
+  const typed = text.trim();
+  if (type === 'BOOL') {
+    const word = typed.toUpperCase();
+    if (word === 'TRUE' || word === '1') return true;
+    if (word === 'FALSE' || word === '0') return false;
+    return null;
+  }
+  if (typed === '' || !forceable(type)) return null;
+  const value = Number(typed);
+  if (!Number.isFinite(value)) return null;
+  if (INTEGERS.has(type) && !Number.isInteger(value)) return null;
+  return value;
+}
+
+/** A forced value as the controller sent it, in the words of its type when it has one. */
+export function shownForced(value: unknown): string {
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+  if (typeof value === 'number' || typeof value === 'string') return String(value);
+  return JSON.stringify(value);
+}

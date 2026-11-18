@@ -684,6 +684,113 @@ describe('the values of the running program', () => {
   });
 });
 
+describe('forcing a variable of the running program', () => {
+  const RUNNING = { level: { type: 'INT', value: 20 }, speed: { type: 'INT', value: 300 }, ok: { type: 'BOOL', value: true } };
+  const forceCalls = (calls: Array<{ method: string; path: string; body: unknown }>) =>
+    calls
+      .filter((call) => /\/runtimes\/Tank\/(force|release)$/.test(call.path))
+      .map((call) => `${call.path.replace(/^.*\/runtimes\/Tank\//, '')} ${JSON.stringify(call.body)}`);
+  const forceButtons = (container: HTMLElement) =>
+    [...container.querySelectorAll('[data-testid="variable-force"]')].map((b) => b.getAttribute('aria-label'));
+
+  it('offers Force for each BOOL and number of a running program, and sends what the engineer typed', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank', { forced: [], forced_tags: [] })), watch: watchOf(RUNNING) });
+    const { calls, container } = await opened(backend);
+
+    // Not a TIME, not a STRING: those cannot be forced.
+    expect(forceButtons(container)).toEqual(['Force level', 'Force ok', 'Force speed', 'Force run']);
+    expect(byTestId(container, 'runtime-forced')?.textContent).toBe('none');
+    expect((byTestId(container, 'runtime-release-all') as HTMLButtonElement).disabled).toBe(true);
+
+    const asked: string[] = [];
+    vi.stubGlobal('prompt', (message: string) => (asked.push(message), '444'));
+    click(byLabel(container, 'Force speed'));
+    await settle();
+    expect(asked[0]).toContain('Force speed (INT) of Tank');
+    expect(asked[0]).toContain('an output bound to it is written this value');
+    vi.stubGlobal('prompt', () => 'true');
+    click(byLabel(container, 'Force ok'));
+    await settle();
+    expect(forceCalls(calls)).toEqual(['force {"variable":"speed","value":444}', 'force {"variable":"ok","value":true}']);
+  });
+
+  it('sends nothing when the engineer cancels or types what is not a value of the type, and says why', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank', { forced: [] })), watch: watchOf(RUNNING) });
+    const { calls, container } = await opened(backend);
+
+    vi.stubGlobal('prompt', () => null);
+    click(byLabel(container, 'Force speed'));
+    await settle();
+    for (const typed of ['fast', '2.5', '']) {
+      vi.stubGlobal('prompt', () => typed);
+      click(byLabel(container, 'Force speed'));
+      await settle();
+    }
+    vi.stubGlobal('prompt', () => 'yes');
+    click(byLabel(container, 'Force ok'));
+    await settle();
+    expect(forceCalls(calls)).toEqual([]);
+    expect(byTestId(container, 'program-error')?.textContent).toBe('yes is not a value of ok, a BOOL: nothing was forced.');
+  });
+
+  it('marks a forced value, lists what is forced, and releases one or every one after asking', async () => {
+    const backend = tank({
+      runtimes: runtimesOf(runtimeOf('Tank', { forced: [{ variable: 'speed', value: 444 }], forced_tags: [SPEED] })),
+      watch: watchOf({ ...RUNNING, speed: { type: 'INT', value: 444, forced: true } }),
+    });
+    const { calls, container } = await opened(backend);
+
+    const speed = [...container.querySelectorAll('[data-testid="variable-value"]')][2] as HTMLElement;
+    expect(speed.getAttribute('data-forced')).toBe('true');
+    expect(speed.textContent).toBe('444FORCED');
+    expect(container.querySelectorAll('[data-testid="variable-forced"]')).toHaveLength(1);
+    expect(byTestId(container, 'runtime-forced-badge')?.textContent).toBe('FORCED 1');
+    expect(texts(container, 'runtime-forced-variable')).toEqual(['speed = 444']);
+    // A forced variable is released, not forced again.
+    expect(forceButtons(container)).toEqual(['Force level', 'Force ok', 'Force run']);
+
+    vi.stubGlobal('confirm', () => false);
+    click(byLabel(container, 'Release speed'));
+    click(byTestId(container, 'runtime-release-all'));
+    await settle();
+    expect(forceCalls(calls)).toEqual([]);
+
+    vi.stubGlobal('confirm', () => true);
+    click(byLabel(container, 'Release speed'));
+    await settle();
+    click(byTestId(container, 'runtime-release-all'));
+    await settle();
+    expect(forceCalls(calls)).toEqual(['release {"variable":"speed"}', 'release {}']);
+  });
+
+  it('says UNKNOWN for what is forced when the controller does not say, and offers no Force', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')), watch: watchOf(RUNNING) });
+    const { container } = await opened(backend);
+    expect(byTestId(container, 'runtime-forced')?.textContent).toBe('UNKNOWN');
+    expect(byTestId(container, 'runtime-forced-badge')).toBeNull();
+    expect(forceButtons(container)).toEqual([]);
+  });
+
+  it('offers no Force for a program that is not running, nor to a viewer', async () => {
+    const stopped = tank({ runtimes: runtimesOf(runtimeOf('Tank', { mode: 'stop', forced: [] })), watch: watchOf(RUNNING, 'stop') });
+    const { container } = await opened(stopped);
+    expect(forceButtons(container)).toEqual([]);
+    unmountAll();
+
+    useSession.setState({ phase: 'signed-in', user: { username: 'otto', display_name: 'Otto', role: 'operator', via: 'session' } });
+    const forced = tank({
+      runtimes: runtimesOf(runtimeOf('Tank', { forced: [{ variable: 'speed', value: 444 }] })),
+      watch: watchOf(RUNNING),
+    });
+    const { container: asOperator } = await opened(forced);
+    expect(forceButtons(asOperator)).toEqual([]);
+    expect(byTestId(asOperator, 'variable-release')).toBeNull();
+    expect((byTestId(asOperator, 'runtime-release-all') as HTMLButtonElement).disabled).toBe(true);
+    // What is forced is shown to everyone.
+    expect(byTestId(asOperator, 'runtime-forced-badge')?.textContent).toBe('FORCED 1');
+  });
+});
+
 describe('who may change a program', () => {
   it('lets a viewer read and check, and change nothing', async () => {
     useSession.setState({ phase: 'signed-in', user: { username: 'vera', display_name: 'Vera', role: 'viewer', via: 'session' } });

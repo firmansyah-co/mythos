@@ -288,6 +288,13 @@ export interface RuntimeStatus {
   outputs: RuntimeOutput[];
   pid: number | null;
   restarts: number;
+  /**
+   * The variables an engineer holds at a value, as its module last said. `null`: nothing is
+   * known (the module does not answer); absent from a server without forcing.
+   */
+  forced?: Array<{ variable: string; value: unknown }> | null;
+  /** Every tag bound to a forced variable. */
+  forced_tags?: string[];
 }
 
 /** A runtime module that could run a program, and the target profile it declares (ADR-013 §2.2). */
@@ -616,6 +623,9 @@ export const api = {
   /** Put a program in STOP (engineer): its outputs are written their safe values. */
   stopRuntime: (id: string) =>
     request<RuntimeCommandAnswer>(`/api/v1/runtimes/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
+  /** Release every forced variable of a program (engineer). */
+  releaseRuntimeForces: (id: string) =>
+    request<{ id: string; state: unknown }>(`/api/v1/runtimes/${encodeURIComponent(id)}/release`, json('POST', {})),
   pairedNodeStatus: (id: string) =>
     request<{ reachable: boolean; node?: { name: string; role: string; version: string }; error?: string }>(
       `/api/v1/pairings/${encodeURIComponent(id)}/status`

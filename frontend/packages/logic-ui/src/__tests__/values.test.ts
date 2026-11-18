@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatVariable, hasOneValue } from '../values';
+import { forceable, formatVariable, hasOneValue, parseForced } from '../values';
 
 describe('a watched value as text', () => {
   it('is written in its type', () => {
@@ -42,5 +42,17 @@ describe('a watched value as text', () => {
     expect(['ARRAY [1..4] OF INT', 'TON', 'Motor', 'STRING', 'ARRAY [1..2] OF STRING[4]'].some(hasOneValue)).toBe(
       false
     );
+  });
+});
+
+describe('what an engineer may force a variable to', () => {
+  it('takes a BOOL as TRUE/FALSE or 1/0, an integer only whole, a REAL as a number, and nothing else', () => {
+    expect(['TRUE', ' false ', '1', '0', 'yes', ''].map((t) => parseForced('BOOL', t))).toEqual([true, false, true, false, null, null]);
+    expect(['444', ' -3 ', '2.5', 'fast', '', 'Infinity'].map((t) => parseForced('INT', t))).toEqual([444, -3, null, null, null, null]);
+    expect(['2.5', '1e3', 'NaN'].map((t) => parseForced('REAL', t))).toEqual([2.5, 1000, null]);
+    // A TIME and a STRING are not forced at all.
+    expect(parseForced('TIME', '5')).toBeNull();
+    expect(parseForced('STRING[8]', 'x')).toBeNull();
+    expect(['BOOL', 'SINT', 'LINT', 'LREAL', 'TIME', 'STRING[8]'].map(forceable)).toEqual([true, true, true, true, false, false]);
   });
 });
