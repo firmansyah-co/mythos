@@ -1314,9 +1314,13 @@ async fn a_new_build_of_a_running_program_is_changed_online_and_a_cold_load_or_a
 
     // The device was never told the safe value: the new build took the output over from the
     // old one without a gap, and its first scan wrote it from the carried state.
+    // Sampled from before the load was asked until the new build had run 20 scans of 20 ms, so
+    // the samples span the swap. How many there are depends on the OS's timer: a 1 ms sleep
+    // lasts about 15 ms on Windows (48 samples there, where Linux takes hundreds). Ten is
+    // enough to say the window was watched, and is reached on both.
     assert!(
-        seen.len() > 50,
-        "the register was sampled: {} times",
+        seen.len() >= 10,
+        "the register was sampled only {} times through the swap",
         seen.len()
     );
     assert!(
