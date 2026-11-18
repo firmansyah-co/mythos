@@ -74,10 +74,17 @@ export function activate(host: WorkbenchHost): Dispose {
       const state = usePrograms.getState();
       const project = (data as { project?: unknown } | null)?.project;
       if (state.projectId === null || project !== state.projectId) return;
-      if (state.busy !== null || anyDirty(state)) return;
-      const listed = new Set(state.programs.map((doc) => doc.entry.name));
       const program = (data as { program?: unknown }).program;
       const what = (data as { what?: unknown }).what;
+      // A Ladder Diagram is not edited here (ADR-013 L3b-1): its view follows what an agent or
+      // another workbench saved, unless it has changes here.
+      const ladder = state.programs.find((doc) => doc.entry.name === program && doc.entry.language === 'ld');
+      if (what === 'source' && ladder && ladder.source !== null) {
+        void state.reread(ladder.entry.name);
+        return;
+      }
+      if (state.busy !== null || anyDirty(state)) return;
+      const listed = new Set(state.programs.map((doc) => doc.entry.name));
       // This workbench's own saves come back as events too; only a list that changed is read.
       if ((what === 'created' && !listed.has(String(program))) || (what === 'deleted' && listed.has(String(program)))) {
         void state.load(state.projectId);

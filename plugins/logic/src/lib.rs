@@ -452,6 +452,18 @@ fn power(compiled: &mythos_logic_compiler::Compiled) -> Vec<Value> {
         .collect()
 }
 
+/// What identifies a build: its code and everything that ties it to the plant. A check gives
+/// the same, so an editor knows whether the text it shows is what a runtime runs.
+fn version_of(entry: &ProgramEntry, compiled: &mythos_logic_compiler::Compiled) -> String {
+    let mut hash = Sha256::new();
+    hash.update(&compiled.bytecode);
+    hash.update(entry.interval_ms.to_le_bytes());
+    hash.update(
+        serde_json::to_vec(&(&entry.inputs, &entry.outputs, &entry.published)).unwrap_or_default(),
+    );
+    hex::encode(&hash.finalize()[..6])
+}
+
 /// Compile `source` for the entry's target: the answer of `check`.
 fn check(entry: &ProgramEntry, source: &str) -> Value {
     let target = match TargetProfile::by_name(&entry.target) {
@@ -475,6 +487,8 @@ fn check(entry: &ProgramEntry, source: &str) -> Value {
                 "ok": true,
                 "diagnostics": [],
                 "program": compiled.name,
+                // The version a build of this text with these settings would have.
+                "version": version_of(entry, &compiled),
                 "variables": variables(&compiled.symbols),
                 "code_size": compiled.code_size,
                 "memory_size": compiled.memory_size,
@@ -518,14 +532,7 @@ fn build(
         ));
     }
 
-    // What identifies this build: the code and everything that ties it to the plant.
-    let mut hash = Sha256::new();
-    hash.update(&compiled.bytecode);
-    hash.update(entry.interval_ms.to_le_bytes());
-    hash.update(
-        serde_json::to_vec(&(&entry.inputs, &entry.outputs, &entry.published)).unwrap_or_default(),
-    );
-    let version = hex::encode(&hash.finalize()[..6]);
+    let version = version_of(entry, &compiled);
 
     let program = RuntimeProgram {
         name: compiled.name.clone(),
@@ -678,7 +685,7 @@ pub fn manifest() -> ModuleManifest {
                 "Remove a program and its source from a project. A runtime that already runs it is not touched.",
                 None, &[]),
             route("POST", "/programs/:program/check", "viewer", "check_logic_program",
-                "Compile a program, Structured Text or Ladder Diagram, without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program; in a Ladder Diagram the range is the element's tag in the document and 'element' names it: pou, local_id, x, y, or the interface's variable, and the characters of its text), or its variables (hidden: made by the Ladder Diagram front-end for itself) and what its bindings get wrong. A Ladder Diagram that compiles also gives 'power': for each output of an element whose state a variable holds once a scan is over, that variable (or on: always ON), to watch for power flow. With 'source' it checks that text instead of the saved one.",
+                "Compile a program, Structured Text or Ladder Diagram, without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program; in a Ladder Diagram the range is the element's tag in the document and 'element' names it: pou, local_id, x, y, or the interface's variable, and the characters of its text), or its variables (hidden: made by the Ladder Diagram front-end for itself), what its bindings get wrong and the version a build of it would have. A Ladder Diagram that compiles also gives 'power': for each output of an element whose state a variable holds once a scan is over, that variable (or on: always ON), to watch for power flow. With 'source' it checks that text instead of the saved one.",
                 Some(json!({
                     "type": "object",
                     "properties": { "source": { "type": "string" } }
@@ -1066,6 +1073,11 @@ mod tests {
         assert_eq!(built["instance"]["program"]["name"], "Tank");
         let symbols = built["instance"]["program"]["symbols"].as_array().unwrap();
         assert!(symbols.iter().any(|s| s["path"] == "__LD_10"));
+        // A check of the same text gives the version its build has.
+        assert_eq!(
+            check(&ld_entry(), &ladder("run"))["version"],
+            built["version"]
+        );
         // The same program in Structured Text is another build.
         let st = build(&entry(), TANK, None).unwrap();
         assert_ne!(st["version"], built["version"]);

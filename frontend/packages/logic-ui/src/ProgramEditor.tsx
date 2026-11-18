@@ -1,12 +1,12 @@
-// The editor of one control program: its Structured Text, what the compiler says of it, its
-// task settings, its variables with their bindings to tags, and what the controller's runtime
-// is doing with it.
+// The editor of one control program: its Structured Text, or its Ladder Diagram drawn read-only
+// with its live state (LadderView), what the compiler says of it, its task settings, its
+// variables with their bindings to tags, and what the controller's runtime is doing with it.
 //
 // Three things are kept apart on purpose, because an engineer acts on the difference: the text
 // in the editor, the text that is saved, and the program that runs. Nothing that runs changes
 // until "Load" builds the saved text and puts it into the project's runtimes.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, CirclePlay, CircleStop, Download, Lock, LockOpen, Save, Trash2, Undo2, Upload } from 'lucide-react';
 import { ForcedMark, TagValue } from '@mythos/workbench-sdk/react';
 import {
@@ -29,11 +29,14 @@ import {
   useController,
   useProject,
   useTelemetry,
+  type Diagnostic,
   type ForcedValue,
   type ProgramEntry,
   type Variable,
   type WatchedValue,
 } from './bridge';
+import { readLadder, transfers, type Ladder } from './ladder';
+import { LadderView, type LadderLive } from './LadderView';
 import {
   checkIsCurrent,
   describeStart,
@@ -596,7 +599,9 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
   const io = useController((s) => s.io);
   const { entry } = doc;
   const rows = bindingsOf(entry);
-  const variables = doc.variables;
+  // What the Ladder Diagram front-end made for itself (`__LD_…`) is not the program's: it is
+  // watched for the diagram, and not listed.
+  const variables = doc.variables === null ? null : doc.variables.filter((variable) => variable.hidden !== true);
   const current = variables !== null && doc.variablesSource === doc.source;
   // What a binding may name: the tags of the configuration being edited and of what runs.
   const tags = [...new Set([...configured, ...(io?.connections.flatMap((c) => c.tags) ?? [])])].sort();
@@ -723,8 +728,17 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
   );
 }
 
+/** Where a diagnostic is: a line and column of the text, or in a Ladder Diagram its element. */
+export function placeOf(diagnostic: Diagnostic): string {
+  const element = diagnostic.element;
+  if (!element) return `${diagnostic.line}:${diagnostic.col}`;
+  if (element.local_id !== null && element.local_id !== undefined) return `${element.pou} element ${element.local_id}`;
+  if (element.variable) return `${element.pou} variable ${element.variable}`;
+  return element.pou === '' ? `${diagnostic.line}:${diagnostic.col}` : element.pou;
+}
+
 /** What the compiler said, of which text. */
-function CheckPanel({ doc, goTo }: { doc: ProgramDoc; goTo: (line: number, col: number) => void }) {
+function CheckPanel({ doc, goTo }: { doc: ProgramDoc; goTo: (diagnostic: Diagnostic) => void }) {
   const current = checkIsCurrent(doc);
   if (doc.check === null) {
     return (
@@ -759,11 +773,10 @@ function CheckPanel({ doc, goTo }: { doc: ProgramDoc; goTo: (line: number, col: 
                 type="button"
                 className="logic-diagnostic"
                 data-testid="diagnostic"
-                onClick={() => goTo(diagnostic.line, diagnostic.col)}
+                data-local-id={diagnostic.element?.local_id ?? undefined}
+                onClick={() => goTo(diagnostic)}
               >
-                <span className="mono logic-diagnostic__at">
-                  {diagnostic.line}:{diagnostic.col}
-                </span>
+                <span className="mono logic-diagnostic__at">{placeOf(diagnostic)}</span>
                 {diagnostic.message}
               </button>
             </li>
@@ -813,6 +826,83 @@ function RemovePanel({ name, busy, onRemoved }: { name: string; busy: boolean; o
       <p className="muted">A runtime that already runs the program is not touched: unload it first.</p>
     </section>
   );
+}
+
+/** What is drawn live on a Ladder Diagram, and why, or why nothing is. */
+function liveOf(doc: ProgramDoc, state: RunState, watch: WatchView | undefined): { live: LadderLive | null; why: string } {
+  const check = checkIsCurrent(doc) ? doc.check : null;
+  if (check === null || !check.ok) {
+    return { live: null, why: 'No live state is drawn: this text has not compiled. Check it.' };
+  }
+  if (state.kind === 'unknown') return { live: null, why: `No live state is drawn: what the runtime does is not known (${state.why}).` };
+  if (state.kind === 'not-loaded') return { live: null, why: 'No live state is drawn: no runtime runs this program.' };
+  const power = check.power ?? [];
+  if (state.stale) {
+    return { live: { values: null, power }, why: 'The runtimes can no longer be read: every state is UNKNOWN.' };
+  }
+  if (check.version === undefined || check.version !== state.runtime.version) {
+    return {
+      live: null,
+      why: `No live state is drawn: the runtime runs version ${state.runtime.version}, and this text builds version ${check.version ?? 'UNKNOWN'}. Load it to see it live.`,
+    };
+  }
+  if (state.runtime.mode !== 'run') {
+    return { live: null, why: `No live state is drawn: the program is in ${state.runtime.mode.toUpperCase()}, so no power flows.` };
+  }
+  if (!watch) return { live: null, why: 'No live state is drawn yet: the values have not been read.' };
+  if (watch.answer === null) {
+    return { live: { values: null, power }, why: `The values cannot be read: every state is UNKNOWN. ${watch.error ?? ''}`.trim() };
+  }
+  if (watch.answer.state.mode !== 'run' || watch.answer.state.version !== check.version) {
+    return { live: null, why: 'No live state is drawn: the values read are not of this version in RUN.' };
+  }
+  const values = new Map(watch.answer.values.map((value) => [value.variable.toLowerCase(), value]));
+  return {
+    live: { values, power },
+    why: 'Live, as the last scan left it: each contact and coil from its variable; a link only where a variable holds its power, and no other.',
+  };
+}
+
+/** The Ladder Diagram of the program, read-only, with its live state. */
+function LadderPanel({ doc, ladder, state }: { doc: ProgramDoc; ladder: Ladder; state: RunState }) {
+  const watch = usePrograms((s) => s.watches[doc.entry.name]);
+  const { live, why } = liveOf(doc, state, watch);
+  const check = checkIsCurrent(doc) ? doc.check : null;
+  const diagnostics = check && !check.ok ? check.diagnostics : [];
+  const program = check?.ok ? (check.program ?? null) : null;
+  const jumps = ladder.ok && ladder.pous.some((pou) => pou.pouType === 'program' && transfers(pou));
+  return (
+    <div className="logic-panel" data-testid="ld-panel">
+      <p className="muted" data-testid="ld-live" data-live={live === null ? 'none' : live.values === null ? 'unknown' : 'live'}>
+        {why}
+      </p>
+      {live !== null && jumps && (
+        <p className="muted" data-testid="ld-live-jumps">
+          This body jumps or returns: which rungs ran in a scan is not kept, so no link shows power.
+        </p>
+      )}
+      <p className="muted">Read-only: a Ladder Diagram is changed through save_logic_source until its editor is built.</p>
+      {ladder.ok ? (
+        <LadderView pous={ladder.pous} program={program} live={live} diagnostics={diagnostics} />
+      ) : (
+        <div className="notice notice--bad" role="alert" data-testid="ld-unreadable">
+          <p>The diagram cannot be drawn: {ladder.error}.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A watched variable's path as an element writes it: a name, members and subscripts. */
+const PLACE = /^[A-Za-z_]\w*(\[[^\]]+\])?(\.[A-Za-z_]\w*(\[[^\]]+\])?)*$/;
+
+/** The variables a Ladder Diagram's contacts, coils and variable elements read or write. */
+function elementVariables(ladder: Ladder | null): string[] {
+  if (ladder === null || !ladder.ok) return [];
+  return ladder.pous
+    .filter((pou) => pou.pouType === 'program')
+    .flatMap((pou) => pou.elements.map((e) => e.variable ?? ''))
+    .filter((path) => PLACE.test(path));
 }
 
 /**
@@ -867,6 +957,9 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
   const readRuntimes = usePrograms((s) => s.readRuntimes);
   const editor = useRef<SourceEditorHandle>(null);
   const exists = doc !== undefined;
+  const isLadder = doc?.entry.language === 'ld';
+  const ladderSource = isLadder ? (doc?.source ?? null) : null;
+  const ladder = useMemo(() => (ladderSource === null ? null : readLadder(ladderSource)), [ladderSource]);
   const sourceRead = doc?.source !== null && doc?.source !== undefined;
 
   // The source is read when the editor opens; the first check follows, for the variables.
@@ -892,10 +985,16 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
     const view = runState(name, s.runtimes);
     return view.kind === 'loaded' && !view.stale;
   });
-  const watched = (doc?.variables ?? [])
-    .filter((variable) => hasOneValue(variable.type))
-    .map((variable) => variable.path)
-    .join('\n');
+  // A Ladder Diagram also asks for what its elements name that is not a variable of its own
+  // (an element of an array), each once.
+  const declared = (doc?.variables ?? []).filter((variable) => hasOneValue(variable.type)).map((variable) => variable.path);
+  const known = new Set(declared.map((path) => path.toLowerCase()));
+  const extra = [...new Set(elementVariables(ladder))].filter((path) => {
+    const fresh = !known.has(path.toLowerCase());
+    known.add(path.toLowerCase());
+    return fresh;
+  });
+  const watched = [...declared, ...extra].join('\n');
   const readWatch = usePrograms((s) => s.readWatch);
   const dropWatch = usePrograms((s) => s.dropWatch);
   useEffect(() => {
@@ -1044,15 +1143,31 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
         <div className="logic-editor__top">
           <div className="logic-editor__main">
             <div className="logic-editor__source">
-              <SourceEditor
-                ref={editor}
-                source={doc.source}
-                readOnly={!may}
-                diagnostics={diagnostics}
-                onChange={(source) => setSource(name, source)}
-              />
+              {isLadder && ladder !== null ? (
+                <LadderPanel doc={doc} ladder={ladder} state={state} />
+              ) : (
+                <SourceEditor
+                  ref={editor}
+                  source={doc.source}
+                  readOnly={!may}
+                  diagnostics={diagnostics}
+                  onChange={(source) => setSource(name, source)}
+                />
+              )}
             </div>
-            <CheckPanel doc={doc} goTo={(line, col) => editor.current?.goTo(line, col)} />
+            <CheckPanel
+              doc={doc}
+              goTo={(diagnostic) => {
+                if (!isLadder) {
+                  editor.current?.goTo(diagnostic.line, diagnostic.col);
+                  return;
+                }
+                const id = diagnostic.element?.local_id;
+                if (id === null || id === undefined) return;
+                const found = document.querySelector(`[data-testid="ld-diagnostic"][data-local-id="${id}"]`);
+                (found as (Element & { scrollIntoView?: (arg?: unknown) => void }) | null)?.scrollIntoView?.({ block: 'center' });
+              }}
+            />
           </div>
           <div className="logic-editor__side">
             <RuntimePanel name={name} state={state} busy={working} />

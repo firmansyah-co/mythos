@@ -1,14 +1,18 @@
-// The "Programs" section of the project tree: the open project's control programs, and a row
-// to add one.
+// The "Programs" section of the project tree: the open project's control programs, each with
+// its language, and a row to add one in a language chosen there.
 
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { ChevronDown, ChevronRight, Cpu, FileCode2, Plus } from 'lucide-react';
-import { mayEngineer, useProject } from './bridge';
+import { mayEngineer, useProject, type Language } from './bridge';
 import { anyDirty, isDirty, usePrograms } from './programs';
 
 /** What a program may be called: what the logic module accepts. */
 export const NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+/** A language as the tree names it. */
+export const LANGUAGE_LABEL: Record<string, string> = { st: 'ST', ld: 'LD' };
+const LANGUAGE_TITLE: Record<string, string> = { st: 'Structured Text', ld: 'Ladder Diagram' };
 
 interface NodeProps {
   depth: number;
@@ -61,12 +65,13 @@ function AddProgram({ openEditor }: { openEditor: (name: string) => void }) {
   const create = usePrograms((state) => state.create);
   const busy = usePrograms((state) => state.busy);
   const [name, setName] = useState<string | null>(null);
+  const [language, setLanguage] = useState<Language>('st');
   const trimmed = (name ?? '').trim();
   const invalid = trimmed !== '' && !NAME.test(trimmed);
 
   const submit = async () => {
     if (trimmed === '' || invalid) return;
-    const made = await create(trimmed);
+    const made = await create(trimmed, language);
     if (made) {
       setName(null);
       openEditor(made);
@@ -110,8 +115,22 @@ function AddProgram({ openEditor }: { openEditor: (name: string) => void }) {
             if (event.key === 'Enter') void submit();
             if (event.key === 'Escape') setName(null);
           }}
-          onBlur={() => trimmed === '' && setName(null)}
+          onBlur={(event) => {
+            // Moving to the language keeps the name being typed.
+            if (trimmed === '' && !event.currentTarget.parentElement?.contains(event.relatedTarget as Node | null)) {
+              setName(null);
+            }
+          }}
         />
+        <select
+          aria-label="Program language"
+          value={language}
+          disabled={busy === 'creating'}
+          onChange={(event) => setLanguage(event.target.value === 'ld' ? 'ld' : 'st')}
+        >
+          <option value="st">ST</option>
+          <option value="ld">LD</option>
+        </select>
       </div>
       {invalid && (
         <p className="tree__note" data-testid="tree-program-name-invalid">
@@ -160,11 +179,20 @@ export function ProgramsTree({ openEditor }: { openEditor: (name: string) => voi
             testId="tree-program"
             onOpen={() => openEditor(doc.entry.name)}
             mark={
-              isDirty(doc) ? (
-                <span className="tree__mark tree__mark--warn" title="Unsaved changes">
-                  *
+              <>
+                {isDirty(doc) && (
+                  <span className="tree__mark tree__mark--warn" title="Unsaved changes">
+                    *
+                  </span>
+                )}
+                <span
+                  className="tree__mark"
+                  data-testid="tree-program-language"
+                  title={LANGUAGE_TITLE[doc.entry.language] ?? doc.entry.language}
+                >
+                  {LANGUAGE_LABEL[doc.entry.language] ?? doc.entry.language.toUpperCase()}
                 </span>
-              ) : undefined
+              </>
             }
           />
         ))}

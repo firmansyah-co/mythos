@@ -109,6 +109,24 @@ export const watchOf =
     age_ms: 12,
   });
 
+/** A TC6 document holding the PROGRAM `name` with `elements` as its LD body, between the rails. */
+export const ladderOf = (name: string, elements: string, interface_ = '<interface/>') =>
+  `<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <types><dataTypes/><pous>
+    <pou name="${name}" pouType="program">
+      ${interface_}
+      <body><LD>
+        <leftPowerRail localId="1"><position x="0" y="0"/><connectionPointOut formalParameter=""/></leftPowerRail>
+        ${elements}
+        <rightPowerRail localId="2"><position x="400" y="0"/></rightPowerRail>
+      </LD></body>
+    </pou>
+  </pous></types>
+  <instances><configurations/></instances>
+</project>
+`;
+
 const failure = (status: number, error: string) =>
   new Response(JSON.stringify({ error }), { status, statusText: status === 500 ? 'Internal Server Error' : 'Bad Request' });
 
@@ -153,7 +171,11 @@ export function server(backend: Backend): Call[] {
       const [, name, action] = logic;
       if (!name) {
         if (method === 'GET') return Response.json({ programs: backend.programs.map((p) => p.entry) });
-        const made = { entry: entryOf((body as { name: string }).name), source: `PROGRAM ${(body as { name: string }).name}\nEND_PROGRAM\n` };
+        const asked = body as { name: string; language?: string };
+        const made =
+          asked.language === 'ld'
+            ? { entry: entryOf(asked.name, { language: 'ld' }), source: ladderOf(asked.name, '') }
+            : { entry: entryOf(asked.name), source: `PROGRAM ${asked.name}\nEND_PROGRAM\n` };
         backend.programs.push(made);
         return Response.json({ program: made.entry, source: made.source }, { status: 201 });
       }

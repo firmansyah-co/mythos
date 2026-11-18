@@ -344,7 +344,8 @@ try {
   check('nothing runs before it is loaded', (await (await api(base + '/api/v1/runtimes')).json()).runtimes.length === 0);
   await evaluate(`__t.clickTestId('program-load')`); await sleep(3000);
   const builtNote = await evaluate(`__t.text('[data-testid="program-built"]')[0]`);
-  check('Load builds the program and loads it into a runtime', /^Version [0-9a-f]{12} was built and loaded\.$/.test(builtNote ?? ''), builtNote);
+  // Since C6b the note also says how the runtime started: a first load is not changed online.
+  check('Load builds the program and loads it into a runtime', /^Version [0-9a-f]{12} was built and loaded\.Not changed online: /.test(builtNote ?? ''), builtNote);
   check('no error is left on screen', !(await evaluate(`__t.has('[data-testid="program-error"]')`)), (await evaluate(`__t.text('[data-testid="program-error"]')`)).join(' '));
   const loadedRuntime = (await (await api(base + '/api/v1/runtimes')).json()).runtimes[0];
   check('the controller runs it in the VM runtime module', loadedRuntime?.id === 'Doubler' && loadedRuntime.module === 'vm' && loadedRuntime.mode === 'run' && loadedRuntime.scans > 0, JSON.stringify(loadedRuntime));
@@ -410,6 +411,97 @@ try {
   check('Unload takes it out of the controller’s runtimes', (await (await api(base + '/api/v1/runtimes')).json()).runtimes.length === 0
     && (await evaluate(`__t.text('[data-testid="runtime-mode"]')[0]`)) === 'NOT LOADED');
   await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
+
+  // 8d. A Ladder Diagram (ADR-013 L3b-1): added from the tree as LD, its rungs saved over the
+  // API as an agent saves them (the graphical editor is L3b-2), checked with a mistake drawn at
+  // its element, bound to the device's counter, loaded, and its contacts drawn live: `odd`
+  // follows the counter, so the contact on it changes state as the device counts.
+  {
+  await evaluate(`__t.clickTestId('tree-add-program')`); await sleep(200);
+  await evaluate(`__t.type('Program name', 'Ladder'); __t.type('Program language', 'ld'); __t.press('Program name', 'Enter'); true`); await sleep(1500);
+  check('an LD program added from the tree opens as a diagram, with its two rails and no text area',
+    (await evaluate(`__t.text('[data-testid="ld-element"]').length`)) === 2
+      && (await evaluate(`[...document.querySelectorAll('[data-testid="ld-element"]')].map((e) => e.getAttribute('data-kind')).join()`)) === 'leftPowerRail,rightPowerRail'
+      && !(await evaluate(`__t.has('[aria-label="Structured Text source"]')`)),
+    await evaluate(`__t.text('[data-testid="ld-panel"]').join(' ')`));
+  const languages = await evaluate(`[...document.querySelectorAll('[data-testid="tree-program"]')].map((n) => n.querySelector('.tree__label').textContent + ':' + n.querySelector('[data-testid="tree-program-language"]').textContent)`);
+  check('the tree says each program’s language', JSON.stringify(languages) === '["Doubler:ST","Ladder:LD"]', JSON.stringify(languages));
+  const rung = (id, x, y, body) => body.replace('@', `localId="${id}"><position x="${x}" y="${y}"/>`);
+  const ladder = (contactVariable) => `<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <types><dataTypes/><pous>
+    <pou name="Ladder" pouType="program">
+      <interface>
+        <inputVars><variable name="seconds"><type><INT/></type></variable></inputVars>
+        <localVars>
+          <variable name="odd"><type><BOOL/></type></variable>
+          <variable name="lamp"><type><BOOL/></type></variable>
+          <variable name="dark"><type><BOOL/></type></variable>
+        </localVars>
+      </interface>
+      <body><LD>
+        <leftPowerRail localId="1"><position x="0" y="0"/><connectionPointOut formalParameter=""/></leftPowerRail>
+        ${rung(10, 40, 20, '<inVariable @<connectionPointOut/><expression>seconds MOD 2 = 1</expression></inVariable>')}
+        ${rung(11, 260, 20, '<outVariable @<connectionPointIn><connection refLocalId="10"/></connectionPointIn><expression>odd</expression></outVariable>')}
+        ${rung(20, 60, 80, `<contact @<connectionPointIn><connection refLocalId="1"/></connectionPointIn><connectionPointOut/><variable>${contactVariable}</variable></contact>`)}
+        ${rung(21, 260, 80, '<coil @<connectionPointIn><connection refLocalId="20"/></connectionPointIn><connectionPointOut/><variable>lamp</variable></coil>')}
+        ${rung(30, 60, 140, '<contact negated="true" @<connectionPointIn><connection refLocalId="1"/></connectionPointIn><connectionPointOut/><variable>odd</variable></contact>')}
+        ${rung(31, 260, 140, '<coil @<connectionPointIn><connection refLocalId="30"/></connectionPointIn><connectionPointOut/><variable>dark</variable></coil>')}
+        <rightPowerRail localId="2"><position x="400" y="0"/><connectionPointIn><connection refLocalId="21"/></connectionPointIn><connectionPointIn><connection refLocalId="31"/></connectionPointIn></rightPowerRail>
+      </LD></body>
+    </pou>
+  </pous></types>
+  <instances><configurations/></instances>
+</project>
+`;
+  const saveLadder = async (contactVariable) => (await api(`${base}/api/v1/projects/plant_a/logic/programs/Ladder/source`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: ladder(contactVariable) }) })).ok;
+  check('an agent saves rungs into it over the API', await saveLadder('od'));
+  await sleep(1500);
+  check('the open diagram follows what was saved elsewhere',
+    (await evaluate(`document.querySelectorAll('[data-testid="ld-element"][data-kind="contact"]').length`)) === 2,
+    await evaluate(`[...document.querySelectorAll('[data-testid="ld-element"]')].map((e) => e.getAttribute('data-kind')).join()`));
+  await evaluate(`__t.click('Check')`); await sleep(1200);
+  const ldDiagnostics = await evaluate(`__t.text('[data-testid="diagnostic"]')`);
+  check('a mistake in a rung is told at its element', JSON.stringify(ldDiagnostics) === '["Ladder element 20od is not declared"]', JSON.stringify(ldDiagnostics));
+  check('and drawn around it in the diagram', (await evaluate(`[...document.querySelectorAll('[data-testid="ld-diagnostic"]')].map((d) => d.getAttribute('data-local-id')).join()`)) === '20');
+  check('the corrected rungs are saved', await saveLadder('odd'));
+  await sleep(1500);
+  await evaluate(`__t.click('Check')`); await sleep(1200);
+  check('and compile', (await evaluate(`__t.text('[data-testid="check-ok"]')[0]`)) === 'COMPILES');
+  const ldRows = await evaluate(`__t.text('[data-testid="variable-row"] td:first-child')`);
+  check('its variables are listed, and none the front-end made for itself', JSON.stringify(ldRows) === '["seconds","odd","lamp","dark"]', JSON.stringify(ldRows));
+  check('its rungs are numbered in the order they run', JSON.stringify(await evaluate(`__t.text('[data-testid="ld-rung"]')`)) === '["1","2","3"]');
+  await evaluate(`__t.type('Bind seconds', 'input'); true`); await sleep(200);
+  await evaluate(`__t.type('Reads tag for seconds', 'external.BoilerHouse.Unit1.runtime_s'); true`);
+  await evaluate(`__t.type('Interval in milliseconds', '50'); true`);
+  await evaluate(`[...document.querySelectorAll('.settings__check')].find((l) => l.textContent.includes('Run when loaded')).querySelector('input').click(); true`);
+  await evaluate(`__t.clickTestId('program-load')`); await sleep(3000);
+  const ldBuilt = await evaluate(`__t.text('[data-testid="program-built"]')[0]`);
+  check('Load builds the Ladder Diagram and loads it into a runtime', /^Version [0-9a-f]{12} was built and loaded\.Not changed online: /.test(ldBuilt ?? ''), ldBuilt);
+  const ladderRuntime = (await (await api(base + '/api/v1/runtimes')).json()).runtimes.find((r) => r.id === 'Ladder');
+  check('the controller runs it in the VM runtime module', ladderRuntime?.mode === 'run' && ladderRuntime.scans > 0, JSON.stringify(ladderRuntime));
+  await sleep(1000);
+  const live = () => evaluate(`(() => {
+    const at = (id) => document.querySelector('[data-testid="ld-element"][data-local-id="' + id + '"]')?.getAttribute('data-state');
+    const row = [...document.querySelectorAll('[data-testid="variable-row"]')].find((r) => r.querySelector('td').textContent === 'odd');
+    return { live: document.querySelector('[data-testid="ld-live"]')?.getAttribute('data-live'), no: at(20), nc: at(30), lamp: at(21), dark: at(31),
+      rail: document.querySelector('[data-testid="ld-link"][data-from="1"][data-to="20"]')?.getAttribute('data-state'),
+      odd: row?.querySelector('[data-testid="variable-value"]')?.textContent }; })()`);
+  const seen = [];
+  for (let i = 0; i < 6; i++) { seen.push(await live()); await sleep(450); }
+  check('the diagram is drawn live while its version runs', seen.every((s) => s.live === 'live' && s.rail === 'on'), JSON.stringify(seen));
+  check('each contact is drawn from its variable: the negated one the opposite',
+    seen.every((s) => (s.no === 'on' || s.no === 'off') && s.nc === (s.no === 'on' ? 'off' : 'on') && s.odd === (s.no === 'on' ? 'TRUE' : 'FALSE')),
+    JSON.stringify(seen));
+  check('and its state changes with the device’s counter', new Set(seen.map((s) => s.no)).size === 2, JSON.stringify(seen.map((s) => s.no)));
+  await shot('e2e_6e_ladder');
+  await evaluate(`__t.clickTestId('runtime-stop')`); await sleep(2500);
+  check('a stopped Ladder Diagram is drawn with no power', (await live()).live === 'none' && (await live()).no === 'none', JSON.stringify(await live()));
+  await evaluate(`__t.clickTestId('runtime-unload')`); await sleep(2500);
+  check('Unload takes it out of the controller’s runtimes', !(await (await api(base + '/api/v1/runtimes')).json()).runtimes.some((r) => r.id === 'Ladder'));
+  await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
+  }
 
   // 9. Go offline: values disappear, on the screen as everywhere else.
   await evaluate(`__t.click('Go offline')`); await sleep(500);

@@ -939,7 +939,7 @@ describe('who may change a program', () => {
     expect(button(container, 'Remove program…')).toBeNull();
     const tree = render(<ProgramsTree openEditor={() => undefined} />);
     expect(byTestId(tree, 'tree-add-program')).toBeNull();
-    expect(texts(tree, 'tree-program')).toEqual(['Tank']);
+    expect(texts(tree, 'tree-program')).toEqual(['TankST']);
   });
 });
 
@@ -960,16 +960,16 @@ describe('the Programs section of the tree', () => {
     typeInto(byLabel(tree, 'Program name'), 'Pump');
     await doing(() => byLabel(tree, 'Program name')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(writes(calls)).toEqual(['POST /projects/plant/logic/programs']);
-    expect(texts(tree, 'tree-program')).toEqual(['Tank', 'Pump']);
+    expect(texts(tree, 'tree-program')).toEqual(['TankST', 'PumpST']);
     expect(openedEditors).toEqual(['Pump']);
   });
 
   it('marks a program with unsaved changes', async () => {
     const { container } = await opened(tank());
     const tree = render(<ProgramsTree openEditor={() => undefined} />);
-    expect(texts(tree, 'tree-program')).toEqual(['Tank']);
+    expect(texts(tree, 'tree-program')).toEqual(['TankST']);
     typeSource(container, 'changed');
-    expect(texts(tree, 'tree-program')).toEqual(['Tank*']);
+    expect(texts(tree, 'tree-program')).toEqual(['Tank*ST']);
   });
 
   it('removes a program only when asked twice, and closes its editor', async () => {
