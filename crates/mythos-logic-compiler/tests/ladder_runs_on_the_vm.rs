@@ -119,6 +119,39 @@ fn a_long_series_and_a_wide_parallel_compile_and_run() {
 }
 
 #[test]
+fn a_long_series_of_functions_compiles_and_runs() {
+    // 300 AND blocks, each taking the one before: each result is kept for monitoring (§2.15),
+    // and is worked out one block at a time, so the series takes no stack for its length.
+    let mut p = Pou::program("Main")
+        .vars(&[("x", "BOOL"), ("y", "BOOL"), ("q", "BOOL")])
+        .left(1, 0)
+        .contact(2, 0, 0, Contact::No, "x", &["1"]);
+    let mut prev = "2".to_string();
+    for k in 0..300u64 {
+        p = p.block(
+            10 + k,
+            20 + 10 * k as i32,
+            0,
+            "AND",
+            None,
+            &[("IN1", In::From(&[&prev])), ("IN2", In::Expr("y"))],
+            &["OUT"],
+        );
+        prev = (10 + k).to_string();
+    }
+    let mut r = ld(&[p
+        .coil(5, 9999, 0, Coil::Plain, "q", &[&prev])
+        .right(3, 0, &["5"])]);
+    for (x, y) in [(true, true), (true, false), (false, true), (true, true)] {
+        set(&mut r, "x", x);
+        set(&mut r, "y", y);
+        r.scan().unwrap();
+        assert_eq!(r.bool("q"), x && y, "x={x} y={y}");
+        assert_eq!(r.bool("__LD_309"), x && y, "the last block's result, kept");
+    }
+}
+
+#[test]
 fn a_normally_closed_contact_passes_power_when_its_variable_is_off() {
     let mut r = ld(&[one_contact(Contact::Nc)]);
     for (en, x) in [(true, false), (true, true), (false, false), (false, true)] {
@@ -195,14 +228,18 @@ fn the_memory_of_an_edge_is_a_private_hidden_variable_named_for_its_element() {
         !m.retain,
         "an unqualified variable of a program is not retained"
     );
-    // Nothing else is hidden in this program: no temporaries for a single rung.
+    // Nothing else is hidden in this program but what keeps power for monitoring (§2.15):
+    // the rung's flag and the output of each contact and of the coil.
     let hidden: Vec<&str> =
         r.c.symbols
             .iter()
             .filter(|s| s.path.starts_with("__"))
             .map(|s| s.path.as_str())
             .collect();
-    assert_eq!(hidden, ["__EDGE_3", "__LD_3"]);
+    assert_eq!(
+        hidden,
+        ["__NET_2", "__LD_2", "__EDGE_3", "__LD_3", "__LD_4"]
+    );
 }
 
 fn one_coil(kind: Coil) -> Pou {
@@ -901,6 +938,15 @@ fn comments_are_not_part_of_any_network() {
 fn the_oscillator_the_emulators_run_does_what_its_rungs_say() {
     let xml = include_str!("ladder/oscillator.xml");
     let mut r = Run::of(compile_in(xml, Language::Ld, &TargetProfile::rp2040()));
+    let kept =
+        r.c.symbols
+            .iter()
+            .filter(|s| s.path.starts_with("__LD_") || s.path.starts_with("__NET_"))
+            .count();
+    eprintln!(
+        "the oscillator is {} bytes of code and {} of memory, {kept} variables keeping power",
+        r.c.code_size, r.c.memory_size
+    );
     let (mut rises, mut falls, mut last, mut latched_at) = (0, 0, false, None);
     let mut steps = Vec::new();
     for k in 0..60 {
