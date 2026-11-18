@@ -1,6 +1,8 @@
 import type { StreamState, TagSample, TagView } from './quality';
 import { viewTag } from './quality';
 
+export { ForcedFlag, ForcedMark, isForced } from './ForcedMark';
+
 /** The words and tone for a tag's state. Exported so every surface says the same thing. */
 export function badgeFor(view: TagView): { label: string; tone: string } {
   switch (view.kind) {

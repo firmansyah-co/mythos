@@ -26,6 +26,7 @@ const EMPTY_CONTROLLER: ControllerView = {
   io: null,
   error: null,
   configuredTags: [],
+  forcedTags: null,
 };
 
 /** The live tag cache and the stream's state, as the workbench holds them. */
@@ -150,6 +151,25 @@ export interface RuntimeStatus {
   overruns: number | null;
   outputs_safe: boolean;
   outputs: OutputStatus[];
+  /**
+   * The variables an engineer holds at a value. `null`: not known (the module does not
+   * answer); absent from a server without forcing, which is not known either.
+   */
+  forced?: ForcedValue[] | null;
+  /** Every tag bound to a forced variable. */
+  forced_tags?: string[];
+}
+
+/** A variable held at a value by an engineer (`POST /api/v1/runtimes/<id>/force`). */
+export interface ForcedValue {
+  variable: string;
+  value: unknown;
+}
+
+/** What forcing or releasing answers: the program's state, with what is forced now. */
+export interface ForceAnswer {
+  id: string;
+  state: { mode: string; forced?: ForcedValue[] };
 }
 
 export interface RuntimesAnswer {
@@ -164,6 +184,8 @@ export interface WatchedValue {
   type: string | null;
   value: unknown;
   error: string | null;
+  /** Whether an engineer holds it at this value, rather than the program. */
+  forced?: boolean;
 }
 
 /** A program's variables as its last scan left them (`POST /api/v1/runtimes/<id>/watch`). */
@@ -234,6 +256,14 @@ export const api = {
   stop: (id: string) => host().api(`/api/v1/runtimes/${name(id)}/stop`, { method: 'POST' }),
   watch: (id: string, variables: string[]) =>
     host().api<WatchAnswer>(`/api/v1/runtimes/${name(id)}/watch`, json('POST', { variables })),
+  force: (id: string, variable: string, value: number | boolean) =>
+    host().api<ForceAnswer>(`/api/v1/runtimes/${name(id)}/force`, json('POST', { variable, value })),
+  /** Release one forced variable, or every one with `null`. */
+  release: (id: string, variable: string | null) =>
+    host().api<ForceAnswer>(
+      `/api/v1/runtimes/${name(id)}/release`,
+      json('POST', variable === null ? {} : { variable })
+    ),
   /**
    * Put `instance` into the project's runtimes in place of the one with its id, or take the
    * one called `id` out when `instance` is `null`. Every other instance is sent back as it was

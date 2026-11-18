@@ -3,8 +3,8 @@
 import { viewTag, type QualityTone } from '@mythos/workbench-sdk/quality';
 import { useProjectIo } from './scope';
 import type { IoFieldElement } from './screenModel';
-import { useTelemetry } from './bridge';
-import { TagValue } from '@mythos/workbench-sdk/react';
+import { useController, useTelemetry } from './bridge';
+import { ForcedMark, TagValue } from '@mythos/workbench-sdk/react';
 
 /**
  * An I/O field as it is drawn. The value obeys the same rule as everywhere else: shown as
@@ -15,6 +15,7 @@ export function IoField({ element }: { element: IoFieldElement }) {
   const io = useProjectIo();
   const sample = useTelemetry((state) => (element.tag ? state.tags.get(element.tag) : undefined));
   const stream = useTelemetry((state) => state.stream);
+  const forcedTags = useController((state) => state.forcedTags);
 
   if (element.tag === '') {
     return (
@@ -51,6 +52,8 @@ export function IoField({ element }: { element: IoFieldElement }) {
       <span className="iofield__value">
         <TagValue sample={sample} stream={io ? stream : 'IDLE'} />
         {element.unit && view.kind === 'live' && <span className="iofield__unit">{element.unit}</span>}
+        {/* The controller's forces are its running project's: another project's field shows no value to mark. */}
+        {io && <ForcedMark uri={element.tag} forcedTags={forcedTags} />}
       </span>
       {word && <span className="iofield__state">{word}</span>}
     </div>

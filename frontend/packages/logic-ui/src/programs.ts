@@ -40,7 +40,7 @@ export interface ProgramDoc {
   startFailure: string | null;
 }
 
-export type Busy = 'saving' | 'checking' | 'loading' | 'commanding' | 'creating' | 'removing' | null;
+export type Busy = 'saving' | 'checking' | 'loading' | 'commanding' | 'forcing' | 'creating' | 'removing' | null;
 export type Phase = 'idle' | 'reading' | 'ready' | 'unreadable';
 
 /** The controller's runtimes as last read, or why they could not be. */
@@ -89,6 +89,10 @@ export interface ProgramsState {
   /** Take the program out of the project's runtimes. */
   unload: (name: string) => Promise<boolean>;
   command: (name: string, run: boolean) => Promise<void>;
+  /** Hold a variable of the running program at a value. */
+  force: (name: string, variable: string, value: number | boolean) => Promise<boolean>;
+  /** Release one forced variable of the running program, or every one with `null`. */
+  release: (name: string, variable: string | null) => Promise<boolean>;
   readRuntimes: () => Promise<void>;
   /** Read these variables of the runtime that runs the program. */
   readWatch: (name: string, variables: string[]) => Promise<void>;
@@ -413,6 +417,35 @@ export const usePrograms = create<ProgramsState>((set, get) => {
         void get().readRuntimes();
       } catch (cause) {
         failed(`Runtime ${name} was not asked to ${run ? 'run' : 'stop'}`, cause);
+      }
+    },
+
+    force: async (name, variable, value) => {
+      set({ busy: 'forcing', error: null });
+      try {
+        await api.force(name, variable, value);
+        set({ busy: null });
+        log.info(`${variable} of ${name} is forced to ${String(value)}.`);
+        void get().readRuntimes();
+        return true;
+      } catch (cause) {
+        failed(`${variable} of ${name} was not forced`, cause);
+        return false;
+      }
+    },
+
+    release: async (name, variable) => {
+      const what = variable === null ? `The forces of ${name} were` : `${variable} of ${name} was`;
+      set({ busy: 'forcing', error: null });
+      try {
+        await api.release(name, variable);
+        set({ busy: null });
+        log.info(`${what} released.`);
+        void get().readRuntimes();
+        return true;
+      } catch (cause) {
+        failed(`${what} not released`, cause);
+        return false;
       }
     },
 

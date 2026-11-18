@@ -133,6 +133,9 @@ export function server(backend: Backend): Call[] {
           : Response.json(backend.runtimes);
       }
       if (/\/api\/v1\/runtimes\/[^/]+\/(run|stop)$/.test(path)) return Response.json({});
+      if (/\/api\/v1\/runtimes\/[^/]+\/(force|release)$/.test(path)) {
+        return Response.json({ id: path.split('/').at(-2), state: { mode: 'run', forced: [] } });
+      }
       if (/\/api\/v1\/runtimes\/[^/]+\/watch$/.test(path)) {
         return typeof backend.watch === 'function'
           ? Response.json(backend.watch((body as { variables: string[] }).variables))

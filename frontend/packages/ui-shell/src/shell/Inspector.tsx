@@ -10,12 +10,13 @@ import { useWorkbench, type InspectorTab } from '../data/workbench';
 import { ModuleMount } from '../modules/ModuleMount';
 import { useModuleUi } from '../modules/registry';
 import { ConnectionStateBadge } from '../editors/ConnectionStateBadge';
-import { QualityBadge, TagValue } from './QualityBadge';
+import { ForcedMark, QualityBadge, TagValue } from './QualityBadge';
 import { RuntimeGate } from './RuntimeGate';
 
 function TagProperties({ uri }: { uri: string }) {
   const io = useProjectIo();
   const meta = useController((state) => state.tagMeta.get(uri));
+  const forcedTags = useController((state) => state.forcedTags);
   const sample = useTelemetry((state) => state.tags.get(uri));
   const stream = useTelemetry((state) => state.stream);
   const view = viewTag(sample, stream);
@@ -37,6 +38,7 @@ function TagProperties({ uri }: { uri: string }) {
       <dt>Value</dt>
       <dd>
         <TagValue sample={sample} stream={stream} />
+        <ForcedMark uri={uri} forcedTags={forcedTags} />
       </dd>
       <dt>Data type</dt>
       <dd className="mono">{online && view.kind !== 'never-read' ? sample.type : '—'}</dd>

@@ -6,7 +6,7 @@ import { allTagUris, connectionOfTag } from '../data/derive';
 import { formatTimestampNs, viewTag } from '../data/quality';
 import { useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
-import { QualityBadge, TagValue } from '../shell/QualityBadge';
+import { ForcedMark, QualityBadge, TagValue } from '../shell/QualityBadge';
 import { RuntimeGate } from '../shell/RuntimeGate';
 
 /**
@@ -21,6 +21,7 @@ export function TagTable({ connectionId }: { connectionId?: string }) {
 
 function Rows({ io, connectionId }: { io: IoStatus; connectionId?: string }) {
   const tagMeta = useController((state) => state.tagMeta);
+  const forcedTags = useController((state) => state.forcedTags);
   const tags = useTelemetry((state) => state.tags);
   const stream = useTelemetry((state) => state.stream);
   const selection = useWorkbench((state) => state.selection);
@@ -100,6 +101,7 @@ function Rows({ io, connectionId }: { io: IoStatus; connectionId?: string }) {
                     </td>
                     <td className="num">
                       <TagValue sample={sample} stream={stream} />
+                      <ForcedMark uri={uri} forcedTags={forcedTags} />
                     </td>
                     <td className="mono">{hasType ? sample.type : '—'}</td>
                     <td>

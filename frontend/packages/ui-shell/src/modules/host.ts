@@ -61,7 +61,15 @@ export function controllerView(): ControllerView {
   const controller = useController.getState();
   const io = useIoConfig.getState();
   const programs = useProgramTags.getState().published;
-  const sources = [controller.activeProjectId, controller.io, controller.error, io.draft, io.schemas, programs];
+  const sources = [
+    controller.activeProjectId,
+    controller.io,
+    controller.error,
+    controller.forcedTags,
+    io.draft,
+    io.schemas,
+    programs,
+  ];
   if (lastView && sources.every((source, index) => source === lastSources[index])) return lastView;
   lastSources = sources;
   lastView = {
@@ -76,6 +84,7 @@ export function controllerView(): ControllerView {
     ]
       .filter((uri) => uri !== '')
       .sort((a, b) => a.localeCompare(b)),
+    forcedTags: controller.forcedTags,
   };
   return lastView;
 }

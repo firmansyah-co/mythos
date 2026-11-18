@@ -411,7 +411,7 @@ describe('Settings → Runtimes: who may run and stop', () => {
     expect(button(view, 'Run tank').disabled).toBe(true);
     expect(button(view, 'Stop tank').disabled).toBe(true);
     expect([...view.querySelectorAll('button')].filter((b) => !b.disabled)).toHaveLength(0);
-    expect(text(view, 'runtimes-who-may')).toBe('Only an engineer or an administrator runs or stops a program.');
+    expect(text(view, 'runtimes-who-may')).toBe('Only an engineer or an administrator runs or stops a program, or releases its forced variables.');
   });
 
   it.each(['engineer', 'admin'] as const)('an %s may run and stop', async (role) => {
@@ -526,6 +526,76 @@ describe('Settings → Runtimes: run and stop', () => {
     act(() => button(view, 'Stop tank').click());
     await settle();
     expect(text(view, 'runtime-command-answer')).toBe('The controller answered for tank: asked UNKNOWN');
+  });
+});
+
+describe('Settings → Runtimes: forced variables', () => {
+  const FORCED: RuntimeStatus = {
+    ...RUNNING,
+    forced: [
+      { variable: 'speed', value: 444 },
+      { variable: 'level_ok', value: false },
+    ],
+    forced_tags: ['external.Plant.LT1.level', 'external.Plant.P1.speed'],
+  };
+
+  it('lists each forced variable with its value under a FORCED badge, for everyone', async () => {
+    const { view } = await shown({ body: list([FORCED]) }, 'viewer');
+    const forced = one(view, 'runtime-forced');
+    expect(forced.getAttribute('data-count')).toBe('2');
+    expect(forced.querySelector('.badge')?.textContent).toBe('FORCED 2');
+    expect(all(view, 'runtime-forced-variable').map((row) => row.textContent)).toEqual(['speed = 444', 'level_ok = false']);
+    // A viewer sees it and cannot release it.
+    expect(button(view, 'Release the forces of tank').disabled).toBe(true);
+  });
+
+  it('says nothing is forced only when the controller says so, and UNKNOWN when it does not', async () => {
+    const { view } = await shown({ body: list([{ ...RUNNING, forced: [], forced_tags: [] }]) });
+    expect(text(view, 'runtime-forced')).toBe('nothing forced');
+    expect(button(view, 'Release the forces of tank')).toBeNull();
+    unmountAll();
+
+    // An older controller that does not say, and a module that does not answer.
+    for (const runtime of [RUNNING, { ...UNREACHABLE, forced: null }]) {
+      const { view: other } = await shown({ body: list([runtime]) });
+      expect(text(other, 'runtime-forced')).toBe('forced UNKNOWN');
+      expect(one(other, 'runtime-forced').getAttribute('data-missing')).toBe('true');
+      expect(button(other, 'Release the forces of tank')).toBeNull();
+      unmountAll();
+    }
+  });
+
+  it('Release all asks first, sends nothing when declined, then shows what the controller answered', async () => {
+    const { server, view } = await shown({ body: list([FORCED]) });
+    vi.stubGlobal('confirm', () => false);
+    act(() => button(view, 'Release the forces of tank').click());
+    await settle();
+    expect(server.calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+
+    server.command = () => answer({ id: 'tank', state: { mode: 'run', forced: [] } });
+    server.read = { body: list([{ ...RUNNING, forced: [], forced_tags: [] }]) };
+    vi.stubGlobal('confirm', () => true);
+    act(() => button(view, 'Release the forces of tank').click());
+    await settle();
+    expect(server.calls.filter((c) => c.method === 'POST')).toEqual([{ method: 'POST', path: '/api/v1/runtimes/tank/release' }]);
+    expect(text(view, 'runtime-release-answer')).toBe('The controller released the forces of tank; nothing is forced now.');
+    expect(text(view, 'runtime-forced')).toBe('nothing forced');
+  });
+
+  it('a release answer that does not say what is forced now is UNKNOWN, and a refusal is shown', async () => {
+    const { server, view } = await shown({ body: list([FORCED]) });
+    vi.stubGlobal('confirm', () => true);
+    server.command = () => answer({ id: 'tank' });
+    act(() => button(view, 'Release the forces of tank').click());
+    await settle();
+    expect(text(view, 'runtime-release-answer')).toBe(
+      'The controller released the forces of tank; it did not say what is forced now (UNKNOWN).'
+    );
+
+    server.command = () => answer({ error: 'the runtime had no exchange within 2500 ms' }, 504);
+    act(() => button(view, 'Release the forces of tank').click());
+    await settle();
+    expect(text(view, 'runtime-command-error')).toContain('Release was not taken for tank');
   });
 });
 

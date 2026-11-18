@@ -6,6 +6,7 @@ import { useTelemetry } from '../data/telemetry';
 import { useWorkbench } from '../data/workbench';
 import { ModuleMount } from '../modules/ModuleMount';
 import { useModuleUi } from '../modules/registry';
+import { ForcedFlag } from './QualityBadge';
 
 const STREAM_WORDS = {
   IDLE: { label: 'OFFLINE', tone: 'neutral' },
@@ -24,6 +25,7 @@ export function OnlineTools() {
   const connectionCount = useController((state) => state.io?.connections.length);
   const activeProjectId = useController((state) => state.activeProjectId);
   const error = useController((state) => state.error);
+  const forcedTags = useController((state) => state.forcedTags);
 
   const uris = allTagUris(io);
   const counts = { live: 0, stale: 0, unread: 0, missing: 0 };
@@ -69,6 +71,17 @@ export function OnlineTools() {
           <dd className="mono">{io && stream === 'OPEN' ? counts.unread : '—'}</dd>
           <dt>No data</dt>
           <dd className="mono">{io && stream === 'OPEN' ? counts.missing : '—'}</dd>
+          <dt>Forced</dt>
+          <dd className="mono" data-testid="card-forced">
+            {/* Not known is a dash, never a zero: zero is the controller's statement that nothing is forced. */}
+            {io && forcedTags !== null ? forcedTags.length : '—'}
+            {io && forcedTags !== null && forcedTags.length > 0 && (
+              <>
+                {' '}
+                <ForcedFlag title="An engineer forces a program variable bound to these tags: their values are not the program's (or the field's)." />
+              </>
+            )}
+          </dd>
         </dl>
       )}
 

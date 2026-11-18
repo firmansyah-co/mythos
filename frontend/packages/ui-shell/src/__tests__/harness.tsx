@@ -66,7 +66,7 @@ export function resetStores(): void {
   goOffline();
   unloadModuleUis();
   useTelemetry.setState({ tags: new Map(), stream: 'IDLE', lastBatchAtMs: null, wantOnline: false });
-  useController.setState({ activeProjectId: undefined, io: null, tagMeta: new Map(), error: null });
+  useController.setState({ activeProjectId: undefined, io: null, tagMeta: new Map(), forcedTags: null, error: null });
   useLog.setState({ entries: [] });
   useIoConfig.getState().reset();
   useProgramTags.getState().reset();

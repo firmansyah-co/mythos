@@ -377,6 +377,28 @@ try {
   const twiceWatched = watchedLater.find((r) => r.name === 'twice'); const secondsWatched = watchedLater.find((r) => r.name === 'seconds');
   check('the values are of one scan: twice is exactly two times seconds', twiceWatched?.state === 'live' && Number(twiceWatched.value) === 2 * Number(secondsWatched?.value), JSON.stringify(watchedLater));
   await shot('e2e_6c_logic');
+  // Forcing (ADR-013 C5c): an engineer holds twice at 1234 against the program, which writes
+  // seconds * 2 every scan; the editor, the bound tag and the controller all say it is forced.
+  await evaluate(`window.prompt = () => '1234'; window.confirm = () => true; document.querySelector('[aria-label="Force twice"]').click(); true`); await sleep(2500);
+  const forcedRuntime = (await (await api(base + '/api/v1/runtimes')).json()).runtimes[0];
+  check('Force holds the variable: the controller lists it and the tag it is published as',
+    forcedRuntime?.forced?.length === 1 && forcedRuntime.forced[0].variable === 'twice' && forcedRuntime.forced[0].value === 1234 && JSON.stringify(forcedRuntime?.forced_tags) === '["internal.BoilerHouse.Doubler.twice"]',
+    JSON.stringify(forcedRuntime));
+  const forcedRow = await evaluate(`(() => { const row = [...document.querySelectorAll('[data-testid="variable-row"]')].find((r) => r.querySelector('td').textContent === 'twice');
+    const v = row.querySelector('[data-testid="variable-value"]'); return { value: v.textContent, forced: v.getAttribute('data-forced') }; })()`);
+  check('the editor shows the forced value, marked FORCED', forcedRow.value === '1234FORCED' && forcedRow.forced === 'true', JSON.stringify(forcedRow));
+  check('the Runtime panel says what is forced', (await evaluate(`__t.text('[data-testid="runtime-forced-badge"]')[0]`)) === 'FORCED 1'
+    && (await evaluate(`__t.text('[data-testid="runtime-forced-variable"]')[0]`)) === 'twice = 1234');
+  const forcedTag = await evaluate(`(() => { const b = document.querySelector('[data-testid="binding"][data-kind="published"]');
+    return { value: b.querySelector('[data-testid="tag-value"]')?.textContent, marked: !!b.querySelector('[data-testid="tag-forced"]') }; })()`);
+  check('the published tag carries the forced value on the tag bus, marked FORCED', forcedTag.value === '1234' && forcedTag.marked, JSON.stringify(forcedTag));
+  await shot('e2e_6d_forced');
+  await evaluate(`__t.clickTestId('runtime-release-all')`); await sleep(2500);
+  const releasedRuntime = (await (await api(base + '/api/v1/runtimes')).json()).runtimes[0];
+  const releasedRow = await watchedNow();
+  check('Release all hands the variable back to the program', JSON.stringify(releasedRuntime?.forced) === '[]'
+    && Number(releasedRow.find((r) => r.name === 'twice')?.value) === 2 * Number(releasedRow.find((r) => r.name === 'seconds')?.value)
+    && !(await evaluate(`__t.has('[data-testid="variable-forced"]')`)), JSON.stringify({ releasedRuntime, releasedRow }));
   await evaluate(`__t.clickTestId('runtime-stop')`); await sleep(2500);
   check('Stop puts the program in STOP', (await evaluate(`__t.text('[data-testid="runtime-mode"]')[0]`)) === 'STOP'
     && (await (await api(base + '/api/v1/runtimes')).json()).runtimes[0]?.mode === 'stop');
