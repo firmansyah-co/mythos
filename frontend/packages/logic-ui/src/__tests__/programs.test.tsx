@@ -361,6 +361,36 @@ describe('bindings', () => {
   });
 });
 
+describe('a forced value of a bound tag', () => {
+  /** The FORCED mark of the binding to `tag`, or `null` when it has none. */
+  const markOf = (container: HTMLElement, tag: string): Element | null => {
+    const row = [...container.querySelectorAll('[data-testid="binding"]')].find(
+      (el) => (el.querySelector('input.logic-binding__tag') as HTMLInputElement | null)?.value === tag
+    );
+    if (!row) throw new Error(`no binding to ${tag}`);
+    return row.querySelector('[data-testid="tag-forced"]');
+  };
+  const bound = () =>
+    entryOf('Tank', {
+      inputs: [{ variable: 'level', tag: LEVEL }],
+      outputs: [{ variable: 'speed', tag: SPEED, safe: 0 }],
+    });
+
+  it('is marked FORCED, and a bound tag that is not forced is not', async () => {
+    const { container } = await opened(tank({ programs: [{ entry: bound(), source: TANK }] }));
+    await doing(() => useController.setState({ forcedTags: [SPEED] }));
+    expect(markOf(container, SPEED)?.textContent).toBe('FORCED');
+    expect(markOf(container, LEVEL)).toBeNull();
+  });
+
+  it('is not marked while the forced tags are not known', async () => {
+    const { container } = await opened(tank({ programs: [{ entry: bound(), source: TANK }] }));
+    await doing(() => useController.setState({ forcedTags: null }));
+    expect(markOf(container, SPEED)).toBeNull();
+    expect(markOf(container, LEVEL)).toBeNull();
+  });
+});
+
 describe('loading into a runtime', () => {
   it('saves, checks, builds, and puts the instance into the project\'s runtimes beside the others', async () => {
     const other = { id: 'Pump', module: 'vm', run: true, program: { name: 'Pump' } };

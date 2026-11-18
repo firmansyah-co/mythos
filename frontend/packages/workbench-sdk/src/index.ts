@@ -59,6 +59,16 @@ export interface ControllerView {
    * control programs publish, as its runtimes configuration says.
    */
   configuredTags: string[];
+  /**
+   * Every tag bound to a variable an engineer forces (ADR-013 §2.5), as the controller's
+   * runtimes last said: an input the program no longer takes, an output written the forced
+   * value, a published tag giving it. A tag here shows a value that is neither the program's
+   * nor the field's, and is marked so wherever it is shown. `null` when not known (the
+   * runtimes could not be read): nothing is then marked, and nothing is claimed unforced.
+   * A runtime whose module does not answer contributes none, because the controller knows
+   * none of its forces.
+   */
+  forcedTags: string[] | null;
 }
 
 export interface Identity {

@@ -8,7 +8,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Check, CirclePlay, CircleStop, Download, Lock, LockOpen, Save, Trash2, Undo2, Upload } from 'lucide-react';
-import { TagValue } from '@mythos/workbench-sdk/react';
+import { ForcedMark, TagValue } from '@mythos/workbench-sdk/react';
 import {
   addBinding,
   bindingsOf,
@@ -364,6 +364,7 @@ function BindingEditor({
   const setSettings = usePrograms((s) => s.setSettings);
   const sample = useTelemetry((s) => s.tags.get(row.tag));
   const stream = useTelemetry((s) => s.stream);
+  const forcedTags = useController((s) => s.forcedTags);
   const { entry } = doc;
   const problem = problemOf(row);
   const label = `${KIND_LABEL[row.kind]} for ${row.variable}`;
@@ -424,6 +425,7 @@ function BindingEditor({
         </label>
       )}
       {row.tag.trim() !== '' && <TagValue sample={sample} stream={stream} />}
+      {row.tag.trim() !== '' && <ForcedMark uri={row.tag} forcedTags={forcedTags} />}
       <button
         type="button"
         className="icon-btn"

@@ -25,6 +25,7 @@ const EMPTY_CONTROLLER: ControllerView = {
   io: null,
   error: null,
   configuredTags: [],
+  forcedTags: null,
 };
 
 /** The live tag cache and the stream's state, as the workbench holds them. */

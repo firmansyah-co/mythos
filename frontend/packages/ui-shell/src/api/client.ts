@@ -289,12 +289,22 @@ export interface RuntimeStatus {
   pid: number | null;
   restarts: number;
   /**
-   * The variables an engineer holds at a value, as its module last said. `null`: nothing is
-   * known (the module does not answer); absent from a server without forcing.
+   * The variables an engineer holds at a value, as its module last said (ADR-013 §2.5).
+   * `null`: nothing is known, because its module does not answer. Absent from a server
+   * without forcing.
    */
-  forced?: Array<{ variable: string; value: unknown }> | null;
-  /** Every tag bound to a forced variable. */
+  forced?: ForcedValue[] | null;
+  /**
+   * Every tag bound to a forced variable. Empty, not absent, when its module does not answer
+   * (`forced` is `null` then). Absent from a server without forcing.
+   */
   forced_tags?: string[];
+}
+
+/** A variable an engineer forces, and the value it is held at. */
+export interface ForcedValue {
+  variable: string;
+  value: unknown;
 }
 
 /** A runtime module that could run a program, and the target profile it declares (ADR-013 §2.2). */

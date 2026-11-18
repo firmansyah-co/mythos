@@ -281,6 +281,60 @@ describe('what stands between the operator and a current value', () => {
   });
 });
 
+describe('a forced value on the operator\'s screen', () => {
+  const OTHER = 'external.BoilerHouse.Unit1.feed_flow';
+  const mark = (container: HTMLElement) =>
+    container.querySelector('[data-testid="io-field"] [data-testid="tag-forced"]');
+  const good = () =>
+    act(() =>
+      useTelemetry.setState({
+        tags: new Map([[TAG, sample(TAG, { type: 'REAL', value: 56.25 })]]),
+        stream: 'OPEN',
+        lastBatchAtMs: 1_700_000_000_000,
+      })
+    );
+
+  it('is marked FORCED beside the value, saying why', async () => {
+    server({ active: [screenOf('s1', 'Overview', [FIELD])], draft: [] });
+    const container = await openRuntime();
+    good();
+    act(() => useController.setState({ forcedTags: [TAG] }));
+
+    expect(mark(container)?.textContent).toBe('FORCED');
+    expect(mark(container)?.getAttribute('title')).toBe(
+      "An engineer forces the program variable bound to this tag: this value is not the program's (or the field's)."
+    );
+    // The value is still shown: the mark says whose it is, it does not hide it.
+    expect(container.querySelector('[data-testid="io-field"]')?.getAttribute('data-state')).toBe('live');
+  });
+
+  it('is not marked when another tag is forced, nor when none is', async () => {
+    server({ active: [screenOf('s1', 'Overview', [FIELD])], draft: [] });
+    const container = await openRuntime();
+    good();
+    act(() => useController.setState({ forcedTags: [OTHER] }));
+    expect(mark(container)).toBeNull();
+    act(() => useController.setState({ forcedTags: [] }));
+    expect(mark(container)).toBeNull();
+  });
+
+  it('is not marked while the forced tags are not known', async () => {
+    server({ active: [screenOf('s1', 'Overview', [FIELD])], draft: [] });
+    const container = await openRuntime();
+    good();
+    act(() => useController.setState({ forcedTags: null }));
+    expect(mark(container)).toBeNull();
+  });
+
+  it('is not marked on a screen of a project the controller does not run', async () => {
+    server({ active: [screenOf('s1', 'Overview', [FIELD])], draft: [] });
+    const container = await openRuntime(false);
+    good();
+    act(() => useController.setState({ forcedTags: [TAG] }));
+    expect(mark(container)).toBeNull();
+  });
+});
+
 describe('addresses and choosing a screen', () => {
   it.each([
     { projectId: 'plant', view: { id: 'runtime' } },
