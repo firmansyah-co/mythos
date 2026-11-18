@@ -446,6 +446,35 @@ fn watch_body() -> Value {
     })
 }
 
+fn force_body() -> Value {
+    json!({
+        "type": "object",
+        "required": ["variable", "value"],
+        "properties": {
+            "variable": {
+                "type": "string",
+                "description": "A variable as the program declares it: level, pump.running, hist[2]"
+            },
+            "value": {
+                "type": ["number", "boolean"],
+                "description": "What to hold it at: a boolean or 0/1 for a BOOL, a number in the variable's range otherwise"
+            }
+        }
+    })
+}
+
+fn release_body() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "variable": {
+                "type": "string",
+                "description": "The forced variable to release; leave it out to release every one"
+            }
+        }
+    })
+}
+
 fn runtimes_config_body() -> Value {
     json!({
         "type": "object",
@@ -1173,6 +1202,28 @@ pub const TOOLS: &[Tool] = &[
         body: Some(watch_body),
         read_only: true,
         destructive: false,
+    },
+    Tool {
+        name: "force_runtime_variable",
+        title: "Force a variable of a running program",
+        description: "Hold a variable of a running program at a value (a BOOL or a number; one element of an array as name[2]). Whatever its inputs and the program say, it reads and is written as that value: an output bound to it is written it to the device, a published tag gives it, and an operator's setpoint to it is refused. It holds until released (release_runtime_forces), until the program leaves run (stopped or faulted), or until a program is loaded again. A program that is not in run is refused. The answer's state.forced lists every forced variable; list_runtimes shows them too, with forced_tags: every tag bound to a forced variable. It is carried out at the runtime's next exchange; an answer of 504 means it was not carried out.",
+        method: "POST",
+        path: "/api/v1/runtimes/:runtime/force",
+        query: &[],
+        body: Some(force_body),
+        read_only: false,
+        destructive: true,
+    },
+    Tool {
+        name: "release_runtime_forces",
+        title: "Release forced variables of a program",
+        description: "Release one forced variable (body.variable), or every forced variable of the program (no variable). The program decides the value again from its next scan, so an output bound to it may change at once. A variable that is not forced is refused.",
+        method: "POST",
+        path: "/api/v1/runtimes/:runtime/release",
+        query: &[],
+        body: Some(release_body),
+        read_only: false,
+        destructive: true,
     },
     Tool {
         name: "get_runtimes_config",

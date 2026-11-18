@@ -378,10 +378,10 @@ async fn an_engineer_loads_a_program_it_runs_the_plant_and_each_role_does_what_i
     assert_eq!(
         body["values"],
         json!([
-            {"variable": "level", "type": "INT", "value": 20, "error": null},
-            {"variable": "speed", "type": "INT", "value": 300, "error": null},
+            {"variable": "level", "type": "INT", "value": 20, "error": null, "forced": false},
+            {"variable": "speed", "type": "INT", "value": 300, "error": null, "forced": false},
             {"variable": "flow", "type": null, "value": null,
-             "error": "the program has no variable flow"}
+             "error": "the program has no variable flow", "forced": false}
         ]),
         "{body}"
     );
@@ -511,6 +511,316 @@ async fn an_engineer_loads_a_program_it_runs_the_plant_and_each_role_does_what_i
     assert_eq!(rig.sim.holding(1).await, Some(SAFE_SPEED));
     let (_, body) = rig.send(&rig.viewer, "GET", "/api/v1/runtimes", None).await;
     assert_eq!(body["runtimes"], json!([]), "{body}");
+
+    rig.io.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_engineer_forces_a_variable_everyone_sees_it_and_stopping_releases_it() {
+    let rig = rig().await;
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/io",
+            Some(rig.io_config()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/runtimes",
+            Some(runtimes("level")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    rig.speed_is("the program commands 300", 300).await;
+    let tank = rig
+        .tank_when("nothing is forced", |t| t["forced"] == json!([]))
+        .await;
+    assert_eq!(tank["forced_tags"], json!([]), "{tank}");
+
+    let force = |variable: &str, value: Value| json!({"variable": variable, "value": value});
+
+    // Forcing overrides the program: an operator may not, nor a viewer.
+    for who in [&rig.viewer, &rig.operator] {
+        let (status, _) = rig
+            .send(
+                who,
+                "POST",
+                "/api/v1/runtimes/tank/force",
+                Some(force("speed", json!(444))),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = rig
+            .send(
+                who,
+                "POST",
+                "/api/v1/runtimes/tank/release",
+                Some(json!({})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    // The engineer forces the output: the device is written the forced value, not the
+    // program's, and the answer says what is forced.
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "POST",
+            "/api/v1/runtimes/tank/force",
+            Some(force("speed", json!(444))),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["state"]["forced"],
+        json!([{"variable": "speed", "value": 444}]),
+        "{body}"
+    );
+    rig.speed_is("speed forced to 444", 444).await;
+
+    // Everyone sees it: the status lists the variable and every tag bound to it, and a watch
+    // marks the value as forced.
+    let tank = rig
+        .tank_when("the status says speed is forced", |t| {
+            t["forced_tags"] == json!([SPEED])
+        })
+        .await;
+    assert_eq!(
+        tank["forced"],
+        json!([{"variable": "speed", "value": 444}]),
+        "{tank}"
+    );
+    let (status, body) = rig
+        .send(
+            &rig.viewer,
+            "POST",
+            "/api/v1/runtimes/tank/watch",
+            Some(json!({"variables": ["speed", "level"]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["values"][0]["value"], 444, "{body}");
+    assert_eq!(body["values"][0]["forced"], true, "{body}");
+    assert_eq!(body["values"][1]["forced"], false, "{body}");
+
+    // A forced setpoint holds against the operator; forcing an input holds against the field.
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "POST",
+            "/api/v1/runtimes/tank/force",
+            Some(force("setpoint", json!(40))),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = rig
+        .send(
+            &rig.operator,
+            "PUT",
+            &format!("/api/v1/tags/{T_SETPOINT}/value"),
+            Some(json!({"value": 30})),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("forced"),
+        "the operator is told why: {body}"
+    );
+    let tank = rig
+        .tank_when("speed and setpoint are forced", |t| {
+            t["forced_tags"] == json!([SPEED, T_SETPOINT])
+        })
+        .await;
+    assert_eq!(tank["forced"].as_array().unwrap().len(), 2, "{tank}");
+
+    // What cannot be forced is refused, saying why, and nothing changes.
+    for (body, why) in [
+        (force("flow", json!(1)), "the program has no variable flow"),
+        (force("speed", json!(70_000)), "is not a value of speed"),
+        (
+            force("speed", json!("fast")),
+            "must be a number or a boolean",
+        ),
+    ] {
+        let (status, answer) = rig
+            .send(
+                &rig.engineer,
+                "POST",
+                "/api/v1/runtimes/tank/force",
+                Some(body),
+            )
+            .await;
+        assert_ne!(status, StatusCode::OK, "{answer}");
+        assert!(
+            answer["error"].as_str().unwrap_or_default().contains(why),
+            "{answer}"
+        );
+    }
+    let (status, _) = rig
+        .send(
+            &rig.engineer,
+            "POST",
+            "/api/v1/runtimes/nobody/force",
+            Some(force("speed", json!(1))),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "POST",
+            "/api/v1/runtimes/tank/release",
+            Some(json!({"variable": "level"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "level is not forced", "{body}");
+
+    // Released, the program decides again: setpoint back to what the program holds (40 was
+    // written into it while forced, and stays until the program changes it), speed from it.
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "POST",
+            "/api/v1/runtimes/tank/release",
+            Some(json!({"variable": "speed"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["state"]["forced"],
+        json!([{"variable": "setpoint", "value": 40}]),
+        "{body}"
+    );
+    rig.speed_is(
+        "speed released: setpoint 40, level 20, the program commands 200",
+        200,
+    )
+    .await;
+
+    // Stopping releases every force: run again, and the program starts cold with none.
+    let (status, _) = rig
+        .send(&rig.engineer, "POST", "/api/v1/runtimes/tank/stop", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    rig.speed_is("stopped: the safe value", SAFE_SPEED).await;
+    let tank = rig
+        .tank_when("stopped, nothing is forced", |t| {
+            t["mode"] == "stop" && t["forced"] == json!([])
+        })
+        .await;
+    assert_eq!(tank["forced_tags"], json!([]), "{tank}");
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "POST",
+            "/api/v1/runtimes/tank/force",
+            Some(force("speed", json!(444))),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("the program is not running"),
+        "{body}"
+    );
+    let (status, _) = rig
+        .send(&rig.engineer, "POST", "/api/v1/runtimes/tank/run", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    rig.speed_is(
+        "running again from a cold start: setpoint 50, nothing forced",
+        300,
+    )
+    .await;
+
+    // A forced input holds against the field: the device says 20, the program reads 45.
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "POST",
+            "/api/v1/runtimes/tank/force",
+            Some(force("level", json!(45))),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    rig.speed_is("level forced to 45: the program commands 50", 50)
+        .await;
+
+    // Releasing every force at once.
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "POST",
+            "/api/v1/runtimes/tank/force",
+            Some(force("speed", json!(9))),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    rig.speed_is("speed forced to 9", 9).await;
+    let tank = rig
+        .tank_when("two forced, level bound to one of them", |t| {
+            t["forced"].as_array().is_some_and(|f| f.len() == 2)
+        })
+        .await;
+    assert_eq!(tank["forced_tags"], json!([LEVEL, SPEED]), "{tank}");
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "POST",
+            "/api/v1/runtimes/tank/release",
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"]["forced"], json!([]), "{body}");
+    rig.speed_is("every force released: the program commands 300", 300)
+        .await;
+
+    // Loading the program again releases every force too.
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "POST",
+            "/api/v1/runtimes/tank/force",
+            Some(force("speed", json!(11))),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    rig.speed_is("speed forced to 11", 11).await;
+    let mut again = runtimes("level");
+    again["instances"][0]["program"]["version"] = json!("v2");
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/runtimes",
+            Some(again),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    rig.speed_is(
+        "loaded again: nothing forced, the program commands 300",
+        300,
+    )
+    .await;
+    let tank = rig
+        .tank_when("v2 runs with nothing forced", |t| {
+            t["version"] == "v2" && t["forced"] == json!([])
+        })
+        .await;
+    assert_eq!(tank["forced_tags"], json!([]), "{tank}");
 
     rig.io.shutdown().await;
 }

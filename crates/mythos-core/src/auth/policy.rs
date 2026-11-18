@@ -120,6 +120,10 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     ("PUT", "/api/v1/projects/:id/runtimes", E),
     ("POST", "/api/v1/runtimes/:runtime/run", E),
     ("POST", "/api/v1/runtimes/:runtime/stop", E),
+    // Holding a variable of a running program at a value overrides the program: engineering
+    // (owner, 2026-11-18). So is releasing it, which hands the variable back to the program.
+    ("POST", "/api/v1/runtimes/:runtime/force", E),
+    ("POST", "/api/v1/runtimes/:runtime/release", E),
     ("POST", "/api/v1/modules/rescan", E),
     ("POST", "/api/v1/control/deploy", E),
     // A service module's routes: any signed-in account gets as far as the module host, which
