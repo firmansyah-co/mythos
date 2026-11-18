@@ -3,7 +3,7 @@
 - **Document Identifier**: MYTHOS-SPEC-001
 - **Standard Compliance**: ISO/IEC/IEEE 29148:2018 (Systems and Software Engineering — Life Cycle Processes — Requirements Engineering)
 - **Controlled Language**: ASD-STE100 Simplified Technical English
-- **Version**: 1.3.0
+- **Version**: 1.4.0
 - **Status**: APPROVED / MASTER BASELINE
 - **Author**: Scribe (VP of Publication & Technical Documentation)
 - **Architectural Contributors**: Neo (VP Software), Vulcan (VP Hardware), Iris (VP Design), Sage (VP R&D)
@@ -476,7 +476,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 ## 4. Non-Functional & Quality Requirements
 
 ### 4.1 Performance & Timing Bounds
-- **NFR-001**: TagBus read latency under peak load shall not exceed 100 nanoseconds (target: $< 50\,\text{ns}$).
+- **NFR-001**: A TagBus tag read shall not exceed 300 nanoseconds, measured as §6 states for SYS-REQ-002. (Set by the owner on 2026-11-18, the same bound as the atomic swap of TSK-002; it was 100 ns, with a 50 ns target.)
 - **NFR-002**: Real-time Native STruC++ scan jitter shall not exceed $\pm 100\,\mu\text{s}$ when executing on a Linux kernel with `PREEMPT_RT` patches.
 - **NFR-003**: Discovery scan over Layer 2 DCP shall return responses from all active physical devices within 2,500 milliseconds.
 - **NFR-004**: Swinging Door Compression shall achieve over $90\%$ data reduction on telemetry while preserving peak and inflection accuracy.
@@ -495,7 +495,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 
 | Interface ID | Interface Name | Protocol / Mechanism | Data Format | Latency Bound |
 |---|---|---|---|---|
-| **IF-001** | Internal Tag Bus | POSIX SHM (`/dev/shm/mythos_tagbus`) | POD Structs (64-byte aligned), Plant Hierarchy URIs (`external.*` & `internal.*`) | $< 100\,\text{ns}$ for a busy-poll read at p50 (measured 36 ns under 16-thread contention at 1-minute load average 63.85; PR #25, run 40089446143). This figure does not bound the swap-acquire read path or the write path: measured p50 178 ns and 145 ns in the same run. |
+| **IF-001** | Internal Tag Bus | POSIX SHM (`/dev/shm/mythos_tagbus`) | POD Structs (64-byte aligned), Plant Hierarchy URIs (`external.*` & `internal.*`) | $< 300\,\text{ns}$ per read (NFR-001; was $< 100\,\text{ns}$ for a busy-poll read at p50 until 2026-11-18). Under 16-thread contention a busy-poll read measured p50 36 ns and a swap-acquire read p50 178 ns (1-minute load average 63.85; PR #25, run 40089446143). The write path is not bounded by this figure (p50 145 ns in the same run). |
 | **IF-002** | Native STruC++ Engine Bridge | Linux FFI (`extern "C"`) | C-ABI Pointers, Dual-Zone Mapping (%IX field inputs / %QX, %MX internal logic) | $< 10\,\mu\text{s}$ |
 | **IF-003** | Fieldbus Discovery | PROFINET Layer 2 DCP | Raw Ethernet Frames (`0x8892`) | $< 2.5\,\text{s}$ |
 | **IF-004** | Serial Fieldbus | RS485 / Modbus RTU | Binary Modbus frames mapped to `external.<namespace>.<device>.<variable>` | $10\,\text{ms} - 500\,\text{ms}$ |
@@ -512,7 +512,7 @@ The target controller (Raspberry Pi Compute Module 4 or Industrial PC inside the
 
 | Requirement ID | Specification Item | Verification Method | Acceptance Pass Criteria |
 |---|---|---|---|
-| **SYS-REQ-002** | Lock-Free Shared Memory | Benchmark Test | 1,000,000 tag reads complete with average latency $< 50\,\text{ns}$. Zero data corruption. |
+| **SYS-REQ-002** | Lock-Free Shared Memory | Benchmark Test | 1,000,000 tag reads complete with average latency $< 300\,\text{ns}$ (was $< 50\,\text{ns}$ until 2026-11-18). Zero data corruption. Measured on an optimised build; the best of five rounds is the result, as for the TSK-002 swap. |
 | **SYS-REQ-010** | Protocol Driver SPI | Fault Injection Test | Simulated crash in Modbus driver terminates only that driver actor. Core and Native STruC++ Engine remain healthy. |
 | **SYS-REQ-016** | Field Device Tag Ingestion | Tag Registry Verification | Confirms `external` prefix applies strictly to external field device telemetry. |
 | **SYS-REQ-021** | In-Canvas Logic Deployment | End-to-End API Test | Logic deployed via `POST /api/v1/control/deploy` compiles on-device and reloads without manual file upload. |
@@ -580,3 +580,4 @@ The requirements defined in this specification are backed by the approved Archit
 |---|---|---|---|
 | 1.2.0 | — | Scribe (VP Publication & Documentation) | Baseline approved by Adrian (Board of Commissioners) and Aria (CEO). |
 | 1.3.0 | 2026-10-23 | Scribe (VP Publication & Documentation) | ADR-008 propagation. Section 3.2 now names `crates/mythos-plugin-sdk`. SYS-REQ-010 now states the implemented `ProtocolDriver` (validate_config, poll_cycle, write_tag) and `MythosPlugin` (metadata, init, start, tick, stop, health_check) method sets. IF-001 is qualified: its `< 100 ns` bound is stated for a busy-poll read at p50 and is recorded as not bounding the swap-acquire read path or the write path (PR #25, run 40089446143). |
+| 1.4.0 | 2026-11-18 | Adrian (owner); recorded by Claude | NFR-001, IF-001 and the SYS-REQ-002 acceptance criterion: a tag read is bounded at 300 ns, the bound the owner set for the TSK-002 swap on 2026-11-17 and extended to reads on 2026-11-18 ("berlaku untuk baca juga"). It was 100 ns with a 50 ns target (NFR-001), 50 ns average (SYS-REQ-002) and 100 ns busy-poll p50 (IF-001). The write path keeps no bound here; TSK-010 still records it as under revision. |
