@@ -1349,12 +1349,14 @@ impl<'a> Lowering<'a> {
             Kind::Contact {
                 edge: Edge::None, ..
             } => true,
+            // One showing another output is refused before its inputs are read.
             Kind::Block {
                 type_name,
                 instance: None,
-                ..
+                outputs,
             } => {
                 !self.known.is_block(&type_name.to_ascii_uppercase())
+                    && outputs.iter().all(|(o, _)| o == "OUT" || o == "ENO")
                     && self.uses(k, "OUT") <= 1
                     && self.uses(k, "ENO") == 0
             }
