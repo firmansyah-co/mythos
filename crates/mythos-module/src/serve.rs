@@ -55,6 +55,30 @@ pub trait RuntimeEngine: ProtocolDriver {
             "this runtime module does not give the values of its variables".to_string(),
         ))
     }
+
+    /// Hold a variable at a value until released, the program leaves RUN, or another is
+    /// loaded. A runtime that cannot force says so.
+    async fn force(
+        &mut self,
+        _ctx: &PluginContext,
+        _variable: String,
+        _value: Value,
+    ) -> Result<RuntimeState, PluginError> {
+        Err(PluginError::RuntimeError(
+            "this runtime module cannot force a variable".to_string(),
+        ))
+    }
+
+    /// Release a forced variable, or with `None` every one.
+    async fn unforce(
+        &mut self,
+        _ctx: &PluginContext,
+        _variable: Option<String>,
+    ) -> Result<RuntimeState, PluginError> {
+        Err(PluginError::RuntimeError(
+            "this runtime module cannot force a variable".to_string(),
+        ))
+    }
 }
 
 /// The calls a module answers beyond a driver's.
@@ -106,6 +130,12 @@ impl<D: RuntimeEngine> ExtraCalls<D> for RuntimeCalls {
             Call::Exchange { inputs } => encode(driver.exchange(ctx, inputs).await.map_err(fail)?),
             Call::Mode { run } => encode(driver.set_mode(ctx, run).await.map_err(fail)?),
             Call::Watch { variables } => encode(driver.watch(ctx, variables).await.map_err(fail)?),
+            Call::Force { variable, value } => {
+                encode(driver.force(ctx, variable, value).await.map_err(fail)?)
+            }
+            Call::Unforce { variable } => {
+                encode(driver.unforce(ctx, variable).await.map_err(fail)?)
+            }
             _ => Err(WireError {
                 kind: ErrorKind::Protocol,
                 message: "not a runtime call".to_string(),
@@ -364,8 +394,10 @@ where
         }),
         // A driver does not need to know the node; it is told nothing it must act on.
         Call::Node { .. } => Ok(json!(null)),
-        call @ (Call::Exchange { .. } | Call::Mode { .. } | Call::Watch { .. }) => {
-            extra.handle(manifest, driver, ctx.as_ref(), call).await
-        }
+        call @ (Call::Exchange { .. }
+        | Call::Mode { .. }
+        | Call::Watch { .. }
+        | Call::Force { .. }
+        | Call::Unforce { .. }) => extra.handle(manifest, driver, ctx.as_ref(), call).await,
     }
 }

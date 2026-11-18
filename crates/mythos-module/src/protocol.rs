@@ -260,6 +260,15 @@ pub enum Call {
     /// Read variables of a runtime module's program as its last scan left them. It changes
     /// nothing. Answers with a [`WatchReply`].
     Watch { variables: Vec<String> },
+    /// Hold a variable of a running program at a value: whatever the inputs and the program
+    /// say, the variable reads and is written as `value` until it is released, the program
+    /// leaves RUN, or another program is loaded. Answers with its [`RuntimeState`].
+    Force { variable: String, value: Value },
+    /// Release a forced variable, or with `None` every one. Answers with its [`RuntimeState`].
+    Unforce {
+        #[serde(default)]
+        variable: Option<String>,
+    },
 }
 
 // -----------------------------------------------------------------------------
@@ -372,6 +381,17 @@ pub struct RuntimeState {
     pub max_scan_us: u64,
     /// Scans that started late because the one before had not finished.
     pub overruns: u64,
+    /// The variables held at a value by [`Call::Force`]. Empty from a module that cannot force.
+    #[serde(default)]
+    pub forced: Vec<ForcedValue>,
+}
+
+/// A variable held at a value by [`Call::Force`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForcedValue {
+    /// The name as it was forced.
+    pub variable: String,
+    pub value: Value,
 }
 
 /// A runtime module's answer to [`Call::Exchange`].
@@ -397,6 +417,9 @@ pub struct WatchedValue {
     pub value: Option<Value>,
     #[serde(default)]
     pub error: Option<String>,
+    /// Whether the value is held there by [`Call::Force`] rather than by the program.
+    #[serde(default)]
+    pub forced: bool,
 }
 
 /// A runtime module's answer to [`Call::Watch`]: the variables as the last scan left them,

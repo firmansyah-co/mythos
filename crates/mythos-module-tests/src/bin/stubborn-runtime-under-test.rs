@@ -33,6 +33,7 @@ impl Stubborn {
             last_scan_us: 0,
             max_scan_us: 0,
             overruns: 0,
+            forced: Vec::new(),
         }
     }
 }

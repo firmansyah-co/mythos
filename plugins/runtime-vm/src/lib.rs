@@ -26,8 +26,8 @@ use mythos_logic_vm::{
     Value as VmValue,
 };
 use mythos_module::protocol::{
-    ExchangeReply, InputOf, ModuleKind, ModuleManifest, RuntimeMode, RuntimeProgram, RuntimeState,
-    WatchReply, WatchedValue, WireInput, WireOutput, WireSample, PROTOCOL_VERSION,
+    ExchangeReply, ForcedValue, InputOf, ModuleKind, ModuleManifest, RuntimeMode, RuntimeProgram,
+    RuntimeState, WatchReply, WatchedValue, WireInput, WireOutput, WireSample, PROTOCOL_VERSION,
 };
 use mythos_module::RuntimeEngine;
 use mythos_plugin_sdk::{
@@ -504,6 +504,18 @@ fn describe(fault: Fault) -> String {
 // The running program
 // -----------------------------------------------------------------------------
 
+/// The most variables one program may have forced at once.
+const FORCE_LIMIT: usize = 64;
+
+/// A variable held at a value: written before each scan, so the program reads it, and after,
+/// so what the program wrote does not stand.
+struct Forced {
+    /// The name as it was forced.
+    variable: String,
+    offset: u32,
+    value: VmValue,
+}
+
 struct Live {
     memory: Vec<u8>,
     mode: RuntimeMode,
@@ -518,6 +530,8 @@ struct Live {
     fed: bool,
     /// When the program was put in RUN: the zero of its clock.
     since: Instant,
+    /// The variables held at a value. Only while in RUN: leaving it releases every one.
+    forces: Vec<Forced>,
 }
 
 impl Live {
@@ -531,7 +545,26 @@ impl Live {
             last_scan_us: self.last_scan_us,
             max_scan_us: self.max_scan_us,
             overruns: self.overruns,
+            forced: self
+                .forces
+                .iter()
+                .map(|f| ForcedValue {
+                    variable: f.variable.clone(),
+                    value: to_json(f.value),
+                })
+                .collect(),
         }
+    }
+
+    /// Write every forced variable its value.
+    fn hold(&mut self) {
+        for f in &self.forces {
+            write(&mut self.memory, f.offset, f.value);
+        }
+    }
+
+    fn is_forced(&self, offset: u32) -> bool {
+        self.forces.iter().any(|f| f.offset == offset)
     }
 
     /// From its initial values, clock at zero, waiting for its first inputs.
@@ -542,6 +575,7 @@ impl Live {
             .map_err(|e| PluginError::RuntimeError(describe(e)))?;
         self.mode = RuntimeMode::Run;
         self.fault = None;
+        self.forces.clear();
         self.scans = 0;
         self.last_scan_us = 0;
         self.max_scan_us = 0;
@@ -629,6 +663,7 @@ fn scan_loop(plan: Arc<Plan>, live: Arc<Mutex<Live>>, quit: Arc<AtomicBool>) {
                 }
             }
         }
+        l.hold();
         let started = Instant::now();
         let now_ns = l.since.elapsed().as_nanos().min(i64::MAX as u128) as i64;
         match scan(
@@ -640,6 +675,7 @@ fn scan_loop(plan: Arc<Plan>, live: Arc<Mutex<Live>>, quit: Arc<AtomicBool>) {
             BUDGET,
         ) {
             Ok(_) => {
+                l.hold();
                 let us = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
                 l.scans += 1;
                 l.last_scan_us = us;
@@ -647,6 +683,7 @@ fn scan_loop(plan: Arc<Plan>, live: Arc<Mutex<Live>>, quit: Arc<AtomicBool>) {
             }
             Err(fault) => {
                 l.mode = RuntimeMode::Fault;
+                l.forces.clear();
                 l.fault = Some(format!("scan {} stopped: {}", l.scans + 1, describe(fault)));
                 tracing::error!("{}", l.fault.as_deref().unwrap_or_default());
             }
@@ -716,6 +753,7 @@ impl MythosPlugin for VmEngine {
             inputs: HashMap::new(),
             fed: false,
             since: Instant::now(),
+            forces: Vec::new(),
         };
         if run {
             live.cold_run(&plan)?;
@@ -804,6 +842,11 @@ impl ProtocolDriver for VmEngine {
                 "the program is not running, so the setpoint was not taken".to_string(),
             ));
         }
+        if l.is_forced(var.offset) {
+            return Err(PluginError::InvalidTag(format!(
+                "{tag_uri} is forced by an engineer, so the setpoint was not taken"
+            )));
+        }
         write(&mut l.memory, var.offset, v);
         Ok(())
     }
@@ -877,6 +920,7 @@ impl RuntimeEngine for VmEngine {
             (false, _) => {
                 l.mode = RuntimeMode::Stop;
                 l.fault = None;
+                l.forces.clear();
             }
         }
         Ok(l.state(&running.plan))
@@ -899,6 +943,7 @@ impl RuntimeEngine for VmEngine {
                     ty: None,
                     value: None,
                     error: Some(why),
+                    forced: false,
                 },
                 Ok((offset, shape, ty)) => {
                     let (value, error) = match shape {
@@ -910,6 +955,7 @@ impl RuntimeEngine for VmEngine {
                         ty: Some(ty),
                         value,
                         error,
+                        forced: matches!(shape, Shape::Value(_)) && l.is_forced(offset),
                     }
                 }
             })
@@ -918,6 +964,84 @@ impl RuntimeEngine for VmEngine {
             state: l.state(plan),
             values,
         })
+    }
+
+    /// Hold a variable at a value. Only in RUN: a program that is not running has nothing to
+    /// hold, and leaving RUN releases every force, so none outlives the run it was set in.
+    async fn force(
+        &mut self,
+        _ctx: &PluginContext,
+        variable: String,
+        value: Value,
+    ) -> Result<RuntimeState, PluginError> {
+        let running = self.running()?;
+        let plan = &running.plan;
+        let mut l = lock(&running.live);
+        if l.mode != RuntimeMode::Run {
+            return Err(PluginError::RuntimeError(
+                "the program is not running: a variable is forced only while it runs, and \
+                 stopping it releases every force"
+                    .to_string(),
+            ));
+        }
+        let (offset, shape, ty) = locate(plan, &variable).map_err(PluginError::InvalidTag)?;
+        let elem = match shape {
+            Shape::Value(ElemType::Time) | Shape::Text(_) => {
+                return Err(PluginError::InvalidTag(format!(
+                    "{variable} is a {ty}; only a BOOL or a number can be forced"
+                )))
+            }
+            Shape::Value(elem) => elem,
+        };
+        let held = to_vm(elem, &value).ok_or_else(|| {
+            PluginError::InvalidTag(format!(
+                "{value} is not a value of {variable}, a {ty}: nothing was forced"
+            ))
+        })?;
+        let count = l.forces.len();
+        match l.forces.iter_mut().find(|f| f.offset == offset) {
+            Some(f) => {
+                f.variable = variable;
+                f.value = held;
+            }
+            None if count >= FORCE_LIMIT => {
+                return Err(PluginError::InvalidTag(format!(
+                    "{FORCE_LIMIT} variables are forced already, the most one program may have"
+                )))
+            }
+            None => l.forces.push(Forced {
+                variable,
+                offset,
+                value: held,
+            }),
+        }
+        // At once, so an exchange before the next scan already gives the forced value.
+        write(&mut l.memory, offset, held);
+        Ok(l.state(plan))
+    }
+
+    /// Release one forced variable, or every one. The program decides its value again from its
+    /// next scan.
+    async fn unforce(
+        &mut self,
+        _ctx: &PluginContext,
+        variable: Option<String>,
+    ) -> Result<RuntimeState, PluginError> {
+        let running = self.running()?;
+        let plan = &running.plan;
+        let mut l = lock(&running.live);
+        match variable {
+            None => l.forces.clear(),
+            Some(variable) => {
+                let (offset, _, _) = locate(plan, &variable).map_err(PluginError::InvalidTag)?;
+                let before = l.forces.len();
+                l.forces.retain(|f| f.offset != offset);
+                if l.forces.len() == before {
+                    return Err(PluginError::InvalidTag(format!("{variable} is not forced")));
+                }
+            }
+        }
+        Ok(l.state(plan))
     }
 }
 

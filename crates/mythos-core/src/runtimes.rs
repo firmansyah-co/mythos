@@ -24,7 +24,8 @@
 use crate::io::{ConnectionConfig, IoStatusHandle, WriteError};
 use crate::tag::TagCatalog;
 use mythos_module::protocol::{
-    Call, ExchangeReply, RuntimeMode, RuntimeProgram, RuntimeState, WatchReply, WireInput,
+    Call, ExchangeReply, ForcedValue, RuntimeMode, RuntimeProgram, RuntimeState, WatchReply,
+    WireInput,
 };
 use mythos_module::{ModuleBinary, ProcessDriver};
 use mythos_pal::PlatformShm;
@@ -39,7 +40,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{oneshot, Mutex, Notify, RwLock};
 
 /// The project file that says which runtimes run, beside `io.json`.
 pub const RUNTIMES_FILE: &str = "runtimes.json";
@@ -311,6 +312,45 @@ pub struct RuntimeStatus {
     pub outputs: Vec<OutputStatus>,
     pub pid: Option<u32>,
     pub restarts: u64,
+    /// The variables an engineer holds at a value, as its module last said. `None`: nothing
+    /// is known, because its module has not answered (yet, or any more).
+    pub forced: Option<Vec<ForcedValue>>,
+    /// Every tag bound to a forced variable: an input the program no longer takes, an output
+    /// written the forced value, a published tag giving it. What the HMI marks as forced.
+    pub forced_tags: Vec<String>,
+}
+
+/// A force or a release an engineer asked of an instance.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ForceAsk {
+    Force {
+        variable: String,
+        value: Value,
+    },
+    /// One variable, or with `None` every one.
+    Release {
+        variable: Option<String>,
+    },
+}
+
+/// Why a force or a release was not done.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ForceRefusal {
+    /// The module refused it: the program is not running, it has no such variable, ...
+    Refused(String),
+    /// The module did not answer.
+    Unreachable(String),
+    /// The instance was unloaded before its next exchange.
+    Unloaded,
+}
+
+/// What a force or a release came to.
+pub type ForceAnswer = Result<RuntimeState, ForceRefusal>;
+
+/// A force or a release waiting for the instance's next exchange.
+struct PendingForce {
+    ask: ForceAsk,
+    reply: oneshot::Sender<ForceAnswer>,
 }
 
 /// The variables being watched of one instance, and what its module last said of them.
@@ -332,6 +372,8 @@ struct StatesInner {
     problem: Option<String>,
     /// What is being watched, by instance id.
     watches: HashMap<String, Watch>,
+    /// Forces and releases waiting for the instance's next exchange, by instance id.
+    forcing: HashMap<String, Vec<PendingForce>>,
     /// Woken whenever a watch is answered.
     answered: Arc<Notify>,
 }
@@ -392,6 +434,36 @@ impl RuntimeStates {
             }
         }
         true
+    }
+
+    /// Ask a loaded instance to force or release a variable at its next exchange. `None` when
+    /// there is no such instance; otherwise the answer comes on the receiver. Whoever stops
+    /// waiting drops the receiver, and an ask nobody waits for any more is not carried out.
+    pub fn force(&self, id: &str, ask: ForceAsk) -> Option<oneshot::Receiver<ForceAnswer>> {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        if !inner.statuses.contains_key(id) {
+            return None;
+        }
+        let (reply, answer) = oneshot::channel();
+        inner
+            .forcing
+            .entry(id.to_string())
+            .or_default()
+            .push(PendingForce { ask, reply });
+        Some(answer)
+    }
+
+    /// The forces and releases asked of the instance, in the order they were asked, and still
+    /// waited for.
+    fn forcing_wanted(&self, id: &str) -> Vec<PendingForce> {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        inner
+            .forcing
+            .remove(id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| !p.reply.is_closed())
+            .collect()
     }
 
     /// What the instance's module last said of exactly these variables, and how long ago.
@@ -460,6 +532,9 @@ impl RuntimeStates {
             inner.statuses.remove(id);
             inner.wanted.remove(id);
             inner.watches.remove(id);
+            for pending in inner.forcing.remove(id).unwrap_or_default() {
+                let _ = pending.reply.send(Err(ForceRefusal::Unloaded));
+            }
             // Whoever waits for its values is told now, not at their deadline.
             inner.answered.notify_waiters();
         }
@@ -633,6 +708,10 @@ impl RuntimeDriver {
                 outputs,
                 pid: self.process.pid(),
                 restarts: self.process.restarts(),
+                forced: state.map(|s| s.forced.clone()),
+                forced_tags: state
+                    .map(|s| forced_tags(&instance.program, &s.forced))
+                    .unwrap_or_default(),
             },
         );
     }
@@ -641,6 +720,44 @@ impl RuntimeDriver {
         serde_json::from_value(config.clone())
             .map_err(|e| PluginError::InvalidConfiguration(format!("not a runtime instance: {e}")))
     }
+}
+
+/// What a module said when it refused, without the error kind's prefix.
+fn module_reason(e: PluginError) -> String {
+    match e {
+        PluginError::InitializationFailed(m)
+        | PluginError::StartFailed(m)
+        | PluginError::RuntimeError(m)
+        | PluginError::InvalidConfiguration(m)
+        | PluginError::CapabilityViolation(m)
+        | PluginError::Timeout(m)
+        | PluginError::InvalidTag(m)
+        | PluginError::CommunicationError(m) => m,
+    }
+}
+
+/// A variable's name as a program compares it: case and spaces do not count.
+fn variable_key(name: &str) -> String {
+    name.chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Every tag bound to one of the forced variables, once each.
+fn forced_tags(program: &RuntimeProgram, forced: &[ForcedValue]) -> Vec<String> {
+    let keys: HashSet<String> = forced.iter().map(|f| variable_key(&f.variable)).collect();
+    let bound = program
+        .inputs
+        .iter()
+        .map(|b| (&b.variable, &b.tag))
+        .chain(program.outputs.iter().map(|b| (&b.variable, &b.tag)))
+        .chain(program.published.iter().map(|b| (&b.variable, &b.tag)));
+    let tags: BTreeSet<String> = bound
+        .filter(|(variable, _)| keys.contains(&variable_key(variable)))
+        .map(|(_, tag)| tag.clone())
+        .collect();
+    tags.into_iter().collect()
 }
 
 fn mode_name(mode: RuntimeMode) -> &'static str {
@@ -759,6 +876,11 @@ impl ProtocolDriver for RuntimeDriver {
                 self.last = None;
                 self.make_safe().await;
                 self.report("unreachable", Some(e.to_string()));
+                for pending in self.env.states.forcing_wanted(&id) {
+                    let _ = pending.reply.send(Err(ForceRefusal::Unreachable(format!(
+                        "the runtime's module does not answer: {e}"
+                    ))));
+                }
                 if let Some(variables) = self.env.states.watch_wanted(&id) {
                     self.env.states.watch_answer(
                         &id,
@@ -801,6 +923,32 @@ impl ProtocolDriver for RuntimeDriver {
                     Err(e) => tracing::warn!("{}: mode change not taken: {e}", Self::owner(&id)),
                 }
             }
+        }
+
+        // What an engineer asked to force or release, in the order asked: after a mode change,
+        // so a force asked after a stop is refused by a program that no longer runs.
+        for pending in self.env.states.forcing_wanted(&id) {
+            let call = match pending.ask {
+                ForceAsk::Force { variable, value } => Call::Force { variable, value },
+                ForceAsk::Release { variable } => Call::Unforce { variable },
+            };
+            let answer = match self.process.call(call, EXCHANGE_DEADLINE).await {
+                Ok(v) => serde_json::from_value::<RuntimeState>(v).map_err(|e| {
+                    ForceRefusal::Unreachable(format!(
+                        "the module answered a force with something else: {e}"
+                    ))
+                }),
+                Err(PluginError::CommunicationError(e) | PluginError::Timeout(e)) => {
+                    Err(ForceRefusal::Unreachable(e))
+                }
+                Err(e) => Err(ForceRefusal::Refused(module_reason(e))),
+            };
+            if let Ok(state) = &answer {
+                // What it now holds is reported at once, not at the next exchange.
+                self.last = Some(state.clone());
+                self.report(mode_name(state.mode), state.fault.clone());
+            }
+            let _ = pending.reply.send(answer);
         }
 
         // The variables somebody watches, as this scan left them. Reading changes nothing in
@@ -937,8 +1085,65 @@ mod tests {
                 outputs: Vec::new(),
                 pid: None,
                 restarts: 0,
+                forced: Some(Vec::new()),
+                forced_tags: Vec::new(),
             },
         );
+    }
+
+    #[test]
+    fn the_tags_of_a_forced_variable_are_every_tag_bound_to_it_whatever_its_case() {
+        let instance: RuntimeInstance = serde_json::from_value(instance("t")).unwrap();
+        let mut program = instance.program;
+        program.inputs.push(mythos_module::protocol::InputBinding {
+            variable: "B".into(),
+            tag: "external.A.B.e".into(),
+            of: Default::default(),
+        });
+        let forced = |names: &[&str]| -> Vec<ForcedValue> {
+            names
+                .iter()
+                .map(|n| ForcedValue {
+                    variable: n.to_string(),
+                    value: json!(1),
+                })
+                .collect()
+        };
+        assert_eq!(forced_tags(&program, &forced(&[])), Vec::<String>::new());
+        assert_eq!(
+            forced_tags(&program, &forced(&[" b "])),
+            vec!["external.A.B.d".to_string(), "external.A.B.e".to_string()]
+        );
+        assert_eq!(
+            forced_tags(&program, &forced(&["A", "c", "zz"])),
+            vec!["external.A.B.c".to_string(), "internal.A.t.c".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_force_waits_for_its_instance_and_one_nobody_waits_for_is_dropped() {
+        let states = RuntimeStates::default();
+        let ask = || ForceAsk::Force {
+            variable: "a".into(),
+            value: json!(1),
+        };
+        assert!(states.force("t", ask()).is_none(), "no such instance");
+        loaded(&states, "t", 1);
+        let waited = states.force("t", ask()).unwrap();
+        let abandoned = states.force("t", ask()).unwrap();
+        drop(abandoned);
+        assert_eq!(
+            states.forcing_wanted("t").len(),
+            1,
+            "an ask whose caller stopped waiting is not carried out"
+        );
+        assert!(states.forcing_wanted("t").is_empty(), "taken once");
+        drop(waited);
+
+        // Unloading answers whoever waits, at once.
+        let waiting = states.force("t", ask()).unwrap();
+        states.forget("t", 1);
+        assert_eq!(waiting.await.unwrap(), Err(ForceRefusal::Unloaded));
     }
 
     fn reply(variable: &str) -> WatchReply {

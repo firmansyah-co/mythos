@@ -3,10 +3,11 @@
 
 use crate::api::state::ApiState;
 use crate::io::ConfigProblem;
-use crate::runtimes::{RuntimesConfig, RUNTIMES_FILE, WATCH_LIMIT};
+use crate::runtimes::{ForceAsk, ForceRefusal, RuntimesConfig, RUNTIMES_FILE, WATCH_LIMIT};
 use crate::storage::StorageError;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::Extension;
 use axum::Json;
 use mythos_pal::PlatformShm;
 use serde_json::{json, Value};
@@ -179,6 +180,115 @@ pub async fn watch<S: PlatformShm + 'static>(
             ));
         }
     }
+}
+
+/// How long a force or a release waits for the runtime's next exchange.
+const FORCE_WAIT: std::time::Duration = std::time::Duration::from_millis(2_500);
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForceBody {
+    variable: String,
+    value: Value,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseBody {
+    #[serde(default)]
+    variable: Option<String>,
+}
+
+fn who(identity: Option<Extension<crate::auth::Identity>>) -> String {
+    identity
+        .map(|Extension(i)| format!("{} ({})", i.username, i.via))
+        .unwrap_or_else(|| "an unauthenticated caller".to_string())
+}
+
+/// Carry a force or a release to the runtime at its next exchange, and give its answer.
+async fn forcing<S: PlatformShm + 'static>(
+    state: &ApiState<S>,
+    id: &str,
+    ask: ForceAsk,
+    who: &str,
+) -> Result<Json<Value>, ApiError> {
+    let what = match &ask {
+        ForceAsk::Force { variable, value } => format!("force {variable} to {value}"),
+        ForceAsk::Release { variable: Some(v) } => format!("release the force of {v}"),
+        ForceAsk::Release { variable: None } => "release every force".to_string(),
+    };
+    let refuse = |status: StatusCode, why: String| {
+        tracing::warn!(target: "mythos::audit", "{who} could not {what} in runtime '{id}': {why}");
+        failure(status, why)
+    };
+    let Some(answer) = state
+        .io_manager
+        .as_ref()
+        .and_then(|io| io.runtimes().force(id, ask.clone()))
+    else {
+        return Err(refuse(
+            StatusCode::NOT_FOUND,
+            format!("no runtime '{id}' is loaded on this node"),
+        ));
+    };
+    // Past the wait the receiver is dropped, and an ask nobody waits for is not carried out.
+    match tokio::time::timeout(FORCE_WAIT, answer).await {
+        Ok(Ok(Ok(runtime))) => {
+            tracing::info!(target: "mythos::audit", "{who} did {what} in runtime '{id}'");
+            Ok(Json(json!({ "id": id, "state": runtime })))
+        }
+        Ok(Ok(Err(ForceRefusal::Refused(why)))) => Err(refuse(StatusCode::CONFLICT, why)),
+        Ok(Ok(Err(ForceRefusal::Unreachable(why)))) => Err(refuse(StatusCode::BAD_GATEWAY, why)),
+        Ok(Ok(Err(ForceRefusal::Unloaded))) | Ok(Err(_)) => Err(refuse(
+            StatusCode::NOT_FOUND,
+            format!("runtime '{id}' was unloaded before it was asked"),
+        )),
+        Err(_) => Err(refuse(
+            StatusCode::GATEWAY_TIMEOUT,
+            format!(
+                "runtime '{id}' had no exchange within {} ms, so it was not asked and nothing changed",
+                FORCE_WAIT.as_millis()
+            ),
+        )),
+    }
+}
+
+/// `POST /api/v1/runtimes/:runtime/force` — hold a variable of a running program at a value.
+/// Whatever its inputs and the program say, it reads and is written as that value: an output
+/// bound to it is written it, a published tag gives it, an operator's setpoint to it is
+/// refused. It holds until released, until the program leaves RUN (stopped, faulted), or until
+/// a program is loaded again. Only a BOOL or a number can be forced.
+pub async fn force<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    Path(id): Path<String>,
+    identity: Option<Extension<crate::auth::Identity>>,
+    Json(body): Json<ForceBody>,
+) -> Result<Json<Value>, ApiError> {
+    if !(body.value.is_number() || body.value.is_boolean()) {
+        return Err(failure(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "nothing was forced: the value must be a number or a boolean",
+        ));
+    }
+    let ask = ForceAsk::Force {
+        variable: body.variable,
+        value: body.value,
+    };
+    forcing(&state, &id, ask, &who(identity)).await
+}
+
+/// `POST /api/v1/runtimes/:runtime/release` — release one forced variable (`variable`), or
+/// every one (no `variable`). The program decides its value again from its next scan.
+pub async fn release<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    Path(id): Path<String>,
+    identity: Option<Extension<crate::auth::Identity>>,
+    Json(body): Json<ReleaseBody>,
+) -> Result<Json<Value>, ApiError> {
+    let ask = ForceAsk::Release {
+        variable: body.variable,
+    };
+    forcing(&state, &id, ask, &who(identity)).await
 }
 
 /// `GET /api/v1/projects/:id/runtimes` — the project's runtimes, or `null` when it has none.
