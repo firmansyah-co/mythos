@@ -10,11 +10,15 @@
 //! the standard ones and the source's own. Recursion is refused. A keyword of the standard is
 //! refused as a name.
 //!
+//! The standard function blocks are a library written in ST ([`library`]); a program is
+//! compiled with the POUs of it that it uses.
+//!
 //! It depends on `mythos-logic-ir` alone. Another language is another crate like this one.
 
 pub mod ast;
 pub mod check;
 pub mod lexer;
+pub mod library;
 pub mod parser;
 
 use mythos_logic_ir::{Diagnostic, Unit};
@@ -26,13 +30,19 @@ use mythos_logic_ir::{Diagnostic, Unit};
 /// parser and the checker each stay silent about what only follows from something already
 /// told. A POU that could not be read whole has its declarations checked and its statements
 /// not; every other POU is checked in full.
+///
+/// The POUs of the standard library the source uses are compiled with it. A diagnostic is
+/// never about a place in the library: one would be the compiler's fault, and says so about
+/// the whole program ([`library::as_the_compilers`]).
 pub fn lower(source: &str) -> Result<Unit, Vec<Diagnostic>> {
-    let (ast, mut diags) = parser::Parser::new(lexer::tokens(source)).source();
+    let (mut ast, mut diags) = parser::Parser::new(lexer::tokens(source)).source();
+    library::add_used(&mut ast, &mut diags);
     match check::check(&ast) {
         Ok(unit) if diags.is_empty() => return Ok(unit),
         Ok(_) => {}
         Err(more) => diags.extend(more),
     }
+    let mut diags = library::as_the_compilers(diags);
     diags.sort_by_key(|d| (d.line, d.col));
     Err(diags)
 }

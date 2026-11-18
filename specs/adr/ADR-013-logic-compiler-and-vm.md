@@ -68,18 +68,18 @@ the guard each kind of break.
 - **Nothing unsupported is compiled into something else.** A construct a front-end does not take
   yet is a diagnostic naming it, with its line and column.
 - **LD and FBD are lowered from their graphs**, not printed as ST text.
-- **Standard function blocks.** The IR holds their catalog (names, members, types, directions);
-  the VM holds how an instance is stored and run; a test in the backend holds the two equal.
-  This is a stopgap: the standard blocks are to become a library written in the IEC
-  languages, so that adding a block no longer means new firmware. User function blocks exist
-  since format 1; the standard blocks are still native in the VM.
+- **Standard function blocks** are a library written in Structured Text (§2.14, L4): a block
+  is source compiled with the program that uses it, so adding one needs no new firmware. The
+  IR has no catalog of them and the compiler emits no native call; the VM keeps its native
+  blocks only so that programs of formats 1 to 3 keep running.
 - **IL is not built** (Adrian, 2026-11-17: "iya, IL tidak dibuat"). Ed. 3 §7.2.1: "This
   language is outdated as an assembler like language. Therefore it is deprecated and will not
   be contained in the next edition of this standard." The languages are ST, LD, FBD and SFC.
 
 ### 2.2 Target profiles are data
 
-A target declares what it can run: the bytecode format its VM reads, types it refuses, the
+A target declares what it can run: the bytecode format its VM reads (the newest; a VM
+reads every format before it, §2.3), types it refuses, the
 variable memory and code a program may use, and how deep its evaluation stack and its calls may
 go (`max_stack_depth`, `max_call_depth`: what the target's firmware has). The compiler checks
 the IR and its output against the profile, so a program that does not fit is refused at compile
@@ -87,7 +87,10 @@ time with the reason, never on the controller: `the program needs a stack 7 valu
 target board allows 6`. A profile that leaves a depth out states no limit, which is not a limit
 of zero; the `pc` profile states none, because a PC runner gives each program what it declares. A profile is `serde` data: **a runtime module carries its own in its manifest**
 (§2.4), so a new board brings its profile without a compiler change. Until runtime modules exist,
-three stand in (`pc`, `rp2040`, `esp32`); their microcontroller limits are budgets chosen for a
+three stand in (`pc`, `rp2040`, `esp32`), each declaring the VM's own format, 4 since L4; a
+profile that declares another is refused with the reason (`the target board-3 runs bytecode
+format 3; this compiler makes format 4`): such a VM cannot load what this compiler makes, and
+the compiler makes the newest format only. Their microcontroller limits are budgets chosen for a
 program, not the chips' sizes. The stack and call depths of `rp2040` and `esp32` (64 and 16)
 are those of the firmware this repository builds for their instruction sets (§2.9), which a
 test holds equal.
@@ -128,17 +131,29 @@ test holds equal.
     loads it and runs it scan for scan as before: the program does not stop and is not built
     again. Only a new major stops the programs of the line before until they are built again;
     such a format says so where it is introduced. The compiler makes the newest format only.
-  - *Today.* This VM reads formats 1, 2 and 3 (`OLDEST_FORMAT_VERSION`, `FORMAT_VERSION`).
-    Format 2 added the thirteen instructions on strings (`0xD0`–`0xDC`), format 3 the
-    thirteen numeric ones (`0xE0`–`0xEC`), each on opcodes no earlier instruction had, and
-    neither changed anything of the formats before: the programs of the corpus compiled by
-    the format-1 and the format-2 compiler, and by the format-2 and the format-3 compiler,
-    differ only in the version field and the checksum. Format 0, the spike's, had a 16-byte
-    header with no call depth and no table of bodies; format 1 did not extend it, so it is
-    refused. `older_formats_run_alike.rs` runs the corpus as the format-1 and the format-2
-    compiler made it (committed bytes, never regenerated) against the same sources compiled
-    now, 200 scans each with the same inputs, memory equal after every scan.
-- **Format 3** (format 1 with strings, L2c-1, and the numeric functions, L2c-2).
+  - *Today.* This VM reads formats 1, 2, 3 and 4 (`OLDEST_FORMAT_VERSION`,
+    `FORMAT_VERSION`). Format 2 added the thirteen instructions on strings (`0xD0`–`0xDC`),
+    format 3 the thirteen numeric ones (`0xE0`–`0xEC`), format 4 one, `NOW` (`0xF0`), each
+    on opcodes no earlier instruction had, and none changed anything of the formats before:
+    the programs of the corpus compiled by the format-1, the format-2 and the format-3
+    compiler differ only in the version field and the checksum. Format 0, the spike's, had a
+    16-byte header with no call depth and no table of bodies; format 1 did not extend it, so
+    it is refused. `older_formats_run_alike.rs` runs the corpus as the format-1, the format-2
+    and the format-3 compiler made it (committed bytes, never regenerated; the format-3 ones
+    with their symbols) against the same sources compiled now, 200 scans each with the same
+    inputs. Since format 4 the standard blocks are ST and lay their state out as variables of
+    their own (§2.14), so memory is laid out otherwise: every variable the two programs share
+    by path and type, every public member of a standard block among them, is equal after
+    every scan.
+  - *Format 4* (L4). `NOW` pushes the scan clock: the `now` the host gives the scan, the time
+    since the program was put in RUN in nanoseconds, the same for every instruction of the
+    scan; the native blocks were given the same. Only the standard library asks for it,
+    through the intrinsic `__NOW()` (§2.14). In a program of format 1 to 3 it is refused at
+    load (`NotInFormat`). `FB` and `FBP`, the native standard blocks, stay in every format,
+    4 included (a format only adds to the one before), so the programs of formats 1 to 3 run
+    as they did; the compiler of format 4 no longer emits them.
+- **Format 4** (format 1 with strings, L2c-1, the numeric functions, L2c-2, and the scan
+  clock, L4).
   - *Header*: magic, version, stack depth, memory size, code length, call depth, number of
     bodies, then a table of bodies (code offset, instance size), the initial memory image, the
     code, CRC-32.
@@ -518,7 +533,7 @@ Adrian, 2026-11-17: where an implementation and the standard differ, follow the 
 | Integer division | Table 29 footnote d: truncation toward zero; by zero is an error (§7.3.2) | truncates; by zero the scan stops with a fault | not compared |
 | `=` `<>` and `<` `>` `<=` `>=` | Table 71: one precedence (4), left to right | `a < b = c` is `(a < b) = c` | not compared |
 | Implicit conversions | Figure 11, entries "i": SINT→INT→DINT→LINT; SINT, INT→REAL; SINT, INT, DINT→LREAL; REAL→LREAL | exactly those | agrees |
-| Timers | Figure 15 (timing diagrams) | TON, TOF, TP as drawn, ET included | agrees (it found our TP bug) |
+| Timers | Figure 15 (timing diagrams) | TON, TOF, TP as drawn, ET included; since L4 in ST, the same scan for scan as the native ones (§2.14) | agrees (it found our TP bug) |
 | Function: input left out of a formal call | §6.6.1.4.2, Table 20 feature 1b: it has its initial value | its declared initial value, at every call | agrees |
 | Function: internal variables and result | §6.6.2.1, Table 19 feature 2e: not stored | start afresh at every call | agrees |
 | Function block: input not given | §6.6.3.4.1 rule 3c: keeps its initial value or that of the latest call | keeps it; `inst.in := x;` apart from the call takes effect at the next call | agrees |
@@ -552,7 +567,15 @@ Adrian, 2026-11-17: where an implementation and the standard differ, follow the 
 | Which sections take RETAIN, NON_RETAIN | §6.5.6.1, §6.5.6.2, Table 40 and Table 47 features 4a–5b, Annex A (`Input_Decls`, `Output_Decls`, `Loc_Var_Decls`, `FB_Input_Decls`, `FB_Output_Decls`, `Global_Var_Decls`): static VAR, VAR_INPUT, VAR_OUTPUT of programs and function blocks, and VAR_GLOBAL; not VAR_IN_OUT; Annex A gives VAR_TEMP, VAR_EXTERNAL and a function's sections none | those three in a PROGRAM and a FUNCTION_BLOCK. Refused with the reason: on VAR_IN_OUT, VAR_TEMP, VAR_EXTERNAL, and on any section of a FUNCTION (it keeps nothing between calls). VAR_GLOBAL is not built, qualified or not | not compared |
 | CONSTANT with RETAIN | Annex A: `Loc_Var_Decls` and `Global_Var_Decls` take one of CONSTANT, RETAIN, NON_RETAIN, never two | refused, in either order. CONSTANT alone is not built | not compared |
 | A variable of an unqualified section at a warm restart | §6.5.6.1 rule 3: implementer specific | initialized, as NON_RETAIN: `retain` is absent. A cold restart initializes everything (rule 4) | not compared |
-| A function block instance in a qualified section | §6.5.6.2: every variable of the instance takes the qualifier, except (a) one the type declares RETAIN or NON_RETAIN itself and (b) one that is a function block instance, which follows its own type's declarations | as the clause. An array of instances is instances: each element follows its type (b). In an unqualified section, every member follows the type's declarations. A standard block (TON, CTU, …) declares none, so its members take the instance's. Its internal state (a timer's start time and running flag, an edge memory) is in no symbol, so a warm restart restores its public members and starts that state afresh, as a cold start does: a timer times again from its next rising IN, and an edge detector may see the first scan as an edge. Settled so for now (2026-11-18); writing the standard blocks in ST (L4) makes that state ordinary variables under the same rules | not compared |
+| A function block instance in a qualified section | §6.5.6.2: every variable of the instance takes the qualifier, except (a) one the type declares RETAIN or NON_RETAIN itself and (b) one that is a function block instance, which follows its own type's declarations | as the clause. An array of instances is instances: each element follows its type (b). In an unqualified section, every member follows the type's declarations. A standard block (TON, CTU, …) declares none, so its members take the instance's, its internal state included: since L4 that state (a timer's START, RUNNING, CLOCK, an edge memory) is variables of the block (§2.14), each a symbol, and a warm restart keeps it as it keeps the rest. A RETAIN timer carries on from its ET (the next row); a RETAIN edge detector or counter does not see a level held across the restart as an edge | not compared |
+| A timer after a warm restart | not addressed: Figure 15 draws one clock | the scan clock starts again from zero at every start, while a RETAIN timer keeps START, taken on the clock before. A clock below the one the timer saw at its previous call is a restart: START := now − ET, so it carries on from its ET, never negative and never past PT. A restart is not seen when the timer is first called after it at a clock already past its previous call's: ET then grows by the clock less that call's, no more than the time since the restart. The time a program was stopped is not timed: no scan clock runs then (`timers.st`; `a_retained_timer_carries_on_from_its_et_when_the_clock_starts_again`, and `runtime_api.rs` through the real module) | not compared |
+| A change of PT while a timer runs | Table 46 note: implementer specific | ET is the time since START, limited by the PT of the call; Q is ET ≥ PT. As the native blocks did | not compared |
+| R_EDGE inputs of the counters | Table 45 declares CU and CD `BOOL R_EDGE`; §6.6.3.2 rule 13: R_EDGE implicitly declares an R_TRIG in the block | the edge memory is a BOOL variable of the block (`CU_M`, `CD_M`), the same edge: as a variable of the block it takes the instance's retention, where an implicit R_TRIG instance would follow its own type (§6.5.6.2 (b)) and lose the edge at a warm restart. R_EDGE and F_EDGE in a program's declarations are not built | not compared |
+| Typed counters | Table 45 features 1a–3e: CTU_INT, …_DINT, …_LINT, …_UDINT, …_ULINT; CTU is CTU_INT | INT, DINT and LINT, and CTU, CTD, CTUD as those of INT; PVmax and PVmin the limits of the type (Table 45 note). UDINT and ULINT are not built: there are no unsigned types | not compared |
+| Typed timers | Table 46 features 1b–3c; its footnote a says "features 2b and 3b shall not be used" in textual languages, but the footnote's marker stands on 2d and 3d, the graphical symbols | TP_TIME, TON_TIME, TOF_TIME, the same as TP, TON, TOF: read either way they may be given (§6.6.3.5.1: the implementer may provide additional standard blocks). LTIME (1c, 2c, 3c) is not built | not compared |
+| Long input names of the bistables | Table 43 features 1b, 2b: SR(SET1, RESET), RS(SET, RESET1) | not built: a block here has one name for each input | not compared |
+| A name with two underscores together, or one at its end | §6.1.2: "__LIM_SW5 and LIM__SW5 are not valid identifiers"; nor is LIM_SW5_ | refused by the lexer where it is written, with its range. A name of an intrinsic begins with two underscores, so no program can write one (§2.14) | not compared |
+| A POU or a type named as a block of the standard library | Annex A: the names of the standard function blocks are not keywords | refused, naming the word, as a standard function's is: every name the library declares, used by the program or not. A variable may bear one (`ton : TON`) | not compared |
 | A structure in a qualified section | §6.5.6.2: every element, nested ones too, takes the qualifier | as the clause, also inside an instance | not compared |
 | An array | not addressed: §6.5.6.2 speaks of instances and structures | one symbol, retained or not as a whole. An array of instances whose members would be retained in part (`VAR RETAIN a : ARRAY [1..2] OF B` where B holds a TON, or `VAR a : ARRAY [1..2] OF B` where B declares some members RETAIN and some not) is refused at its declaration, naming its path | not compared |
 | An integer to and from STRING | Table 22 footnote e: the "external representation" of the value | `INT_TO_STRING(-5)` is `'-5'`; `STRING_TO_DINT` reads an integer literal: a sign and decimal digits, or `2#`, `8#`, `16#` digits, single underscores between digits. Nothing else (no space, no type prefix): `BadNumber`. A value its type cannot hold wraps, as narrowing does | stops at the first character that is not a digit: `'16#7F'` is 16 (deliberate difference) |
@@ -591,9 +614,9 @@ differential corpus and two tests did, and were renamed). This list is a reading
 a table copied from it; ed. 4, which drops IL, has not been read.
 
 Closed in L2b: the evaluation stack stops at the depth the program declares, and a target
-profile carries a stack depth and a call depth (§2.2, §2.3). Found while reading §6.1.2 and
-not built: an identifier
-with two underscores together, or one at its end, is accepted (the standard forbids both).
+profile carries a stack depth and a call depth (§2.2, §2.3). Closed in L4: an identifier with
+two underscores together, or one at its end, found while reading §6.1.2, is refused (the row
+above).
 
 The differential test lists the first three rows, INSERT's position and the integer read
 from a based literal as deliberate differences from STruC++ (287 of 7,500 values); a rounding
@@ -605,6 +628,64 @@ BOOL, REAL, LREAL or TIME; STRING in SEL, MAX, MIN, LIMIT, MUX. Not built in L2c
 strings (BYTE, WORD, DWORD, LWORD) and the unsigned integers, and so the shifts of Table 30
 (SHL, SHR, ROL, ROR) and the bitwise functions of Table 31 on them; TO_* conversions without
 the source type; typed literals (`INT#5`, `REAL#1.5`).
+
+### 2.14 The standard library in Structured Text, and intrinsics (L4)
+
+**Decided by Adrian, 2026-11-18**: "semua FB standar harus diimplementasi diatas ST. expose
+semua hal yang perlu sebagai intrinsic. kedepan kita akan implementasi semua OSCAT sebagai FB
+standar kita." Every standard function block is implemented on top of ST; whatever ST cannot
+express is exposed as an intrinsic; OSCAT is to follow as the standard library.
+
+- **The library is source.** `crates/mythos-logic-st/src/library/`: one `.st` file per block
+  or per family (`bistables.st`, `edges.st`, `counters.st`, `timers.st`), each embedded with
+  `include_str!`, and an index (`library::POUS`: each POU's name, kind and file), which a test
+  holds equal to what the files declare. It lives in the ST front-end because it is ST; a later
+  language front-end that needs it lowers it through this one, or takes the IR it makes.
+- **What a program gets.** The front-end reads the program, then adds the POUs of the library
+  it uses, and those they use, each once: a type named in a declaration, a function called in
+  an expression (`library::add_used`). The rest is not compiled. A library POU is then an
+  ordinary POU of the unit: TON is a function block type like a user's, its body emitted once,
+  each instance's state in its own variables. The IR has no catalog of standard blocks any more
+  (`IR_VERSION` 5), and the backend no native call.
+- **The blocks** (IEC 61131-3 ed. 3 §6.6.3.5): SR, RS (Table 43); R_TRIG, F_TRIG (Table 44,
+  as written); CTU, CTD, CTUD and their variants of INT, DINT and LINT (Table 45); TP, TON, TOF
+  and TP_TIME, TON_TIME, TOF_TIME (Table 46, Figure 15). What is left out and why is in §2.13
+  (no unsigned types, no LTIME, the long input names of the bistables, R_EDGE in a program).
+- **Equal to the native blocks.** `standard_blocks_run_as_the_native_ones.rs` runs each native
+  block in a format-3 program of one `FB` instruction beside the library's, with the same
+  random sequences of inputs and clock (edges, held levels, IN pulses shorter than PT, PT
+  changed while timing, zero and below zero, resets and loads while counting, counts at the
+  limits of INT, a clock that does not move and one that jumps past PT): every input and output
+  equal after every scan, 9 blocks × 400 sequences × 150 scans. There is no intended difference.
+  The timers' rule for a clock that goes back (§2.13) acts only across a restart, which the
+  native blocks never saw with their state kept.
+- **Intrinsics.** What ST cannot say is an intrinsic, named with two underscores at its start:
+  §6.1.2 forbids that in an identifier, so the lexer refuses it in a program, with its range,
+  and takes it only in the library's text; the checker takes an intrinsic only in a library POU
+  as well. One so far: `__NOW()`, a TIME, the scan clock: the time since the program was put in
+  RUN, the same for the whole scan, the `now` the native timers were given. In the IR it is
+  `ExprKind::Intrinsic(Intrinsic::Now)`; in the bytecode the instruction `NOW` of format 4
+  (§2.3).
+- **Names.** Every name the library declares is refused as the name of a program's POU or
+  type, used or not, with the range of the name (`TON is a name of the standard; choose
+  another`): a program never changes what a library name means. Inside the library, names are
+  looked up among the library's alone, so nothing a program declares reaches in: a program may
+  have a function named RUNNING or a type named START, the names of a timer's own variables. A
+  variable may bear a library name (`ton : TON`), as of a standard function.
+- **Places.** The lines of library file `k` are counted from `(k + 1) × 2^20`, which no
+  program reaches. A diagnostic about a place in the library would be a fault of the compiler,
+  and is made one about the whole program that says so and where (`the standard library does
+  not compile (timers.st 12:5: …); this is a fault of the compiler, not of the program`); the
+  program's text is never pointed into for it.
+- **What changes for a host.** Each member of a standard block's instance, its internal state
+  included (a timer's RUNNING, START, CLOCK; an edge memory M, CU_M, CD_M), is a symbol, as a
+  user block's members are, and takes the instance's retention (§2.13). Watch reads `t.ET`
+  and a binding takes `t.Q` by the same paths as before; an instance takes more memory (a TON
+  35 bytes, not 28) and a call of a standard block is a call (one more frame of call depth).
+  From a program, the internal state is private (§6.6.3.2 rule 11), as a user block's is.
+- **OSCAT next.** OSCAT is to follow as the standard library. It is now an Eclipse project
+  under EPL-2.0 (https://eclipse.dev/oscat/); its license must be checked before any of its
+  source is copied in.
 
 ## 3. Order of work
 
@@ -657,6 +738,9 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   name; the VM's own real functions; bytecode format 3. Not built: the bit strings and their
   shifts (§2.13).
 - L3. **LD, FBD, SFC** (not IL, §2.1), each a front-end crate and an editor kind.
+- L4. **The standard library in ST** (done, §2.14): the standard function blocks written in
+  Structured Text, with intrinsics for what ST cannot say (the scan clock, bytecode format 4);
+  their state retained like any variable's. Next: OSCAT, once its license is checked.
 
 **Later:** ESP32 and RP2040 firmware as runtime modules on real boards; a C backend; a Linux
 real-time mode.
@@ -682,16 +766,17 @@ Each step leaves `dev` working.
 | Part | Built |
 | :--- | :--- |
 | 2.1 Crates and layers | `mythos-logic-ir`, `-st`, `-vm`, `-backend-vm`, `-compiler`; `layers.rs` guards them |
-| 2.1 ST front-end | Several POUs in any order: TYPE (STRUCT, named ARRAY), FUNCTION (VAR_INPUT, VAR; positional and formal calls), FUNCTION_BLOCK (VAR_INPUT, VAR_OUTPUT, VAR; nesting; arrays of instances), one PROGRAM; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME, STRING (`STRING[n]`, `STRING(n)`, 254 by default; literals with `$` combinations; assignment that cuts; comparison; LEN, LEFT, RIGHT, MID, CONCAT, INSERT, DELETE, REPLACE, FIND; integer to and from STRING; in functions, function blocks, arrays, structures and a TYPE name); ABS, SQRT, LN, LOG, EXP, SIN, COS, TAN, ASIN, ACOS, ATAN, ATAN2, EXPT and `**`, TRUNC_*, SEL, MAX, MIN, LIMIT, MUX, and ADD, SUB, MUL, DIV, MOVE, GT, GE, EQ, LE, LT, NE by name; arrays of any dimensions with initial value lists; whole-structure and whole-array assignment; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between the elementary types; implicit widening per Figure 11; recursion refused naming the cycle; a keyword of the standard refused as a name; RETAIN and NON_RETAIN on VAR, VAR_INPUT and VAR_OUTPUT of a PROGRAM and a FUNCTION_BLOCK, each symbol saying whether it is retained (`Symbol::retain`, `"retain": true` or absent; C7b-1, §2.13; `retentive_variables.rs`), refused where nothing can be retained; kept across a warm restart by the runtime and the core (§2.5, C7b-2); diagnostics for everything else (enumerations, subranges, WSTRING, CHAR, VAR_IN_OUT, methods, and more: each refused by name); every independent mistake of a source in one pass, each once, with the range it is about (§2.8); a body or a type nested more than 100 deep refused, a structure that contains itself told before anything follows it (§2.8) |
-| 2.2 Profiles | `serde` data with a format version; `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format, stack depth, call depth) proven with profiles read from JSON; a profile written before the depths existed still loads and states no limit |
-| 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 3 (L2c: format 1 with strings and the numeric functions, with its own real functions, §2.3), and formats 1 and 2 read as they were written (a VM reads every format it extends; an instruction newer than a program's format refused at load): bodies, call frames, instance-relative and region-confined addressing; loader checks, with every jump landing on an instruction of its body, and `load_within` a host's limits; run-time checks, budget; the stack and the calls stop at the depths the program declares; faults, with `IndexOutOfRange`, `CallDepthExceeded`, `StackOverflow`, for strings `StringTooLong`, `StringArgument`, `BadString`, `BadNumber`, and `SelectorOutOfRange` |
+| 2.1 ST front-end | Several POUs in any order: TYPE (STRUCT, named ARRAY), FUNCTION (VAR_INPUT, VAR; positional and formal calls), FUNCTION_BLOCK (VAR_INPUT, VAR_OUTPUT, VAR; nesting; arrays of instances), one PROGRAM; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME, STRING (`STRING[n]`, `STRING(n)`, 254 by default; literals with `$` combinations; assignment that cuts; comparison; LEN, LEFT, RIGHT, MID, CONCAT, INSERT, DELETE, REPLACE, FIND; integer to and from STRING; in functions, function blocks, arrays, structures and a TYPE name); ABS, SQRT, LN, LOG, EXP, SIN, COS, TAN, ASIN, ACOS, ATAN, ATAN2, EXPT and `**`, TRUNC_*, SEL, MAX, MIN, LIMIT, MUX, and ADD, SUB, MUL, DIV, MOVE, GT, GE, EQ, LE, LT, NE by name; arrays of any dimensions with initial value lists; whole-structure and whole-array assignment; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between the elementary types; implicit widening per Figure 11; recursion refused naming the cycle; a keyword of the standard refused as a name; RETAIN and NON_RETAIN on VAR, VAR_INPUT and VAR_OUTPUT of a PROGRAM and a FUNCTION_BLOCK, each symbol saying whether it is retained (`Symbol::retain`, `"retain": true` or absent; C7b-1, §2.13; `retentive_variables.rs`), refused where nothing can be retained; kept across a warm restart by the runtime and the core (§2.5, C7b-2); the standard function blocks from a library written in ST, only those a program uses (§2.14, L4); a name with two underscores together or one at its end refused (§6.1.2); diagnostics for everything else (enumerations, subranges, WSTRING, CHAR, VAR_IN_OUT, methods, and more: each refused by name); every independent mistake of a source in one pass, each once, with the range it is about (§2.8); a body or a type nested more than 100 deep refused, a structure that contains itself told before anything follows it (§2.8) |
+| 2.2 Profiles | `serde` data with a format version (4 since L4; a profile of another is refused, naming both); `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format, stack depth, call depth) proven with profiles read from JSON; a profile written before the depths existed still loads and states no limit |
+| 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 4 (format 1 with strings and the numeric functions, L2c, with its own real functions, §2.3, and the scan clock `NOW`, L4), and formats 1, 2 and 3 read as they were written, their native standard blocks included (a VM reads every format it extends; an instruction newer than a program's format refused at load): bodies, call frames, instance-relative and region-confined addressing; loader checks, with every jump landing on an instruction of its body, and `load_within` a host's limits; run-time checks, budget; the stack and the calls stop at the depths the program declares; faults, with `IndexOutOfRange`, `CallDepthExceeded`, `StackOverflow`, for strings `StringTooLong`, `StringArgument`, `BadString`, `BadNumber`, and `SelectorOutOfRange` |
 | 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
-| 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Forcing is built (`Call::Force`, `Call::Unforce`, C5c): `runtime_api.rs` forces an output, a setpoint and an input of the running module process over the API and watches the device follow, refuses an operator and a viewer, refuses what cannot be forced, and sees every force released by a stop and by loading the program again. The watchdog is built (C7a): a program in RUN that completes no scan within ten intervals (never less than two seconds), or whose scan thread has ended, is put in FAULT at the next exchange with the reason (`watchdog: …`), every force released, so the core writes the safe values; a scan itself is bounded by the instruction budget. Proven by the module's own tests: a healthy program runs past the limit untouched, and one whose scan thread ends is faulted and asks for no write. RETAIN is built in the runtime and the core (C7b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter and proves that it goes on after a stop and run, after the program is loaded again, after its module process is killed and started again (from the values kept last, not those it was loaded with), and after a load in STOP, while the other counter starts from zero each time, and that a cold start resets it; the module's tests prove that a value is taken only into a variable of the same name, type and size. Not built: state carried across a replacement beyond RETAIN (an online change keeping every variable) |
+| 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Forcing is built (`Call::Force`, `Call::Unforce`, C5c): `runtime_api.rs` forces an output, a setpoint and an input of the running module process over the API and watches the device follow, refuses an operator and a viewer, refuses what cannot be forced, and sees every force released by a stop and by loading the program again. The watchdog is built (C7a): a program in RUN that completes no scan within ten intervals (never less than two seconds), or whose scan thread has ended, is put in FAULT at the next exchange with the reason (`watchdog: …`), every force released, so the core writes the safe values; a scan itself is bounded by the instruction budget. Proven by the module's own tests: a healthy program runs past the limit untouched, and one whose scan thread ends is faulted and asks for no write. RETAIN is built in the runtime and the core (C7b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter and proves that it goes on after a stop and run, after the program is loaded again, after its module process is killed and started again (from the values kept last, not those it was loaded with), and after a load in STOP, while the other counter starts from zero each time, and that a cold start resets it; the module's tests prove that a value is taken only into a variable of the same name, type and size. Since L4 a standard block's state is variables of its own: `runtime_api.rs` runs a RETAIN TON beside a plain one through the real module process, and after a stop and run the RETAIN one carries on from its ET (the time stopped not timed) while the plain one times again from 0, and a cold start resets both. Not built: state carried across a replacement beyond RETAIN (an online change keeping every variable) |
 | 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run` (a warm restart), `/cold-start`, `/stop`, `/watch`, `/force` and `/release`, `GET`/`PUT /api/v1/projects/:id/runtimes`, each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; what is forced in each, a FORCED badge with each variable and its value (`forced UNKNOWN` when the controller does not say), and "Release all" for an engineer, asked first, with the controller's answer shown as it gave it; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
 | 2.6 The logic module | Built: `plugins/logic` (programs, bindings, check, build; eight MCP tools), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes; its workbench UI `frontend/packages/logic-ui` (tree section, program editor, load, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus. Not built: unit tests in ST, programs in a device's slice |
 | 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); editors for LD, FBD, SFC are not built. 2.10: not built |
-| 2.9 Emulators | Built: eight programs (`strings.st` since L2c-1, `library.st` since L2c-2), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else |
-| 2.12 Oracle | `differential_strucpp.rs`: 8 programs, 60 cycles, 9,480 values, all agree except the five deliberate rows of §2.13 (287 values: 167 of the first three, 60 each of INSERT's position and a based literal read as an integer). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE |
+| 2.9 Emulators | Built: eight programs (`strings.st` since L2c-1, `library.st` since L2c-2), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else. Since L4 the timers and counters in them are the library's, in ST: all 16 runs equal |
+| 2.12 Oracle | `differential_strucpp.rs`: 8 programs, 60 cycles, 9,480 values, all agree except the five deliberate rows of §2.13 (287 values: 167 of the first three, 60 each of INSERT's position and a based literal read as an integer). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE. Unchanged by L4 (the standard blocks in ST): the same 9,480 values, the same 287 |
+| 2.14 Standard library in ST (L4) | `crates/mythos-logic-st/src/library/`: SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD and their INT, DINT and LINT variants, TP, TON, TOF and their TIME variants (22 POUs in 4 files, an index); the intrinsic `__NOW()`; names of the library refused to a program's POUs and types; the library's names resolved among its own; no diagnostic pointing into it. Proven by `standard_library.rs` (14) and `standard_blocks_run_as_the_native_ones.rs` (4: every native block against the library's, 400 sequences of 150 scans each, 540,000 scans in all) |
 
 Evidence of the spike (2026-11-17):
 
@@ -833,3 +918,30 @@ Evidence of the spike (2026-11-17):
   module's test red; skipping the check of each instruction against its program's version
   turns `an_instruction_newer_than_the_programs_format_is_refused_at_load` red. The oracle
   (9,480 values, 287 deliberate) and the emulators (all 16 runs equal) are unchanged.
+- **L4** (the standard library in ST, 2026-11-18): 21 tests added to the five logic crates
+  (234, from 213 on `dev` at `ca35b59`; one removed, the backend's test holding the IR's
+  catalog of standard blocks equal to the VM's, which no longer exists): `standard_library.rs`
+  (14), `standard_blocks_run_as_the_native_ones.rs` (4), a third test in
+  `older_formats_run_alike.rs` (format 3), one in the lexer (§6.1.2), two in the VM's loader
+  tests (`NOW`, and the native blocks in every format); `runtime_api.rs` gained
+  `a_retain_timer_keeps_its_elapsed_time_across_a_stop_and_run`. The format-3 fixtures were
+  made once from `ca35b59`'s tree, with their symbols, and the format-1 and format-2 ones
+  differ from them only in the version field and the checksum, which the test holds. The
+  oracle is unchanged (9,480 values, 287 deliberate). The emulators run the corpus, its
+  standard blocks now ST, on both instruction sets: all 16 runs equal (rustc 1.100.0, QEMU
+  8.2.2, in the CI runner's image); the ESP32-C3 build of the VM is 39,318 bytes of code (44
+  more, for `NOW`). Mutation-checked, each in a copy of the
+  tree (`git archive`, its own target directory; the clean copy passed before and after):
+  one millisecond added to TON's ET turned nine tests red, among them
+  `the_timers_written_in_st_run_as_the_native_ones`, all three
+  `format_N_bytecode_runs_…` and `a_retained_timer_carries_on_from_its_et_…`; R_TRIG never
+  remembering CLK turned `the_edges_and_bistables_written_in_st_run_as_the_native_ones` and
+  the three `format_N_…` red; a program's POU named TON let through turned
+  `a_program_cannot_declare_a_pou_or_a_type_with_a_name_of_the_library` and
+  `what_a_function_block_does_not_support_yet_is_refused_by_name` red; the clock-back rule
+  putting START after the clock turned `a_retained_timer_carries_on_from_its_et_…` red, and
+  with the guards that keep ET at zero or above removed as well, so that a negative ET comes
+  out, also `a_timer_whose_start_is_more_than_a_time_can_hold_before_the_clock_is_done` and
+  `the_timers_written_in_st_run_as_the_native_ones`; `NOW` taken in a format-3 program turned
+  `now_pushes_the_clock_the_host_gave_the_scan` and `the_format_each_instruction_came_in_is_pinned`
+  red.

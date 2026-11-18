@@ -119,11 +119,35 @@ fn known(c: char) -> bool {
 
 /// Every token of `src`, and every place that could not be read.
 pub fn tokens(src: &str) -> Lexed {
+    lex_as(src, 1, false)
+}
+
+/// The tokens of a file of the standard library, its lines counted from `first_line`, so that
+/// a place in it can never be taken for a place in a program's source (ADR-013 L4). Only
+/// here may a name begin with two underscores: those are the intrinsics, which a program
+/// cannot name.
+pub(crate) fn library_tokens(src: &str, first_line: u32) -> Lexed {
+    lex_as(src, first_line, true)
+}
+
+/// Whether `word` cannot be a name: IEC 61131-3 ed. 3 §6.1.2 allows neither two
+/// underscores together nor one at the end (`__LIM_SW5`, `LIM__SW5`, `LIM_SW5_`). With
+/// `intrinsic`, a name may begin with two underscores and a letter, which is how the
+/// library names an intrinsic; the rest of it follows the rule.
+fn misnamed(word: &str, intrinsic: bool) -> bool {
+    let rest = word
+        .strip_prefix("__")
+        .filter(|rest| intrinsic && rest.starts_with(|x: char| x.is_ascii_alphabetic()))
+        .unwrap_or(word);
+    rest.contains("__") || rest.ends_with('_')
+}
+
+fn lex_as(src: &str, first_line: u32, library: bool) -> Lexed {
     let chars: Vec<char> = src.chars().collect();
     let mut c = Cursor {
         chars: &chars,
         i: 0,
-        line: 1,
+        line: first_line,
         col: 1,
     };
     let mut toks = Vec::new();
@@ -223,6 +247,11 @@ pub fn tokens(src: &str) -> Lexed {
                 typed_literal_body(&mut c, dated);
                 unreadable!(format!(
                     "the typed literal {word}#… is not supported yet; only T# and TIME#"
+                ));
+            }
+            if misnamed(&word, library) {
+                unreadable!(format!(
+                    "{word} is not a name: a name has no two underscores together and none at its end"
                 ));
             }
             token!(Tok::Word(upper, word));
@@ -617,6 +646,51 @@ b := DT#1970-01-01-00:00:00;",
         assert_eq!(errors, 5);
         assert!(!lexed.cut);
         assert!(matches!(lexed.toks.last().unwrap().tok, Tok::Eof));
+    }
+
+    #[test]
+    fn a_name_with_two_underscores_together_or_one_at_its_end_is_refused() {
+        // IEC 61131-3 ed. 3 §6.1.2, with its own examples.
+        let lexed = tokens("__LIM_SW5 LIM__SW5 LIM_SW5_ _ LIM_SW5 _LIM_SW5 __NOW");
+        let said: Vec<String> = lexed.diags.iter().map(|d| d.to_string()).collect();
+        let why = "is not a name: a name has no two underscores together and none at its end";
+        assert_eq!(
+            said,
+            vec![
+                format!("1:1: __LIM_SW5 {why}"),
+                format!("1:11: LIM__SW5 {why}"),
+                format!("1:20: LIM_SW5_ {why}"),
+                format!("1:29: _ {why}"),
+                format!("1:48: __NOW {why}"),
+            ]
+        );
+        let words: Vec<&str> = lexed
+            .toks
+            .iter()
+            .filter_map(|t| match &t.tok {
+                Tok::Word(_, w) => Some(w.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            words,
+            ["LIM_SW5", "_LIM_SW5"],
+            "one leading underscore is a name"
+        );
+
+        // The library names an intrinsic so; nothing else breaks the rule there either, and
+        // its places are counted from the line it is given.
+        let lexed = library_tokens("__NOW LIM__SW5 __LIM_ ___X", 1 << 20);
+        let said: Vec<String> = lexed.diags.iter().map(|d| d.to_string()).collect();
+        assert_eq!(
+            said,
+            vec![
+                format!("1048576:7: LIM__SW5 {why}"),
+                format!("1048576:16: __LIM_ {why}"),
+                format!("1048576:23: ___X {why}"),
+            ]
+        );
+        assert_eq!(lexed.toks[0].tok, Tok::Word("__NOW".into(), "__NOW".into()));
     }
 
     #[test]

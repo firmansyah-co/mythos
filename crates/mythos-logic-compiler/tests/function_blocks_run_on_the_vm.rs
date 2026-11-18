@@ -189,8 +189,8 @@ fn a_block_holds_instances_of_other_blocks_and_each_outer_instance_has_its_own()
     );
     assert_eq!(r.int("s1.count.CV"), 2);
     assert_eq!(
-        r.c.call_depth, 2,
-        "Main calls Station, which calls Debounce"
+        r.c.call_depth, 3,
+        "Main calls Station, which calls Debounce, which calls its TON (written in ST)"
     );
 }
 
@@ -468,7 +468,7 @@ fn from_outside_an_instance_only_its_inputs_are_written_and_only_its_holder_call
             "x.inner is inside another function block instance; only that block's body calls it",
         ),
         ("x := x;", "x is a function block instance; call it, or name one of its members"),
-        ("v := x;", "x is a function block instance; name one of its inputs or outputs"),
+        ("v := x;", "x is a function block instance; name one of its outputs, like x.o"),
         ("x(i := 1, m := 2);", "m is an internal variable of Outer, not a parameter"),
         ("x(o := 1);", "o is an output of Outer: read it with o => variable"),
         ("x(i => v);", "i is an input of Outer: set it with i := value"),
@@ -602,20 +602,26 @@ fn every_member_of_every_instance_is_a_symbol_by_its_path() {
             ("s.clean.hold", "TIME", 6, false),
             ("s.clean.q", "BOOL", 14, false),
             ("s.clean.on_delay.IN", "BOOL", 15, false),
-            ("s.clean.on_delay.PT", "TIME", 19, false),
-            ("s.clean.on_delay.Q", "BOOL", 16, false),
-            ("s.clean.on_delay.ET", "TIME", 27, false),
-            ("s.edge.CLK", "BOOL", 43, false),
-            ("s.edge.Q", "BOOL", 44, false),
-            ("s.count.CU", "BOOL", 46, false),
-            ("s.count.R", "BOOL", 47, false),
-            ("s.count.PV", "INT", 50, false),
-            ("s.count.Q", "BOOL", 48, false),
-            ("s.count.CV", "INT", 52, false),
+            ("s.clean.on_delay.PT", "TIME", 16, false),
+            ("s.clean.on_delay.Q", "BOOL", 24, false),
+            ("s.clean.on_delay.ET", "TIME", 25, false),
+            // A standard block's own variables are members like any block's (ADR-013 L4).
+            ("s.clean.on_delay.RUNNING", "BOOL", 33, false),
+            ("s.clean.on_delay.START", "TIME", 34, false),
+            ("s.clean.on_delay.CLOCK", "TIME", 42, false),
+            ("s.edge.CLK", "BOOL", 50, false),
+            ("s.edge.Q", "BOOL", 51, false),
+            ("s.edge.M", "BOOL", 52, false),
+            ("s.count.CU", "BOOL", 53, false),
+            ("s.count.R", "BOOL", 54, false),
+            ("s.count.PV", "INT", 55, false),
+            ("s.count.Q", "BOOL", 57, false),
+            ("s.count.CV", "INT", 58, false),
+            ("s.count.CU_M", "BOOL", 60, false),
         ]
     );
     assert_eq!(
-        r.c.memory_size, 54,
+        r.c.memory_size, 61,
         "the program's variables and nothing else"
     );
 }

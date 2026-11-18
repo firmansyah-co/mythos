@@ -378,7 +378,7 @@ fn profile(json: &str) -> TargetProfile {
 #[test]
 fn a_target_that_cannot_run_a_type_refuses_the_program_at_compile_time() {
     let no_lreal = profile(
-        r#"{"name":"no-lreal","format_version":3,"max_memory":65536,"max_code":65536,"refuses":["Lreal"]}"#,
+        r#"{"name":"no-lreal","format_version":4,"max_memory":65536,"max_code":65536,"refuses":["Lreal"]}"#,
     );
     let err = compile("PROGRAM P VAR x : LREAL; END_VAR END_PROGRAM", &no_lreal)
         .err()
@@ -394,7 +394,7 @@ fn a_target_that_cannot_run_a_type_refuses_the_program_at_compile_time() {
 
     // A target that refuses STRING refuses every length of it.
     let no_text = profile(
-        r#"{"name":"no-text","format_version":3,"max_memory":65536,"max_code":65536,"refuses":[{"String":254}]}"#,
+        r#"{"name":"no-text","format_version":4,"max_memory":65536,"max_code":65536,"refuses":[{"String":254}]}"#,
     );
     let err = compile(
         "PROGRAM P VAR x : STRING[10]; END_VAR END_PROGRAM",
@@ -407,13 +407,13 @@ fn a_target_that_cannot_run_a_type_refuses_the_program_at_compile_time() {
         "STRING is not supported on the target no-text"
     );
 
-    let tiny = profile(r#"{"name":"tiny","format_version":3,"max_memory":8,"max_code":65536}"#);
+    let tiny = profile(r#"{"name":"tiny","format_version":4,"max_memory":8,"max_code":65536}"#);
     let err = compile("PROGRAM P VAR t : TON; END_VAR END_PROGRAM", &tiny)
         .err()
         .unwrap();
     assert_eq!(
         err[0].message,
-        "the program needs 28 bytes of variable memory; the target tiny allows 8"
+        "the program needs 35 bytes of variable memory; the target tiny allows 8"
     );
 }
 
@@ -427,7 +427,18 @@ fn a_target_whose_vm_reads_another_bytecode_format_is_refused_at_compile_time() 
         .unwrap();
     assert_eq!(
         err[0].message,
-        "the target board-x runs bytecode format 7; this compiler makes format 3"
+        "the target board-x runs bytecode format 7; this compiler makes format 4"
+    );
+    // A target whose VM reads format 3 at most cannot load format 4 (ADR-013 L4): its
+    // profile says 3, and it is refused here, not at download.
+    let older =
+        profile(r#"{"name":"board-3","format_version":3,"max_memory":65536,"max_code":65536}"#);
+    let err = compile("PROGRAM P VAR x : INT; END_VAR END_PROGRAM", &older)
+        .err()
+        .unwrap();
+    assert_eq!(
+        err[0].message,
+        "the target board-3 runs bytecode format 3; this compiler makes format 4"
     );
 }
 
@@ -461,9 +472,12 @@ fn the_symbol_table_says_where_every_variable_and_member_is_and_which_the_host_m
             ("go", "BOOL", 0, true),
             ("out", "INT", 1, false),
             ("t.IN", "BOOL", 3, false),
-            ("t.PT", "TIME", 7, false),
-            ("t.Q", "BOOL", 4, false),
-            ("t.ET", "TIME", 15, false),
+            ("t.PT", "TIME", 4, false),
+            ("t.Q", "BOOL", 12, false),
+            ("t.ET", "TIME", 13, false),
+            ("t.RUNNING", "BOOL", 21, false),
+            ("t.START", "TIME", 22, false),
+            ("t.CLOCK", "TIME", 30, false),
         ]
     );
 }
