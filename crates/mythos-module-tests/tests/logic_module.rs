@@ -45,6 +45,48 @@ VAR_OUTPUT speed : INT; END_VAR
 END_PROGRAM
 ";
 
+/// The tank in Ladder Diagram (ADR-013 §2.15): `speed := level * 10` through a MUL block, and
+/// a contact on `level_ok` to the coil `running`. `{contact}` is the contact's variable.
+const MIXER: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <types><dataTypes/><pous>
+    <pou name="Mixer" pouType="program">
+      <interface>
+        <inputVars>
+          <variable name="level"><type><INT/></type></variable>
+          <variable name="level_ok"><type><BOOL/></type></variable>
+        </inputVars>
+        <outputVars>
+          <variable name="speed"><type><INT/></type></variable>
+          <variable name="running"><type><BOOL/></type></variable>
+        </outputVars>
+      </interface>
+      <body><LD>
+        <leftPowerRail localId="1"><position x="0" y="0"/><connectionPointOut formalParameter=""/></leftPowerRail>
+        <contact localId="10"><position x="40" y="20"/><connectionPointIn><connection refLocalId="1"/></connectionPointIn><connectionPointOut/><variable>{contact}</variable></contact>
+        <coil localId="11"><position x="200" y="20"/><connectionPointIn><connection refLocalId="10"/></connectionPointIn><connectionPointOut/><variable>running</variable></coil>
+        <inVariable localId="20"><position x="40" y="100"/><connectionPointOut/><expression>level</expression></inVariable>
+        <block localId="21" typeName="MUL"><position x="120" y="100"/>
+          <inputVariables>
+            <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="20"/></connectionPointIn></variable>
+            <variable formalParameter="IN2"><connectionPointIn><expression>10</expression></connectionPointIn></variable>
+          </inputVariables>
+          <inOutVariables/>
+          <outputVariables><variable formalParameter="OUT"><connectionPointOut/></variable></outputVariables>
+        </block>
+        <outVariable localId="22"><position x="200" y="100"/><connectionPointIn><connection refLocalId="21"/></connectionPointIn><expression>speed</expression></outVariable>
+        <rightPowerRail localId="2"><position x="400" y="0"/><connectionPointIn><connection refLocalId="11"/></connectionPointIn></rightPowerRail>
+      </LD></body>
+    </pou>
+  </pous></types>
+  <instances><configurations/></instances>
+</project>
+"#;
+
+fn mixer(contact: &str) -> String {
+    MIXER.replace("{contact}", contact)
+}
+
 /// The tag bus segment of one test, removed when the test ends.
 struct Segment(String);
 
@@ -426,6 +468,168 @@ async fn a_program_is_written_checked_built_loaded_and_runs_the_plant() {
     rig.close().await;
 }
 
+/// A Ladder Diagram program (ADR-013 L3b-1): created as a TC6 document, its source read and
+/// saved as XML, checked with a diagnostic at its element, built, loaded, and it runs the
+/// plant; an ST program saved before programs had a language goes on as it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_plant() {
+    let rig = rig().await;
+    let data = rig.project.join("logic");
+
+    // An ST program as C3 stored it: its entry has no language, its source is Tank.st.
+    std::fs::create_dir_all(data.join("programs")).unwrap();
+    std::fs::write(
+        data.join("programs.json"),
+        json!({"programs": [{"name": "Tank", "interval_ms": 20, "runtime": "vm",
+                             "target": "pc", "run": true}]})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(data.join("programs/Tank.st"), TANK).unwrap();
+    let listed = rig.eng("GET", PROGRAMS, None, 200).await;
+    assert_eq!(listed["programs"][0]["language"], "st", "{listed}");
+    let checked = rig
+        .eng("POST", &format!("{PROGRAMS}/Tank/check"), None, 200)
+        .await;
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert!(checked.get("power").is_none(), "{checked}");
+
+    // A new LD program is a TC6 document that compiles, in its own file.
+    let mix = format!("{PROGRAMS}/Mixer");
+    let created = rig
+        .eng(
+            "POST",
+            PROGRAMS,
+            Some(json!({"name": "Mixer", "language": "ld"})),
+            201,
+        )
+        .await;
+    assert_eq!(created["program"]["language"], "ld", "{created}");
+    let source = created["source"].as_str().unwrap();
+    assert!(
+        source.contains(r#"<project xmlns="http://www.plcopen.org/xml/tc6_0201">"#),
+        "{source}"
+    );
+    assert!(data.join("programs/Mixer.xml").is_file());
+    assert!(!data.join("programs/Mixer.st").exists());
+    assert_eq!(rig.eng("GET", &mix, None, 200).await["source"], source);
+    let checked = rig.eng("POST", &format!("{mix}/check"), None, 200).await;
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert_eq!(checked["power"], json!([]), "{checked}");
+    let refused = rig
+        .eng(
+            "POST",
+            PROGRAMS,
+            Some(json!({"name": "Pump", "language": "fbd"})),
+            400,
+        )
+        .await;
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("'fbd' is not a language"),
+        "{refused}"
+    );
+
+    // A diagnostic of an unsaved document names the element and where it is drawn.
+    let checked = rig
+        .eng(
+            "POST",
+            &format!("{mix}/check"),
+            Some(json!({"source": mixer("levl_ok")})),
+            200,
+        )
+        .await;
+    assert_eq!(checked["ok"], false, "{checked}");
+    assert_eq!(
+        checked["diagnostics"][0]["message"],
+        "levl_ok is not declared"
+    );
+    assert_eq!(
+        checked["diagnostics"][0]["element"],
+        json!({"pou": "Mixer", "local_id": 10, "x": 40.0, "y": 20.0,
+               "text": {"field": "variable", "col": 1, "end_col": 8}}),
+        "{checked}"
+    );
+
+    // Saved as XML, bound, built and loaded: it runs the plant (level 20).
+    rig.eng(
+        "PUT",
+        &format!("{mix}/source"),
+        Some(json!({"source": mixer("level_ok")})),
+        200,
+    )
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(data.join("programs/Mixer.xml")).unwrap(),
+        mixer("level_ok")
+    );
+    // The tank's bindings but its setpoint, which the mixer does not have.
+    let mut bound = settings();
+    bound["published"] = json!([]);
+    rig.eng("PUT", &format!("{mix}/settings"), Some(bound), 200)
+        .await;
+    assert_eq!(
+        rig.eng("GET", &mix, None, 200).await["program"]["language"],
+        "ld",
+        "settings do not change the language"
+    );
+    let checked = rig.eng("POST", &format!("{mix}/check"), None, 200).await;
+    assert_eq!(checked["binding_problems"], json!([]), "{checked}");
+    assert_eq!(
+        checked["power"],
+        json!([{"local_id": 1, "output": "", "on": true}]),
+        "the contact and the coil are used once: no variable holds their output"
+    );
+    rig.eng(
+        "PUT",
+        "/api/v1/projects/plant/io",
+        Some(rig.io_config()),
+        200,
+    )
+    .await;
+    let built = rig.eng("POST", &format!("{mix}/build"), None, 200).await;
+    assert_eq!(built["warnings"], json!([]), "{built}");
+    assert_eq!(built["instance"]["program"]["name"], "Mixer");
+    rig.eng(
+        "PUT",
+        "/api/v1/projects/plant/runtimes",
+        Some(json!({"instances": [built["instance"]]})),
+        200,
+    )
+    .await;
+    rig.speed_is("the ladder commands 200", 200).await;
+    let watched = rig
+        .eng(
+            "POST",
+            "/api/v1/runtimes/Mixer/watch",
+            Some(json!({"variables": ["running", "level_ok"]})),
+            200,
+        )
+        .await;
+    assert_eq!(watched["values"][0]["value"], true, "{watched}");
+    assert_eq!(watched["values"][1]["value"], true, "{watched}");
+
+    // The ST program is untouched by all of it, and is still written back as ST.
+    let checked = rig
+        .eng("POST", &format!("{PROGRAMS}/Tank/check"), None, 200)
+        .await;
+    assert_eq!(checked["ok"], true, "{checked}");
+    let list: Value =
+        serde_json::from_str(&std::fs::read_to_string(data.join("programs.json")).unwrap())
+            .unwrap();
+    assert_eq!(list["programs"][0]["language"], "st", "{list}");
+    assert_eq!(list["programs"][1]["language"], "ld", "{list}");
+
+    // Removing it removes its document.
+    rig.eng("DELETE", &mix, None, 200).await;
+    assert!(!data.join("programs/Mixer.xml").exists());
+    assert!(data.join("programs/Tank.st").is_file());
+
+    rig.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_source_made_to_exhaust_the_stack_is_refused_and_the_module_answers_on() {
     // The compiler runs on a thread of the module's runtime. Nested thousands deep, or with a
@@ -686,12 +890,60 @@ async fn an_agent_writes_checks_and_builds_a_program_over_mcp() {
         ]
     );
 
+    // Each tool that takes or gives a source says which languages.
+    let description = |name: &str| {
+        listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap()["description"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    for name in [
+        "list_logic_programs",
+        "create_logic_program",
+        "get_logic_program",
+        "save_logic_source",
+        "check_logic_program",
+        "build_logic_program",
+    ] {
+        let said = description(name);
+        assert!(
+            said.contains("Structured Text") && said.contains("Ladder Diagram"),
+            "{name}: {said}"
+        );
+    }
+
     let (error, created) = tool(
         "create_logic_program",
         json!({"project_id": "plant", "body": {"name": "Tank", "interval_ms": 50}}),
     )
     .await;
     assert!(!error, "{created}");
+    assert_eq!(created["program"]["language"], "st", "{created}");
+    let (error, created) = tool(
+        "create_logic_program",
+        json!({"project_id": "plant", "body": {"name": "Mixer", "language": "ld"}}),
+    )
+    .await;
+    assert!(!error, "{created}");
+    let (error, saved) = tool(
+        "save_logic_source",
+        json!({"project_id": "plant", "program": "Mixer", "body": {"source": mixer("level_ok")}}),
+    )
+    .await;
+    assert!(!error, "{saved}");
+    let (error, checked) = tool(
+        "check_logic_program",
+        json!({"project_id": "plant", "program": "Mixer", "body": {}}),
+    )
+    .await;
+    assert!(!error, "{checked}");
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert_eq!(checked["program"], "Mixer", "{checked}");
     let (error, saved) = tool(
         "save_logic_source",
         json!({"project_id": "plant", "program": "Tank", "body": {"source": TANK}}),

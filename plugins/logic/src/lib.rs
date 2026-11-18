@@ -2,18 +2,28 @@
 //!
 //! A project's programs live in the module's data directory (`<project>/logic/`): the list
 //! with each program's settings and its bindings to tags in `programs.json`, and each
-//! program's source in `programs/<name>.st`. The module checks a program (the compiler's
-//! diagnostics, each with the range of the source it is about, and its variables for the
-//! binding table) and builds it:
-//! compiled for its target, bindings checked against its variables, packed as the runtime
-//! instance the core loads (`PUT /api/v1/projects/:id/runtimes`).
+//! program's source beside it: `programs/<name>.st` for Structured Text, `programs/<name>.xml`
+//! for a Ladder Diagram (a PLCopen TC6 XML v2.01 document holding its POUs, ADR-013 §2.15).
+//! The module checks a program (the compiler's diagnostics, each with the range of the source
+//! it is about or, in a Ladder Diagram, the element; its variables for the binding table) and
+//! builds it: compiled for its target, bindings checked against its variables, packed as the
+//! runtime instance the core loads (`PUT /api/v1/projects/:id/runtimes`).
+//!
+//! **Each program is compiled from its own source alone** (`compile_sources` with that one
+//! source). Every source of a project holds a PROGRAM, and a program is compiled from sources
+//! of which exactly one POU is a PROGRAM, so another program's functions and function blocks
+//! cannot be compiled in without taking its PROGRAM out of its file; and a program built with
+//! another's POUs would change, and take a new version, when that other program is edited.
+//! A function or function block a program needs is in its own source: in a Ladder Diagram
+//! document beside its PROGRAM, in Structured Text before it. A library of the project's own,
+//! sources without a PROGRAM shared by every program, is not built.
 //!
 //! It never talks to a runtime, and it does not load what it builds: a module cannot call the
 //! core. The workbench, or an agent over MCP, takes the built instance and saves it into the
 //! project's runtimes.
 
 use async_trait::async_trait;
-use mythos_logic_compiler::{compile, Diagnostic, Symbol, TargetProfile};
+use mythos_logic_compiler::{compile_sources, Diagnostic, Holds, Sources, Symbol, TargetProfile};
 use mythos_module::protocol::{
     HttpCall, HttpReply, InputBinding, InputOf, ModuleKind, ModuleManifest, OutputBinding,
     PublishedBinding, RouteDecl, RouteScope, RuntimeProgram, PROTOCOL_VERSION,
@@ -45,7 +55,9 @@ const SOURCES_DIR: &str = "programs";
 pub struct ProgramEntry {
     /// Its name in the project, and the id of the runtime instance it becomes.
     pub name: String,
-    /// The language of its source. `st` is the one there is.
+    /// The language of its source: `st` (Structured Text) or `ld` (Ladder Diagram, a TC6
+    /// document). A `programs.json` written before there was a choice has none, which is `st`.
+    #[serde(default = "structured_text")]
     pub language: String,
     /// The interval of its cyclic task.
     pub interval_ms: u64,
@@ -69,6 +81,13 @@ struct Programs {
     #[serde(default)]
     programs: Vec<ProgramEntry>,
 }
+
+fn structured_text() -> String {
+    "st".into()
+}
+
+/// The languages a program may be written in, each with the extension of its file.
+const LANGUAGES: &[(&str, &str)] = &[("st", "st"), ("ld", "xml")];
 
 type Refusal = (u16, Value);
 
@@ -116,14 +135,24 @@ fn save(data: &Path, programs: &Programs) -> Result<(), Refusal> {
     write_atomic(&data.join(PROGRAMS_FILE), &bytes)
 }
 
-fn source_path(data: &Path, name: &str) -> PathBuf {
-    data.join(SOURCES_DIR).join(format!("{name}.st"))
+/// The file of a program's source: `.st` or, for a Ladder Diagram, `.xml`.
+fn source_path(data: &Path, entry: &ProgramEntry) -> PathBuf {
+    let extension = LANGUAGES
+        .iter()
+        .find(|(l, _)| *l == entry.language)
+        .map_or("st", |(_, e)| e);
+    data.join(SOURCES_DIR)
+        .join(format!("{}.{extension}", entry.name))
 }
 
-fn read_source(data: &Path, name: &str) -> Result<String, Refusal> {
-    let path = source_path(data, name);
-    std::fs::read_to_string(&path)
-        .map_err(|e| error(500, format!("the source of {name} cannot be read: {e}")))
+fn read_source(data: &Path, entry: &ProgramEntry) -> Result<String, Refusal> {
+    let path = source_path(data, entry);
+    std::fs::read_to_string(&path).map_err(|e| {
+        error(
+            500,
+            format!("the source of {} cannot be read: {e}", entry.name),
+        )
+    })
 }
 
 fn find<'a>(programs: &'a Programs, name: &str) -> Result<&'a ProgramEntry, Refusal> {
@@ -134,10 +163,78 @@ fn find<'a>(programs: &'a Programs, name: &str) -> Result<&'a ProgramEntry, Refu
         .ok_or_else(|| error(404, format!("the project has no program '{name}'")))
 }
 
-/// What a new program starts as: every section a program may have, empty.
-fn template(name: &str) -> String {
+/// What a new program starts as. In Structured Text, every section a program may have, empty.
+/// In a Ladder Diagram, a TC6 project holding the PROGRAM with no variable and a body of the
+/// two power rails and no rung between them, which compiles to a program that does nothing.
+fn template(name: &str, language: &str, now: std::time::SystemTime) -> String {
+    if language != "ld" {
+        return format!(
+            "PROGRAM {name}\nVAR_INPUT\nEND_VAR\nVAR_OUTPUT\nEND_VAR\nVAR\nEND_VAR\n\nEND_PROGRAM\n"
+        );
+    }
+    // The schema requires a file header: who wrote it is not known, so it is left empty; the
+    // product, its version and the time are this module's own.
     format!(
-        "PROGRAM {name}\nVAR_INPUT\nEND_VAR\nVAR_OUTPUT\nEND_VAR\nVAR\nEND_VAR\n\nEND_PROGRAM\n"
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <fileHeader companyName="" productName="MythOS logic" productVersion="{version}" creationDateTime="{created}"/>
+  <contentHeader name="{name}">
+    <coordinateInfo>
+      <fbd><scaling x="1" y="1"/></fbd>
+      <ld><scaling x="1" y="1"/></ld>
+      <sfc><scaling x="1" y="1"/></sfc>
+    </coordinateInfo>
+  </contentHeader>
+  <types>
+    <dataTypes/>
+    <pous>
+      <pou name="{name}" pouType="program">
+        <interface/>
+        <body>
+          <LD>
+            <leftPowerRail localId="1">
+              <position x="0" y="0"/>
+              <connectionPointOut formalParameter=""/>
+            </leftPowerRail>
+            <rightPowerRail localId="2">
+              <position x="400" y="0"/>
+            </rightPowerRail>
+          </LD>
+        </body>
+      </pou>
+    </pous>
+  </types>
+  <instances>
+    <configurations/>
+  </instances>
+</project>
+"#,
+        version = env!("CARGO_PKG_VERSION"),
+        created = date_time(now),
+    )
+}
+
+/// `time` as an `xsd:dateTime` in UTC, to the second: `2026-11-18T09:30:00Z`.
+fn date_time(time: std::time::SystemTime) -> String {
+    let secs = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs()) as i64;
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // The civil date of a day count from 1970-01-01 (Howard Hinnant's days_from_civil, inverted).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
     )
 }
 
@@ -147,9 +244,9 @@ fn template(name: &str) -> String {
 
 /// What can be said of an entry without compiling its source.
 fn check_entry(entry: &ProgramEntry) -> Result<(), String> {
-    if entry.language != "st" {
+    if !LANGUAGES.iter().any(|(l, _)| *l == entry.language) {
         return Err(format!(
-            "'{}' is not a language this module compiles; 'st' is",
+            "'{}' is not a language this module compiles; 'st' (Structured Text) and 'ld' (Ladder Diagram) are",
             entry.language
         ));
     }
@@ -281,6 +378,13 @@ fn check_bindings(entry: &ProgramEntry, symbols: &[Symbol]) -> Vec<String> {
     problems
 }
 
+/// A variable the front-end made for itself (ADR-013 §2.15: an LD edge's memory, a value
+/// used twice, a jump), or a member of one: a part of its path begins with two underscores,
+/// which IEC 61131-3 ed. 3 §6.1.2 forbids in every name a program declares.
+fn hidden(path: &str) -> bool {
+    path.split('.').any(|part| part.starts_with("__"))
+}
+
 /// What the workbench shows of a variable in the binding table.
 fn variables(symbols: &[Symbol]) -> Vec<Value> {
     symbols
@@ -295,7 +399,55 @@ fn variables(symbols: &[Symbol]) -> Vec<Value> {
                 // Bound only to be read (an output, a published tag that is not a setpoint):
                 // only its function block writes it.
                 "private": s.private,
+                "hidden": hidden(&s.path),
             })
+        })
+        .collect()
+}
+
+/// Compile the program's `source`, written in its language, for `target`: from that one
+/// source alone (see the top of this file).
+fn compile_entry(
+    entry: &ProgramEntry,
+    source: &str,
+    target: &TargetProfile,
+) -> Result<mythos_logic_compiler::Compiled, Vec<Diagnostic>> {
+    let file = |extension: &str| format!("{}.{extension}", entry.name);
+    if entry.language == "ld" {
+        let name = file("xml");
+        compile_sources(
+            &Sources {
+                st: None,
+                ld: &[(name.as_str(), source)],
+            },
+            target,
+        )
+    } else {
+        let name = file("st");
+        compile_sources(
+            &Sources {
+                st: Some((name.as_str(), source)),
+                ld: &[],
+            },
+            target,
+        )
+    }
+}
+
+/// Where the editor reads the power of each output of an element of the PROGRAM: ON, or a
+/// variable that holds it exactly once a scan is over (`mythos_logic_compiler::Probe`). An
+/// output that is not listed has no state anything holds, and is shown as unknown.
+fn power(compiled: &mythos_logic_compiler::Compiled) -> Vec<Value> {
+    compiled
+        .probes
+        .iter()
+        .filter(|p| p.pou.eq_ignore_ascii_case(&compiled.name))
+        .map(|p| match &p.holds {
+            Holds::On => json!({"local_id": p.local_id, "output": p.output, "on": true}),
+            Holds::Variable { path, negated } => json!({
+                "local_id": p.local_id, "output": p.output,
+                "variable": path, "negated": negated,
+            }),
         })
         .collect()
 }
@@ -316,10 +468,10 @@ fn check(entry: &ProgramEntry, source: &str) -> Value {
             });
         }
     };
-    match compile(source, &target) {
+    match compile_entry(entry, source, &target) {
         Ok(compiled) => {
             let problems = check_bindings(entry, &compiled.symbols);
-            json!({
+            let mut answer = json!({
                 "ok": true,
                 "diagnostics": [],
                 "program": compiled.name,
@@ -327,7 +479,11 @@ fn check(entry: &ProgramEntry, source: &str) -> Value {
                 "code_size": compiled.code_size,
                 "memory_size": compiled.memory_size,
                 "binding_problems": problems,
-            })
+            });
+            if entry.language == "ld" {
+                answer["power"] = Value::Array(power(&compiled));
+            }
+            answer
         }
         Err(diagnostics) => json!({ "ok": false, "diagnostics": diagnostics }),
     }
@@ -342,7 +498,7 @@ fn build(
     check_entry(entry).map_err(|e| error(400, e))?;
     let target = TargetProfile::by_name(&entry.target)
         .ok_or_else(|| error(400, format!("'{}' is not a target profile", entry.target)))?;
-    let compiled = compile(source, &target).map_err(|diagnostics| {
+    let compiled = compile_entry(entry, source, &target).map_err(|diagnostics| {
         (
             400,
             json!({
@@ -486,32 +642,34 @@ pub fn manifest() -> ModuleManifest {
         version: env!("CARGO_PKG_VERSION").into(),
         kind: ModuleKind::Service,
         provides: PROVIDES.into(),
-        description: "Control programs: their source, their bindings to tags, check and build".into(),
+        description: "Control programs in Structured Text or Ladder Diagram: their source, their bindings to tags, check and build".into(),
         capabilities: vec![],
         config_schema: Value::Null,
         always_on: false,
         profile: Value::Null,
         routes: vec![
             route("GET", "/programs", "viewer", "list_logic_programs",
-                "A project's control programs with their settings and bindings.", None, &[]),
+                "A project's control programs with their settings and bindings, each with its language: st (Structured Text) or ld (Ladder Diagram).", None, &[]),
             route("POST", "/programs", "engineer", "create_logic_program",
-                "Add a program to a project: an empty PROGRAM, not run when loaded until its settings say so.",
+                "Add a program to a project, in Structured Text (st, the default) or Ladder Diagram (ld): an empty PROGRAM, not run when loaded until its settings say so. A Ladder Diagram starts as a PLCopen TC6 XML v2.01 document holding the PROGRAM, with the two power rails and no rung.",
                 Some(json!({
                     "type": "object",
                     "required": ["name"],
                     "properties": {
                         "name": { "type": "string", "description": "A letter, then letters, digits or _; at most 64" },
+                        "language": { "type": "string", "enum": ["st", "ld"], "default": "st",
+                            "description": "st: Structured Text. ld: Ladder Diagram, stored as a PLCopen TC6 XML v2.01 document. It cannot be changed later" },
                         "interval_ms": { "type": "integer", "minimum": 1, "default": 100 }
                     }
                 })), &[]),
             route("GET", "/programs/:program", "viewer", "get_logic_program",
-                "A program's settings, bindings and source.", None, &[]),
+                "A program's settings, bindings and source: Structured Text, or for a Ladder Diagram (language ld) the PLCopen TC6 XML v2.01 document.", None, &[]),
             route("PUT", "/programs/:program/source", "engineer", "save_logic_source",
-                "Replace a program's source. Nothing is compiled or loaded: check_logic_program and build_logic_program do that.",
+                "Replace a program's source, in its language: Structured Text, or for a Ladder Diagram (language ld) a PLCopen TC6 XML v2.01 document whose POUs include the PROGRAM. Nothing is compiled or loaded: check_logic_program and build_logic_program do that.",
                 Some(json!({
                     "type": "object",
                     "required": ["source"],
-                    "properties": { "source": { "type": "string", "description": "Structured Text" } }
+                    "properties": { "source": { "type": "string", "description": "Structured Text, or for a Ladder Diagram the TC6 XML document" } }
                 })), &[]),
             route("PUT", "/programs/:program/settings", "engineer", "save_logic_settings",
                 "Replace a program's settings and its bindings to tags.",
@@ -520,13 +678,13 @@ pub fn manifest() -> ModuleManifest {
                 "Remove a program and its source from a project. A runtime that already runs it is not touched.",
                 None, &[]),
             route("POST", "/programs/:program/check", "viewer", "check_logic_program",
-                "Compile a program without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program), or its variables and what its bindings get wrong. With 'source' it checks that text instead of the saved one.",
+                "Compile a program, Structured Text or Ladder Diagram, without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program; in a Ladder Diagram the range is the element's tag in the document and 'element' names it: pou, local_id, x, y, or the interface's variable, and the characters of its text), or its variables (hidden: made by the Ladder Diagram front-end for itself) and what its bindings get wrong. A Ladder Diagram that compiles also gives 'power': for each output of an element whose state a variable holds once a scan is over, that variable (or on: always ON), to watch for power flow. With 'source' it checks that text instead of the saved one.",
                 Some(json!({
                     "type": "object",
                     "properties": { "source": { "type": "string" } }
                 })), &[]),
             route("POST", "/programs/:program/build", "engineer", "build_logic_program",
-                "Compile the saved source and pack it as a runtime instance. The answer's 'instance' is what save_runtimes_config takes in its 'instances' (replace the one with the same id); nothing is loaded by this call.",
+                "Compile the saved source, Structured Text or Ladder Diagram, and pack it as a runtime instance. The answer's 'instance' is what save_runtimes_config takes in its 'instances' (replace the one with the same id); nothing is loaded by this call.",
                 None, &["tags"]),
         ],
     }
@@ -547,6 +705,8 @@ fn body<T: for<'de> Deserialize<'de>>(call: &HttpCall) -> Result<T, Refusal> {
 #[derive(Deserialize)]
 struct Create {
     name: String,
+    #[serde(default = "structured_text")]
+    language: String,
     #[serde(default)]
     interval_ms: Option<u64>,
 }
@@ -611,7 +771,7 @@ impl Logic {
                     }
                     let entry = ProgramEntry {
                         name: b.name.clone(),
-                        language: "st".into(),
+                        language: b.language.clone(),
                         interval_ms: b.interval_ms.unwrap_or(100),
                         runtime: "vm".into(),
                         target: "pc".into(),
@@ -622,25 +782,27 @@ impl Logic {
                         published: vec![],
                     };
                     check_entry(&entry).map_err(|e| error(400, e))?;
-                    write_atomic(&source_path(data, &b.name), template(&b.name).as_bytes())?;
+                    let source = template(&b.name, &entry.language, std::time::SystemTime::now());
+                    write_atomic(&source_path(data, &entry), source.as_bytes())?;
                     programs.programs.push(entry.clone());
                     save(data, &programs)?;
                     changed("created", &b.name);
-                    Ok(json!({ "program": entry, "source": template(&b.name) }))
+                    Ok(json!({ "program": entry, "source": source }))
                 }),
                 201,
             ),
             ("GET", "/programs/:program") => reply(
                 load(data).and_then(|p| {
                     let entry = find(&p, name)?.clone();
-                    Ok(json!({ "program": entry, "source": read_source(data, name)? }))
+                    let source = read_source(data, &entry)?;
+                    Ok(json!({ "program": entry, "source": source }))
                 }),
                 200,
             ),
             ("PUT", "/programs/:program/source") => reply(
                 body::<SourceBody>(call).and_then(|b| {
-                    find(&load(data)?, name)?;
-                    write_atomic(&source_path(data, name), b.source.as_bytes())?;
+                    let entry = find(&load(data)?, name)?.clone();
+                    write_atomic(&source_path(data, &entry), b.source.as_bytes())?;
                     changed("source", name);
                     Ok(json!({ "saved": true }))
                 }),
@@ -675,10 +837,10 @@ impl Logic {
             ),
             ("DELETE", "/programs/:program") => reply(
                 load(data).and_then(|mut programs| {
-                    find(&programs, name)?;
+                    let entry = find(&programs, name)?.clone();
                     programs.programs.retain(|p| p.name != name);
                     save(data, &programs)?;
-                    let _ = std::fs::remove_file(source_path(data, name));
+                    let _ = std::fs::remove_file(source_path(data, &entry));
                     changed("deleted", name);
                     Ok(json!({ "deleted": name }))
                 }),
@@ -693,7 +855,7 @@ impl Logic {
                     };
                     let source = match given.source {
                         Some(source) => source,
-                        None => read_source(data, name)?,
+                        None => read_source(data, entry)?,
                     };
                     Ok(check(entry, &source))
                 }),
@@ -702,7 +864,7 @@ impl Logic {
             ("POST", "/programs/:program/build") => reply(
                 load(data).and_then(|p| {
                     let entry = find(&p, name)?;
-                    build(entry, &read_source(data, name)?, call.tags.as_deref())
+                    build(entry, &read_source(data, entry)?, call.tags.as_deref())
                 }),
                 200,
             ),
@@ -750,6 +912,176 @@ mod tests {
         IF level_ok AND (level < setpoint) THEN speed := (setpoint - level) * 10; ELSE speed := 0; END_IF;
         END_PROGRAM";
 
+    /// A Ladder Diagram of the tank (a TC6 document, ADR-013 §2.15): `run` through a contact
+    /// that feeds two coils (a branch point, kept in `__LD_10`), and `speed := level * 10`
+    /// through a MUL block.
+    fn ladder(contact_variable: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <types><dataTypes/><pous>
+    <pou name="Tank" pouType="program">
+      <interface>
+        <inputVars>
+          <variable name="level"><type><INT/></type></variable>
+          <variable name="run"><type><BOOL/></type></variable>
+        </inputVars>
+        <outputVars>
+          <variable name="speed"><type><INT/></type></variable>
+          <variable name="motor"><type><BOOL/></type></variable>
+          <variable name="lamp"><type><BOOL/></type></variable>
+        </outputVars>
+      </interface>
+      <body><LD>
+        <leftPowerRail localId="1"><position x="0" y="0"/><connectionPointOut formalParameter=""/></leftPowerRail>
+        <contact localId="10"><position x="40" y="20"/><connectionPointIn><connection refLocalId="1"/></connectionPointIn><connectionPointOut/><variable>{contact_variable}</variable></contact>
+        <coil localId="11"><position x="200" y="20"/><connectionPointIn><connection refLocalId="10"/></connectionPointIn><connectionPointOut/><variable>motor</variable></coil>
+        <coil localId="12" negated="true"><position x="200" y="50"/><connectionPointIn><connection refLocalId="10"/></connectionPointIn><connectionPointOut/><variable>lamp</variable></coil>
+        <inVariable localId="20"><position x="40" y="100"/><connectionPointOut/><expression>level</expression></inVariable>
+        <block localId="21" typeName="MUL"><position x="120" y="100"/>
+          <inputVariables>
+            <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="20"/></connectionPointIn></variable>
+            <variable formalParameter="IN2"><connectionPointIn><expression>10</expression></connectionPointIn></variable>
+          </inputVariables>
+          <inOutVariables/>
+          <outputVariables><variable formalParameter="OUT"><connectionPointOut/></variable></outputVariables>
+        </block>
+        <outVariable localId="22"><position x="200" y="100"/><connectionPointIn><connection refLocalId="21"/></connectionPointIn><expression>speed</expression></outVariable>
+        <rightPowerRail localId="2"><position x="400" y="0"/>
+          <connectionPointIn><connection refLocalId="11"/></connectionPointIn>
+          <connectionPointIn><connection refLocalId="12"/></connectionPointIn>
+        </rightPowerRail>
+      </LD></body>
+    </pou>
+  </pous></types>
+  <instances><configurations/></instances>
+</project>
+"#
+        )
+    }
+
+    fn ld_entry() -> ProgramEntry {
+        serde_json::from_value(json!({
+            "name": "Tank", "language": "ld", "interval_ms": 20, "runtime": "vm", "target": "pc", "run": true,
+            "inputs": [{"variable": "level", "tag": "external.P.LT1.level"}],
+            "outputs": [{"variable": "speed", "tag": "external.P.P1.speed", "safe": 0}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_programs_list_written_before_languages_is_structured_text() {
+        // The shape C3 wrote: no language. It is read, and every program in it is ST.
+        let old: Programs = serde_json::from_value(json!({"programs": [{
+            "name": "Tank", "interval_ms": 20, "runtime": "vm", "target": "pc", "run": true
+        }]}))
+        .expect("a list without a language is read");
+        assert_eq!(old.programs[0].language, "st");
+        assert_eq!(
+            source_path(Path::new("/d"), &old.programs[0]),
+            Path::new("/d/programs/Tank.st")
+        );
+        assert_eq!(
+            source_path(Path::new("/d"), &ld_entry()),
+            Path::new("/d/programs/Tank.xml")
+        );
+        // Written back, it says so.
+        assert_eq!(
+            serde_json::to_value(&old).unwrap()["programs"][0]["language"],
+            "st"
+        );
+    }
+
+    #[test]
+    fn a_new_ladder_diagram_is_a_tc6_document_that_compiles_to_a_program_doing_nothing() {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_795_000_000);
+        assert_eq!(date_time(at), "2026-11-18T11:06:40Z");
+        let source = template("Tank", "ld", at);
+        assert!(
+            source.contains(r#"<pou name="Tank" pouType="program">"#),
+            "{source}"
+        );
+        assert!(source.contains(r#"creationDateTime="2026-11-18T11:06:40Z""#));
+        let checked = check(&ld_entry(), &source);
+        assert_eq!(checked["ok"], true, "{checked}");
+        assert_eq!(checked["program"], "Tank");
+        assert_eq!(checked["variables"], json!([]));
+        // Nothing connects to the rails: nothing carries power.
+        assert_eq!(checked["power"], json!([]));
+        // An ST program's check says nothing of power.
+        assert!(check(&entry(), TANK).get("power").is_none());
+        assert_eq!(template("Tank", "st", at), template("Tank", "xx", at));
+    }
+
+    #[test]
+    fn a_ladder_diagram_is_checked_with_its_variables_and_where_its_power_is_held() {
+        let checked = check(&ld_entry(), &ladder("run"));
+        assert_eq!(checked["ok"], true, "{checked}");
+        assert_eq!(checked["binding_problems"], json!([]), "{checked}");
+        let vars = checked["variables"].as_array().unwrap();
+        let var = |path: &str| {
+            vars.iter()
+                .find(|v| v["path"] == path)
+                .unwrap_or_else(|| panic!("{path} in {vars:?}"))
+        };
+        assert_eq!(var("level")["hidden"], false);
+        assert_eq!(var("motor")["bindable"], true);
+        // The branch point's state, kept by the front-end: hidden, and private.
+        assert_eq!(var("__LD_10")["hidden"], true);
+        assert_eq!(var("__LD_10")["private"], true);
+        assert_eq!(
+            checked["power"],
+            json!([
+                {"local_id": 1, "output": "", "on": true},
+                {"local_id": 10, "output": "", "variable": "__LD_10", "negated": false},
+                {"local_id": 11, "output": "", "variable": "__LD_10", "negated": false},
+                {"local_id": 12, "output": "", "variable": "__LD_10", "negated": false},
+            ])
+        );
+    }
+
+    #[test]
+    fn a_ladder_diagnostic_names_its_element_and_where_it_is_drawn() {
+        let checked = check(&ld_entry(), &ladder("runn"));
+        assert_eq!(checked["ok"], false, "{checked}");
+        let d = &checked["diagnostics"][0];
+        assert_eq!(d["message"], "runn is not declared", "{checked}");
+        assert_eq!(
+            d["element"],
+            json!({"pou": "Tank", "local_id": 10, "x": 40.0, "y": 20.0,
+                   "text": {"field": "variable", "col": 1, "end_col": 5}}),
+            "{checked}"
+        );
+        // Its line is the element's tag in the document; one source names none.
+        assert_eq!(d["line"], 18, "{checked}");
+        assert!(d.get("source").is_none(), "{checked}");
+        // Not compiled as Structured Text: that would say something of line 1.
+        assert_eq!(checked["diagnostics"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_ladder_diagram_is_built_into_a_runtime_instance_like_any_program() {
+        let built = build(&ld_entry(), &ladder("run"), None).unwrap();
+        assert_eq!(built["instance"]["id"], "Tank");
+        assert_eq!(built["instance"]["program"]["name"], "Tank");
+        let symbols = built["instance"]["program"]["symbols"].as_array().unwrap();
+        assert!(symbols.iter().any(|s| s["path"] == "__LD_10"));
+        // The same program in Structured Text is another build.
+        let st = build(&entry(), TANK, None).unwrap();
+        assert_ne!(st["version"], built["version"]);
+        let (status, body) = build(&ld_entry(), &ladder("runn"), None).unwrap_err();
+        assert_eq!(status, 400);
+        assert_eq!(body["diagnostics"][0]["element"]["local_id"], 10);
+        // An ST source given to an LD program is read as XML, and is not XML.
+        let (_, body) = build(&ld_entry(), TANK, None).unwrap_err();
+        assert_eq!(
+            body["diagnostics"],
+            json!([{"line": 1, "col": 1, "end_line": 5, "end_col": 32,
+                    "message": "text outside the root element"}]),
+            "{body}"
+        );
+    }
+
     #[test]
     fn a_name_is_a_letter_then_letters_digits_or_underscores() {
         for ok in ["Tank", "a", "Pump_2", "x9"] {
@@ -778,7 +1110,10 @@ mod tests {
             change(&mut e);
             check_entry(&e).unwrap_err()
         };
-        assert!(with(&|e| e.language = "ld".into()).contains("is not a language"));
+        assert!(with(&|e| e.language = "fbd".into()).contains("is not a language"));
+        let mut ld = entry();
+        ld.language = "ld".into();
+        assert_eq!(check_entry(&ld), Ok(()));
         assert!(with(&|e| e.interval_ms = 0).contains("at least 1"));
         assert!(with(&|e| e.runtime = " ".into()).contains("names no runtime module"));
         assert!(with(&|e| e.target = "plc-9000".into()).contains("is not a target profile"));
