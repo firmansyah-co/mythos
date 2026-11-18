@@ -371,8 +371,13 @@ Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (A
   lists each forced variable with its value (UNKNOWN when the controller does not say, never
   "none"), and has "Release all", which asks first. Nobody but an engineer is offered either;
   everyone sees what is forced.
-- Not built: the forced mark on a tag's value in the HMI and the other views of tags (next,
-  C5c-3); watching an element of an array from the table; an editor for LD, FBD, SFC.
+- **The forced mark on a tag's value** (C5c-3): the workbench reads `GET /api/v1/runtimes`
+  beside the controller's state and gives every module `forcedTags` (`ControllerView`): the
+  tags bound to a forced variable, or `null` when the runtimes cannot be read (never `[]` in its
+  place, which would claim nothing is forced). One mark of the SDK (`ForcedMark`) says FORCED
+  beside the value in the HMI's I/O field (for the project the controller runs), the tag table,
+  the inspector and the editor's bound tags; the online tools card counts the forced tags.
+- Not built: watching an element of an array from the table; an editor for LD, FBD, SFC.
 
 ### 2.7 The HMI is not a runtime
 
@@ -602,9 +607,9 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   - C4a. **The Runtimes page** (done): Settings → Runtimes shows every runtime of this node as
     `GET /api/v1/runtimes` reports it, with run and stop for an engineer (§2.5, §5).
 - C5. **Online**: monitor (done: `watch`, §2.5), runtime tags in the HMI (done: the tags a
-  project's programs publish are offered wherever a binding names a tag), force (the API, the
-  protocol, the editor and the Runtimes page are built, §2.5, §2.6; the mark on a tag's value in
-  the HMI is next).
+  project's programs publish are offered wherever a binding names a tag), force (done: the API
+  and the protocol, §2.5; the editor, the Runtimes page and the FORCED mark wherever a tag's
+  value is shown, §2.6).
 - C6. **Swap and online change; programs in a device's slice.**
 - C7. **Hardening**: watchdog, RETAIN variables across restarts.
 
