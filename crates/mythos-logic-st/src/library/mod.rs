@@ -190,7 +190,7 @@ fn spec_names(spec: &ast::TypeSpec, out: &mut Vec<String>) {
         match &spec.kind {
             ast::TypeSpecKind::Named(name) => return add(name, out),
             ast::TypeSpecKind::Array(_, elem) => spec = elem,
-            ast::TypeSpecKind::String(_) => return,
+            ast::TypeSpecKind::String(_) | ast::TypeSpecKind::OfValue => return,
         }
     }
 }

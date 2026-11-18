@@ -127,6 +127,22 @@ export const ladderOf = (name: string, elements: string, interface_ = '<interfac
 </project>
 `;
 
+/** A TC6 project holding one PROGRAM whose body is the Function Block Diagram `elements`. */
+export const fbdOf = (name: string, elements: string, interface_ = '<interface/>') =>
+  `<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <types><dataTypes/><pous>
+    <pou name="${name}" pouType="program">
+      ${interface_}
+      <body><FBD>
+        ${elements}
+      </FBD></body>
+    </pou>
+  </pous></types>
+  <instances><configurations/></instances>
+</project>
+`;
+
 const failure = (status: number, error: string) =>
   new Response(JSON.stringify({ error }), { status, statusText: status === 500 ? 'Internal Server Error' : 'Bad Request' });
 
@@ -175,7 +191,9 @@ export function server(backend: Backend): Call[] {
         const made =
           asked.language === 'ld'
             ? { entry: entryOf(asked.name, { language: 'ld' }), source: ladderOf(asked.name, '') }
-            : { entry: entryOf(asked.name), source: `PROGRAM ${asked.name}\nEND_PROGRAM\n` };
+            : asked.language === 'fbd'
+              ? { entry: entryOf(asked.name, { language: 'fbd' }), source: fbdOf(asked.name, '') }
+              : { entry: entryOf(asked.name), source: `PROGRAM ${asked.name}\nEND_PROGRAM\n` };
         backend.programs.push(made);
         return Response.json({ program: made.entry, source: made.source }, { status: 201 });
       }

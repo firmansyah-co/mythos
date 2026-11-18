@@ -2,7 +2,7 @@
 //! 61131-3 ed. 3 §8.2 does what its table says, scan by scan (ADR-013 §2.15).
 
 mod support;
-#[path = "../../mythos-logic-ld/tests/support/tc6.rs"]
+#[path = "../../mythos-logic-graphic/tests/support/tc6.rs"]
 mod tc6;
 
 use mythos_logic_compiler::{compile_in, compile_sources, Language, Sources, TargetProfile};
@@ -24,7 +24,7 @@ fn with_st(pous: &[Pou], st: &str) -> Run {
     Run::of(compile_sources(
         &Sources {
             st: Some(("pous.st", st)),
-            ld: &ld,
+            tc6: &ld,
         },
         &TargetProfile::pc(),
     ))

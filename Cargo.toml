@@ -14,7 +14,7 @@ members = [
     "crates/mythos-logic-vm",
     "crates/mythos-logic-backend-vm",
     "crates/mythos-logic-compiler",
-    "crates/mythos-logic-ld",
+    "crates/mythos-logic-graphic",
     "plugins/drivers/driver-modbus",
     "plugins/hmi",
     "plugins/discovery",
@@ -46,7 +46,7 @@ mythos-logic-st = { path = "crates/mythos-logic-st" }
 mythos-logic-vm = { path = "crates/mythos-logic-vm" }
 mythos-logic-backend-vm = { path = "crates/mythos-logic-backend-vm" }
 mythos-logic-compiler = { path = "crates/mythos-logic-compiler" }
-mythos-logic-ld = { path = "crates/mythos-logic-ld" }
+mythos-logic-graphic = { path = "crates/mythos-logic-graphic" }
 driver-modbus = { path = "plugins/drivers/driver-modbus" }
 
 # Concurrency and Async

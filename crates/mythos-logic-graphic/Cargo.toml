@@ -1,11 +1,11 @@
 [package]
-name = "mythos-logic-ld"
+name = "mythos-logic-graphic"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "The Ladder Diagram front-end of MythOS control logic: IEC 61131-3 LD, stored as PLCopen TC6 XML, to the IR (ADR-013)"
+description = "The graphical front-ends of MythOS control logic: IEC 61131-3 LD and FBD, stored as PLCopen TC6 XML, to the IR (ADR-013)"
 
 [lints]
 workspace = true

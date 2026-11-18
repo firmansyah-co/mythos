@@ -1,7 +1,9 @@
-//! No Ladder Diagram document, however damaged, makes the LD front-end panic or say nothing
-//! (ADR-013 §2.15); `damaged_sources_never_panic.rs` does the same for Structured Text.
+//! No Ladder Diagram or Function Block Diagram document, however damaged, makes the graphical
+//! front-end panic or say nothing (ADR-013 §2.15, §2.16); `damaged_sources_never_panic.rs` does
+//! the same for Structured Text.
 //!
-//! The hand-written TC6 project of the emulator corpus (`tests/ladder/oscillator.xml`) is
+//! The hand-written TC6 projects of the emulator corpus (`tests/ladder/oscillator.xml`,
+//! `tests/fbd/blinker.xml`) are
 //! damaged the ways a file is, by a tool or by hand: characters and stretches deleted, pieces
 //! of XML and of the schema inserted, lines repeated, swapped and dropped, attribute values and
 //! ids changed, the text cut short. Each damaged document must compile or be refused with at
@@ -23,7 +25,7 @@ impl Rng {
     }
 }
 
-const PIECES: [&str; 24] = [
+const PIECES: [&str; 29] = [
     "<",
     ">",
     "/>",
@@ -48,6 +50,12 @@ const PIECES: [&str; 24] = [
     "<expression>a +</expression>",
     "<variable name=\"__x\"><type><BOOL/></type></variable>",
     "\u{0}",
+    // Of a Function Block Diagram: lines continued, drawn back, joined.
+    "<connector localId=\"503\" name=\"LVL\"><position x=\"1\" y=\"1\"/><connectionPointIn><connection refLocalId=\"41\"/></connectionPointIn></connector>",
+    "<continuation localId=\"504\" name=\"LVL\"><position x=\"1\" y=\"1\"/><connectionPointOut/></continuation>",
+    "<connection refLocalId=\"31\" formalParameter=\"CV\"/>",
+    "<connection refLocalId=\"54\"/>",
+    "executionOrderId=\"7\"",
 ];
 
 fn damage(text: &str, rng: &mut Rng) -> String {
@@ -70,6 +78,11 @@ fn damage(text: &str, rng: &mut Rng) -> String {
                     .lines()
                     .map(String::from)
                     .collect();
+                // An earlier damage can leave no line at all (a Windows checkout, with CRLF,
+                // feeds other text to the same seed): there is no line to move then.
+                if lines.is_empty() {
+                    continue;
+                }
                 let (a, b) = (rng.below(lines.len()), rng.below(lines.len()));
                 match rng.below(3) {
                     0 => lines.swap(a, b),
@@ -102,12 +115,28 @@ fn damage(text: &str, rng: &mut Rng) -> String {
 
 #[test]
 fn a_damaged_ladder_document_is_compiled_or_refused_with_places_never_a_panic() {
-    let original = include_str!("ladder/oscillator.xml");
-    let mut rng = Rng(0x5EED_1AD0_0000_0001);
+    damaged(
+        include_str!("ladder/oscillator.xml"),
+        Language::Ld,
+        0x5EED_1AD0_0000_0001,
+    );
+}
+
+#[test]
+fn a_damaged_function_block_diagram_is_compiled_or_refused_with_places_never_a_panic() {
+    damaged(
+        include_str!("fbd/blinker.xml"),
+        Language::Fbd,
+        0x5EED_FBD0_0000_0001,
+    );
+}
+
+fn damaged(original: &str, language: Language, seed: u64) {
+    let mut rng = Rng(seed);
     let (mut refused, mut compiled) = (0, 0);
     for _ in 0..3000 {
         let text = damage(original, &mut rng);
-        match compile_in(&text, Language::Ld, &TargetProfile::pc()) {
+        match compile_in(&text, language, &TargetProfile::pc()) {
             Ok(_) => compiled += 1,
             Err(diags) => {
                 refused += 1;
@@ -124,6 +153,7 @@ fn a_damaged_ladder_document_is_compiled_or_refused_with_places_never_a_panic() 
             }
         }
     }
+    eprintln!("{refused} refused, {compiled} compiled");
     assert!(
         refused > 1000 && compiled > 100,
         "{refused} refused, {compiled} compiled"

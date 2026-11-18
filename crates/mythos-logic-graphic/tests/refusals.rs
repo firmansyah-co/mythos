@@ -4,8 +4,8 @@
 
 mod support;
 
+use mythos_logic_graphic::{lower, Source};
 use mythos_logic_ir::Diagnostic;
-use mythos_logic_ld::{lower, Source};
 use support::tc6::{project, Coil, Contact, In, Pou};
 
 fn refused(pous: &[Pou]) -> Vec<Diagnostic> {
@@ -485,7 +485,7 @@ fn a_body_in_another_language_is_refused() {
     let d = refused_xml(&xml);
     assert!(
         d.iter().any(|d| d.message
-            == "Main has a body in ST; this front-end reads LD (write ST in a .st source)"),
+            == "Main has a body in ST; this front-end reads LD and FBD (write ST in a .st source)"),
         "{d:#?}"
     );
 }

@@ -83,6 +83,59 @@ const MIXER: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 </project>
 "#;
 
+/// The tank in Function Block Diagram (ADR-013 §2.16): `speed := level * 10` through a MUL
+/// block, and `running := level_ok AND NOT halt`, the NOT a negated input. `{level}` is the
+/// variable the first input variable reads.
+const BLENDER: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <types><dataTypes/><pous>
+    <pou name="Blender" pouType="program">
+      <interface>
+        <inputVars>
+          <variable name="level"><type><INT/></type></variable>
+          <variable name="level_ok"><type><BOOL/></type></variable>
+        </inputVars>
+        <outputVars>
+          <variable name="speed"><type><INT/></type></variable>
+          <variable name="running"><type><BOOL/></type></variable>
+        </outputVars>
+        <localVars>
+          <variable name="halt"><type><BOOL/></type></variable>
+        </localVars>
+      </interface>
+      <body><FBD>
+        <inVariable localId="20"><position x="0" y="0"/><connectionPointOut/><expression>{level}</expression></inVariable>
+        <block localId="21" typeName="MUL"><position x="120" y="0"/>
+          <inputVariables>
+            <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="20"/></connectionPointIn></variable>
+            <variable formalParameter="IN2"><connectionPointIn><expression>10</expression></connectionPointIn></variable>
+          </inputVariables>
+          <inOutVariables/>
+          <outputVariables><variable formalParameter="OUT"><connectionPointOut/></variable></outputVariables>
+        </block>
+        <outVariable localId="22"><position x="240" y="0"/><connectionPointIn><connection refLocalId="21"/></connectionPointIn><expression>speed</expression></outVariable>
+        <inVariable localId="30"><position x="0" y="100"/><connectionPointOut/><expression>level_ok</expression></inVariable>
+        <inVariable localId="31"><position x="0" y="140"/><connectionPointOut/><expression>halt</expression></inVariable>
+        <block localId="32" typeName="AND"><position x="120" y="100"/>
+          <inputVariables>
+            <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="30"/></connectionPointIn></variable>
+            <variable formalParameter="IN2" negated="true"><connectionPointIn><connection refLocalId="31"/></connectionPointIn></variable>
+          </inputVariables>
+          <inOutVariables/>
+          <outputVariables><variable formalParameter="OUT"><connectionPointOut/></variable></outputVariables>
+        </block>
+        <outVariable localId="33"><position x="240" y="100"/><connectionPointIn><connection refLocalId="32"/></connectionPointIn><expression>running</expression></outVariable>
+      </FBD></body>
+    </pou>
+  </pous></types>
+  <instances><configurations/></instances>
+</project>
+"#;
+
+fn blender(level: &str) -> String {
+    BLENDER.replace("{level}", level)
+}
+
 fn mixer(contact: &str) -> String {
     MIXER.replace("{contact}", contact)
 }
@@ -520,7 +573,7 @@ async fn a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_p
         .eng(
             "POST",
             PROGRAMS,
-            Some(json!({"name": "Pump", "language": "fbd"})),
+            Some(json!({"name": "Pump", "language": "sfc"})),
             400,
         )
         .await;
@@ -528,7 +581,7 @@ async fn a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_p
         refused["error"]
             .as_str()
             .unwrap()
-            .contains("'fbd' is not a language"),
+            .contains("'sfc' is not a language"),
         "{refused}"
     );
 
@@ -646,6 +699,133 @@ async fn a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_p
     assert!(!data.join("programs/Mixer.xml").exists());
     assert!(data.join("programs/Tank.st").is_file());
 
+    rig.close().await;
+}
+
+/// A Function Block Diagram program (ADR-013 L3c-1): created as a TC6 document, checked with a
+/// diagnostic at its element and with where each value is kept, built, loaded, and it runs the
+/// plant; its kept values are read from the running module process, a number among them; an
+/// ST program beside it is unaffected.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_function_block_diagram_program_is_written_checked_built_loaded_and_runs_the_plant() {
+    let rig = rig().await;
+    let data = rig.project.join("logic");
+    rig.eng("POST", PROGRAMS, Some(json!({"name": "Tank"})), 201)
+        .await;
+    rig.eng(
+        "PUT",
+        &format!("{PROGRAMS}/Tank/source"),
+        Some(json!({"source": TANK})),
+        200,
+    )
+    .await;
+
+    let blend = format!("{PROGRAMS}/Blender");
+    let created = rig
+        .eng(
+            "POST",
+            PROGRAMS,
+            Some(json!({"name": "Blender", "language": "fbd"})),
+            201,
+        )
+        .await;
+    assert_eq!(created["program"]["language"], "fbd", "{created}");
+    let source = created["source"].as_str().unwrap();
+    assert!(source.contains("<FBD/>"), "{source}");
+    assert!(data.join("programs/Blender.xml").is_file());
+    let checked = rig.eng("POST", &format!("{blend}/check"), None, 200).await;
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert_eq!(checked["values"], json!([]), "{checked}");
+    assert!(checked.get("power").is_none(), "{checked}");
+
+    // A diagnostic of an unsaved document names the element and where it is drawn.
+    let checked = rig
+        .eng(
+            "POST",
+            &format!("{blend}/check"),
+            Some(json!({"source": blender("levl")})),
+            200,
+        )
+        .await;
+    assert_eq!(checked["ok"], false, "{checked}");
+    assert_eq!(checked["diagnostics"][0]["message"], "levl is not declared");
+    assert_eq!(
+        checked["diagnostics"][0]["element"],
+        json!({"pou": "Blender", "local_id": 20, "x": 0.0, "y": 0.0,
+               "text": {"field": "expression", "col": 1, "end_col": 5}}),
+        "{checked}"
+    );
+
+    rig.eng(
+        "PUT",
+        &format!("{blend}/source"),
+        Some(json!({"source": blender("level")})),
+        200,
+    )
+    .await;
+    let mut bound = settings();
+    bound["published"] = json!([]);
+    rig.eng("PUT", &format!("{blend}/settings"), Some(bound), 200)
+        .await;
+    let checked = rig.eng("POST", &format!("{blend}/check"), None, 200).await;
+    assert_eq!(checked["binding_problems"], json!([]), "{checked}");
+    assert_eq!(
+        checked["values"],
+        json!([
+            {"local_id": 20, "output": "", "variable": "__FBD_20", "negated": false},
+            {"local_id": 20, "network": [20, 21, 22], "variable": "__NET_20", "negated": false},
+            {"local_id": 21, "output": "OUT", "variable": "__FBD_21", "negated": false},
+            {"local_id": 30, "output": "", "variable": "__FBD_30", "negated": false},
+            {"local_id": 30, "network": [30, 32, 33, 31], "variable": "__NET_30", "negated": false},
+            {"local_id": 31, "output": "", "variable": "__FBD_31", "negated": false},
+            {"local_id": 32, "output": "OUT", "variable": "__FBD_32", "negated": false},
+        ]),
+        "every output's value and each network's flag"
+    );
+    rig.eng(
+        "PUT",
+        "/api/v1/projects/plant/io",
+        Some(rig.io_config()),
+        200,
+    )
+    .await;
+    let built = rig.eng("POST", &format!("{blend}/build"), None, 200).await;
+    assert_eq!(built["warnings"], json!([]), "{built}");
+    rig.eng(
+        "PUT",
+        "/api/v1/projects/plant/runtimes",
+        Some(json!({"instances": [built["instance"]]})),
+        200,
+    )
+    .await;
+    rig.speed_is("the diagram commands 200", 200).await;
+    // What the check named, read from the running module process as any variable is: the
+    // MUL's result a number, in its own type.
+    let kept = rig
+        .eng(
+            "POST",
+            "/api/v1/runtimes/Blender/watch",
+            Some(json!({"variables": ["__FBD_21", "__FBD_32", "__NET_20", "running"]})),
+            200,
+        )
+        .await;
+    assert_eq!(kept["values"][0]["type"], "INT", "{kept}");
+    assert_eq!(kept["values"][0]["value"], 200, "{kept}");
+    assert_eq!(kept["values"][1]["value"], true, "{kept}");
+    assert_eq!(kept["values"][2]["value"], true, "{kept}");
+    assert_eq!(kept["values"][3]["value"], true, "{kept}");
+
+    // The ST program is untouched.
+    let checked = rig
+        .eng("POST", &format!("{PROGRAMS}/Tank/check"), None, 200)
+        .await;
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert!(checked.get("values").is_none(), "{checked}");
+    let list: Value =
+        serde_json::from_str(&std::fs::read_to_string(data.join("programs.json")).unwrap())
+            .unwrap();
+    assert_eq!(list["programs"][0]["language"], "st", "{list}");
+    assert_eq!(list["programs"][1]["language"], "fbd", "{list}");
     rig.close().await;
 }
 
@@ -931,7 +1111,9 @@ async fn an_agent_writes_checks_and_builds_a_program_over_mcp() {
     ] {
         let said = description(name);
         assert!(
-            said.contains("Structured Text") && said.contains("Ladder Diagram"),
+            said.contains("Structured Text")
+                && said.contains("Ladder Diagram")
+                && said.contains("Function Block Diagram"),
             "{name}: {said}"
         );
     }

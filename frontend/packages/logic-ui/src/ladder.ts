@@ -96,23 +96,23 @@ export interface LdPou {
 
 export type Ladder = { ok: true; pous: LdPou[] } | { ok: false; error: string };
 
-const children = (node: Element, name?: string): Element[] =>
+export const children = (node: Element, name?: string): Element[] =>
   [...node.children].filter((child) => name === undefined || child.localName === name);
-const child = (node: Element, name: string): Element | null => children(node, name)[0] ?? null;
+export const child = (node: Element, name: string): Element | null => children(node, name)[0] ?? null;
 
-function number(text: string | null): number | null {
+export function number(text: string | null): number | null {
   if (text === null || text.trim() === '') return null;
   const value = Number(text);
   return Number.isFinite(value) ? value : null;
 }
 
 /** A `true`/`false` attribute (xsd:boolean, so also `1`/`0`). */
-const flag = (node: Element, name: string) => {
+export const flag = (node: Element, name: string) => {
   const value = node.getAttribute(name);
   return value === 'true' || value === '1';
 };
 
-function relPosition(point: Element | null): { x: number; y: number } | null {
+export function relPosition(point: Element | null): { x: number; y: number } | null {
   const rel = point ? child(point, 'relPosition') : null;
   if (!rel) return null;
   const x = number(rel.getAttribute('x'));
@@ -129,7 +129,7 @@ function connectionsOf(point: Element): LdConnection[] {
   return out;
 }
 
-function inputOf(point: Element | null, formal: string | null, negated: boolean): LdInput {
+export function inputOf(point: Element | null, formal: string | null, negated: boolean): LdInput {
   const expression = point ? child(point, 'expression') : null;
   return {
     formal,
@@ -141,7 +141,7 @@ function inputOf(point: Element | null, formal: string | null, negated: boolean)
 }
 
 /** The text of an element's `<variable>` or `<expression>` child. */
-const textOf = (node: Element, name: string): string | null => {
+export const textOf = (node: Element, name: string): string | null => {
   const found = child(node, name);
   return found ? (found.textContent ?? '').trim() : null;
 };
@@ -228,8 +228,8 @@ function element(node: Element, kind: LdKind): LdElement | string {
   return e;
 }
 
-/** Read a TC6 document for drawing. What is not a TC6 project says why. */
-export function readLadder(text: string): Ladder {
+/** The POUs of a TC6 document, or why it is not one (LD and FBD read it alike). */
+export function tc6Pous(text: string): { ok: true; pous: Element[] } | { ok: false; error: string } {
   let doc: Document;
   try {
     doc = new DOMParser().parseFromString(text, 'application/xml');
@@ -247,8 +247,15 @@ export function readLadder(text: string): Ladder {
     };
   }
   const pous = child(root, 'types') ? child(child(root, 'types') as Element, 'pous') : null;
+  return { ok: true, pous: pous ? children(pous, 'pou') : [] };
+}
+
+/** Read a TC6 document for drawing. What is not a TC6 project says why. */
+export function readLadder(text: string): Ladder {
+  const read = tc6Pous(text);
+  if (!read.ok) return read;
   const out: LdPou[] = [];
-  for (const pou of pous ? children(pous, 'pou') : []) {
+  for (const pou of read.pous) {
     const body = child(pou, 'body');
     const ld = body ? child(body, 'LD') : null;
     const read: LdPou = {

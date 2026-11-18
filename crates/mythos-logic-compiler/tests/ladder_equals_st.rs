@@ -14,7 +14,7 @@
 //! in the LD program; each of those, read after each scan, is equal.
 
 mod support;
-#[path = "../../mythos-logic-ld/tests/support/tc6.rs"]
+#[path = "../../mythos-logic-graphic/tests/support/tc6.rs"]
 mod tc6;
 
 use mythos_logic_compiler::{compile, compile_sources, Sources, TargetProfile};
@@ -121,7 +121,7 @@ fn ld_run(pous: Vec<Pou>, st: Option<&'static str>) -> impl Fn() -> Run {
         Run::of(compile_sources(
             &Sources {
                 st: st.map(|t| ("pous.st", t)),
-                ld: &ld,
+                tc6: &ld,
             },
             &TargetProfile::pc(),
         ))

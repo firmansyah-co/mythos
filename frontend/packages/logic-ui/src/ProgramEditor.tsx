@@ -1,5 +1,6 @@
 // The editor of one control program: its Structured Text, or its Ladder Diagram with its live
-// state (LadderEditor for an engineer, LadderView read-only for everyone else), what the
+// state (LadderEditor for an engineer, LadderView read-only for everyone else), or its Function
+// Block Diagram with its live state (FbdView, read-only for everyone until the FBD editor), what the
 // compiler says of it, its task settings, its variables with their bindings to tags, and what
 // the controller's runtime is doing with it.
 //
@@ -34,8 +35,11 @@ import {
   type ForcedValue,
   type ProgramEntry,
   type Variable,
+  type ValueProbe,
   type WatchedValue,
 } from './bridge';
+import { readFbd, type Fbd } from './fbd';
+import { FbdView } from './FbdView';
 import { readLadder, type Ladder } from './ladder';
 import { LadderEditor } from './LadderEditor';
 import { LadderView, type LadderLive } from './LadderView';
@@ -830,17 +834,27 @@ function RemovePanel({ name, busy, onRemoved }: { name: string; busy: boolean; o
   );
 }
 
-/** What is drawn live on a Ladder Diagram, and why, or why nothing is. */
-function liveOf(doc: ProgramDoc, state: RunState, watch: WatchView | undefined): { live: LadderLive | null; why: string } {
+/** What is drawn live on a diagram: the watched values and where the check says each is kept. */
+interface DiagramLive {
+  values: Map<string, WatchedValue> | null;
+  probes: ValueProbe[];
+}
+
+/**
+ * What is drawn live on a Ladder Diagram (its power) or a Function Block Diagram (its values),
+ * and why, or why nothing is.
+ */
+function liveOf(doc: ProgramDoc, state: RunState, watch: WatchView | undefined): { live: DiagramLive | null; why: string } {
   const check = checkIsCurrent(doc) ? doc.check : null;
+  const fbd = doc.entry.language === 'fbd';
   if (check === null || !check.ok) {
     return { live: null, why: 'No live state is drawn: this text has not compiled. Check it.' };
   }
   if (state.kind === 'unknown') return { live: null, why: `No live state is drawn: what the runtime does is not known (${state.why}).` };
   if (state.kind === 'not-loaded') return { live: null, why: 'No live state is drawn: no runtime runs this program.' };
-  const power = check.power ?? [];
+  const power: ValueProbe[] = (fbd ? check.values : check.power) ?? [];
   if (state.stale) {
-    return { live: { values: null, power }, why: 'The runtimes can no longer be read: every state is UNKNOWN.' };
+    return { live: { values: null, probes: power }, why: 'The runtimes can no longer be read: every state is UNKNOWN.' };
   }
   if (check.version === undefined || check.version !== state.runtime.version) {
     return {
@@ -849,20 +863,51 @@ function liveOf(doc: ProgramDoc, state: RunState, watch: WatchView | undefined):
     };
   }
   if (state.runtime.mode !== 'run') {
-    return { live: null, why: `No live state is drawn: the program is in ${state.runtime.mode.toUpperCase()}, so no power flows.` };
+    const nothing = fbd ? 'nothing is computed' : 'no power flows';
+    return { live: null, why: `No live state is drawn: the program is in ${state.runtime.mode.toUpperCase()}, so ${nothing}.` };
   }
   if (!watch) return { live: null, why: 'No live state is drawn yet: the values have not been read.' };
   if (watch.answer === null) {
-    return { live: { values: null, power }, why: `The values cannot be read: every state is UNKNOWN. ${watch.error ?? ''}`.trim() };
+    return { live: { values: null, probes: power }, why: `The values cannot be read: every state is UNKNOWN. ${watch.error ?? ''}`.trim() };
   }
   if (watch.answer.state.mode !== 'run' || watch.answer.state.version !== check.version) {
     return { live: null, why: 'No live state is drawn: the values read are not of this version in RUN.' };
   }
   const values = new Map(watch.answer.values.map((value) => [value.variable.toLowerCase(), value]));
   return {
-    live: { values, power },
-    why: 'Live, as the last scan left it: the power each element and link had when its rung ran; a rung the scan did not run is drawn as not executed.',
+    live: { values, probes: power },
+    why: fbd
+      ? 'Live, as the last scan left it: the value each line carried when its network ran; a network the scan did not run is drawn as not executed, a function that did not run as not computed.'
+      : 'Live, as the last scan left it: the power each element and link had when its rung ran; a rung the scan did not run is drawn as not executed.',
   };
+}
+
+/**
+ * The Function Block Diagram of the program with its live state, read-only for everyone: its
+ * editor is the next slice (ADR-013 L3c-2). Its TC6 document is saved over the API
+ * (`save_logic_source`), and the view follows a source saved elsewhere.
+ */
+function FbdPanel({ doc, fbd, state }: { doc: ProgramDoc; fbd: Fbd; state: RunState }) {
+  const watch = usePrograms((s) => s.watches[doc.entry.name]);
+  const { live, why } = liveOf(doc, state, watch);
+  const check = checkIsCurrent(doc) ? doc.check : null;
+  const diagnostics = check && !check.ok ? check.diagnostics : [];
+  const program = check?.ok ? (check.program ?? null) : null;
+  return (
+    <div className="logic-panel" data-testid="fbd-panel">
+      <p className="muted" data-testid="fbd-live" data-live={live === null ? 'none' : live.values === null ? 'unknown' : 'live'}>
+        {why}
+      </p>
+      <p className="muted">Read-only: the Function Block Diagram editor is not built yet.</p>
+      {fbd.ok ? (
+        <FbdView pous={fbd.pous} program={program} live={live} diagnostics={diagnostics} />
+      ) : (
+        <div className="notice notice--bad" role="alert" data-testid="fbd-unreadable">
+          <p>The diagram cannot be drawn: {fbd.error}.</p>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** How long after the last edit of a Ladder Diagram the editor checks it by itself. */
@@ -885,7 +930,9 @@ function LadderPanel({ doc, ladder, state, may }: { doc: ProgramDoc; ladder: Lad
     return () => clearTimeout(timer);
   }, [may, current, doc.source, name, checkNow]);
   const watch = usePrograms((s) => s.watches[doc.entry.name]);
-  const { live, why } = liveOf(doc, state, watch);
+  const shown = liveOf(doc, state, watch);
+  const live: LadderLive | null = shown.live === null ? null : { values: shown.live.values, power: shown.live.probes };
+  const why = shown.why;
   const check = checkIsCurrent(doc) ? doc.check : null;
   const diagnostics = check && !check.ok ? check.diagnostics : [];
   const program = check?.ok ? (check.program ?? null) : null;
@@ -919,13 +966,14 @@ function LadderPanel({ doc, ladder, state, may }: { doc: ProgramDoc; ladder: Lad
 /** A watched variable's path as an element writes it: a name, members and subscripts. */
 const PLACE = /^[A-Za-z_]\w*(\[[^\]]+\])?(\.[A-Za-z_]\w*(\[[^\]]+\])?)*$/;
 
-/** The variables a Ladder Diagram's contacts, coils and variable elements read or write. */
-function elementVariables(ladder: Ladder | null): string[] {
-  if (ladder === null || !ladder.ok) return [];
-  return ladder.pous
+/** The variables a diagram's contacts, coils and variable elements read or write. */
+function elementVariables(diagram: Ladder | Fbd | null): string[] {
+  if (diagram === null || !diagram.ok) return [];
+  const pous: Array<{ pouType: string; elements: Array<{ variable: string | null }> }> = diagram.pous;
+  return pous
     .filter((pou) => pou.pouType === 'program')
     .flatMap((pou) => pou.elements.map((e) => e.variable ?? ''))
-    .filter((path) => PLACE.test(path));
+    .filter((path) => PLACE.test(path) && !/^(TRUE|FALSE)$/i.test(path));
 }
 
 /**
@@ -983,6 +1031,9 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
   const isLadder = doc?.entry.language === 'ld';
   const ladderSource = isLadder ? (doc?.source ?? null) : null;
   const ladder = useMemo(() => (ladderSource === null ? null : readLadder(ladderSource)), [ladderSource]);
+  const isFbd = doc?.entry.language === 'fbd';
+  const fbdSource = isFbd ? (doc?.source ?? null) : null;
+  const fbd = useMemo(() => (fbdSource === null ? null : readFbd(fbdSource)), [fbdSource]);
   const sourceRead = doc?.source !== null && doc?.source !== undefined;
 
   // The source is read when the editor opens; the first check follows, for the variables.
@@ -1012,7 +1063,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
   // (an element of an array), each once.
   const declared = (doc?.variables ?? []).filter((variable) => hasOneValue(variable.type)).map((variable) => variable.path);
   const known = new Set(declared.map((path) => path.toLowerCase()));
-  const extra = [...new Set(elementVariables(ladder))].filter((path) => {
+  const extra = [...new Set(elementVariables(isFbd ? fbd : ladder))].filter((path) => {
     const fresh = !known.has(path.toLowerCase());
     known.add(path.toLowerCase());
     return fresh;
@@ -1168,6 +1219,8 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
             <div className="logic-editor__source">
               {isLadder && ladder !== null ? (
                 <LadderPanel doc={doc} ladder={ladder} state={state} may={may} />
+              ) : isFbd && fbd !== null ? (
+                <FbdPanel doc={doc} fbd={fbd} state={state} />
               ) : (
                 <SourceEditor
                   ref={editor}
@@ -1181,13 +1234,14 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
             <CheckPanel
               doc={doc}
               goTo={(diagnostic) => {
-                if (!isLadder) {
+                if (!isLadder && !isFbd) {
                   editor.current?.goTo(diagnostic.line, diagnostic.col);
                   return;
                 }
                 const id = diagnostic.element?.local_id;
                 if (id === null || id === undefined) return;
-                const found = document.querySelector(`[data-testid="ld-diagnostic"][data-local-id="${id}"]`);
+                const mark = isFbd ? 'fbd-diagnostic' : 'ld-diagnostic';
+                const found = document.querySelector(`[data-testid="${mark}"][data-local-id="${id}"]`);
                 (found as (Element & { scrollIntoView?: (arg?: unknown) => void }) | null)?.scrollIntoView?.({ block: 'center' });
               }}
             />

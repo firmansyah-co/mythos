@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "mythos-logic"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "hex",
@@ -2622,11 +2622,21 @@ name = "mythos-logic-compiler"
 version = "0.1.0"
 dependencies = [
  "mythos-logic-backend-vm",
+ "mythos-logic-graphic",
  "mythos-logic-ir",
- "mythos-logic-ld",
  "mythos-logic-st",
  "mythos-logic-vm",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mythos-logic-graphic"
+version = "0.1.0"
+dependencies = [
+ "mythos-logic-ir",
+ "mythos-logic-st",
+ "quick-xml",
  "serde_json",
 ]
 
@@ -2635,16 +2645,6 @@ name = "mythos-logic-ir"
 version = "0.1.0"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "mythos-logic-ld"
-version = "0.1.0"
-dependencies = [
- "mythos-logic-ir",
- "mythos-logic-st",
- "quick-xml",
- "serde_json",
 ]
 
 [[package]]

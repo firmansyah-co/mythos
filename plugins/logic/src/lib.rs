@@ -3,9 +3,10 @@
 //! A project's programs live in the module's data directory (`<project>/logic/`): the list
 //! with each program's settings and its bindings to tags in `programs.json`, and each
 //! program's source beside it: `programs/<name>.st` for Structured Text, `programs/<name>.xml`
-//! for a Ladder Diagram (a PLCopen TC6 XML v2.01 document holding its POUs, ADR-013 §2.15).
-//! The module checks a program (the compiler's diagnostics, each with the range of the source
-//! it is about or, in a Ladder Diagram, the element; its variables for the binding table) and
+//! for a Ladder Diagram or a Function Block Diagram (a PLCopen TC6 XML v2.01 document holding
+//! its POUs, ADR-013 §2.15, §2.16). The module checks a program (the compiler's diagnostics,
+//! each with the range of the source it is about or, in a diagram, the element; its variables
+//! for the binding table) and
 //! builds it: compiled for its target, bindings checked against its variables, packed as the
 //! runtime instance the core loads (`PUT /api/v1/projects/:id/runtimes`).
 //!
@@ -57,8 +58,9 @@ const SOURCES_DIR: &str = "programs";
 pub struct ProgramEntry {
     /// Its name in the project, and the id of the runtime instance it becomes.
     pub name: String,
-    /// The language of its source: `st` (Structured Text) or `ld` (Ladder Diagram, a TC6
-    /// document). A `programs.json` written before there was a choice has none, which is `st`.
+    /// The language of its source: `st` (Structured Text), `ld` (Ladder Diagram) or `fbd`
+    /// (Function Block Diagram), each diagram a TC6 document. A `programs.json` written before
+    /// there was a choice has none, which is `st`.
     #[serde(default = "structured_text")]
     pub language: String,
     /// The interval of its cyclic task.
@@ -89,7 +91,12 @@ fn structured_text() -> String {
 }
 
 /// The languages a program may be written in, each with the extension of its file.
-const LANGUAGES: &[(&str, &str)] = &[("st", "st"), ("ld", "xml")];
+const LANGUAGES: &[(&str, &str)] = &[("st", "st"), ("ld", "xml"), ("fbd", "xml")];
+
+/// Whether a program in `language` is a PLCopen TC6 document.
+fn is_tc6(language: &str) -> bool {
+    matches!(language, "ld" | "fbd")
+}
 
 type Refusal = (u16, Value);
 
@@ -137,7 +144,7 @@ fn save(data: &Path, programs: &Programs) -> Result<(), Refusal> {
     write_atomic(&data.join(PROGRAMS_FILE), &bytes)
 }
 
-/// The file of a program's source: `.st` or, for a Ladder Diagram, `.xml`.
+/// The file of a program's source: `.st` or, for a diagram, `.xml`.
 fn source_path(data: &Path, entry: &ProgramEntry) -> PathBuf {
     let extension = LANGUAGES
         .iter()
@@ -167,13 +174,28 @@ fn find<'a>(programs: &'a Programs, name: &str) -> Result<&'a ProgramEntry, Refu
 
 /// What a new program starts as. In Structured Text, every section a program may have, empty.
 /// In a Ladder Diagram, a TC6 project holding the PROGRAM with no variable and a body of the
-/// two power rails and no rung between them, which compiles to a program that does nothing.
+/// two power rails and no rung between them; in a Function Block Diagram, the PROGRAM with no
+/// variable and an empty FBD body. Either compiles to a program that does nothing.
 fn template(name: &str, language: &str, now: std::time::SystemTime) -> String {
-    if language != "ld" {
+    if !is_tc6(language) {
         return format!(
             "PROGRAM {name}\nVAR_INPUT\nEND_VAR\nVAR_OUTPUT\nEND_VAR\nVAR\nEND_VAR\n\nEND_PROGRAM\n"
         );
     }
+    let body = if language == "fbd" {
+        "          <FBD/>\n"
+    } else {
+        r#"          <LD>
+            <leftPowerRail localId="1">
+              <position x="0" y="0"/>
+              <connectionPointOut formalParameter=""/>
+            </leftPowerRail>
+            <rightPowerRail localId="2">
+              <position x="400" y="0"/>
+            </rightPowerRail>
+          </LD>
+"#
+    };
     // The schema requires a file header: who wrote it is not known, so it is left empty; the
     // product, its version and the time are this module's own.
     format!(
@@ -193,16 +215,7 @@ fn template(name: &str, language: &str, now: std::time::SystemTime) -> String {
       <pou name="{name}" pouType="program">
         <interface/>
         <body>
-          <LD>
-            <leftPowerRail localId="1">
-              <position x="0" y="0"/>
-              <connectionPointOut formalParameter=""/>
-            </leftPowerRail>
-            <rightPowerRail localId="2">
-              <position x="400" y="0"/>
-            </rightPowerRail>
-          </LD>
-        </body>
+{body}        </body>
       </pou>
     </pous>
   </types>
@@ -248,7 +261,7 @@ fn date_time(time: std::time::SystemTime) -> String {
 fn check_entry(entry: &ProgramEntry) -> Result<(), String> {
     if !LANGUAGES.iter().any(|(l, _)| *l == entry.language) {
         return Err(format!(
-            "'{}' is not a language this module compiles; 'st' (Structured Text) and 'ld' (Ladder Diagram) are",
+            "'{}' is not a language this module compiles; 'st' (Structured Text), 'ld' (Ladder Diagram) and 'fbd' (Function Block Diagram) are",
             entry.language
         ));
     }
@@ -380,8 +393,8 @@ fn check_bindings(entry: &ProgramEntry, symbols: &[Symbol]) -> Vec<String> {
     problems
 }
 
-/// A variable the front-end made for itself (ADR-013 §2.15: an LD edge's memory, a value
-/// used twice, a jump), or a member of one: a part of its path begins with two underscores,
+/// A variable the front-end made for itself (ADR-013 §2.15, §2.16: an LD edge's memory, a
+/// power or a value kept for monitoring, a network's flag, a jump), or a member of one: a part of its path begins with two underscores,
 /// which IEC 61131-3 ed. 3 §6.1.2 forbids in every name a program declares.
 fn hidden(path: &str) -> bool {
     path.split('.').any(|part| part.starts_with("__"))
@@ -415,12 +428,12 @@ fn compile_entry(
     target: &TargetProfile,
 ) -> Result<mythos_logic_compiler::Compiled, Vec<Diagnostic>> {
     let file = |extension: &str| format!("{}.{extension}", entry.name);
-    if entry.language == "ld" {
+    if is_tc6(&entry.language) {
         let name = file("xml");
         compile_sources(
             &Sources {
                 st: None,
-                ld: &[(name.as_str(), source)],
+                tc6: &[(name.as_str(), source)],
             },
             target,
         )
@@ -429,19 +442,21 @@ fn compile_entry(
         compile_sources(
             &Sources {
                 st: Some((name.as_str(), source)),
-                ld: &[],
+                tc6: &[],
             },
             target,
         )
     }
 }
 
-/// Where the editor reads the power of the PROGRAM's diagram (`mythos_logic_compiler::Probe`):
-/// for each output of an element and each junction of links, the hidden variable assigned
-/// when it is evaluated in the scan (or on: always ON while its network runs), and for each
-/// network the variable that says whether it ran in the last scan. What is not listed carries
-/// no power (a value that is not a BOOL), and is shown without a state.
-fn power(compiled: &mythos_logic_compiler::Compiled) -> Vec<Value> {
+/// Where the editor reads the PROGRAM's diagram live (`mythos_logic_compiler::Probe`): for
+/// each output of an element and each junction of links, the hidden variable assigned when it
+/// is evaluated in the scan (or on: always ON while its network runs), and for each network the
+/// variable that says whether it ran in the last scan. In a Ladder Diagram that is power: what
+/// is not listed carries none (a value that is not a BOOL), and is shown without a state. In a
+/// Function Block Diagram it is every output's value, of whatever type; `ran`, where given,
+/// names the BOOL that is TRUE where the value was computed in the scan (ADR-013 §2.16).
+fn probes(compiled: &mythos_logic_compiler::Compiled) -> Vec<Value> {
     compiled
         .probes
         .iter()
@@ -457,6 +472,11 @@ fn power(compiled: &mythos_logic_compiler::Compiled) -> Vec<Value> {
                 Holds::Variable { path, negated } => {
                     entry["variable"] = json!(path);
                     entry["negated"] = json!(negated);
+                }
+                Holds::Guarded { path, ran } => {
+                    entry["variable"] = json!(path);
+                    entry["negated"] = json!(false);
+                    entry["ran"] = json!(ran);
                 }
             }
             entry
@@ -506,8 +526,10 @@ fn check(entry: &ProgramEntry, source: &str) -> Value {
                 "memory_size": compiled.memory_size,
                 "binding_problems": problems,
             });
-            if entry.language == "ld" {
-                answer["power"] = Value::Array(power(&compiled));
+            match entry.language.as_str() {
+                "ld" => answer["power"] = Value::Array(probes(&compiled)),
+                "fbd" => answer["values"] = Value::Array(probes(&compiled)),
+                _ => {}
             }
             answer
         }
@@ -661,34 +683,34 @@ pub fn manifest() -> ModuleManifest {
         version: env!("CARGO_PKG_VERSION").into(),
         kind: ModuleKind::Service,
         provides: PROVIDES.into(),
-        description: "Control programs in Structured Text or Ladder Diagram: their source, their bindings to tags, check and build".into(),
+        description: "Control programs in Structured Text, Ladder Diagram or Function Block Diagram: their source, their bindings to tags, check and build".into(),
         capabilities: vec![],
         config_schema: Value::Null,
         always_on: false,
         profile: Value::Null,
         routes: vec![
             route("GET", "/programs", "viewer", "list_logic_programs",
-                "A project's control programs with their settings and bindings, each with its language: st (Structured Text) or ld (Ladder Diagram).", None, &[]),
+                "A project's control programs with their settings and bindings, each with its language: st (Structured Text), ld (Ladder Diagram) or fbd (Function Block Diagram).", None, &[]),
             route("POST", "/programs", "engineer", "create_logic_program",
-                "Add a program to a project, in Structured Text (st, the default) or Ladder Diagram (ld): an empty PROGRAM, not run when loaded until its settings say so. A Ladder Diagram starts as a PLCopen TC6 XML v2.01 document holding the PROGRAM, with the two power rails and no rung.",
+                "Add a program to a project, in Structured Text (st, the default), Ladder Diagram (ld) or Function Block Diagram (fbd): an empty PROGRAM, not run when loaded until its settings say so. A Ladder Diagram starts as a PLCopen TC6 XML v2.01 document holding the PROGRAM, with the two power rails and no rung; a Function Block Diagram as one holding the PROGRAM with an empty FBD body.",
                 Some(json!({
                     "type": "object",
                     "required": ["name"],
                     "properties": {
                         "name": { "type": "string", "description": "A letter, then letters, digits or _; at most 64" },
-                        "language": { "type": "string", "enum": ["st", "ld"], "default": "st",
-                            "description": "st: Structured Text. ld: Ladder Diagram, stored as a PLCopen TC6 XML v2.01 document. It cannot be changed later" },
+                        "language": { "type": "string", "enum": ["st", "ld", "fbd"], "default": "st",
+                            "description": "st: Structured Text. ld: Ladder Diagram. fbd: Function Block Diagram. Each diagram is stored as a PLCopen TC6 XML v2.01 document. It cannot be changed later" },
                         "interval_ms": { "type": "integer", "minimum": 1, "default": 100 }
                     }
                 })), &[]),
             route("GET", "/programs/:program", "viewer", "get_logic_program",
-                "A program's settings, bindings and source: Structured Text, or for a Ladder Diagram (language ld) the PLCopen TC6 XML v2.01 document.", None, &[]),
+                "A program's settings, bindings and source: Structured Text, or for a Ladder Diagram (language ld) or a Function Block Diagram (fbd) the PLCopen TC6 XML v2.01 document.", None, &[]),
             route("PUT", "/programs/:program/source", "engineer", "save_logic_source",
-                "Replace a program's source, in its language: Structured Text, or for a Ladder Diagram (language ld) a PLCopen TC6 XML v2.01 document whose POUs include the PROGRAM. Nothing is compiled or loaded: check_logic_program and build_logic_program do that.",
+                "Replace a program's source, in its language: Structured Text, or for a Ladder Diagram (language ld) or a Function Block Diagram (fbd) a PLCopen TC6 XML v2.01 document whose POUs include the PROGRAM (its body LD or FBD; one document may hold POUs of both). Nothing is compiled or loaded: check_logic_program and build_logic_program do that.",
                 Some(json!({
                     "type": "object",
                     "required": ["source"],
-                    "properties": { "source": { "type": "string", "description": "Structured Text, or for a Ladder Diagram the TC6 XML document" } }
+                    "properties": { "source": { "type": "string", "description": "Structured Text, or for a Ladder Diagram or a Function Block Diagram the TC6 XML document" } }
                 })), &[]),
             route("PUT", "/programs/:program/settings", "engineer", "save_logic_settings",
                 "Replace a program's settings and its bindings to tags.",
@@ -697,13 +719,13 @@ pub fn manifest() -> ModuleManifest {
                 "Remove a program and its source from a project. A runtime that already runs it is not touched.",
                 None, &[]),
             route("POST", "/programs/:program/check", "viewer", "check_logic_program",
-                "Compile a program, Structured Text or Ladder Diagram, without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program; in a Ladder Diagram the range is the element's tag in the document and 'element' names it: pou, local_id, x, y, or the interface's variable, and the characters of its text), or its variables (hidden: made by the Ladder Diagram front-end for itself), what its bindings get wrong and the version a build of it would have. A Ladder Diagram that compiles also gives 'power', to watch for power flow: for each output of an element that carries power ('output') and each input where links join ('input'), the hidden variable assigned when it is evaluated in the scan (or on: ON whenever its network runs); for each network ('network': its elements' local_ids), the variable that is TRUE when it ran in the last scan. With 'source' it checks that text instead of the saved one.",
+                "Compile a program, Structured Text, Ladder Diagram or Function Block Diagram, without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program; in a diagram the range is the element's tag in the document and 'element' names it: pou, local_id, x, y, or the interface's variable, and the characters of its text), or its variables (hidden: made by the diagram front-end for itself), what its bindings get wrong and the version a build of it would have. A Ladder Diagram that compiles also gives 'power', to watch for power flow: for each output of an element that carries power ('output') and each input where links join ('input'), the hidden variable assigned when it is evaluated in the scan (or on: ON whenever its network runs); for each network ('network': its elements' local_ids), the variable that is TRUE when it ran in the last scan. A Function Block Diagram that compiles gives 'values' of the same shape: for every output of every element (a block's by its formal parameter, ENO among them; '' for a variable's), the hidden variable holding the value it gave when it was evaluated in the scan, of the output's own type (or on: ENO always TRUE), with 'ran' where the value is computed only where that BOOL is TRUE (a function under EN); for each network the variable that is TRUE when it ran. With 'source' it checks that text instead of the saved one.",
                 Some(json!({
                     "type": "object",
                     "properties": { "source": { "type": "string" } }
                 })), &[]),
             route("POST", "/programs/:program/build", "engineer", "build_logic_program",
-                "Compile the saved source, Structured Text or Ladder Diagram, and pack it as a runtime instance. The answer's 'instance' is what save_runtimes_config takes in its 'instances' (replace the one with the same id); nothing is loaded by this call.",
+                "Compile the saved source, Structured Text, Ladder Diagram or Function Block Diagram, and pack it as a runtime instance. The answer's 'instance' is what save_runtimes_config takes in its 'instances' (replace the one with the same id); nothing is loaded by this call.",
                 None, &["tags"]),
         ],
     }
@@ -1111,6 +1133,147 @@ mod tests {
         );
     }
 
+    /// The tank as a Function Block Diagram (ADR-013 §2.16): `speed := level * 10` through a
+    /// MUL block, and `motor := run AND NOT stop`, the NOT a negated input of the AND.
+    fn diagram(level_variable: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <types><dataTypes/><pous>
+    <pou name="Tank" pouType="program">
+      <interface>
+        <inputVars>
+          <variable name="level"><type><INT/></type></variable>
+          <variable name="run"><type><BOOL/></type></variable>
+          <variable name="stop"><type><BOOL/></type></variable>
+        </inputVars>
+        <outputVars>
+          <variable name="speed"><type><INT/></type></variable>
+          <variable name="motor"><type><BOOL/></type></variable>
+        </outputVars>
+      </interface>
+      <body><FBD>
+        <inVariable localId="1"><position x="0" y="0"/><connectionPointOut/><expression>{level_variable}</expression></inVariable>
+        <block localId="2" typeName="MUL"><position x="120" y="0"/>
+          <inputVariables>
+            <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="1"/></connectionPointIn></variable>
+            <variable formalParameter="IN2"><connectionPointIn><expression>10</expression></connectionPointIn></variable>
+          </inputVariables>
+          <inOutVariables/>
+          <outputVariables><variable formalParameter="OUT"><connectionPointOut/></variable></outputVariables>
+        </block>
+        <outVariable localId="3"><position x="240" y="0"/><connectionPointIn><connection refLocalId="2"/></connectionPointIn><expression>speed</expression></outVariable>
+        <inVariable localId="10"><position x="0" y="100"/><connectionPointOut/><expression>run</expression></inVariable>
+        <inVariable localId="11"><position x="0" y="140"/><connectionPointOut/><expression>stop</expression></inVariable>
+        <block localId="12" typeName="AND"><position x="120" y="100"/>
+          <inputVariables>
+            <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="10"/></connectionPointIn></variable>
+            <variable formalParameter="IN2" negated="true"><connectionPointIn><connection refLocalId="11"/></connectionPointIn></variable>
+          </inputVariables>
+          <inOutVariables/>
+          <outputVariables><variable formalParameter="OUT"><connectionPointOut/></variable></outputVariables>
+        </block>
+        <outVariable localId="13"><position x="240" y="100"/><connectionPointIn><connection refLocalId="12"/></connectionPointIn><expression>motor</expression></outVariable>
+      </FBD></body>
+    </pou>
+  </pous></types>
+  <instances><configurations/></instances>
+</project>
+"#
+        )
+    }
+
+    fn fbd_entry() -> ProgramEntry {
+        let mut e = ld_entry();
+        e.language = "fbd".into();
+        e
+    }
+
+    #[test]
+    fn a_new_function_block_diagram_is_a_tc6_document_that_compiles_to_a_program_doing_nothing() {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_795_000_000);
+        let source = template("Tank", "fbd", at);
+        assert!(source.contains("<FBD/>"), "{source}");
+        assert!(!source.contains("PowerRail"), "{source}");
+        assert!(source.contains(r#"creationDateTime="2026-11-18T11:06:40Z""#));
+        let checked = check(&fbd_entry(), &source);
+        assert_eq!(checked["ok"], true, "{checked}");
+        assert_eq!(checked["program"], "Tank");
+        assert_eq!(checked["variables"], json!([]));
+        assert_eq!(checked["values"], json!([]));
+        // An FBD check says nothing of power, an LD one nothing of values.
+        assert!(checked.get("power").is_none());
+        assert!(check(&ld_entry(), &template("Tank", "ld", at))
+            .get("values")
+            .is_none());
+        assert_eq!(
+            source_path(Path::new("/d"), &fbd_entry()),
+            Path::new("/d/programs/Tank.xml")
+        );
+    }
+
+    #[test]
+    fn a_function_block_diagram_is_checked_with_where_each_value_is_kept() {
+        let checked = check(&fbd_entry(), &diagram("level"));
+        assert_eq!(checked["ok"], true, "{checked}");
+        assert_eq!(checked["binding_problems"], json!([]), "{checked}");
+        let vars = checked["variables"].as_array().unwrap();
+        let var = |path: &str| {
+            vars.iter()
+                .find(|v| v["path"] == path)
+                .unwrap_or_else(|| panic!("{path} in {vars:?}"))
+        };
+        // Each value kept in its own type, hidden and private: a number too.
+        assert_eq!(var("__FBD_2")["type"], "INT");
+        assert_eq!(var("__FBD_12")["type"], "BOOL");
+        for kept in [
+            "__FBD_1", "__FBD_2", "__FBD_10", "__FBD_11", "__FBD_12", "__NET_1", "__NET_10",
+        ] {
+            assert_eq!(var(kept)["hidden"], true, "{kept}");
+            assert_eq!(var(kept)["private"], true, "{kept}");
+        }
+        assert_eq!(
+            checked["values"],
+            json!([
+                {"local_id": 1, "output": "", "variable": "__FBD_1", "negated": false},
+                {"local_id": 1, "network": [1, 2, 3], "variable": "__NET_1", "negated": false},
+                {"local_id": 2, "output": "OUT", "variable": "__FBD_2", "negated": false},
+                {"local_id": 10, "output": "", "variable": "__FBD_10", "negated": false},
+                {"local_id": 10, "network": [10, 12, 13, 11], "variable": "__NET_10", "negated": false},
+                {"local_id": 11, "output": "", "variable": "__FBD_11", "negated": false},
+                {"local_id": 12, "output": "OUT", "variable": "__FBD_12", "negated": false},
+            ])
+        );
+        assert!(checked.get("power").is_none());
+    }
+
+    #[test]
+    fn a_function_block_diagram_diagnostic_names_its_element_and_its_build_runs_like_any() {
+        let checked = check(&fbd_entry(), &diagram("levle"));
+        assert_eq!(checked["ok"], false, "{checked}");
+        let d = &checked["diagnostics"][0];
+        assert_eq!(d["message"], "levle is not declared", "{checked}");
+        assert_eq!(
+            d["element"],
+            json!({"pou": "Tank", "local_id": 1, "x": 0.0, "y": 0.0,
+                   "text": {"field": "expression", "col": 1, "end_col": 6}}),
+            "{checked}"
+        );
+        let built = build(&fbd_entry(), &diagram("level"), None).unwrap();
+        assert_eq!(built["instance"]["program"]["name"], "Tank");
+        let symbols = built["instance"]["program"]["symbols"].as_array().unwrap();
+        assert!(symbols.iter().any(|s| s["path"] == "__FBD_2"));
+        assert_eq!(
+            check(&fbd_entry(), &diagram("level"))["version"],
+            built["version"]
+        );
+        // The same document as an LD program compiles the same: the reader is one.
+        assert_eq!(
+            build(&ld_entry(), &diagram("level"), None).unwrap()["version"],
+            built["version"]
+        );
+    }
+
     #[test]
     fn a_name_is_a_letter_then_letters_digits_or_underscores() {
         for ok in ["Tank", "a", "Pump_2", "x9"] {
@@ -1139,10 +1302,12 @@ mod tests {
             change(&mut e);
             check_entry(&e).unwrap_err()
         };
-        assert!(with(&|e| e.language = "fbd".into()).contains("is not a language"));
-        let mut ld = entry();
-        ld.language = "ld".into();
-        assert_eq!(check_entry(&ld), Ok(()));
+        assert!(with(&|e| e.language = "sfc".into()).contains("is not a language"));
+        for language in ["ld", "fbd"] {
+            let mut e = entry();
+            e.language = language.into();
+            assert_eq!(check_entry(&e), Ok(()), "{language}");
+        }
         assert!(with(&|e| e.interval_ms = 0).contains("at least 1"));
         assert!(with(&|e| e.runtime = " ".into()).contains("names no runtime module"));
         assert!(with(&|e| e.target = "plc-9000".into()).contains("is not a target profile"));

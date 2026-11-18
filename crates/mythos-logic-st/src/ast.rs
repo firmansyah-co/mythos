@@ -87,6 +87,13 @@ pub enum TypeSpecKind {
     Array(Vec<(i128, i128)>, Box<TypeSpec>),
     /// `STRING`, or `STRING[n]` with the length as written and where it is.
     String(Option<(i128, Span)>),
+    /// The type of the value first assigned to the variable, whatever it is. Only a hidden
+    /// variable another front-end declares for itself has it, never ST text: the Function
+    /// Block Diagram front-end keeps each block's output in one, so that the output of a
+    /// function of more than one type (ADD, SEL, MAX, …) is kept in the type the checker
+    /// gives that call, by the one rule of typing there is (ADR-013 §2.16). The first
+    /// statement that assigns it must come before every one that reads it.
+    OfValue,
 }
 
 /// What a declaration starts its variable with.
