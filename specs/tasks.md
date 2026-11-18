@@ -249,7 +249,24 @@ Each sprint lasts two weeks and delivers fully verified, tested, and documented 
 
 ### Long-term horizons (owner, 2026-11-18)
 
-Recorded so they are not lost; neither is scheduled, and neither is started without the owner.
+Recorded so they are not lost. None is scheduled, and none is started without the owner.
+
+**Order after ADR-013 L3 (LD, FBD, SFC), agreed with the owner:**
+
+1. **Alarms (ISA-18.2 / IEC 62682) and the historian.** ADR-007 is accepted and nothing of it is built yet, and a SCADA without them is not fit for a control room. Alarms need priorities, acknowledgement, shelving, first-out and flood suppression. The historian needs trends a user can trust: it keeps the honest quality of every sample, and never shows an interpolated value as a measured one.
+2. **The foundation for IEC 62443.** Signed modules and updates (the supply chain), documented secure defaults, a development process to 62443-4-1, and a mapping of what exists (accounts and roles, the audit log, TLS, pinned pairing) to the component requirements of 62443-4-2. ISASecure certification is the long-term aim; the foundation is laid first because certification takes long.
+3. **An OPC UA server (IEC 62541)**, so that tags, alarms and history reach MES, ERP and other systems; then an OPC UA client driver for other vendors' PLCs, the PLCopen companion specification for IEC 61131-3, and MQTT Sparkplug B for IIoT. All of them are modules (ADR-010); none needs a change to the core.
+
+**Medium to long term:**
+
+- **Redundancy and high availability:** hot-standby servers and controllers that fail over without losing outputs, and redundant networks. Safe values, RETAIN, online change and its variable snapshot (ADR-013 C6b) are the foundations; full redundancy is a project of its own.
+- **Determinism measured, not claimed:** a Linux PREEMPT_RT mode whose scan jitter is measured against NFR-002 (±100 µs).
+- **Proof of conformance:** the PLCopen IEC 61131-3 conformity tests (ADR-013's "semantics settled" tables are the groundwork), and unit tests in ST.
+- **Importers from the incumbents:** CODESYS and TIA Portal projects through PLCopen TC6 XML, which ADR-013 L3 already reads.
+- **Regulated industries (21 CFR Part 11):** an audit trail of every change to programs and configuration, and electronic signatures (named in ADR-007, not built).
+- **Long-term support releases**, with the compatibility discipline the bytecode formats already keep.
+
+**Deliberately not on the roadmap:** functional safety certified to IEC 61508 (SIL). MythOS is not a safety system (ADR-013 §2.11), and that boundary is kept.
 
 - **IEC 61850 (long term).** Reading and commanding substation IEDs (protection relays, MV switchgear, PV and battery plants) directly, as **driver modules** (ADR-010), not in the core. In stages:
   1. an MMS client: reads, buffered and unbuffered reports, and SCL (ICD/CID/SCD) import that yields the tag mappings;
@@ -395,4 +412,4 @@ Recorded so they are not lost; neither is scheduled, and neither is started with
 | 1.3.0 | 2026-10-23 | Scribe (VP Publication & Documentation) | ADR-008 propagation. TSK-001 and TSK-004 now name `crates/mythos-plugin-sdk` and the real workspace members. TSK-005 now names `plugins/drivers/driver-modbus/`. GATE 3 status recorded as REOPENED: TSK-309 was not delivered and had no mechanical evidence. |
 | 1.4.0 | 2026-10-26 | Scribe (VP Publication & Technical Documentation) | TSK-010 criterion revised: the $< 100\,\text{ns}$ p99-under-16-threads acceptance criterion is withdrawn as a merge gate and recorded as not met, with the measurement preserved (PR #25, run 40089446143, merged at `333d199`) and the 16-thread step reduced to report-only. No replacement bound is selected; that is a board decision. New Sprint 8 records TSK-801 as a pre-committed prerequisite: the live-telemetry consumer plus the SYS-REQ-096 device-mode end-to-end path. `DeviceExecutionMode` duplication recorded as accepted and temporary; its real cost is a serde wire-name divergence between the two definitions, with the canonical ownership decision as a precondition on TSK-801. |
 | 1.5.0 | 2026-11-18 | Adrian (owner); recorded by Claude | TSK-002's atomic swap bound is 300 ns (was 50 ns; owner, 2026-11-17). The owner extended 300 ns to a tag read on 2026-11-18; the TSK-010 STATUS note records how that is gated (best of five rounds of 1,000,000 uncontended reads) and that the 16-thread p99 stays report-only. No write bound is decided. |
-| 1.6.0 | 2026-11-18 | Adrian (owner); recorded by Claude | Long-term horizons recorded: IEC 61850 as driver modules (long term, staged, license risk stated) and a CFC mode for FBD (medium term, after standard FBD). IEC 61499 (long term): one VM with a cyclic and an event scheduler, the execution model recognised from the uploaded files and matched to a runtime module, FORTE as an oracle only. None is scheduled. |
+| 1.6.0 | 2026-11-18 | Adrian (owner); recorded by Claude | Long-term horizons recorded: IEC 61850 as driver modules (long term, staged, license risk stated) and a CFC mode for FBD (medium term, after standard FBD). IEC 61499 (long term): one VM with a cyclic and an event scheduler, the execution model recognised from the uploaded files and matched to a runtime module, FORTE as an oracle only. None is scheduled. The order after L3 (alarms and the historian, the IEC 62443 foundation, OPC UA) and the medium- to long-term items (redundancy, PREEMPT_RT, PLCopen conformance, importers, 21 CFR Part 11, LTS) are recorded; IEC 61508 is recorded as out of scope. |
