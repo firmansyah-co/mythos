@@ -839,22 +839,26 @@ fn kill(pid: u32) {
 }
 
 /// A program with one RETAIN variable, `total`, and one that is not, `n`; both count scans.
-/// The compiler marks `total` as the symbol table says a RETAIN section does (`"retain": true`).
+/// The compiler marks `total` in the symbol table (`"retain": true`), as its RETAIN section says.
 fn counter(version: &str) -> Value {
     const COUNTER: &str = "
 PROGRAM Counter
-VAR total : DINT; n : DINT; END_VAR
+VAR RETAIN total : DINT; END_VAR
+VAR n : DINT; END_VAR
   total := total + 1;
   n := n + 1;
 END_PROGRAM
 ";
     let compiled = compile(COUNTER, &TargetProfile::pc()).unwrap_or_else(|d| panic!("{d:?}"));
-    let mut symbols = serde_json::to_value(&compiled.symbols).unwrap();
-    for symbol in symbols.as_array_mut().unwrap() {
-        if symbol["path"] == "total" {
-            symbol["retain"] = json!(true);
-        }
-    }
+    let symbols = serde_json::to_value(&compiled.symbols).unwrap();
+    let retained: Vec<&Value> = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["retain"] == true)
+        .map(|s| &s["path"])
+        .collect();
+    assert_eq!(retained, vec![&json!("total")], "{symbols}");
     json!({"instances": [{
         "id": "counter", "module": "vm", "run": true,
         "program": {
