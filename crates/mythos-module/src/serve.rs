@@ -12,8 +12,8 @@
 //! the order they arrive, one at a time.
 
 use crate::protocol::{
-    Call, ErrorKind, ExchangeReply, ModuleManifest, Request, Response, RuntimeState, WatchReply,
-    WireDeclaration, WireError, WireInput, WireSample, MANIFEST_FLAG, SERVE_FLAG,
+    Call, ErrorKind, ExchangeReply, ModuleManifest, Request, Response, RetainedValue, RuntimeState,
+    WatchReply, WireDeclaration, WireError, WireInput, WireSample, MANIFEST_FLAG, SERVE_FLAG,
 };
 use mythos_plugin_sdk::{async_trait, PluginContext, PluginError, ProtocolDriver};
 use serde_json::{json, Value};
@@ -38,11 +38,13 @@ pub trait RuntimeEngine: ProtocolDriver {
         inputs: Vec<WireInput>,
     ) -> Result<ExchangeReply, PluginError>;
 
-    /// Put the program in RUN (from a cold start unless it already runs) or in STOP.
+    /// Put the program in RUN or in STOP. From STOP or FAULT, RUN is a warm restart (RETAIN
+    /// variables keep their values, the rest are initialized), or with `cold` a cold restart.
     async fn set_mode(
         &mut self,
         ctx: &PluginContext,
         run: bool,
+        cold: bool,
     ) -> Result<RuntimeState, PluginError>;
 
     /// Read variables as the last scan left them. A runtime that cannot be watched says so.
@@ -66,6 +68,13 @@ pub trait RuntimeEngine: ProtocolDriver {
     ) -> Result<RuntimeState, PluginError> {
         Err(PluginError::RuntimeError(
             "this runtime module cannot force a variable".to_string(),
+        ))
+    }
+
+    /// The values of the program's RETAIN variables now. A runtime that keeps none says so.
+    async fn retained(&mut self, _ctx: &PluginContext) -> Result<Vec<RetainedValue>, PluginError> {
+        Err(PluginError::RuntimeError(
+            "this runtime module keeps no RETAIN values".to_string(),
         ))
     }
 
@@ -128,7 +137,10 @@ impl<D: RuntimeEngine> ExtraCalls<D> for RuntimeCalls {
         let fail = |e: PluginError| WireError::from(&e);
         match call {
             Call::Exchange { inputs } => encode(driver.exchange(ctx, inputs).await.map_err(fail)?),
-            Call::Mode { run } => encode(driver.set_mode(ctx, run).await.map_err(fail)?),
+            Call::Mode { run, cold } => {
+                encode(driver.set_mode(ctx, run, cold).await.map_err(fail)?)
+            }
+            Call::Retained => encode(driver.retained(ctx).await.map_err(fail)?),
             Call::Watch { variables } => encode(driver.watch(ctx, variables).await.map_err(fail)?),
             Call::Force { variable, value } => {
                 encode(driver.force(ctx, variable, value).await.map_err(fail)?)
@@ -398,6 +410,7 @@ where
         | Call::Mode { .. }
         | Call::Watch { .. }
         | Call::Force { .. }
-        | Call::Unforce { .. }) => extra.handle(manifest, driver, ctx.as_ref(), call).await,
+        | Call::Unforce { .. }
+        | Call::Retained) => extra.handle(manifest, driver, ctx.as_ref(), call).await,
     }
 }

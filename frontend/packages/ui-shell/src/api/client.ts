@@ -627,7 +627,7 @@ export const api = {
     }
     return body as RuntimeList;
   },
-  /** Put a loaded program in RUN (engineer). From STOP or FAULT that is a cold start. */
+  /** Put a loaded program in RUN (engineer). From STOP or FAULT that is a warm restart: RETAIN variables keep their values. */
   runRuntime: (id: string) =>
     request<RuntimeCommandAnswer>(`/api/v1/runtimes/${encodeURIComponent(id)}/run`, { method: 'POST' }),
   /** Put a program in STOP (engineer): its outputs are written their safe values. */

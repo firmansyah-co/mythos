@@ -470,7 +470,7 @@ describe('Settings → Runtimes: run and stop', () => {
     act(() => button(view, 'Run tank').click());
     await settle();
     expect(asked).toHaveLength(1);
-    expect(asked[0]).toContain('cold start');
+    expect(asked[0]).toContain('warm restart');
     expect(server.calls.filter((c) => c.method === 'POST')).toHaveLength(0);
 
     vi.stubGlobal('confirm', () => true);

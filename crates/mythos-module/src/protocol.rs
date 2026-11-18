@@ -254,9 +254,15 @@ pub enum Call {
     /// One exchange with a runtime module: the tags it reads as they are now, in; what it
     /// publishes and what it wants written, out. Answers with an [`ExchangeReply`].
     Exchange { inputs: Vec<WireInput> },
-    /// Put a runtime module's program in RUN (from STOP or FAULT: from a cold start) or in
-    /// STOP. Answers with its [`RuntimeState`].
-    Mode { run: bool },
+    /// Put a runtime module's program in RUN or in STOP. From STOP or FAULT, RUN is a warm
+    /// restart: its RETAIN variables keep the values they had, the others take their initial
+    /// values; with `cold`, every variable takes its initial value (IEC 61131-3 §6.5.6).
+    /// Answers with its [`RuntimeState`].
+    Mode {
+        run: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cold: bool,
+    },
     /// Read variables of a runtime module's program as its last scan left them. It changes
     /// nothing. Answers with a [`WatchReply`].
     Watch { variables: Vec<String> },
@@ -269,6 +275,21 @@ pub enum Call {
         #[serde(default)]
         variable: Option<String>,
     },
+    /// The values of the program's RETAIN variables now, for the host to keep across a restart
+    /// of the module. Answers with a list of [`RetainedValue`]: empty when it has none.
+    Retained,
+}
+
+/// The value of one RETAIN variable, as the runtime module keeps it: what the host stores and
+/// gives back when it starts the program again (`retained` beside `program` in the start
+/// configuration), which takes it only into a variable of the same path, type and size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetainedValue {
+    pub path: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// The variable's bytes in the runtime module's own form, as lowercase hex.
+    pub bytes: String,
 }
 
 // -----------------------------------------------------------------------------

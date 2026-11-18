@@ -116,6 +116,7 @@ impl<S: PlatformShm + 'static> IoManager<S> {
             )),
             io: status.clone(),
             states: crate::runtimes::RuntimeStates::default(),
+            retain: Some(crate::runtimes::RetainStore::new(Arc::clone(&storage))),
         };
         registry.set_runtime_env(runtime_env.clone());
         Arc::new(Self {

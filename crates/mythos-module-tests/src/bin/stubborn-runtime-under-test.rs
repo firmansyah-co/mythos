@@ -140,6 +140,7 @@ impl RuntimeEngine for Stubborn {
         &mut self,
         _ctx: &PluginContext,
         _run: bool,
+        _cold: bool,
     ) -> Result<RuntimeState, PluginError> {
         Ok(self.state())
     }

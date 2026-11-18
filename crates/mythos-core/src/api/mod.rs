@@ -247,6 +247,10 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
         .route("/api/v1/runtimes/:runtime/run", post(runtimes::run::<S>))
         .route("/api/v1/runtimes/:runtime/stop", post(runtimes::stop::<S>))
         .route(
+            "/api/v1/runtimes/:runtime/cold-start",
+            post(runtimes::cold_start::<S>),
+        )
+        .route(
             "/api/v1/runtimes/:runtime/force",
             post(runtimes::force::<S>),
         )

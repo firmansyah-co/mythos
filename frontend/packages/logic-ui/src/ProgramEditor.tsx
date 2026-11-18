@@ -206,12 +206,12 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
           type="button"
           className="btn"
           disabled={!may || busy || state.kind !== 'loaded' || state.stale}
-          title="Put the program in RUN. From STOP or FAULT that is a cold start: its variables take their initial values."
+          title="Put the program in RUN. From STOP or FAULT that is a warm restart: its RETAIN variables keep their values, the others take their initial values."
           onClick={() => {
             // Run starts writing to the plant: it is asked, as on Settings → Runtimes.
             if (
               window.confirm(
-                `Put ${name} in RUN? From STOP or FAULT that is a cold start: its variables take their initial values, and the program writes its outputs.`
+                `Put ${name} in RUN? From STOP or FAULT that is a warm restart: its RETAIN variables keep the values they had, the others take their initial values, and the program writes its outputs.`
               )
             ) {
               void command(name, true);
