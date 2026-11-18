@@ -664,6 +664,19 @@ past clarity and legibility.
   a box's pin wired to a second rung path (an operand is written there), editing a network kept
   as found, adding a POU to the document.
 
+**Where the program editor's parts are** (2026-11-18, the owner's question why the work area
+was crowded while the workbench's panes stood empty). As TIA's block editor: the work area holds
+only the program's body and its interface (the variables with values and bindings, folded or not,
+above the body). The Ladder Diagram's instructions are the **Instructions** task card (the
+favourites bar stays on the editor's toolbar); the runtime's state and commands (RUN/STOP,
+Unload, Release all, scan times, forces) are the **Runtime** task card; the program's properties
+(language, task interval, runtime module, target, Run when loaded, Remove) are the inspector's
+Properties, selected when the editor opens and again on a click in it; what the compiler said
+is a panel of the inspector's **Diagnostics** tab (`host.setDiagnostics`), counted on the tab
+only for the text as it is now, and brought forward after a Check or Load the engineer asked for
+that the compiler refused. The toolbar says the check in a word. Nothing is set while another
+editor is active: the workbench draws only the active one.
+
 **The Function Block Diagram view** (L3c-1; `FbdView.tsx`, `fbd.ts`). An FBD program opens in
 the same editor as ST and LD, with the diagram in place of the text; the variables table,
 bindings, Load, Load cold, Run, Stop, Unload, forcing and watching are unchanged. It is read-only

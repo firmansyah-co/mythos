@@ -1,7 +1,7 @@
 // What the modules' workbench UIs contributed (ADR-011 §2.3), and whether they have loaded.
 
 import { create } from 'zustand';
-import type { Editor, Panel, PortalSection, TreeSection, View } from '@mythos/workbench-sdk';
+import type { DiagnosticsPanel, Editor, Panel, PortalSection, TreeSection, View } from '@mythos/workbench-sdk';
 
 export interface ModuleLoad {
   id: string;
@@ -29,6 +29,8 @@ export interface ModuleUiState {
   inspector: Record<string, Owned<Panel>>;
   /** Task cards by owner. */
   taskCards: Record<string, Owned<Panel>>;
+  /** What modules show in the inspector's Diagnostics tab, by owner. */
+  diagnostics: Record<string, Owned<DiagnosticsPanel>>;
   /** Bumped when a module says its editor titles changed. */
   titles: number;
   /** Owners that hold unsaved changes. */
@@ -44,6 +46,7 @@ const EMPTY: ModuleUiState = {
   portalSections: [],
   inspector: {},
   taskCards: {},
+  diagnostics: {},
   titles: 0,
   unsaved: {},
 };
@@ -69,4 +72,9 @@ export function orderedTreeSections(sections: Owned<TreeSection>[]): Owned<TreeS
     .map((entry, index) => ({ entry, index }))
     .sort((a, b) => (a.entry.item.order ?? 0) - (b.entry.item.order ?? 0) || a.index - b.index)
     .map(({ entry }) => entry);
+}
+
+/** What the modules' diagnostics add to the count on the Diagnostics tab: only what they know. */
+export function moduleProblemCount(state: ModuleUiState): number {
+  return Object.values(state.diagnostics).reduce((sum, panel) => sum + (panel.item.count ?? 0), 0);
 }

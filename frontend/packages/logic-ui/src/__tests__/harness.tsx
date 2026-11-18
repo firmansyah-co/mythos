@@ -3,18 +3,22 @@
 // controller is a fake `fetch` that keeps programs and runtimes the way the logic module and
 // the core do, and records every call.
 
-import { act } from 'react';
+import { act, type ReactElement } from 'react';
 import { vi } from 'vitest';
 import { activate, MODULE_ID } from '../entry';
+import { useLdPalette } from '../LdInstructions';
 import type { CheckResult, ProgramEntry, RuntimesAnswer, RuntimeStatus, WatchAnswer, WatchedValue } from '../bridge';
 import { createHost } from '../../../ui-shell/src/modules/host';
-import { resetStores as resetShell, unmountAll } from '../../../ui-shell/src/__tests__/harness';
+import { render as renderShell, resetStores as resetShell, unmountAll } from '../../../ui-shell/src/__tests__/harness';
+import { ModuleMount } from '../../../ui-shell/src/modules/ModuleMount';
+import { useModuleUi, type Owned } from '../../../ui-shell/src/modules/registry';
+import { useWorkbench } from '../../../ui-shell/src/data/workbench';
+import type { Panel } from '@mythos/workbench-sdk';
 
 export {
   connection,
   ioStatus,
   project,
-  render,
   sample,
   texts,
   typeInto,
@@ -27,10 +31,61 @@ export { useWorkbench as useShell } from '../../../ui-shell/src/data/workbench';
 
 let deactivate: (() => void) | null = null;
 
+/** Every panel of one pane, each under its owner, drawn as the workbench draws them. */
+function PaneOf({ pane, panels }: { pane: string; panels: Record<string, Owned<Panel>> }) {
+  const project = useWorkbench((state) => state.project) ?? { id: 'no-project', name: 'no project' };
+  return (
+    <>
+      {Object.entries(panels).map(([owner, panel]) => (
+        <section key={owner} data-pane={pane} data-owner={owner} aria-label={panel.item.title}>
+          <ModuleMount
+            mount={panel.item.mount}
+            context={{ project: { id: project.id, name: project.name } }}
+            deps={[project.id, owner]}
+          />
+        </section>
+      ))}
+    </>
+  );
+}
+
+/**
+ * What the module put into the workbench's panes, all of it at once: the task cards, the
+ * inspector's panels and its diagnostics. Which of the inspector's tabs is in front is the
+ * workbench's business, tested there; here every panel the module set is on the page.
+ */
+function Panes() {
+  const ui = useModuleUi();
+  return (
+    <>
+      <PaneOf pane="task-cards" panels={ui.taskCards} />
+      <PaneOf pane="inspector" panels={ui.inspector} />
+      <PaneOf pane="diagnostics" panels={ui.diagnostics} />
+    </>
+  );
+}
+
+/** `element` drawn as the work area's editor, with the panes the workbench draws beside it. */
+export function render(element: ReactElement): HTMLElement {
+  return renderShell(
+    <>
+      {element}
+      <Panes />
+    </>
+  );
+}
+
+/** The panel `owner` set in a pane, or null when it has set none there. */
+export function paneOf(container: HTMLElement, pane: 'task-cards' | 'inspector' | 'diagnostics', owner: string): HTMLElement | null {
+  return container.querySelector(`[data-pane="${pane}"][data-owner="${owner}"]`);
+}
+
 /** Every store as the workbench starts, and the logic UI activated against it afresh. */
 export function resetStores(): void {
   deactivate?.();
   resetShell();
+  useLdPalette.setState({ place: null, own: [] });
+  useLdPalette.getState().reread();
   deactivate = activate(createHost(MODULE_ID));
 }
 
