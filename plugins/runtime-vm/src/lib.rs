@@ -109,6 +109,9 @@ struct SymbolEntry {
     /// Whether it keeps its value across a warm restart (IEC 61131-3 §6.5.6).
     #[serde(default)]
     retain: bool,
+    /// Inside a function block instance and not one of its inputs: only the block writes it.
+    #[serde(default)]
+    private: bool,
 }
 
 /// What an array symbol holds: enough to find one element.
@@ -312,9 +315,19 @@ fn plan(config: &Value) -> Result<(Plan, bool, Vec<RetainedValue>), PluginError>
         })
     };
 
+    // A tag written into a variable: never one only its function block writes.
+    let writable = |variable: &str, what: &str| -> Result<(), PluginError> {
+        match symbols.get(&variable.to_ascii_lowercase()) {
+            Some(entry) if entry.private => Err(invalid(format!(
+                "{variable} is inside a function block instance and is not one of its inputs, so only the block writes it; it cannot be {what}"
+            ))),
+            _ => Ok(()),
+        }
+    };
     let mut inputs = Vec::new();
     for b in &program.inputs {
         let var = resolve(&b.variable)?;
+        writable(&b.variable, "read from a tag")?;
         if b.of == InputOf::Good && var.ty != ElemType::Bool {
             return Err(invalid(format!(
                 "{} takes whether {} is GOOD, so it must be a BOOL",
@@ -340,7 +353,11 @@ fn plan(config: &Value) -> Result<(Plan, bool, Vec<RetainedValue>), PluginError>
         if !seen.insert(b.tag.as_str()) {
             return Err(invalid(format!("two variables are published as {}", b.tag)));
         }
-        published.push((resolve(&b.variable)?, b.tag.clone(), b.writable));
+        let var = resolve(&b.variable)?;
+        if b.writable {
+            writable(&b.variable, "a setpoint")?;
+        }
+        published.push((var, b.tag.clone(), b.writable));
     }
     let mut retain = Vec::new();
     for s in entries.iter().filter(|s| s.retain) {
@@ -1272,6 +1289,62 @@ mod tests {
             "code": hex::encode(bytes), "symbols": symbols,
         }}))
         .map(|(plan, ..)| plan)
+    }
+
+    #[test]
+    fn a_tag_is_never_bound_to_write_what_only_a_function_block_writes() {
+        let bytes = include_bytes!(
+            "../../../crates/mythos-logic-compiler/tests/fixtures/format1/integers_and_control.mlbc"
+        );
+        let symbols = json!([
+            {"path": "t.IN", "type": "BOOL", "offset": 0, "size": 1},
+            {"path": "t.Q", "type": "BOOL", "offset": 1, "size": 1, "private": true},
+        ]);
+        let with = |inputs: Value, published: Value| {
+            plan(&json!({ "program": {
+                "name": "P", "version": "1", "interval_ms": 10,
+                "code": hex::encode(bytes), "symbols": symbols,
+                "inputs": inputs, "published": published,
+            }}))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        };
+        assert_eq!(
+            with(
+                json!([{"variable": "t.IN", "tag": "external.A.B.c"}]),
+                json!([])
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            with(
+                json!([]),
+                json!([{"variable": "t.Q", "tag": "internal.A.q"}])
+            ),
+            Ok(()),
+            "read, it is published"
+        );
+        let refused = with(
+            json!([{"variable": "t.Q", "tag": "external.A.B.c"}]),
+            json!([]),
+        );
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.contains("t.Q is inside a function block instance")
+                    && e.ends_with("it cannot be read from a tag")),
+            "{refused:?}"
+        );
+        let refused = with(
+            json!([]),
+            json!([{"variable": "t.Q", "tag": "internal.A.q", "writable": true}]),
+        );
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.ends_with("it cannot be a setpoint")),
+            "{refused:?}"
+        );
     }
 
     #[test]

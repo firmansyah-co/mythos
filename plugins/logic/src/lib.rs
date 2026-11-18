@@ -230,8 +230,19 @@ fn check_bindings(entry: &ProgramEntry, symbols: &[Symbol]) -> Vec<String> {
         }
     };
     let mut good_not_bool = Vec::new();
+    let mut private = Vec::new();
+    // A tag written into a variable: only one the program owns, or an input of a block.
+    let mut written = |kind: &str, s: &Symbol, tag: &str| {
+        if s.private {
+            private.push(format!(
+                "{kind} {tag}: {} is inside a function block instance and is not one of its inputs, so only the block writes it",
+                s.path
+            ));
+        }
+    };
     for b in &entry.inputs {
         if let Some(s) = look("input", &b.variable, &b.tag) {
+            written("input", &s, &b.tag);
             if b.of == InputOf::Good && s.ty != "BOOL" {
                 good_not_bool.push(format!(
                     "input {}: {} takes whether the tag is GOOD, so it must be a BOOL",
@@ -244,9 +255,14 @@ fn check_bindings(entry: &ProgramEntry, symbols: &[Symbol]) -> Vec<String> {
         look("output", &b.variable, &b.tag);
     }
     for b in &entry.published {
-        look("published", &b.variable, &b.tag);
+        if let Some(s) = look("published", &b.variable, &b.tag) {
+            if b.writable {
+                written("setpoint", &s, &b.tag);
+            }
+        }
     }
     problems.extend(good_not_bool);
+    problems.extend(private);
     let mut seen = std::collections::BTreeSet::new();
     for o in &entry.outputs {
         if !seen.insert(o.tag.as_str()) {
@@ -276,6 +292,9 @@ fn variables(symbols: &[Symbol]) -> Vec<Value> {
                 "section": s.section,
                 "array": s.array,
                 "bindable": bindable(s),
+                // Bound only to be read (an output, a published tag that is not a setpoint):
+                // only its function block writes it.
+                "private": s.private,
             })
         })
         .collect()
@@ -846,6 +865,44 @@ mod tests {
                 "output external.P.P1.speed: note is of type STRING[8]; only BOOL, integer and real variables can be bound to a tag (a tag carries a number, never text)"
             ])
         );
+    }
+
+    #[test]
+    fn a_tag_never_writes_what_only_a_function_block_writes() {
+        let good = check(&entry(), TANK);
+        let vars = good["variables"].as_array().unwrap();
+        let private = |path: &str| {
+            vars.iter()
+                .find(|v| v["path"] == path)
+                .unwrap_or_else(|| panic!("{path} in {vars:?}"))["private"]
+                .clone()
+        };
+        // An input of the block is written from outside it; its outputs and its own variables
+        // are not.
+        assert_eq!(private("t.IN"), false);
+        assert_eq!(private("t.Q"), true);
+        assert_eq!(private("t.RUNNING"), true);
+        assert_eq!(private("level"), false);
+
+        let mut e = entry();
+        e.inputs[0].variable = "t.RUNNING".into();
+        e.inputs.push(
+            serde_json::from_value(json!({"variable": "t.IN", "tag": "external.P.X.run"})).unwrap(),
+        );
+        e.published[0].variable = "t.Q".into();
+        e.outputs[0].variable = "t.Q".into();
+        assert_eq!(
+            check(&e, TANK)["binding_problems"],
+            json!([
+                "input external.P.LT1.level: t.RUNNING is inside a function block instance and is not one of its inputs, so only the block writes it",
+                "setpoint internal.P.Tank.setpoint: t.Q is inside a function block instance and is not one of its inputs, so only the block writes it"
+            ]),
+            "read, as an output or a published tag that is not a setpoint, it is bound"
+        );
+        e.published[0].writable = false;
+        assert_eq!(check(&e, TANK)["binding_problems"], json!([
+            "input external.P.LT1.level: t.RUNNING is inside a function block instance and is not one of its inputs, so only the block writes it"
+        ]));
     }
 
     #[test]

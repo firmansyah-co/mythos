@@ -458,3 +458,38 @@ fn a_timer_whose_start_is_more_than_a_time_can_hold_before_the_clock_is_done() {
     assert_eq!(r.int("t.ET"), 1_000 * MS);
     assert!(r.bool("t.Q"));
 }
+
+/// The symbol table says which members of a block only the block writes (IEC 61131-3 ed. 3
+/// §6.6.3.2, Figure 13): its outputs and its own variables, not its inputs. A host binds a tag
+/// to write only what is not private.
+#[test]
+fn a_blocks_outputs_and_internal_variables_are_private_and_its_inputs_are_not() {
+    let src = "PROGRAM P\nVAR_INPUT x : INT; END_VAR\nVAR t : TON; c : CTU; END_VAR\n  t(IN := TRUE, PT := T#1s);\n  c(CU := t.Q, PV := 3);\nEND_PROGRAM\n";
+    let compiled = compile(src, &TargetProfile::pc()).unwrap_or_else(|d| panic!("{d:?}"));
+    let private = |path: &str| {
+        compiled
+            .symbols
+            .iter()
+            .find(|s| s.path == path)
+            .unwrap_or_else(|| panic!("{path}"))
+            .private
+    };
+    for path in ["x", "t.IN", "t.PT", "c.CU", "c.R", "c.PV"] {
+        assert!(!private(path), "{path}");
+    }
+    for path in ["t.Q", "t.ET", "t.RUNNING", "t.START", "c.Q", "c.CV"] {
+        assert!(private(path), "{path}");
+    }
+    // As the runtime reads it: `"private": true`, and no key at all when it is not.
+    let json = serde_json::to_value(&compiled.symbols).unwrap();
+    let of = |path: &str| {
+        json.as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["path"] == path)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(of("t.ET")["private"], serde_json::json!(true));
+    assert!(of("t.IN").get("private").is_none(), "{}", of("t.IN"));
+}
