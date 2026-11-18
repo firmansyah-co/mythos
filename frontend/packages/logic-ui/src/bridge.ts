@@ -201,15 +201,44 @@ interface RuntimesConfig {
   instances: Array<{ id: string } & Record<string, unknown>>;
 }
 
+/** A variable that did not carry over from the running version, and why. */
+export interface NotCarried {
+  variable: string;
+  why: string;
+}
+
+/**
+ * How a runtime a load started began (ADR-013 §2.5): `online`, it took over the running
+ * version's variables and scans on; `warm`, its RETAIN variables took the values kept for them
+ * and every other its initial value; `cold`, every variable its initial value; `unknown`, its
+ * module took the running version's values and does not say which.
+ */
+export interface RuntimeLoad {
+  runtime: string;
+  start: 'online' | 'warm' | 'cold' | 'unknown';
+  /** Why it was not changed online, when it was not. */
+  why: string | null;
+  /** Changed online: how many variables carried over. */
+  carried: number | null;
+  /** Changed online: the running version's variables it did not take. */
+  dropped: NotCarried[];
+  /** Changed online: its variables that took no value of the running version. */
+  initialized: NotCarried[];
+}
+
 /** What saving a project's runtimes answers. */
 export interface ApplyAnswer {
   applied: boolean;
-  /** `failed`: what did not start, as `[connection id, why]`; a runtime's id is `runtime:<id>`. */
+  /**
+   * `failed`: what did not start, as `[connection id, why]`; a runtime's id is `runtime:<id>`.
+   * `runtimes`: how each runtime it started began.
+   */
   changes?: {
     started?: string[];
     stopped?: string[];
     kept?: string[];
     failed?: Array<[string, string]>;
+    runtimes?: RuntimeLoad[];
   } | null;
   [key: string]: unknown;
 }
@@ -267,17 +296,19 @@ export const api = {
   /**
    * Put `instance` into the project's runtimes in place of the one with its id, or take the
    * one called `id` out when `instance` is `null`. Every other instance is sent back as it was
-   * read.
+   * read. With `cold`, what this starts starts from its initial values, RETAIN ones included;
+   * otherwise a new version of a running program is changed online.
    */
   setInstance: async (
     projectId: string,
     id: string,
-    instance: ({ id: string } & Record<string, unknown>) | null
+    instance: ({ id: string } & Record<string, unknown>) | null,
+    cold = false
   ): Promise<ApplyAnswer> => {
     const saved = await host().api<{ config: RuntimesConfig | null }>(runtimesOf(projectId));
     const others = (saved.config?.instances ?? []).filter((other) => other.id !== id);
     return host().api<ApplyAnswer>(
-      runtimesOf(projectId),
+      `${runtimesOf(projectId)}${cold ? '?start=cold' : ''}`,
       json('PUT', { instances: instance ? [...others, instance] : others })
     );
   },

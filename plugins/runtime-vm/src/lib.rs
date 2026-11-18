@@ -26,9 +26,9 @@ use mythos_logic_vm::{
     Value as VmValue,
 };
 use mythos_module::protocol::{
-    ExchangeReply, ForcedValue, InputOf, ModuleKind, ModuleManifest, RetainedValue, RuntimeMode,
-    RuntimeProgram, RuntimeState, WatchReply, WatchedValue, WireInput, WireOutput, WireSample,
-    PROTOCOL_VERSION,
+    CarryReport, ExchangeReply, ForcedValue, InputOf, ModuleKind, ModuleManifest, NotCarried,
+    ProgramVariables, RetainedValue, RuntimeMode, RuntimeProgram, RuntimeState, WatchReply,
+    WatchedValue, WireInput, WireOutput, WireSample, PROTOCOL_VERSION,
 };
 use mythos_module::RuntimeEngine;
 use mythos_plugin_sdk::{
@@ -92,6 +92,18 @@ struct StartConfig {
     /// its first start into RUN, a warm restart.
     #[serde(default)]
     retained: Vec<RetainedValue>,
+    /// The variables of the program this one replaces, as it was running (an online change):
+    /// taken after the initial and the RETAIN values, before the first scan.
+    #[serde(default)]
+    carried: Option<ProgramVariables>,
+}
+
+/// A checked configuration: what to load, and how to start it.
+struct Loaded {
+    plan: Plan,
+    run: bool,
+    retained: Vec<RetainedValue>,
+    carried: Option<ProgramVariables>,
 }
 
 /// One entry of the compiler's symbol table; only what binding and watching need.
@@ -271,11 +283,12 @@ fn locate(plan: &Plan, variable: &str) -> Result<(u32, Shape, String), String> {
 }
 
 /// Check a configuration and work out where everything is. Starts nothing.
-fn plan(config: &Value) -> Result<(Plan, bool, Vec<RetainedValue>), PluginError> {
+fn plan(config: &Value) -> Result<Loaded, PluginError> {
     let StartConfig {
         program,
         run,
         retained,
+        carried,
     } = serde_json::from_value(config.clone())
         .map_err(|e| invalid(format!("not a runtime program: {e}")))?;
     if program.interval_ms == 0 {
@@ -369,8 +382,8 @@ fn plan(config: &Value) -> Result<(Plan, bool, Vec<RetainedValue>), PluginError>
         }
         retain.push((s.path.clone(), s.ty.clone(), s.offset, s.size));
     }
-    Ok((
-        Plan {
+    Ok(Loaded {
+        plan: Plan {
             program,
             bytes,
             memory_size,
@@ -385,7 +398,8 @@ fn plan(config: &Value) -> Result<(Plan, bool, Vec<RetainedValue>), PluginError>
         },
         run,
         retained,
-    ))
+        carried,
+    })
 }
 
 /// The values of the program's RETAIN variables in `memory`.
@@ -435,6 +449,123 @@ fn restore(plan: &Plan, memory: &mut [u8], values: &[RetainedValue]) -> Vec<Stri
         }
     }
     refused
+}
+
+/// The program's variables in the order they lie in memory: every symbol whose bytes are
+/// inside it.
+fn variables_in_memory(plan: &Plan) -> Vec<&SymbolEntry> {
+    let mut all: Vec<&SymbolEntry> = plan
+        .symbols
+        .values()
+        .filter(|s| s.size > 0 && s.offset as usize + s.size as usize <= plan.memory_size)
+        .collect();
+    all.sort_by(|a, b| (a.offset, &a.path).cmp(&(b.offset, &b.path)));
+    all
+}
+
+/// The values of every variable in `memory`, as an online change carries them.
+fn all_values(plan: &Plan, memory: &[u8]) -> Vec<RetainedValue> {
+    variables_in_memory(plan)
+        .into_iter()
+        .map(|s| RetainedValue {
+            path: s.path.clone(),
+            ty: s.ty.clone(),
+            bytes: hex::encode(&memory[s.offset as usize..(s.offset + s.size) as usize]),
+        })
+        .collect()
+}
+
+/// Whether a variable's value carries over as its bytes: one value, a STRING, or an array of
+/// those. An array of structures or of function block instances does not: its type names its
+/// elements but not their layout, which a new build may have changed under the same name.
+fn carries_as_bytes(entry: &SymbolEntry) -> bool {
+    match &entry.array {
+        None => watchable(&entry.ty).is_some(),
+        Some(array) => watchable(&array.element_type).is_some(),
+    }
+}
+
+/// Why the running program's `value` cannot be taken into `entry`, this build's variable of
+/// the same path; `None` when it can.
+fn not_carried_because(
+    entry: &SymbolEntry,
+    value: &RetainedValue,
+    memory_size: usize,
+) -> Option<String> {
+    if entry.ty != value.ty {
+        return Some(format!("its type is {} now, not {}", entry.ty, value.ty));
+    }
+    if !carries_as_bytes(entry) {
+        return Some(format!(
+            "an {} is not carried: the layout of its elements is not compared, and may have changed under the same name",
+            entry.ty
+        ));
+    }
+    if entry.size == 0 || entry.offset as usize + entry.size as usize > memory_size {
+        return Some("it lies outside the program's memory".to_string());
+    }
+    match hex::decode(&value.bytes) {
+        Ok(bytes) if bytes.len() == entry.size as usize => None,
+        _ => Some(format!(
+            "the value given is not the {} bytes of a {}",
+            entry.size, entry.ty
+        )),
+    }
+}
+
+/// Put the running program's values into this build's variables, over their initial and RETAIN
+/// values (an online change): each only into a variable of the same path, type and size, and
+/// what is not taken is said, never guessed at. Every variable of this build that takes no
+/// value keeps the one it has.
+fn carry(plan: &Plan, memory: &mut [u8], values: &[RetainedValue]) -> CarryReport {
+    let mut report = CarryReport {
+        given: true,
+        ..CarryReport::default()
+    };
+    // Why each path of the running program was not taken, by path in lower case.
+    let mut refused: HashMap<String, String> = HashMap::new();
+    let mut taken: HashSet<String> = HashSet::new();
+    for value in values {
+        let key = value.path.to_ascii_lowercase();
+        let why = if taken.contains(&key) || refused.contains_key(&key) {
+            Some("it was given more than once".to_string())
+        } else {
+            match plan.symbols.get(&key) {
+                None => Some("this build has no variable of that name".to_string()),
+                Some(entry) => not_carried_because(entry, value, plan.memory_size),
+            }
+        };
+        match why {
+            None => {
+                let entry = &plan.symbols[&key];
+                let bytes = hex::decode(&value.bytes).unwrap_or_default();
+                let at = entry.offset as usize;
+                memory[at..at + bytes.len()].copy_from_slice(&bytes);
+                report.carried += 1;
+                taken.insert(key);
+            }
+            Some(why) => {
+                refused.entry(key).or_insert_with(|| why.clone());
+                report.dropped.push(NotCarried {
+                    variable: value.path.clone(),
+                    why,
+                });
+            }
+        }
+    }
+    for entry in variables_in_memory(plan) {
+        let key = entry.path.to_ascii_lowercase();
+        if taken.contains(&key) {
+            continue;
+        }
+        report.initialized.push(NotCarried {
+            variable: entry.path.clone(),
+            why: refused
+                .remove(&key)
+                .unwrap_or_else(|| "the running program had no variable of that name".to_string()),
+        });
+    }
+    report
 }
 
 fn declarations(plan: &Plan) -> Vec<TagDeclaration> {
@@ -643,6 +774,8 @@ struct Live {
     ran: bool,
     /// Until then, the RETAIN values the host gave with the program, for its first warm start.
     pending: Vec<RetainedValue>,
+    /// What it did with the running program's values it was started with, if any.
+    carry: CarryReport,
 }
 
 impl Live {
@@ -893,7 +1026,12 @@ impl MythosPlugin for VmEngine {
     /// Load the program, and put it in RUN if the configuration says so.
     async fn start(&mut self, _ctx: &PluginContext, config: &Value) -> Result<(), PluginError> {
         self.halt();
-        let (plan, run, retained) = plan(config)?;
+        let Loaded {
+            plan,
+            run,
+            retained,
+            carried,
+        } = plan(config)?;
         let mut live = Live {
             memory: vec![0u8; plan.memory_size],
             mode: RuntimeMode::Stop,
@@ -909,10 +1047,36 @@ impl MythosPlugin for VmEngine {
             beat: None,
             ran: false,
             pending: retained,
+            carry: CarryReport::default(),
         };
         if run {
             let retained = std::mem::take(&mut live.pending);
             live.cold_run(&plan, Some(retained))?;
+            // An online change: the running program's values over the initial and RETAIN ones,
+            // and its clock going on from where it was, before the first scan.
+            if let Some(carried) = &carried {
+                live.carry = carry(&plan, &mut live.memory, &carried.values);
+                let clock = Duration::from_nanos(carried.clock_ns.max(0) as u64);
+                if let Some(since) = Instant::now().checked_sub(clock) {
+                    live.since = since;
+                }
+            }
+        } else if let Some(carried) = &carried {
+            // A program loaded in STOP is not changed online: it starts when it is put in RUN,
+            // from its initial values and its RETAIN ones.
+            live.carry = CarryReport {
+                given: true,
+                carried: 0,
+                dropped: carried
+                    .values
+                    .iter()
+                    .map(|v| NotCarried {
+                        variable: v.path.clone(),
+                        why: "the program was loaded in STOP".to_string(),
+                    })
+                    .collect(),
+                initialized: Vec::new(),
+            };
         }
         let plan = Arc::new(plan);
         let live = Arc::new(Mutex::new(live));
@@ -949,7 +1113,7 @@ impl MythosPlugin for VmEngine {
 #[async_trait]
 impl ProtocolDriver for VmEngine {
     async fn describe_config(&self, config: &Value) -> Result<Vec<TagDeclaration>, PluginError> {
-        Ok(declarations(&plan(config)?.0))
+        Ok(declarations(&plan(config)?.plan))
     }
 
     fn declared_tags(&self) -> Vec<TagDeclaration> {
@@ -1157,6 +1321,27 @@ impl RuntimeEngine for VmEngine {
         })
     }
 
+    /// Every variable's value now, and the clock, under the lock a scan holds: all of one scan.
+    /// Only in RUN: a program that is not running has no running state to carry on.
+    async fn variables(&mut self, _ctx: &PluginContext) -> Result<ProgramVariables, PluginError> {
+        let running = self.running()?;
+        let l = lock(&running.live);
+        if l.mode != RuntimeMode::Run {
+            return Err(PluginError::RuntimeError(
+                "the program is not in RUN, so it has no running values to carry on".to_string(),
+            ));
+        }
+        Ok(ProgramVariables {
+            clock_ns: l.since.elapsed().as_nanos().min(i64::MAX as u128) as i64,
+            values: all_values(&running.plan, &l.memory),
+        })
+    }
+
+    /// What it did with the running program's values it was started with.
+    async fn carried(&mut self, _ctx: &PluginContext) -> Result<CarryReport, PluginError> {
+        Ok(lock(&self.running()?.live).carry.clone())
+    }
+
     /// Hold a variable at a value. Only in RUN: a program that is not running has nothing to
     /// hold, and leaving RUN releases every force, so none outlives the run it was set in.
     async fn force(
@@ -1277,6 +1462,7 @@ mod tests {
             beat,
             ran: true,
             pending: Vec::new(),
+            carry: CarryReport::default(),
         }
     }
 
@@ -1288,7 +1474,7 @@ mod tests {
             "name": "P", "version": "1", "interval_ms": 10,
             "code": hex::encode(bytes), "symbols": symbols,
         }}))
-        .map(|(plan, ..)| plan)
+        .map(|loaded| loaded.plan)
     }
 
     #[test]
@@ -1586,6 +1772,200 @@ mod tests {
         assert!(subscripts("hist[]").is_err());
         assert!(subscripts("hist[1.5]").is_err());
         assert!(subscripts("hist[2]x").is_err());
+    }
+
+    fn value(path: &str, ty: &str, bytes: &str) -> RetainedValue {
+        RetainedValue {
+            path: path.into(),
+            ty: ty.into(),
+            bytes: bytes.into(),
+        }
+    }
+
+    fn not_carried(variable: &str, why: &str) -> NotCarried {
+        NotCarried {
+            variable: variable.into(),
+            why: why.into(),
+        }
+    }
+
+    /// A new build of a program, as an online change finds it: a RETAIN and a plain counter
+    /// kept, one variable added, one whose type changed, an array of numbers, an array of
+    /// instances, and one variable the old build sends too few bytes for.
+    fn new_build() -> Plan {
+        let plan = retaining(json!([
+            {"path": "Total", "type": "DINT", "offset": 0, "size": 4, "retain": true},
+            {"path": "n", "type": "DINT", "offset": 4, "size": 4},
+            {"path": "added", "type": "INT", "offset": 8, "size": 2},
+            {"path": "kind", "type": "INT", "offset": 10, "size": 2},
+            {"path": "pair", "type": "ARRAY [0..1] OF INT", "offset": 12, "size": 4,
+             "array": {"element_type": "INT", "element_size": 2, "bounds": [[0, 1]]}},
+            {"path": "blocks", "type": "ARRAY [0..0] OF Pump", "offset": 16, "size": 4,
+             "array": {"element_type": "Pump", "element_size": 4, "bounds": [[0, 0]]}},
+            {"path": "w", "type": "INT", "offset": 20, "size": 2},
+        ]))
+        .unwrap();
+        assert!(plan.memory_size >= 22, "the fixture's memory holds them");
+        plan
+    }
+
+    #[test]
+    fn a_running_value_is_carried_only_into_a_variable_of_the_same_name_type_and_size() {
+        let plan = new_build();
+        let mut memory = vec![0xAAu8; plan.memory_size];
+        let report = carry(
+            &plan,
+            &mut memory,
+            &[
+                value("total", "DINT", "d2040000"),
+                value("n", "DINT", "07000000"),
+                value("removed", "DINT", "01000000"),
+                value("kind", "DINT", "05000000"),
+                value("pair", "ARRAY [0..1] OF INT", "01000200"),
+                value("blocks", "ARRAY [0..0] OF Pump", "09090909"),
+                value("w", "INT", "01"),
+            ],
+        );
+        // Taken: the RETAIN counter and the plain one alike, and the array of numbers. The
+        // name's case does not count.
+        assert_eq!(&memory[0..4], &1234i32.to_le_bytes());
+        assert_eq!(&memory[4..8], &7i32.to_le_bytes());
+        assert_eq!(&memory[12..16], &[1, 0, 2, 0]);
+        // Not taken: what this build had before the values came, untouched.
+        assert_eq!(&memory[8..12], &[0xAA; 4], "added and kind keep theirs");
+        assert_eq!(&memory[16..22], &[0xAA; 6], "blocks and w keep theirs");
+        assert_eq!(report.carried, 3);
+        assert!(report.given);
+        let blocks = "an ARRAY [0..0] OF Pump is not carried: the layout of its elements is \
+                      not compared, and may have changed under the same name";
+        assert_eq!(
+            report.dropped,
+            vec![
+                not_carried("removed", "this build has no variable of that name"),
+                not_carried("kind", "its type is INT now, not DINT"),
+                not_carried("blocks", blocks),
+                not_carried("w", "the value given is not the 2 bytes of a INT"),
+            ]
+        );
+        // In the order they lie in memory, each with why.
+        assert_eq!(
+            report.initialized,
+            vec![
+                not_carried("added", "the running program had no variable of that name"),
+                not_carried("kind", "its type is INT now, not DINT"),
+                not_carried("blocks", blocks),
+                not_carried("w", "the value given is not the 2 bytes of a INT"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_value_given_twice_is_taken_once() {
+        let plan = new_build();
+        let mut memory = vec![0u8; plan.memory_size];
+        let report = carry(
+            &plan,
+            &mut memory,
+            &[
+                value("n", "DINT", "07000000"),
+                value("N", "DINT", "08000000"),
+            ],
+        );
+        assert_eq!(&memory[4..8], &7i32.to_le_bytes());
+        assert_eq!(report.carried, 1);
+        assert_eq!(
+            report.dropped,
+            vec![not_carried("N", "it was given more than once")]
+        );
+    }
+
+    #[test]
+    fn every_variable_is_given_in_the_order_it_lies_in_memory() {
+        let plan = new_build();
+        let mut memory = vec![0u8; plan.memory_size];
+        memory[4..8].copy_from_slice(&7i32.to_le_bytes());
+        let values = all_values(&plan, &memory);
+        let paths: Vec<&str> = values.iter().map(|v| v.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            ["Total", "n", "added", "kind", "pair", "blocks", "w"]
+        );
+        assert_eq!(values[1], value("n", "DINT", "07000000"));
+        // What one build gives, the same build takes whole.
+        let mut fresh = vec![0xFFu8; plan.memory_size];
+        let report = carry(&plan, &mut fresh, &values);
+        assert_eq!(report.carried, 6, "all but the array of instances");
+        assert_eq!(&fresh[..16], &memory[..16]);
+    }
+
+    /// The program of [`new_build`] in the engine: started into RUN with the running one's
+    /// values, it holds them before any scan (it is not fed, so none runs), its clock goes on
+    /// from the running one's, and it says what it took. Loaded in STOP, it takes none.
+    #[test]
+    fn a_program_started_with_running_values_takes_them_before_its_first_scan() {
+        let bytes = include_bytes!(
+            "../../../crates/mythos-logic-compiler/tests/fixtures/format1/integers_and_control.mlbc"
+        );
+        let symbols = json!([
+            {"path": "Total", "type": "DINT", "offset": 0, "size": 4, "retain": true},
+            {"path": "n", "type": "DINT", "offset": 4, "size": 4},
+        ]);
+        let config = |run: bool| {
+            json!({
+                "program": {
+                    "name": "P", "version": "2", "interval_ms": 10,
+                    "code": hex::encode(bytes), "symbols": symbols,
+                },
+                "run": run,
+                "retained": [value("Total", "DINT", "01000000")],
+                "carried": {
+                    "clock_ns": 3_600_000_000_000i64,
+                    "values": [value("Total", "DINT", "d2040000"), value("n", "DINT", "07000000")],
+                },
+            })
+        };
+        let ctx = PluginContext::new("io.runtime:p", HashSet::new(), String::new());
+
+        let mut engine = VmEngine::default();
+        finish(engine.start(&ctx, &config(true))).unwrap();
+        let now = finish(engine.variables(&ctx)).unwrap();
+        assert_eq!(
+            &now.values[..2],
+            &[
+                value("Total", "DINT", "d2040000"),
+                value("n", "DINT", "07000000")
+            ],
+            "the running values, over the RETAIN one kept"
+        );
+        assert!(
+            now.clock_ns >= 3_600_000_000_000,
+            "the clock goes on from an hour, not from zero: {}",
+            now.clock_ns
+        );
+        let report = finish(engine.carried(&ctx)).unwrap();
+        assert_eq!((report.given, report.carried), (true, 2));
+        assert!(report.dropped.is_empty() && report.initialized.is_empty());
+
+        let mut stopped = VmEngine::default();
+        finish(stopped.start(&ctx, &config(false))).unwrap();
+        assert!(
+            finish(stopped.variables(&ctx)).is_err(),
+            "a program in STOP gives no running values"
+        );
+        let report = finish(stopped.carried(&ctx)).unwrap();
+        assert_eq!(report.carried, 0);
+        assert_eq!(
+            report.dropped,
+            vec![
+                not_carried("Total", "the program was loaded in STOP"),
+                not_carried("n", "the program was loaded in STOP"),
+            ]
+        );
+        // Put in RUN, it is a warm restart: the RETAIN value kept, nothing carried.
+        finish(stopped.set_mode(&ctx, true, false)).unwrap();
+        let now = finish(stopped.variables(&ctx)).unwrap();
+        assert_eq!(now.values[0], value("Total", "DINT", "01000000"));
+        assert!(now.clock_ns < 3_600_000_000_000);
     }
 
     #[test]

@@ -25,8 +25,8 @@ use crate::io::{ConnectionConfig, IoStatusHandle, WriteError};
 use crate::storage::ControllerStorage;
 use crate::tag::TagCatalog;
 use mythos_module::protocol::{
-    Call, ExchangeReply, ForcedValue, RetainedValue, RuntimeMode, RuntimeProgram, RuntimeState,
-    WatchReply, WireInput,
+    Call, CarryReport, ExchangeReply, ForcedValue, NotCarried, ProgramVariables, RetainedValue,
+    RuntimeMode, RuntimeProgram, RuntimeState, WatchReply, WireInput,
 };
 use mythos_module::{ModuleBinary, ProcessDriver};
 use mythos_pal::PlatformShm;
@@ -62,6 +62,9 @@ pub const WATCH_LIMIT: usize = 256;
 const RETAIN_EVERY: Duration = Duration::from_secs(2);
 /// The connection's cycle deadline: one exchange and the writes it leads to.
 const CYCLE_TIMEOUT_MS: u64 = 10_000;
+/// How long a new build waits for the running one to give its variables, which it does at its
+/// next exchange (every 200 ms at the most).
+const CARRY_WAIT: Duration = Duration::from_millis(2_500);
 
 pub fn is_runtime_connection(id: &str) -> bool {
     id.starts_with(CONNECTION_PREFIX)
@@ -351,6 +354,60 @@ pub enum ForceRefusal {
 /// What a force or a release came to.
 pub type ForceAnswer = Result<RuntimeState, ForceRefusal>;
 
+/// How the variables of a program a load started began (ADR-013 §2.5, online change).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadStart {
+    /// Changed online: it took over the variables of the running build it replaced and scans
+    /// on from them, without a restart.
+    Online,
+    /// As at a warm restart: its RETAIN variables took the values kept for them, every other
+    /// variable its initial value.
+    Warm,
+    /// Cold: every variable took its initial value, RETAIN ones included.
+    Cold,
+    /// Its module was given the running build's variables and does not say what it took.
+    Unknown,
+}
+
+/// What a load did to one runtime: how it started, and what did not carry over.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuntimeLoad {
+    pub runtime: String,
+    pub start: LoadStart,
+    /// Why it was not changed online, when it was not.
+    pub why: Option<String>,
+    /// Changed online: how many of its variables took the running build's value.
+    pub carried: Option<u64>,
+    /// Changed online: the running build's variables it did not take, and why (gone, or of
+    /// another type or size).
+    pub dropped: Vec<NotCarried>,
+    /// Changed online: its variables that took no value of the running build, and why (new,
+    /// or of another type or size): each its initial value, or a RETAIN one its kept value.
+    pub initialized: Vec<NotCarried>,
+}
+
+impl RuntimeLoad {
+    fn not_online(runtime: &str, start: LoadStart, why: String) -> Self {
+        Self {
+            runtime: runtime.to_string(),
+            start,
+            why: Some(why),
+            carried: None,
+            dropped: Vec::new(),
+            initialized: Vec::new(),
+        }
+    }
+}
+
+/// What a new build asked of the running one: its variables, if it runs this program in this
+/// module.
+struct PendingCarry {
+    program: String,
+    module: String,
+    reply: oneshot::Sender<Result<ProgramVariables, String>>,
+}
+
 /// A force or a release waiting for the instance's next exchange.
 struct PendingForce {
     ask: ForceAsk,
@@ -380,6 +437,12 @@ struct StatesInner {
     watches: HashMap<String, Watch>,
     /// Forces and releases waiting for the instance's next exchange, by instance id.
     forcing: HashMap<String, Vec<PendingForce>>,
+    /// Asks of a new build for the variables of the running one, by instance id.
+    carrying: HashMap<String, Vec<PendingCarry>>,
+    /// Whether the load under way starts its programs cold.
+    cold_load: bool,
+    /// What the load under way did to each runtime it started.
+    loads: Vec<RuntimeLoad>,
     /// Woken whenever a watch is answered.
     answered: Arc<Notify>,
 }
@@ -501,6 +564,77 @@ impl RuntimeStates {
             .collect()
     }
 
+    /// Ask the running instance `id` for its variables at its next exchange, for a new build of
+    /// `program` in `module` to carry on from. `None` when no instance of that id is loaded.
+    fn ask_variables(
+        &self,
+        id: &str,
+        program: &str,
+        module: &str,
+    ) -> Option<oneshot::Receiver<Result<ProgramVariables, String>>> {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        if !inner.statuses.contains_key(id) {
+            return None;
+        }
+        let (reply, answer) = oneshot::channel();
+        inner
+            .carrying
+            .entry(id.to_string())
+            .or_default()
+            .push(PendingCarry {
+                program: program.to_string(),
+                module: module.to_string(),
+                reply,
+            });
+        Some(answer)
+    }
+
+    /// The asks for the instance's variables still waited for.
+    fn carrying_wanted(&self, id: &str) -> Vec<PendingCarry> {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        inner
+            .carrying
+            .remove(id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| !p.reply.is_closed())
+            .collect()
+    }
+
+    /// A load begins: whether it starts its programs cold, and nothing recorded yet.
+    pub(crate) fn begin_loads(&self, cold: bool) {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        inner.cold_load = cold;
+        inner.loads.clear();
+    }
+
+    /// A load ended: what it did to each runtime it started.
+    pub(crate) fn end_loads(&self) -> Vec<RuntimeLoad> {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        inner.cold_load = false;
+        std::mem::take(&mut inner.loads)
+    }
+
+    fn cold_load(&self) -> bool {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).cold_load
+    }
+
+    fn record_load(&self, load: RuntimeLoad) {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        inner.loads.retain(|l| l.runtime != load.runtime);
+        inner.loads.push(load);
+    }
+
+    /// Whether a newer driver reports for the instance: a replacement has taken it over.
+    fn replaced(&self, id: &str, generation: u64) -> bool {
+        self.0
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .statuses
+            .get(id)
+            .is_some_and(|(g, _)| *g != generation)
+    }
+
     /// What the instance's module last said of exactly these variables, and how long ago.
     /// `None`: nothing yet, or the instance is gone.
     pub fn watched(
@@ -570,6 +704,11 @@ impl RuntimeStates {
             inner.watches.remove(id);
             for pending in inner.forcing.remove(id).unwrap_or_default() {
                 let _ = pending.reply.send(Err(ForceRefusal::Unloaded));
+            }
+            for pending in inner.carrying.remove(id).unwrap_or_default() {
+                let _ = pending
+                    .reply
+                    .send(Err("the running build was unloaded".to_string()));
             }
             // Whoever waits for its values is told now, not at their deadline.
             inner.answered.notify_waiters();
@@ -744,6 +883,118 @@ impl RuntimeDriver {
                 self.kept = Some(values);
             }
             Err(e) => tracing::error!("the RETAIN values were not kept in {}: {e}", path.display()),
+        }
+    }
+
+    /// The variables of the running build of `instance`, for it to carry on from (an online
+    /// change), or why there are none: no build of it is loaded, the running one is another
+    /// program or in another module, it is not in RUN, or it does not answer. Asked at the
+    /// running one's next exchange.
+    async fn running_variables(
+        &self,
+        instance: &RuntimeInstance,
+    ) -> Result<(ProgramVariables, Instant), String> {
+        let Some(answer) =
+            self.env
+                .states
+                .ask_variables(&instance.id, &instance.program.name, &self.module)
+        else {
+            return Err("no build of it was loaded".to_string());
+        };
+        match tokio::time::timeout(CARRY_WAIT, answer).await {
+            Ok(Ok(Ok(variables))) => Ok((variables, Instant::now())),
+            Ok(Ok(Err(why))) => Err(why),
+            Ok(Err(_)) => Err("the running build was unloaded before it answered".to_string()),
+            Err(_) => Err(format!(
+                "the running build did not give its variables within {} ms",
+                CARRY_WAIT.as_millis()
+            )),
+        }
+    }
+
+    /// What the module says it took of the running build's variables it was started with. A
+    /// module that does not say is not claimed to have changed online.
+    async fn what_it_carried(&mut self, id: &str) -> RuntimeLoad {
+        let answer = self
+            .process
+            .call(Call::Carried, EXCHANGE_DEADLINE)
+            .await
+            .map_err(module_reason)
+            .and_then(|v| {
+                serde_json::from_value::<CarryReport>(v).map_err(|e| {
+                    format!("its module answered for what it carried with something else: {e}")
+                })
+            });
+        match answer {
+            Ok(report) if report.given => RuntimeLoad {
+                runtime: id.to_string(),
+                start: LoadStart::Online,
+                why: None,
+                carried: Some(report.carried),
+                dropped: report.dropped,
+                initialized: report.initialized,
+            },
+            Ok(_) => RuntimeLoad::not_online(
+                id,
+                LoadStart::Unknown,
+                "its module was given the running build's variables and says it was given none"
+                    .to_string(),
+            ),
+            Err(why) => RuntimeLoad::not_online(
+                id,
+                LoadStart::Unknown,
+                format!(
+                    "its module does not say what it took of the running build's variables: {why}"
+                ),
+            ),
+        }
+    }
+
+    /// Answer a new build's asks for this one's variables: only for a build of the same
+    /// program in the same module, and only while this one is in RUN and nobody asked it to
+    /// stop.
+    async fn give_variables(&mut self, id: &str) {
+        let asks = self.env.states.carrying_wanted(id);
+        if asks.is_empty() {
+            return;
+        }
+        let running = self
+            .last
+            .as_ref()
+            .is_some_and(|s| s.mode == RuntimeMode::Run)
+            && self.env.states.wanted(id) != Some(false);
+        let program = self
+            .instance
+            .as_ref()
+            .map(|i| i.program.name.clone())
+            .unwrap_or_default();
+        for ask in asks {
+            let answer = if ask.program != program {
+                Err(format!(
+                    "the program running was '{program}', not '{}'",
+                    ask.program
+                ))
+            } else if ask.module != self.module {
+                Err(format!(
+                    "it ran in the runtime module '{}', not '{}'",
+                    self.module, ask.module
+                ))
+            } else if !running {
+                Err("the running build was not in RUN".to_string())
+            } else {
+                match self.process.call(Call::Variables, EXCHANGE_DEADLINE).await {
+                    Ok(v) => serde_json::from_value::<ProgramVariables>(v).map_err(|e| {
+                        format!(
+                            "the running build answered for its variables with something else: {e}"
+                        )
+                    }),
+                    Err(e) => Err(format!(
+                        "the running build did not give its variables: {}",
+                        module_reason(e)
+                    )),
+                }
+            };
+            let _ = ask.reply.send(answer);
         }
     }
 
@@ -937,13 +1188,29 @@ impl MythosPlugin for RuntimeDriver {
     /// Load the program into a module process, then claim its outputs.
     async fn start(&mut self, ctx: &PluginContext, config: &Value) -> Result<(), PluginError> {
         let instance = Self::parse(config)?;
-        // The values its RETAIN variables had when it last ran, kept by this server: a start
-        // into RUN is then a warm restart.
         let retain_file = self.env.retain.as_ref().and_then(|r| r.file(&instance.id));
-        let kept = retain_file
-            .as_deref()
-            .map(RetainStore::read)
-            .unwrap_or_default();
+        // How it starts (ADR-013 §2.5). Cold when the load asks for it. Changed online when it
+        // replaces a running build of the same program: it takes over that build's variables.
+        // Otherwise as at a warm restart: the values its RETAIN variables had when it last ran,
+        // kept by this server.
+        let cold = self.env.states.cold_load();
+        let kept = match (&retain_file, cold) {
+            (Some(path), false) => RetainStore::read(path),
+            _ => Vec::new(),
+        };
+        let carried = if cold {
+            Err((LoadStart::Cold, "a cold load was asked for".to_string()))
+        } else if !instance.run {
+            Err((
+                LoadStart::Warm,
+                "it is loaded in STOP, and starts as at a warm restart when it is put in RUN"
+                    .to_string(),
+            ))
+        } else {
+            self.running_variables(&instance)
+                .await
+                .map_err(|why| (LoadStart::Warm, why))
+        };
         let mut sent = config.clone();
         if let Value::Object(map) = &mut sent {
             map.insert(
@@ -951,11 +1218,33 @@ impl MythosPlugin for RuntimeDriver {
                 serde_json::to_value(&kept).unwrap_or(Value::Null),
             );
         }
-        self.process.start(ctx, &sent).await?;
+        let mut first = sent.clone();
+        if let (Ok((variables, read_at)), Value::Object(map)) = (&carried, &mut first) {
+            // Its clock goes on from the running build's, and the time since it was read.
+            let since = read_at.elapsed().as_nanos().min(i64::MAX as u128) as i64;
+            let carried = ProgramVariables {
+                clock_ns: variables.clock_ns.saturating_add(since),
+                values: variables.values.clone(),
+            };
+            map.insert(
+                "carried".to_string(),
+                serde_json::to_value(&carried).unwrap_or(Value::Null),
+            );
+        }
+        self.process.start(ctx, &first).await?;
+        // A process started again after a crash is a warm restart: it is never given the
+        // running build's values again, which would by then be old.
+        self.process.restart_with(sent.clone());
+        let load = match carried {
+            Err((start, why)) => RuntimeLoad::not_online(&instance.id, start, why),
+            Ok(_) => self.what_it_carried(&instance.id).await,
+        };
         self.retain_file = retain_file;
-        self.kept = Some(kept);
+        // After a cold load nothing is taken as kept, so its first exchange keeps its values in
+        // place of those of the build it replaced.
+        self.kept = (!cold).then_some(kept);
         self.sent = Some(sent);
-        self.retain_due = Instant::now() + RETAIN_EVERY;
+        self.retain_due = Instant::now();
         let outputs: Vec<String> = instance
             .program
             .outputs
@@ -980,14 +1269,22 @@ impl MythosPlugin for RuntimeDriver {
         self.reads = reads;
         self.instance = Some(instance);
         self.report("stop", Some("loaded; no exchange yet".to_string()));
+        self.env.states.record_load(load);
         Ok(())
     }
 
     /// Unload. The outputs still ours go to their safe values first; then the claim is given
     /// up and the process stopped.
     async fn stop(&mut self, ctx: &PluginContext) -> Result<(), PluginError> {
-        // What its RETAIN variables hold now is kept before the process goes.
-        self.keep_retained(true).await;
+        // What its RETAIN variables hold now is kept before the process goes, unless a new
+        // build has replaced it: the kept values are then that build's to write.
+        let replaced = self
+            .instance
+            .as_ref()
+            .is_some_and(|i| self.env.states.replaced(&i.id, self.generation));
+        if !replaced {
+            self.keep_retained(true).await;
+        }
         if self.instance.is_some() {
             self.safe.clear();
             self.make_safe().await;
@@ -1057,6 +1354,11 @@ impl ProtocolDriver for RuntimeDriver {
                         "the runtime's module does not answer: {e}"
                     ))));
                 }
+                for pending in self.env.states.carrying_wanted(&id) {
+                    let _ = pending.reply.send(Err(format!(
+                        "the running build's module does not answer: {e}"
+                    )));
+                }
                 if let Some(variables) = self.env.states.watch_wanted(&id) {
                     self.env.states.watch_answer(
                         &id,
@@ -1112,6 +1414,10 @@ impl ProtocolDriver for RuntimeDriver {
         // Its RETAIN values, kept when they changed: at once after a change of mode, so that a
         // stop keeps what it stopped with.
         self.keep_retained(changed).await;
+
+        // Its variables, for a new build of it about to replace it: after a mode change, so a
+        // program an engineer has just stopped gives none.
+        self.give_variables(&id).await;
 
         // What an engineer asked to force or release, in the order asked: after a mode change,
         // so a force asked after a stop is refused by a program that no longer runs.

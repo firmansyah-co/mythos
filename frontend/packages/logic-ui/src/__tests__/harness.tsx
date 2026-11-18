@@ -141,7 +141,7 @@ export function server(backend: Backend): Call[] {
           ? Response.json(backend.watch((body as { variables: string[] }).variables))
           : new Response('{"error":"the runtime\'s module does not answer"}', { status: 502, statusText: 'Bad Gateway' });
       }
-      if (/\/projects\/[^/]+\/runtimes$/.test(path)) {
+      if (/\/projects\/[^/]+\/runtimes(\?start=cold)?$/.test(path)) {
         if (method === 'GET') return Response.json({ config: backend.config ?? null });
         backend.config = body as Backend['config'];
         const applied = backend.applied ?? true;

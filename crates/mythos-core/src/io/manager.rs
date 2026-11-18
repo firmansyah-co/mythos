@@ -345,6 +345,12 @@ impl<S: PlatformShm + 'static> IoManager<S> {
     /// describing the result: the connections, or why there are none. Returns what changed, or
     /// `None` when no configuration is in effect.
     pub async fn reload(&self) -> Option<ApplyReport> {
+        self.reload_with(false).await
+    }
+
+    /// [`Self::reload`]; with `cold`, every runtime it starts or replaces starts cold: every
+    /// variable its initial value, RETAIN ones included, and none carried from a running build.
+    pub async fn reload_with(&self, cold: bool) -> Option<ApplyReport> {
         let mut running = self.running.lock().await;
 
         let off = self.field_io_off.read().unwrap().clone();
@@ -427,7 +433,7 @@ impl<S: PlatformShm + 'static> IoManager<S> {
         };
 
         let report = self
-            .apply_locked(&mut running, config, Some(path.display().to_string()))
+            .apply_locked(&mut running, config, Some(path.display().to_string()), cold)
             .await?;
         info!(
             "Field I/O for project '{}': kept {:?}, swapped {:?}, restarted {:?}, started {:?}, stopped {:?}, failed {:?}",
@@ -493,7 +499,7 @@ impl<S: PlatformShm + 'static> IoManager<S> {
         let mut running = self.running.lock().await;
         let applied = match running.config.clone() {
             Some((config, source)) if running.runtime.is_some() => {
-                self.apply_locked(&mut running, config, source).await
+                self.apply_locked(&mut running, config, source, false).await
             }
             _ => None,
         };
@@ -554,12 +560,31 @@ impl<S: PlatformShm + 'static> IoManager<S> {
         running: &mut Running,
         config: IoConfig,
         source: Option<String>,
+        cold: bool,
     ) -> Option<ApplyReport> {
         let registry = self.registry();
+        // How each runtime it starts begins is recorded as it starts, under this lock: no other
+        // load runs beside it.
+        self.runtime_env.states.begin_loads(cold);
+        let report = self.apply_runtime(running, config, source, &registry).await;
+        let loads = self.runtime_env.states.end_loads();
+        report.map(|mut report| {
+            report.runtimes = loads;
+            report
+        })
+    }
+
+    async fn apply_runtime(
+        &self,
+        running: &mut Running,
+        config: IoConfig,
+        source: Option<String>,
+        registry: &DriverRegistry,
+    ) -> Option<ApplyReport> {
         let report = match running.runtime.as_mut() {
             Some(runtime) => {
                 runtime
-                    .apply(config.clone(), source.clone(), &registry)
+                    .apply(config.clone(), source.clone(), registry)
                     .await
             }
             None => {
@@ -581,7 +606,7 @@ impl<S: PlatformShm + 'static> IoManager<S> {
                 let (runtime, report) = IoRuntime::start_with_report(
                     config.clone(),
                     source.clone(),
-                    &registry,
+                    registry,
                     Arc::clone(&self.catalog),
                     writer,
                     self.status.clone(),

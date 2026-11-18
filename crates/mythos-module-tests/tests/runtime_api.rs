@@ -972,11 +972,12 @@ async fn a_retain_variable_keeps_its_value_across_a_stop_and_a_new_process_and_a
         "n started again from 0: {n}, stopped at {stopped}"
     );
 
-    // The server keeps the value, and a new module process starts from it: loading the
-    // program again (another version) is a warm restart too.
+    // The server keeps the value. Loading another version of the program while it runs is an
+    // online change (C6b): both counters go on from the running values, neither restarts.
     let kept = rig
         .kept_when("a value past the one it stopped with", |t| t > stopped)
         .await;
+    let (total_before, n_before, _) = rig.counted().await;
     let (status, body) = rig
         .send(
             &rig.engineer,
@@ -995,12 +996,13 @@ async fn a_retain_variable_keeps_its_value_across_a_stop_and_a_new_process_and_a
         assert!(Instant::now() < deadline, "v2 never ran: {body}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert_eq!(body["changes"]["runtimes"][0]["start"], "online", "{body}");
     let (total, n) = rig
         .counted_when("v2 scans", |_, n, mode| mode == "run" && n > 0)
         .await;
     assert!(
-        total >= kept + n,
-        "v2 went on from what was kept ({kept}): {total}, n {n}"
+        total >= total_before && n >= n_before,
+        "v2 went on from the running values ({total_before}, {n_before}): {total}, n {n}"
     );
 
     // Its module process dies; the one started in its place takes the values kept last, not
@@ -1110,6 +1112,313 @@ async fn a_retain_variable_keeps_its_value_across_a_stop_and_a_new_process_and_a
         )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    rig.io.shutdown().await;
+}
+
+/// The counter of an online change, in three builds. v1 and v2 are the program `Counter`: a
+/// RETAIN counter `total`, a plain one `n`, an on-delay timer `t` timing an hour, and the
+/// output `speed`, 300 more than `n`, so it is never the safe value. v1 also has `old_only`;
+/// v2 has `added` in its place, starting at 42. `other_name` is v2 named `Tally`.
+fn changing(build: &str, version: &str) -> Value {
+    let (name, extra, step) = match build {
+        "v1" => ("Counter", "old_only : INT;", "old_only := old_only + 1;"),
+        "v2" => ("Counter", "added : INT := 42;", ""),
+        "other_name" => ("Tally", "added : INT := 42;", ""),
+        other => panic!("no build {other}"),
+    };
+    let source = format!(
+        "
+PROGRAM {name}
+VAR RETAIN total : DINT; END_VAR
+VAR n : DINT; t : TON; {extra} END_VAR
+VAR_OUTPUT speed : INT; END_VAR
+  total := total + 1;
+  n := n + 1;
+  {step}
+  t(IN := TRUE, PT := T#1h);
+  speed := 300 + DINT_TO_INT(n);
+END_PROGRAM
+"
+    );
+    let compiled = compile(&source, &TargetProfile::pc()).unwrap_or_else(|d| panic!("{d:?}"));
+    json!({"instances": [{
+        "id": "counter", "module": "vm", "run": true,
+        "program": {
+            "name": compiled.name, "version": version, "interval_ms": 20,
+            "code": hex::encode(&compiled.bytecode), "symbols": compiled.symbols,
+            "outputs": [{"variable": "speed", "tag": SPEED, "safe": SAFE_SPEED}],
+        }
+    }]})
+}
+
+impl Rig {
+    /// Variables of the counter as its last scan left them, by name, or why there is none.
+    async fn counter_values(&self, variables: &[&str]) -> Vec<Value> {
+        let (status, body) = self
+            .send(
+                &self.viewer,
+                "POST",
+                "/api/v1/runtimes/counter/watch",
+                Some(json!({ "variables": variables })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["value"].clone())
+            .collect()
+    }
+
+    /// Load `config`, sampling the speed register as often as it can from before the request
+    /// until `version` has run 20 scans: every value the device held through the swap.
+    async fn load_watching_the_output(
+        &self,
+        uri: &str,
+        config: Value,
+        version: &str,
+    ) -> ((StatusCode, Value), Vec<Option<u16>>) {
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let sampler = async {
+            let mut seen = Vec::new();
+            while !done.load(Ordering::SeqCst) {
+                seen.push(self.sim.holding(1).await);
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            seen
+        };
+        let load = async {
+            let answer = self.send(&self.engineer, "PUT", uri, Some(config)).await;
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                let (_, body) = self
+                    .send(&self.viewer, "GET", "/api/v1/runtimes", None)
+                    .await;
+                let runtime = &body["runtimes"][0];
+                if runtime["version"] == version
+                    && runtime["mode"] == "run"
+                    && runtime["scans"].as_u64() > Some(20)
+                {
+                    break;
+                }
+                if Instant::now() > deadline {
+                    done.store(true, Ordering::SeqCst);
+                    panic!("{version} never ran 20 scans: {body}; the load answered {answer:?}");
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            done.store(true, Ordering::SeqCst);
+            answer
+        };
+        tokio::join!(load, sampler)
+    }
+}
+
+#[tokio::test]
+async fn a_new_build_of_a_running_program_is_changed_online_and_a_cold_load_or_another_program_starts_as_before(
+) {
+    const MS: i64 = 1_000_000;
+    let rig = rig().await;
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/io",
+            Some(rig.io_config()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/runtimes",
+            Some(changing("v1", "v1")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // A program loaded where none ran starts as it always did, and says why.
+    let load = &body["changes"]["runtimes"][0];
+    assert_eq!(load["runtime"], "counter", "{body}");
+    assert_eq!(load["start"], "warm", "{body}");
+    assert_eq!(load["why"], "no build of it was loaded", "{body}");
+    let (total_v1, n_v1) = rig
+        .counted_when("v1 counts past 100", |total, n, mode| {
+            mode == "run" && total > 100 && n > 100
+        })
+        .await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let speed_v1 = loop {
+        match rig.sim.holding(1).await {
+            Some(speed) if speed > 300 + 100 => break speed,
+            other => assert!(
+                Instant::now() < deadline,
+                "v1 never commanded 300 + n: {other:?}"
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let et_v1 = rig.counter_values(&["t.ET"]).await[0].as_i64().unwrap();
+    assert!(
+        et_v1 > 2_000 * MS,
+        "the timer has timed two seconds: {et_v1}"
+    );
+
+    // A start that is not a way to start is refused, and nothing is saved or loaded.
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/runtimes?start=hot",
+            Some(changing("v2", "v2")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("start=hot"),
+        "{body}"
+    );
+
+    // v2 while v1 runs: changed online.
+    let ((status, body), seen) = rig
+        .load_watching_the_output(
+            "/api/v1/projects/plant/runtimes",
+            changing("v2", "v2"),
+            "v2",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["changes"]["swapped"],
+        json!(["runtime:counter"]),
+        "{body}"
+    );
+    let load = &body["changes"]["runtimes"][0];
+    assert_eq!(load["runtime"], "counter", "{body}");
+    assert_eq!(load["start"], "online", "{body}");
+    assert_eq!(load["why"], Value::Null, "{body}");
+    assert_eq!(
+        load["dropped"],
+        json!([{"variable": "old_only", "why": "this build has no variable of that name"}]),
+        "{body}"
+    );
+    assert_eq!(
+        load["initialized"],
+        json!([{"variable": "added", "why": "the running program had no variable of that name"}]),
+        "{body}"
+    );
+    // total, n, speed and the seven variables of the timer.
+    assert_eq!(load["carried"], 10, "{body}");
+
+    // The device was never told the safe value: the new build took the output over from the
+    // old one without a gap, and its first scan wrote it from the carried state.
+    assert!(
+        seen.len() > 50,
+        "the register was sampled: {} times",
+        seen.len()
+    );
+    assert!(
+        seen.iter().all(|s| *s != Some(SAFE_SPEED)),
+        "the safe value {SAFE_SPEED} was written during the swap: {seen:?}"
+    );
+    let lowest = seen.iter().flatten().min().copied().unwrap();
+    assert!(
+        lowest >= speed_v1,
+        "the speed never went back below what v1 commanded before the load ({speed_v1}): {lowest}"
+    );
+
+    // Both counters went on, neither restarted; the timer timed on, on a clock that went on;
+    // the new variable started from its initial value.
+    let values = rig.counter_values(&["total", "n", "t.ET", "added"]).await;
+    let (total, n, et) = (
+        values[0].as_i64().unwrap(),
+        values[1].as_i64().unwrap(),
+        values[2].as_i64().unwrap(),
+    );
+    assert!(
+        total > total_v1 + 20,
+        "the RETAIN counter went on from {total_v1}: {total}"
+    );
+    assert!(n > n_v1 + 20, "the plain counter went on from {n_v1}: {n}");
+    assert!(et > et_v1, "the timer went on from {et_v1}: {et}");
+    assert_eq!(values[3], json!(42), "added took its initial value");
+
+    // A cold load of v2 again: both counters from zero, the RETAIN one too, as a cold start
+    // does, and the report says cold.
+    let before = rig.counted().await;
+    let ((status, body), seen) = rig
+        .load_watching_the_output(
+            "/api/v1/projects/plant/runtimes?start=cold",
+            changing("v2", "v2-cold"),
+            "v2-cold",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let load = &body["changes"]["runtimes"][0];
+    assert_eq!(load["start"], "cold", "{body}");
+    assert_eq!(load["why"], "a cold load was asked for", "{body}");
+    assert_eq!(load["carried"], Value::Null, "{body}");
+    assert!(
+        seen.iter().all(|s| *s != Some(SAFE_SPEED)),
+        "a cold load hands the output over too: {seen:?}"
+    );
+    let (total, n) = rig
+        .counted_when("it started cold", |_, n, mode| mode == "run" && n > 0)
+        .await;
+    assert!(
+        total < before.0 && n < before.1,
+        "both counters started again: total {total} (was {}), n {n} (was {})",
+        before.0,
+        before.1
+    );
+    assert!(
+        total <= n + 1,
+        "the RETAIN one from zero, as n: {total}, n {n}"
+    );
+    rig.kept_when("the cold load's count", |t| t < before.0)
+        .await;
+
+    // A program of another name in its place starts as before: the RETAIN counter from what
+    // was kept for the runtime, the plain one from zero.
+    let (running_total, _) = rig
+        .counted_when("it counts past 100 again", |total, _, mode| {
+            mode == "run" && total > 100
+        })
+        .await;
+    let kept = rig.kept_when("past 100", |t| t > 100).await;
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/runtimes",
+            Some(changing("other_name", "tally")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let load = &body["changes"]["runtimes"][0];
+    assert_eq!(load["start"], "warm", "{body}");
+    assert_eq!(
+        load["why"], "the program running was 'Counter', not 'Tally'",
+        "{body}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, body) = rig.send(&rig.viewer, "GET", "/api/v1/runtimes", None).await;
+        if body["runtimes"][0]["version"] == "tally" && body["runtimes"][0]["mode"] == "run" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Tally never ran: {body}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (total, n) = rig
+        .counted_when("Tally scans", |_, n, mode| mode == "run" && n > 0)
+        .await;
+    assert!(
+        total >= kept + n && n < running_total,
+        "a warm restart: total from what was kept ({kept}): {total}; n from zero: {n}"
+    );
 
     rig.io.shutdown().await;
 }

@@ -512,6 +512,109 @@ describe('loading into a runtime', () => {
   });
 });
 
+describe('how a loaded program started', () => {
+  /** A controller whose save of the runtimes answers that it started Tank so. */
+  const starting = (load: Record<string, unknown>) =>
+    tank({
+      intercept: (call) =>
+        call.method === 'PUT' && /\/runtimes(\?|$)/.test(call.path)
+          ? Response.json({ applied: true, changes: { swapped: ['runtime:Tank'], failed: [], runtimes: [load] } })
+          : undefined,
+    });
+  const line = (container: HTMLElement) => byTestId(container, 'program-start')?.textContent ?? '';
+
+  it('says a new version was changed online, and each variable that did not carry over with why', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const { container } = await opened(
+      starting({
+        runtime: 'Tank',
+        start: 'online',
+        why: null,
+        carried: 3,
+        dropped: [{ variable: 'old_only', why: 'this build has no variable of that name' }],
+        initialized: [
+          { variable: 'added', why: 'the running program had no variable of that name' },
+          { variable: 'kind', why: 'its type is INT now, not DINT' },
+        ],
+      })
+    );
+    click(byTestId(container, 'program-load'));
+    await settle();
+
+    expect(line(container)).toBe(
+      "Changed online: it took over the running version's variables (3 carried over) and scans on without a restart. 1 of the running version's did not carry over, and 2 of its own started from their initial values."
+    );
+    expect(texts(container, 'program-dropped')).toEqual(['old_only (this build has no variable of that name)']);
+    expect(texts(container, 'program-initialized')).toEqual([
+      'added (the running program had no variable of that name)',
+      '; kind (its type is INT now, not DINT)',
+    ]);
+    info.mockRestore();
+  });
+
+  it('says why a version was not changed online, and never that it was', async () => {
+    const { container } = await opened(
+      starting({
+        runtime: 'Tank',
+        start: 'warm',
+        why: "the program running was 'Pump', not 'Tank'",
+        carried: null,
+        dropped: [],
+        initialized: [],
+      })
+    );
+    click(byTestId(container, 'program-load'));
+    await settle();
+
+    expect(line(container)).toBe(
+      "Not changed online: the program running was 'Pump', not 'Tank'. Its RETAIN variables start from the values kept for them, every other variable from its initial value."
+    );
+    expect(line(container)).not.toContain('Changed online');
+    expect(texts(container, 'program-dropped')).toEqual([]);
+  });
+
+  it('claims nothing of how it started when the controller does not say', async () => {
+    const { container } = await opened(tank());
+    click(byTestId(container, 'program-load'));
+    await settle();
+
+    expect(byTestId(container, 'program-built')?.textContent).toContain('was built and loaded.');
+    expect(line(container)).toBe('The controller did not say how it started.');
+  });
+
+  it('loads cold only when the engineer confirms, asks the controller for a cold start, and says it was', async () => {
+    const backend = starting({ runtime: 'Tank', start: 'cold', why: 'a cold load was asked for', carried: null, dropped: [], initialized: [] });
+    const { calls, container } = await opened(backend);
+    vi.stubGlobal('confirm', () => false);
+    calls.length = 0;
+    click(byTestId(container, 'program-load-cold'));
+    await settle();
+    expect(writes(calls)).toEqual([]);
+
+    let asked = '';
+    vi.stubGlobal('confirm', (question: string) => {
+      asked = question;
+      return true;
+    });
+    click(byTestId(container, 'program-load-cold'));
+    await settle();
+    expect(asked).toContain('RETAIN variables included');
+    expect(writes(calls)).toEqual([
+      'POST /projects/plant/logic/programs/Tank/check',
+      'POST /projects/plant/logic/programs/Tank/build',
+      'PUT /projects/plant/runtimes?start=cold',
+    ]);
+    expect(line(container)).toBe('Loaded cold: every variable starts from its initial value, RETAIN ones included.');
+
+    // Load without asking for cold sends no start: a running program is then changed online.
+    vi.stubGlobal('confirm', () => true);
+    calls.length = 0;
+    click(byTestId(container, 'program-load'));
+    await settle();
+    expect(writes(calls).at(-1)).toBe('PUT /projects/plant/runtimes');
+  });
+});
+
 describe('what the runtime is doing', () => {
   const mode = (container: HTMLElement) => byTestId(container, 'runtime-mode')?.textContent;
 
@@ -827,7 +930,7 @@ describe('who may change a program', () => {
     const { container } = await opened(tank({ runtimes: runtimesOf(runtimeOf('Tank')) }));
 
     expect(container.querySelector('textarea')?.readOnly).toBe(true);
-    for (const id of ['program-load', 'runtime-run', 'runtime-stop', 'runtime-unload']) {
+    for (const id of ['program-load', 'program-load-cold', 'runtime-run', 'runtime-stop', 'runtime-unload']) {
       expect((byTestId(container, id) as HTMLButtonElement).disabled, id).toBe(true);
     }
     expect((button(container, 'Save') as HTMLButtonElement).disabled).toBe(true);

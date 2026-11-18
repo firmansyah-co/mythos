@@ -278,6 +278,51 @@ pub enum Call {
     /// The values of the program's RETAIN variables now, for the host to keep across a restart
     /// of the module. Answers with a list of [`RetainedValue`]: empty when it has none.
     Retained,
+    /// The values of every variable of the program now, and its clock, for the host to carry
+    /// into a new build of the same program that replaces this one (an online change; `carried`
+    /// beside `program` in the start configuration). Only a program in RUN gives them. It
+    /// changes nothing. Answers with [`ProgramVariables`].
+    Variables,
+    /// What the program took of the values it was started with (`carried`). Answers with a
+    /// [`CarryReport`].
+    Carried,
+}
+
+/// The variables of a running program, as [`Call::Variables`] gives them and a new build of
+/// the program is started from (`carried` in its start configuration).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgramVariables {
+    /// The program's clock when they were read: nanoseconds since it was put in RUN. A program
+    /// started from them goes on from this clock, so its timers neither lose nor gain the time
+    /// the swap took.
+    pub clock_ns: i64,
+    /// Every variable, each in the same form as a RETAIN value: path, type and bytes.
+    pub values: Vec<RetainedValue>,
+}
+
+/// What a program did with the values it was started with (ADR-013 §2.5, online change).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarryReport {
+    /// Whether it was given any. A program given none carried none, and says so.
+    pub given: bool,
+    /// How many of its variables took the running program's value.
+    pub carried: u64,
+    /// The running program's variables it did not take, and why: it has none of that name, or
+    /// its own is of another type or size.
+    #[serde(default)]
+    pub dropped: Vec<NotCarried>,
+    /// Its variables that took no value from the running program, and why: the running one
+    /// had none of that name, or one of another type or size. Each started from its initial
+    /// value, or a RETAIN one from the value kept for it, as at a warm restart.
+    #[serde(default)]
+    pub initialized: Vec<NotCarried>,
+}
+
+/// A variable that did not carry over, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotCarried {
+    pub variable: String,
+    pub why: String,
 }
 
 /// The value of one RETAIN variable, as the runtime module keeps it: what the host stores and
