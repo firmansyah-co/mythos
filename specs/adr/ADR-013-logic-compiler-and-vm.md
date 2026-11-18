@@ -1300,3 +1300,33 @@ Evidence of the spike (2026-11-17):
   `an_agent_writes_checks_and_builds_a_program_over_mcp` red; a `programs.json` without a
   language refused turned `a_programs_list_written_before_languages_is_structured_text` and
   `a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_plant` red.
+- **L3b-2a** (every LD element's power kept for monitoring, and the view drawing it,
+  2026-11-18). `ladder_power_probes.rs` rewritten (9, from 5): every output, junction and
+  network published with the variable keeping it, each a private BOOL symbol; each kept power
+  after a scan is the power the rung had, for every input of a program with a branch point, a
+  timer and a junction; a seal-in rung, whose seal contact keeps what it read before its coil
+  wrote (in three of eight scans that differs from the motor's value after the scan); a
+  network a forward jump skipped reads as not run and keeps the last power it had; the
+  networks after a return read as not run; a backward jump; an instance called by two blocks,
+  each keeping its own call's output; a function with EN keeping ENO and FALSE as its result
+  where it did not run. `ladder_runs_on_the_vm.rs` gained
+  `a_long_series_of_functions_compiles_and_runs` (27, from 26); `ladder_equals_st.rs` is
+  unchanged in what it compares and still holds 1,020,000 values equal; `logic_module.rs`
+  reads `__NET_10`, `__LD_10`, `__LD_11` and `__NET_20` from the running module process. The
+  view's tests (`ladder.test.tsx`, 13) read the mock `power` the compiler gives for their
+  document: every element and link with its power, a contact with power off while its
+  variable conducts, a junction's power apart from its branches', a rung not run drawn as not
+  executed with FORCED kept, UNKNOWN when the values or one value or a rung's flag cannot be
+  read. Mutation-checked in a copy of the tree (`git archive` of the commit, its own target
+  directory; each file restored with `git show`; the clean copy passed before and after):
+  a contact keeping its input in place of its output turned 34 tests red, among them
+  `each_kept_power_after_a_scan_is_the_power_the_rung_had_in_it`,
+  `a_seal_in_contact_keeps_what_it_read_before_its_coil_wrote`,
+  `every_output_junction_and_network_is_published_with_the_variable_keeping_it`, the four
+  `…_equal_their_st_twin` and the logic module's three LD tests (what is kept is what the next
+  element reads, so a wrong store changes what the program does); the network flags never
+  set FALSE turned `a_network_a_jump_skips_reads_as_not_run_and_keeps_what_it_had` and
+  `the_networks_after_a_return_read_as_not_run` red; the view drawing a value it cannot read
+  as not powered turned `draws UNKNOWN, never a state, when the values cannot be read` and
+  `draws one value the runtime does not have as UNKNOWN, and the others as they are` red.
+  The emulators: all 18 runs equal, the oscillator with its stores among them.
