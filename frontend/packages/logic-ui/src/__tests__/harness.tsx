@@ -8,7 +8,7 @@ import { vi } from 'vitest';
 import { activate, MODULE_ID } from '../entry';
 import type { CheckResult, ProgramEntry, RuntimesAnswer, RuntimeStatus, WatchAnswer, WatchedValue } from '../bridge';
 import { createHost } from '../../../ui-shell/src/modules/host';
-import { resetStores as resetShell } from '../../../ui-shell/src/__tests__/harness';
+import { resetStores as resetShell, unmountAll } from '../../../ui-shell/src/__tests__/harness';
 
 export {
   connection,
@@ -241,6 +241,23 @@ export function typeSource(container: HTMLElement, value: string): void {
     setter?.call(area, value);
     area.dispatchEvent(new Event('input', { bubbles: true }));
   });
+}
+
+/**
+ * End a test: unmount what it rendered, take its controller away, and leave a `fetch` that
+ * refuses at once. A test that timed out goes on running after it is reported; without this it
+ * would reach the real network (happy-dom's localhost:3000), where a connection can hang for
+ * minutes on a CI runner, and every test after it in the file would fail with it.
+ */
+export function endTest(): void {
+  unmountAll();
+  vi.unstubAllGlobals();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => {
+      throw new Error('no controller: the test that asked has ended');
+    })
+  );
 }
 
 export function click(element: Element | null): void {

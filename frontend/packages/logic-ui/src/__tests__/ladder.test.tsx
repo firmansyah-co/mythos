@@ -16,6 +16,7 @@ import {
   byTestId,
   click,
   doing,
+  endTest,
   entryOf,
   ladderOf,
   project,
@@ -167,8 +168,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  unmountAll();
-  vi.unstubAllGlobals();
+  endTest();
 });
 
 describe('a Ladder Diagram in the tree', () => {

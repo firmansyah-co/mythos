@@ -11,6 +11,7 @@ import {
   click,
   connection,
   doing,
+  endTest,
   entryOf,
   ioStatus,
   project,
@@ -92,8 +93,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  unmountAll();
-  vi.unstubAllGlobals();
+  endTest();
 });
 
 describe('reading the programs', () => {

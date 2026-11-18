@@ -15,6 +15,7 @@ import { usePrograms } from '../programs';
 import {
   byTestId,
   click,
+  endTest,
   entryOf,
   project,
   render,
@@ -144,8 +145,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  unmountAll();
-  vi.unstubAllGlobals();
+  endTest();
 });
 
 describe('building rungs', () => {
