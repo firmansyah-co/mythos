@@ -19,6 +19,8 @@ pub use keywords::{is_keyword, KEYWORDS, TYPE_KEYWORDS};
 
 /// The version of the IR's shape. A backend given another version refuses it.
 ///
+/// 6: [`Var::hidden`], a variable a language made for itself (the edge memory of a Ladder
+/// Diagram contact), which the host may read and never write.
 /// 5: no standard function blocks of its own: TON, CTU and the rest are function block types
 /// of the unit, written in Structured Text (ADR-013 L4); [`Intrinsic`] for what they need
 /// that no language expresses.
@@ -27,7 +29,7 @@ pub use keywords::{is_keyword, KEYWORDS, TYPE_KEYWORDS};
 /// 2: STRING, string literals, and the functions of the standard library ([`StdFn`]).
 /// 1: a unit of several program organization units (functions, function block types, one
 /// program), structures and arrays; places with a path. 0 was one program of scalar variables.
-pub const IR_VERSION: u32 = 5;
+pub const IR_VERSION: u32 = 6;
 
 /// The length of a STRING declared without one. IEC 61131-3 ed. 3 gives no default:
 /// Table 10 footnote k and §6.4.2.2 leave the maximum length to the implementer, and the
@@ -88,13 +90,71 @@ impl Span {
 /// column counts characters, not bytes. The end equals the start when the message is about a
 /// point with nothing to underline, such as the end of the source. All four are 0 when the
 /// message is about the whole program and no place in it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// A graphical language (Ladder Diagram, ADR-013 §2.15) stores a POU as a PLCopen TC6 XML
+/// document, whose lines say little about the diagram. A diagnostic about such a POU says
+/// which part of it, in [`Element`]: the element of the body by its `localId` and position,
+/// or the declaration of the interface by its name. Its `line` and `col` are then where that
+/// element's tag starts in the document, so a text editor can still point at it. Both
+/// fields are absent for Structured Text, whose JSON is what it was.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Diagnostic {
     pub line: u32,
     pub col: u32,
     pub end_line: u32,
     pub end_col: u32,
     pub message: String,
+    /// The source `line` and `col` are in, by the name the caller gave it, when a program is
+    /// compiled from several (a Structured Text source and Ladder Diagram documents). Absent
+    /// when it is compiled from one, or the message is about the whole program.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The part of a graphical POU the message is about. Absent for a textual language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub element: Option<Box<Element>>,
+}
+
+/// Where in a graphical POU a diagnostic is: an element of its body, or a declaration of its
+/// interface.
+///
+/// ```json
+/// {"pou": "Main", "local_id": 7, "x": 120, "y": 40,
+///  "text": {"field": "variable", "col": 1, "end_col": 6}}
+/// {"pou": "Main", "variable": "count", "text": {"field": "initialValue", "col": 1, "end_col": 4}}
+/// ```
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Element {
+    /// The POU, by its name.
+    pub pou: String,
+    /// The element of the body, by its `localId` (TC6 `localId`, unique in the body). Absent
+    /// for a declaration of the interface and for the body as a whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_id: Option<u64>,
+    /// The element's position in the diagram, as the document gives it (TC6 `position`, its
+    /// `x` and `y`, the element's top left corner). Absent when there is no element.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<f64>,
+    /// The variable of the interface the message is about, by its name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variable: Option<String>,
+    /// The text of the element or declaration the message is about, and which characters of
+    /// it. Absent when it is about the element as a whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<TextRange>,
+}
+
+/// Characters of one text of an element: `field` names the text by the TC6 element or
+/// attribute that holds it (`variable` of a contact or a coil, `expression` of a variable,
+/// `instanceName` and `typeName` of a block, `type` and `initialValue` of a declaration, a
+/// block's input by its formal parameter). `col` and `end_col` count characters from 1, the
+/// end exclusive, as [`Diagnostic`]'s columns do.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TextRange {
+    pub field: String,
+    pub col: u32,
+    pub end_col: u32,
 }
 
 impl Diagnostic {
@@ -105,24 +165,37 @@ impl Diagnostic {
             end_line: span.end_line,
             end_col: span.end_col,
             message: message.into(),
+            source: None,
+            element: None,
         }
     }
 
     /// About the program as a whole, not a place in it.
     pub fn whole(message: impl Into<String>) -> Self {
-        Diagnostic {
-            line: 0,
-            col: 0,
-            end_line: 0,
-            end_col: 0,
-            message: message.into(),
-        }
+        Diagnostic::at(Span::default(), message)
     }
 }
 
 impl std::fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}: {}", self.line, self.col, self.message)
+        if let Some(source) = &self.source {
+            write!(f, "{source}:")?;
+        }
+        write!(f, "{}:{}: ", self.line, self.col)?;
+        if let Some(e) = &self.element {
+            write!(f, "{}", e.pou)?;
+            if let Some(id) = e.local_id {
+                write!(f, " element {id}")?;
+            }
+            if let Some(v) = &e.variable {
+                write!(f, " variable {v}")?;
+            }
+            if let Some(t) = &e.text {
+                write!(f, " {} {}..{}", t.field, t.col, t.end_col)?;
+            }
+            write!(f, ": ")?;
+        }
+        write!(f, "{}", self.message)
     }
 }
 

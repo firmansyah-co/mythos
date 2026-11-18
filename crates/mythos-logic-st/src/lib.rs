@@ -35,7 +35,21 @@ use mythos_logic_ir::{Diagnostic, Unit};
 /// never about a place in the library: one would be the compiler's fault, and says so about
 /// the whole program ([`library::as_the_compilers`]).
 pub fn lower(source: &str) -> Result<Unit, Vec<Diagnostic>> {
-    let (mut ast, mut diags) = parser::Parser::new(lexer::tokens(source)).source();
+    let (ast, diags) = parser::Parser::new(lexer::tokens(source)).source();
+    lower_tree(ast, diags)
+}
+
+/// Check a syntax tree into the IR: `ast`, with what reading it said in `diags`.
+///
+/// Another front-end that builds trees of POUs (Ladder Diagram, ADR-013 §2.15) adds them to
+/// the tree of a Structured Text source and lowers both here, so that the POUs of the two
+/// languages call one another, the standard library is added for both, and every rule of
+/// declarations, types and calls is the one rule ST has. Its places are lines it chose,
+/// apart from any of a source (from `2^31`) and of the library; it maps them back.
+pub fn lower_tree(
+    mut ast: ast::Source,
+    mut diags: Vec<Diagnostic>,
+) -> Result<Unit, Vec<Diagnostic>> {
     library::add_used(&mut ast, &mut diags);
     match check::check(&ast) {
         Ok(unit) if diags.is_empty() => return Ok(unit),

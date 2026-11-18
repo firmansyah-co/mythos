@@ -47,8 +47,8 @@ and a GPL-3.0 compiler to ship beside MythOS. Compiling ST to Rust source instea
 ```text
  front-ends (a crate per language)            backends (a crate per target kind)
  mythos-logic-st ─┐                        ┌─► mythos-logic-backend-vm ─► bytecode ─► mythos-logic-vm
- (LD, FBD, SFC    ┼──► mythos-logic-ir ────┤                                          (PC runner,
-  later)         ─┘     (the seam)         └─► (C99 later: MCUs too small for the VM)   ESP32, RP2040)
+ mythos-logic-ld ─┼──► mythos-logic-ir ────┤                                          (PC runner,
+ (FBD, SFC later)─┘     (the seam)         └─► (C99 later: MCUs too small for the VM)   ESP32, RP2040)
 
  mythos-logic-compiler: joins a front-end, the target's profile and a backend. Owns neither.
 ```
@@ -58,6 +58,7 @@ and a GPL-3.0 compiler to ship beside MythOS. Compiling ST to Rust source instea
 | `mythos-logic-ir` | nothing of the workspace | The seam. A *unit*: structures, array types and POUs (functions, function block types, one program), every name resolved to an index; no addresses, word sizes or instructions. `serde` data with a version (`IR_VERSION`), so a front-end and a backend need not share a process |
 | `mythos-logic-vm` | nothing at all | Builds for a microcontroller with `core` alone |
 | `mythos-logic-st` (and each later language) | the IR | A language is added without touching a target |
+| `mythos-logic-ld` (and FBD, SFC when built) | the IR, and the ST front-end | A graphical language reads the common elements (declarations, types, literals), the text inside its elements and the standard library through the ST front-end, so that both have one rule for each (§2.15); it reaches no target |
 | `mythos-logic-backend-vm` (and each later backend) | the IR, its own target | A target kind is added without touching a language |
 | `mythos-logic-compiler` | all of the above | The one call from source to a program |
 
@@ -67,7 +68,8 @@ the guard each kind of break.
 
 - **Nothing unsupported is compiled into something else.** A construct a front-end does not take
   yet is a diagnostic naming it, with its line and column.
-- **LD and FBD are lowered from their graphs**, not printed as ST text.
+- **LD and FBD are lowered from their graphs**, not printed as ST text: LD to the ST
+  front-end's syntax tree, built element by element, never through text (§2.15).
 - **Standard function blocks** are a library written in Structured Text (§2.14, L4): a block
   is source compiled with the program that uses it, so adding one needs no new firmware. The
   IR has no catalog of them and the compiler emits no native call; the VM keeps its native
@@ -465,7 +467,8 @@ Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (A
   place, which would claim nothing is forced). One mark of the SDK (`ForcedMark`) says FORCED
   beside the value in the HMI's I/O field (for the project the controller runs), the tag table,
   the inspector and the editor's bound tags; the online tools card counts the forced tags.
-- Not built: watching an element of an array from the table; an editor for LD, FBD, SFC.
+- Not built: watching an element of an array from the table; an editor for LD, FBD, SFC. The
+  LD front-end is built (§2.15); the module does not yet store or build an LD program (L3b).
 
 ### 2.7 The HMI is not a runtime
 
@@ -510,7 +513,10 @@ stopped at the first error and recorded only where a construct starts. The ST fr
   the token or construct the message is about: a name, an operator for an operation, a call to
   its `)`, a place with its members and subscripts. It is empty at the end of the source, and
   all four are 0 for a message about the whole program. `line` and `col` are what they were.
-  There are no warnings, so there is no severity.
+  There are no warnings, so there is no severity. A diagnostic about a Ladder Diagram POU
+  also names the element (`element`: the POU, the `localId` and position, or the variable of
+  the interface, and the characters of its text), and one of a program compiled from several
+  sources names its `source` (§2.15); both are absent for ST.
 - **Refuses a keyword of the standard as a name** (§2.13).
 - **Refuses what is nested too deeply, and cannot be made to crash by it.** Every pass over a
   program is recursive, and the compiler runs on a thread of the logic module's process, whose
@@ -539,7 +545,8 @@ Firmware for a board family is the VM plus a host for that board. Before a real 
   RP2040's instruction set, with no hardware divide or floating point) and on an RV32IMC machine
   (`virt`; the ESP32-C3's instruction set). After every scan the firmware prints a CRC-32 of the
   VM's whole memory, and the script requires each to equal what the same program gives on the
-  machine running the script. The format lays memory out identically everywhere, so this
+  machine running the script. Since L3a it runs the Ladder Diagrams of
+  `crates/mythos-logic-compiler/tests/ladder/` as well (`oscillator.xml`, §2.15). The format lays memory out identically everywhere, so this
   compares every variable and every function block's inner state, byte for byte. These machines
   stand for instruction sets, not for the boards: no RP2040 or ESP32 peripheral is emulated
   (board emulators exist for that: rp2040js, picoem, Espressif's QEMU).
@@ -635,6 +642,14 @@ Adrian, 2026-11-17: where an implementation and the standard differ, follow the 
 | A structure in a qualified section | §6.5.6.2: every element, nested ones too, takes the qualifier | as the clause, also inside an instance | not compared |
 | An array | not addressed: §6.5.6.2 speaks of instances and structures | one symbol, retained or not as a whole. An array of instances whose members would be retained in part (`VAR RETAIN a : ARRAY [1..2] OF B` where B holds a TON, or `VAR a : ARRAY [1..2] OF B` where B declares some members RETAIN and some not) is refused at its declaration, naming its path | not compared |
 | An integer to and from STRING | Table 22 footnote e: the "external representation" of the value | `INT_TO_STRING(-5)` is `'-5'`; `STRING_TO_DINT` reads an integer literal: a sign and decimal digits, or `2#`, `8#`, `16#` digits, single underscores between digits. Nothing else (no space, no type prefix): `BadNumber`. A value its type cannot hold wraps, as narrowing does | stops at the first character that is not a digit: `'16#7F'` is 16 (deliberate difference) |
+| Several connections into one input of LD | §8.2.3: the vertical link is the inclusive OR of the links on its left, copied to every link on its right | the OR, also into a block's input (a BOOL); so series is AND and parallel is OR (`series_is_and_and_parallel_is_or`) | not compared |
+| Transition-sensing contacts and coils | Table 75 features 3–4 and Table 76 features 8–9 say a transition is "sensed"; Table 44 defines edge detection (R_TRIG, F_TRIG), and §6.6.3.2 rule 13 realises R_EDGE and F_EDGE with them | as R_TRIG (rising) and F_TRIG (falling), on a hidden BOOL memory of the POU starting FALSE (§2.15). A contact's CLK is its variable, sensed at every evaluation whether its input is ON or not; its output is its input AND Q. A coil's CLK is its input and Q is written to its variable. So a falling contact on a variable OFF at the first evaluation after a cold start is ON then (Table 44 note), and a rising one on a variable ON (`a_falling_contact_is_on_for_one_scan_after_its_variable_goes_off`; the ST twins of `ladder_equals_st.rs` use R_TRIG and F_TRIG) | not compared |
+| The order of LD networks | §8.2.7: top to bottom as they appear, except as jumps change it; §8.1.4: a network is a maximal set of connected elements, the rails excluded | by the topmost element of each, then the leftmost; the order of the document does not matter (`networks_run_top_to_bottom_whatever_the_order_of_the_document`) | not compared |
+| The order within an LD network | §8.1.5.1 rules a–c: no element before its inputs; every element evaluated; nothing more | the wiring first, then position (top, then left). A value more than one statement needs is evaluated once and kept: a branch point, a coil whose output goes on (the power reaching it, sensed before it writes), an edge's output (`power_through_a_coil_is_the_power_before_it_was_written`, `a_branch_point_is_evaluated_once_for_every_branch`) | not compared |
+| EN and ENO of a block in LD | §6.6.1.5 rules 1–4; Example 2 (EN evaluated outside the POU) and Example 4 | outside: EN FALSE, the block is not called, its inputs are not set, ENO is FALSE; otherwise ENO is TRUE (an error stops the scan, so none sets it FALSE). Rule 4 leaves the outputs to the implementer: a function block's keep their values; a function's result that was not computed is not written to a variable, and as power flow it is OFF (`a_function_with_en_writes_nothing_when_it_does_not_run`) | not compared |
+| Jumps and returns in LD | §8.1.6, Table 73; §8.1.5.1 rule c: a network is evaluated whole "even if the network contains one of the execution control elements" | after its network is evaluated whole; of several in one network, the first in evaluation order whose condition is TRUE; a jump goes on at the first network at or below its label, back as well as forward (a loop is bounded by the instruction budget, as WHILE is) | not compared |
+| Feedback in LD | §8.1.5.2 rule a: explicit loops only in FBD; rule b: through a feedback variable | a cycle of connections refused, naming the elements on it; feedback through a variable taken (a seal-in) | not compared |
+| Compare contacts | Table 75 features 5a, 5b (new in ed. 3) | not built: TC6 XML v2.01 has no element for them; a comparison is a block (GT, EQ, …) | not compared |
 
 Three places where the standard leaves a choice or we go beyond it:
 
@@ -743,6 +758,107 @@ express is exposed as an intrinsic; OSCAT is to follow as the standard library.
   under EPL-2.0 (https://eclipse.dev/oscat/); its license must be checked before any of its
   source is copied in.
 
+### 2.15 The Ladder Diagram front-end and its format (L3a)
+
+**Decided by the owner (2026-11-18):** ST, LD, FBD and SFC, each a front-end crate lowering to
+the shared IR, so that the backend, the VM, RETAIN, watching, forcing and online change work
+unchanged for every language; where implementations differ, the standard.
+
+- **The format: PLCopen TC6 XML v2.01**, the basis of IEC 61131-10. A Ladder Diagram is stored
+  and exchanged as a TC6 `project` in the namespace `http://www.plcopen.org/xml/tc6_0201`. The
+  schema, `tc6_xml_v201.xsd`, is not on plcopen.org's public pages any more (2026-11-18: every
+  link to it and to its zip answers 404; PLCopen handed its rights in the format to IEC, now
+  IEC 61131-10). It was read from the copy kept in the Beremiz repository
+  (`https://raw.githubusercontent.com/beremiz/beremiz/master/plcopen/tc6_xml_v201.xsd`, sha256
+  `591b92ba65018a77c32ab9e606abf27bd810cb1f7761d972a85689531c51e20f`, which declares PLCopen's
+  target namespace) for its element and attribute names only. It is not committed: the file
+  states no license. No code of Beremiz was read or copied; the reader is written from the
+  schema's names and IEC 61131-3 ed. 3 §8.
+- **The subset taken** (everything else is refused by its name, with the element it is in):
+  - `project/types/pous/pou`: `name`, `pouType` (`program`, `functionBlock`, `function`).
+    `types/dataTypes` and `instances/configurations` must be empty (a type is declared in the ST
+    source, a task in the logic module); `actions` and `transitions` must be empty (SFC).
+  - `interface`: `returnType`; `inputVars`, `outputVars`, `localVars` (VAR_INPUT, VAR_OUTPUT,
+    VAR), with `retain` or `nonretain` where ST takes RETAIN and NON_RETAIN (§2.13), refused in a
+    function; `tempVars`, `inOutVars`, `externalVars`, `globalVars`, `accessVars`, `constant`,
+    `persistent` and a variable's `address` refused, as ST refuses VAR_TEMP, VAR_IN_OUT,
+    VAR_EXTERNAL, VAR_GLOBAL, CONSTANT and AT. A variable's `type`: an elementary type by name,
+    `string` with its `length`, `array` with its `dimension`s and `baseType`, `derived` (a
+    structure, a named array, a function block type); `enum`, `struct`, the subranges,
+    `pointer` and the generic types refused. Its `initialValue`: `simpleValue` and `arrayValue`
+    (with `repetitionValue`); `structValue` refused.
+  - One `body` holding `LD`: `leftPowerRail`, `rightPowerRail`, `contact` (`negated`, `edge`
+    `rising` or `falling`), `coil` (`negated`, `storage` `set` or `reset`, `edge`), `block` (a
+    function or a function block: the standard library's, the project's in LD or ST; EN and ENO;
+    a `negated` input or output; an input's `expression` in place of a connection),
+    `inVariable`, `outVariable`, `inOutVariable` (`negated`), `label`, `jump`, `return`,
+    `comment`; `connectionPointIn` with `connection` (`refLocalId`, `formalParameter`) or
+    `expression`; `position`. Refused: `connector` and `continuation`, `error`, a block's
+    in-out parameters, `edge` or `storage` on a block's parameter or on a variable, and a body in
+    IL, ST, FBD or SFC.
+- **How it is lowered.** `mythos-logic-ld` reads the document with `quick-xml` (MIT) into a
+  tree, the graph into one element per `localId`, checks the graph, and lowers each network to
+  statements of the ST front-end's syntax tree, built element by element: never ST text (§2.1).
+  The text inside elements (a contact's variable, a variable's expression, an initial value,
+  `t.Q`, `Ts[i]`) is read by the ST lexer and parser, as ST reads it. The LD POUs are then
+  checked by the ST checker together with the project's ST POUs and the standard library
+  (`mythos_logic_st::lower_tree`): a declaration, a type, a call, an assignment to an input,
+  RETAIN, a keyword as a name are one rule in both languages. Hence the layer of §2.1: LD
+  depends on the IR and on the ST front-end, and on nothing downstream. The semantics are the
+  rows of §2.13 for LD: power flow (a vertical link is the OR, so series is AND and parallel is
+  OR), networks top to bottom, the order within one, edges as R_TRIG and F_TRIG, EN and ENO
+  evaluated outside the block, jumps and returns after their network, no feedback by wire.
+- **A graph that is not well formed is refused**, each naming the element by its `localId`:
+  two elements with one `localId`; a connection to an id no element has (dangling); a
+  connection to an element that gives no output, or to an output a block does not show; a
+  contact, coil, output variable, jump or return with no input; a cycle of connections, naming
+  the elements on it; a jump to a label the body does not have, two labels of one name; a
+  function block called without an instance, an instance of another type, one instance called
+  twice in a network; an edge in a function (it keeps nothing between calls, §6.6.2.1).
+- **Hidden variables.** What LD needs that the program did not declare is a variable of the
+  POU whose name begins with two underscores, which §6.1.2 forbids in an identifier, so no
+  name of the program meets it: `__EDGE_<localId>` (BOOL), the memory of an edge contact or
+  coil; `__LD_<localId>` and `__LD_<localId>_ENO`, a value more than one statement needs
+  (BOOL, or the declared type of a function of the project, of a conversion, or of the
+  variable read); `__JUMP` (DINT), when the body jumps or returns. Each is a symbol like any
+  variable, so RETAIN, watching and online change take it: it is unqualified, so not retained
+  in a program and retained in an instance declared RETAIN (§6.5.6.2); online change carries it
+  by its path, which names the element, so an edit that keeps an element's `localId` keeps its
+  memory. Each is **private**: the IR marks it `Var::hidden` (`IR_VERSION` 6) and the backend
+  gives its symbol `"private": true`, so no tag is bound to write it; it may be read, watched
+  and forced, as any private variable.
+- **Places** (§2.8). A TC6 document's lines say little about a diagram, so a diagnostic about
+  an LD POU carries `element`: `{"pou", "local_id", "x", "y", "variable", "text": {"field",
+  "col", "end_col"}}`, the element's `localId` and position as the document gives them, or the
+  variable of the interface, and the characters of the text the message is about (`variable`,
+  `expression`, `instanceName`, `typeName`, `initialValue`, a block's input by its formal
+  parameter). Its `line` and `col` are where the element's tag is in the document. A document
+  that is not well-formed XML is told at its line and column, and nothing that follows from it
+  is told. Inside the front-end each place is a line of the syntax tree from `2^31`, past any
+  source and any file of the library, mapped back after checking.
+- **LD and ST in one program.** `mythos_logic_compiler::compile_sources(&Sources { st, ld },
+  target)` compiles at most one ST source (types, functions, function blocks) with any number
+  of TC6 documents into one program: one POU among all of them is the PROGRAM; each POU may
+  call those of the others and of the standard library; the result is the same `Compiled`
+  (bytecode, symbols, types) and every check of the target profile applies.
+  `compile_in(document, Language::Ld, target)` compiles a document alone. With more than one
+  source, each diagnostic names its `source`.
+- **Not built, and why:** a value a function gives more than one input when its type is not
+  known before checking (ADD, SEL, MOVE, …: keeping it needs a variable of that type) and an
+  input variable read by more than one input that is not a variable by its name: each refused
+  with what to write instead. Connectors, compare contacts (§2.13), in-out parameters, edges on
+  a block's parameters, types declared in a document.
+- **What the editor slice (L3b) needs.** The logic module stores one `.st` per program
+  (`programs/<name>.st`, §2.6): an LD program needs its own file (`programs/<name>.xml`), its
+  language in `programs.json`, and `check` and `build` through `compile_sources` with the
+  project's ST POUs, each an MCP tool as before. The workbench needs an LD editor kind that
+  draws the TC6 elements by their positions and writes TC6 back, keeping the `localId` of an
+  element it does not change (online change and the edge memories follow it), and draws each
+  diagnostic at its `element`. The variable table should show the hidden variables apart, or
+  not at all. Showing power flow live needs each link's state, which no variable holds: the
+  editor works it out from the watched variables, or the front-end publishes, per element, the
+  variable or the expression its output is.
+
 ## 3. Order of work
 
 Two tracks. The core path comes first because Adrian asked for logic that runs end to end
@@ -794,7 +910,12 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   functions of Table 28, EXPT and `**`, TRUNC, the selection of Table 32, the operators by
   name; the VM's own real functions; bytecode format 3. Not built: the bit strings and their
   shifts (§2.13).
-- L3. **LD, FBD, SFC** (not IL, §2.1), each a front-end crate and an editor kind.
+- L3. **LD, FBD, SFC** (not IL, §2.1), each a front-end crate and an editor kind. **L3a**
+  (done, §2.15): the Ladder Diagram front-end, `mythos-logic-ld`, reading PLCopen TC6 XML
+  v2.01; an LD program compiled with the project's ST POUs and the standard library.
+  **L3b** next: the LD editor and the logic module storing, checking and building LD programs
+  (§2.15, what the editor slice needs). Then FBD (the same TC6 reader; FBD's own order of
+  evaluation, §8.3.3, and explicit feedback, §8.1.5.2) and SFC.
 - L4. **The standard library in ST** (done, §2.14): the standard function blocks written in
   Structured Text, with intrinsics for what ST cannot say (the scan clock, bytecode format 4);
   their state retained like any variable's. Next: OSCAT, once its license is checked.
@@ -824,7 +945,7 @@ Each step leaves `dev` working.
 
 | Part | Built |
 | :--- | :--- |
-| 2.1 Crates and layers | `mythos-logic-ir`, `-st`, `-vm`, `-backend-vm`, `-compiler`; `layers.rs` guards them |
+| 2.1 Crates and layers | `mythos-logic-ir`, `-st`, `-ld` (L3a), `-vm`, `-backend-vm`, `-compiler`; `layers.rs` guards them |
 | 2.1 ST front-end | Several POUs in any order: TYPE (STRUCT, named ARRAY), FUNCTION (VAR_INPUT, VAR; positional and formal calls), FUNCTION_BLOCK (VAR_INPUT, VAR_OUTPUT, VAR; nesting; arrays of instances), one PROGRAM; BOOL, SINT, INT, DINT, LINT, REAL, LREAL, TIME, STRING (`STRING[n]`, `STRING(n)`, 254 by default; literals with `$` combinations; assignment that cuts; comparison; LEN, LEFT, RIGHT, MID, CONCAT, INSERT, DELETE, REPLACE, FIND; integer to and from STRING; in functions, function blocks, arrays, structures and a TYPE name); ABS, SQRT, LN, LOG, EXP, SIN, COS, TAN, ASIN, ACOS, ATAN, ATAN2, EXPT and `**`, TRUNC_*, SEL, MAX, MIN, LIMIT, MUX, and ADD, SUB, MUL, DIV, MOVE, GT, GE, EQ, LE, LT, NE by name; arrays of any dimensions with initial value lists; whole-structure and whole-array assignment; IF, CASE, FOR, WHILE, REPEAT, EXIT, RETURN; arithmetic, comparison, BOOL logic; `*_TO_*` between the elementary types; implicit widening per Figure 11; recursion refused naming the cycle; a keyword of the standard refused as a name; RETAIN and NON_RETAIN on VAR, VAR_INPUT and VAR_OUTPUT of a PROGRAM and a FUNCTION_BLOCK, each symbol saying whether it is retained (`Symbol::retain`, `"retain": true` or absent; C7b-1, §2.13; `retentive_variables.rs`), refused where nothing can be retained; kept across a warm restart by the runtime and the core (§2.5, C7b-2); the standard function blocks from a library written in ST, only those a program uses (§2.14, L4); a name with two underscores together or one at its end refused (§6.1.2); diagnostics for everything else (enumerations, subranges, WSTRING, CHAR, VAR_IN_OUT, methods, and more: each refused by name); every independent mistake of a source in one pass, each once, with the range it is about (§2.8); a body or a type nested more than 100 deep refused, a structure that contains itself told before anything follows it (§2.8) |
 | 2.2 Profiles | `serde` data with a format version (4 since L4; a profile of another is refused, naming both); `pc`, `rp2040`, `esp32` stand in; refusals (type, memory, format, stack depth, call depth) proven with profiles read from JSON; a profile written before the depths existed still loads and states no limit |
 | 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 4 (format 1 with strings and the numeric functions, L2c, with its own real functions, §2.3, and the scan clock `NOW`, L4), and formats 1, 2 and 3 read as they were written, their native standard blocks included (a VM reads every format it extends; an instruction newer than a program's format refused at load): bodies, call frames, instance-relative and region-confined addressing; loader checks, with every jump landing on an instruction of its body, and `load_within` a host's limits; run-time checks, budget; the stack and the calls stop at the depths the program declares; faults, with `IndexOutOfRange`, `CallDepthExceeded`, `StackOverflow`, for strings `StringTooLong`, `StringArgument`, `BadString`, `BadNumber`, and `SelectorOutOfRange` |
@@ -832,10 +953,11 @@ Each step leaves `dev` working.
 | 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Forcing is built (`Call::Force`, `Call::Unforce`, C5c): `runtime_api.rs` forces an output, a setpoint and an input of the running module process over the API and watches the device follow, refuses an operator and a viewer, refuses what cannot be forced, and sees every force released by a stop and by loading the program again. The watchdog is built (C7a): a program in RUN that completes no scan within ten intervals (never less than two seconds), or whose scan thread has ended, is put in FAULT at the next exchange with the reason (`watchdog: …`), every force released, so the core writes the safe values; a scan itself is bounded by the instruction budget. Proven by the module's own tests: a healthy program runs past the limit untouched, and one whose scan thread ends is faulted and asks for no write. RETAIN is built in the runtime and the core (C7b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter and proves that it goes on after a stop and run, after the program is loaded again, after its module process is killed and started again (from the values kept last, not those it was loaded with), and after a load in STOP, while the other counter starts from zero each time, and that a cold start resets it; the module's tests prove that a value is taken only into a variable of the same name, type and size. Since L4 a standard block's state is variables of its own: `runtime_api.rs` runs a RETAIN TON beside a plain one through the real module process, and after a stop and run the RETAIN one carries on from its ET (the time stopped not timed) while the plain one times again from 0, and a cold start resets both. Online change is built (C6b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter, a plain counter, a TON and an output bound to a Modbus simulator, loads a build with one variable added and one removed while it runs, and proves that both counters and the timer go on without resetting, the added variable starts from its initial value, the removed one is reported as dropped, and the device's register, sampled about every millisecond through the load, never holds the safe value nor drops below what the old build commanded before the load; that a cold load resets both counters and what is kept; that a program of another name starts as before; and that an unknown `start` is refused. The module's tests prove the carry rule (same path, type and size; an array of structures or instances not carried; a value given twice taken once; what is not carried listed with why), and that a program started into RUN holds the carried values and clock before its first scan while one loaded in STOP takes none |
 | 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run` (a warm restart), `/cold-start`, `/stop`, `/watch`, `/force` and `/release`, `GET`/`PUT /api/v1/projects/:id/runtimes` (`?start=cold`, and `changes.runtimes` saying how each runtime started: C6b), each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; what is forced in each, a FORCED badge with each variable and its value (`forced UNKNOWN` when the controller does not say), and "Release all" for an engineer, asked first, with the controller's answer shown as it gave it; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
 | 2.6 The logic module | Built: `plugins/logic` (programs, bindings, check, build; eight MCP tools), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes; its workbench UI `frontend/packages/logic-ui` (tree section, program editor, load, load cold, how a load started, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus. Not built: unit tests in ST, programs in a device's slice |
-| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); editors for LD, FBD, SFC are not built. 2.10: not built |
-| 2.9 Emulators | Built: eight programs (`strings.st` since L2c-1, `library.st` since L2c-2), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else. Since L4 the timers and counters in them are the library's, in ST: all 16 runs equal |
+| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); the places of an LD diagnostic (§2.15); editors for LD, FBD, SFC are not built. 2.10: not built |
+| 2.9 Emulators | Built: eight programs (`strings.st` since L2c-1, `library.st` since L2c-2), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else. Since L4 the timers and counters in them are the library's, in ST: all 16 runs equal Since L3a a Ladder Diagram joins them (`tests/ladder/oscillator.xml`: two TON, a CTU, rising and falling contacts, a set coil, a jump): all 18 runs equal (rustc 1.100.0, QEMU 8.2.2, run in the CI runner's image) |
 | 2.12 Oracle | `differential_strucpp.rs`: 8 programs, 60 cycles, 9,480 values, all agree except the five deliberate rows of §2.13 (287 values: 167 of the first three, 60 each of INSERT's position and a based literal read as an integer). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE. Unchanged by L4 (the standard blocks in ST): the same 9,480 values, the same 287 |
 | 2.14 Standard library in ST (L4) | `crates/mythos-logic-st/src/library/`: SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD and their INT, DINT and LINT variants, TP, TON, TOF and their TIME variants (22 POUs in 4 files, an index); the intrinsic `__NOW()`; names of the library refused to a program's POUs and types; the library's names resolved among its own; no diagnostic pointing into it. Proven by `standard_library.rs` (14) and `standard_blocks_run_as_the_native_ones.rs` (4: every native block against the library's, 400 sequences of 150 scans each, 540,000 scans in all) |
+| 2.15 Ladder Diagram (L3a) | `crates/mythos-logic-ld`: PLCopen TC6 XML v2.01 read with `quick-xml` (MIT); the subset of §2.15; the graph checked and lowered to the ST front-end's syntax tree; edges, values used twice and jumps in hidden private variables (`Var::hidden`, `IR_VERSION` 6); diagnostics naming the element (`element`) and the source (`source`); `compile_sources` and `Language::Ld` in the compiler; `layers.rs` gives LD its layer (the IR and the ST front-end) and feeds the guard an LD crate reaching the VM and an ST crate reaching LD. Proven by `ladder_runs_on_the_vm.rs` (26: every element, its table's behaviour scan by scan, EN and ENO, a function of ST and the standard functions as blocks, LD function blocks and functions, jumps both ways, a return, RETAIN and the edge memory of a RETAIN instance, 300 contacts in series and in parallel, the emulator's program), `refusals.rs` (28: every refusal of §2.15 with its message and its element, the JSON of a place, the sources named), `ladder_equals_st.rs` (4 LD programs and their ST twins, 200 random sequences of 100 scans each, every shared variable equal after every scan: 51 variables, 1,020,000 values compared) and `damaged_ladder_never_panics.rs` (3,000 damaged documents, each compiled or refused with a place). Mutation-checked in a copy of the tree (`git archive`, its own target directory; the clean copy passed before and after the restores): parallel branches made AND turned `series_is_and_and_parallel_is_or`, `a_long_series_and_a_wide_parallel_compile_and_run`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program` and `contacts_and_coils_equal_their_st_twin` red; a negated contact's negation dropped turned `a_normally_closed_contact_passes_power_when_its_variable_is_off`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program`, `the_oscillator_the_emulators_run_does_what_its_rungs_say` and `contacts_and_coils_equal_their_st_twin` red; an edge contact never writing its memory turned `a_rising_contact_is_on_for_one_scan_after_its_variable_goes_on`, `a_rising_contact_senses_its_variable_while_its_input_is_off`, `a_falling_contact_is_on_for_one_scan_after_its_variable_goes_off` and `contacts_and_coils_equal_their_st_twin` red; a dangling connection let through turned `a_dangling_connection_is_refused_naming_its_element_and_the_missing_id` and `a_damaged_ladder_document_is_compiled_or_refused_with_places_never_a_panic` red. Not built: the LD editor and the logic module's LD programs (L3b) |
 
 Evidence of the spike (2026-11-17):
 

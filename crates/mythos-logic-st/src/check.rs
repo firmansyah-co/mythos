@@ -492,6 +492,7 @@ impl Checker {
                     section: Section::Var,
                     retention: Retention::Unqualified,
                     init: None,
+                    hidden: false,
                 });
             }
             for d in &p.vars {
@@ -564,6 +565,7 @@ impl Checker {
             section: d.section,
             retention: d.retention,
             init,
+            hidden: d.hidden,
         });
     }
 

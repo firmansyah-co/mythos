@@ -4,7 +4,8 @@
 #
 #   scripts/logic-vm-on-emulators.sh
 #
-# For each program in crates/mythos-logic-compiler/tests/differential/ and each machine:
+# For each program in crates/mythos-logic-compiler/tests/differential/ (Structured Text) and
+# crates/mythos-logic-compiler/tests/ladder/ (Ladder Diagram, TC6 XML), and each machine:
 #   1. compile it and run it here (`expected_scans`): the expected lines;
 #   2. build the `on_target` firmware around its bytecode for the machine's instruction set;
 #   3. run that in QEMU and compare what it prints with the expected lines.
@@ -38,8 +39,10 @@ MACHINES=(
 
 FAILED=0
 RAN=0
-for st in "$ROOT"/crates/mythos-logic-compiler/tests/differential/*.st; do
-    name="$(basename "$st" .st)"
+for st in "$ROOT"/crates/mythos-logic-compiler/tests/differential/*.st \
+    "$ROOT"/crates/mythos-logic-compiler/tests/ladder/*.xml; do
+    name="$(basename "$st")"
+    name="${name%.*}"
     for machine in "${MACHINES[@]}"; do
         IFS='|' read -r mname triple script profile emulator <<<"$machine"
         bytecode="$WORK/$name.$mname.mlbc"

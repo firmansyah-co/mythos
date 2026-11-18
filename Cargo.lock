@@ -2623,6 +2623,7 @@ version = "0.1.0"
 dependencies = [
  "mythos-logic-backend-vm",
  "mythos-logic-ir",
+ "mythos-logic-ld",
  "mythos-logic-st",
  "mythos-logic-vm",
  "serde",
@@ -2634,6 +2635,16 @@ name = "mythos-logic-ir"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "mythos-logic-ld"
+version = "0.1.0"
+dependencies = [
+ "mythos-logic-ir",
+ "mythos-logic-st",
+ "quick-xml",
+ "serde_json",
 ]
 
 [[package]]
