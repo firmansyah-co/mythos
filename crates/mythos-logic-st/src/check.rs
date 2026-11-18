@@ -77,6 +77,11 @@ pub fn check(src: &ast::Source) -> Result<Unit, Vec<Diagnostic>> {
     if !contained {
         c.recursion();
     }
+    // Only a sound unit is walked through its instances: one refused for nesting too deep
+    // could exhaust the stack.
+    if c.diags.is_empty() {
+        c.retained_in_part(src);
+    }
     if c.diags.is_empty() {
         Ok(c.unit)
     } else {
@@ -459,6 +464,7 @@ impl Checker {
                     name: p.name.clone(),
                     ty,
                     section: Section::Var,
+                    retention: Retention::Unqualified,
                     init: None,
                 });
             }
@@ -529,6 +535,7 @@ impl Checker {
             name: d.name.clone(),
             ty,
             section: d.section,
+            retention: d.retention,
             init,
         });
     }
@@ -876,6 +883,36 @@ impl Checker {
             }
         }
         false
+    }
+
+    /// An array is one symbol, kept across a warm restart or not as a whole. One the rules of
+    /// IEC 61131-3 ed. 3 §6.5.6.2 would keep in part (an array of function block instances
+    /// whose type declares a member RETAIN or NON_RETAIN, or holds an instance) is refused at
+    /// its declaration, once, naming where in the program it is.
+    fn retained_in_part(&mut self, src: &ast::Source) {
+        let entry = self.unit.entry;
+        if src.pous.get(entry).map(|p| p.kind) != Some(ast::PouKind::Program) {
+            return;
+        }
+        let mut told: Vec<(usize, usize)> = Vec::new();
+        for (path, p, k) in self.unit.arrays_retained_in_part() {
+            if told.contains(&(p, k)) {
+                continue;
+            }
+            told.push((p, k));
+            let name = &self.unit.pous[p].vars[k].name;
+            let span = src.pous[p]
+                .vars
+                .iter()
+                .find(|d| d.name.eq_ignore_ascii_case(name))
+                .map_or(src.pous[p].span, |d| d.span);
+            self.err(
+                span,
+                format!(
+                    "{path} would be retained in part: some members of its elements are retained across a warm restart and some are not (IEC 61131-3 ed. 3 §6.5.6.2); an array retained in part is not supported yet"
+                ),
+            );
+        }
     }
 
     /// How deep a value of `ty` nests: 0 for an elementary type or a standard function

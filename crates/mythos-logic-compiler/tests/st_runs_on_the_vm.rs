@@ -350,8 +350,8 @@ fn what_is_not_supported_yet_is_refused_by_name_never_compiled_as_something_else
             "bind a variable to a tag",
         ),
         (
-            "PROGRAM P VAR RETAIN a : INT; END_VAR END_PROGRAM",
-            "RETAIN is not supported yet",
+            "PROGRAM P VAR PERSISTENT a : INT; END_VAR END_PROGRAM",
+            "PERSISTENT is not supported yet",
         ),
         (
             "PROGRAM P VAR a : INT; END_VAR a := SHL(a, 1); END_PROGRAM",

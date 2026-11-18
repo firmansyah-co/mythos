@@ -21,11 +21,12 @@ pub use keywords::{is_keyword, KEYWORDS, TYPE_KEYWORDS};
 
 /// The version of the IR's shape. A backend given another version refuses it.
 ///
+/// 4: each variable's [`Retention`].
 /// 3: the numeric and selection functions of the standard library in [`StdFn`].
 /// 2: STRING, string literals, and the functions of the standard library ([`StdFn`]).
 /// 1: a unit of several program organization units (functions, function block types, one
 /// program), structures and arrays; places with a path. 0 was one program of scalar variables.
-pub const IR_VERSION: u32 = 3;
+pub const IR_VERSION: u32 = 4;
 
 /// The length of a STRING declared without one. IEC 61131-3 ed. 3 gives no default:
 /// Table 10 footnote k and §6.4.2.2 leave the maximum length to the implementer, and the
@@ -131,4 +132,28 @@ pub enum Section {
     Var,
     Input,
     Output,
+}
+
+/// The retentive qualifier of the section a variable is declared in (IEC 61131-3 ed. 3
+/// §6.5.6, Figure 7): what a warm restart does to it.
+///
+/// A RETAIN variable keeps the value it had when the program stopped; a NON_RETAIN one starts
+/// at its initial value. The standard leaves a variable of an unqualified section to the
+/// implementer (§6.5.6.1 rule 3); MythOS initializes it, as NON_RETAIN. The two differ only
+/// for a function block instance: the members of an instance declared in an unqualified
+/// section follow their type's own declarations ([`Unit::member_retention`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Retention {
+    #[default]
+    Unqualified,
+    Retain,
+    NonRetain,
+}
+
+impl Retention {
+    /// Whether a variable of this retention keeps its value across a warm restart.
+    pub fn retained(self) -> bool {
+        self == Retention::Retain
+    }
 }
