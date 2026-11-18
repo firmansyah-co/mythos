@@ -101,6 +101,7 @@ fn compare(name: &str, ld: impl Fn() -> Run, st: impl Fn() -> Run, inputs: &[Inp
         }
     }
     assert_eq!(values, SEQUENCES as usize * SCANS * shared.len());
+    eprintln!("{name}: {} variables, {values} values equal", shared.len());
 }
 
 fn ld_run(pous: Vec<Pou>, st: Option<&'static str>) -> impl Fn() -> Run {
