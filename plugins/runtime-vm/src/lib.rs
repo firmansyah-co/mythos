@@ -504,6 +504,15 @@ fn describe(fault: Fault) -> String {
 // The running program
 // -----------------------------------------------------------------------------
 
+/// How long a running program may go without completing a scan before the watchdog stops it:
+/// ten intervals, and never less than two seconds, so that a host busy for a moment (a CI runner
+/// shares its cores with builds) does not fault a healthy program. A scan is bounded by [`BUDGET`] instructions, so a program that runs at
+/// all completes one well inside this; what the watchdog catches is a scan thread that has
+/// ended or stopped scanning.
+fn watchdog_limit(interval_ms: u64) -> Duration {
+    Duration::from_millis(interval_ms.saturating_mul(10)).max(Duration::from_secs(2))
+}
+
 /// The most variables one program may have forced at once.
 const FORCE_LIMIT: usize = 64;
 
@@ -532,6 +541,9 @@ struct Live {
     since: Instant,
     /// The variables held at a value. Only while in RUN: leaving it releases every one.
     forces: Vec<Forced>,
+    /// When the program last showed it is being scanned: its first inputs after it was put in
+    /// RUN, then each scan it completed. `None` until it is fed. What the watchdog measures.
+    beat: Option<Instant>,
 }
 
 impl Live {
@@ -581,8 +593,35 @@ impl Live {
         self.max_scan_us = 0;
         self.overruns = 0;
         self.fed = false;
+        self.beat = None;
         self.since = Instant::now();
         Ok(())
+    }
+
+    /// Stop the program for the watchdog, when it is due: a program in RUN, fed, that has
+    /// completed no scan within `limit`, or whose scan thread has ended. It then faults like a
+    /// program whose scan failed: every force is released, and the core writes the safe values.
+    fn watchdog(&mut self, limit: Duration, thread_ended: bool, now: Instant) {
+        if self.mode != RuntimeMode::Run || !self.fed {
+            return;
+        }
+        let why = if thread_ended {
+            "the scan thread has ended; load the program again".to_string()
+        } else {
+            let quiet = now.saturating_duration_since(self.beat.unwrap_or(now));
+            if quiet <= limit {
+                return;
+            }
+            format!(
+                "no scan completed for {} ms, past the watchdog's {} ms",
+                quiet.as_millis(),
+                limit.as_millis()
+            )
+        };
+        self.mode = RuntimeMode::Fault;
+        self.forces.clear();
+        self.fault = Some(format!("watchdog: {why}"));
+        tracing::error!("{}", self.fault.as_deref().unwrap_or_default());
     }
 
     /// Why nothing is reported, when nothing is.
@@ -676,6 +715,7 @@ fn scan_loop(plan: Arc<Plan>, live: Arc<Mutex<Live>>, quit: Arc<AtomicBool>) {
         ) {
             Ok(_) => {
                 l.hold();
+                l.beat = Some(Instant::now());
                 let us = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
                 l.scans += 1;
                 l.last_scan_us = us;
@@ -754,6 +794,7 @@ impl MythosPlugin for VmEngine {
             fed: false,
             since: Instant::now(),
             forces: Vec::new(),
+            beat: None,
         };
         if run {
             live.cold_run(&plan)?;
@@ -866,6 +907,17 @@ impl RuntimeEngine for VmEngine {
             l.inputs.insert(input.tag, (input.value, input.good));
         }
         l.fed = true;
+        if l.beat.is_none() {
+            l.beat = Some(Instant::now());
+        }
+        // Checked before anything is reported: a program the watchdog stops reports no value
+        // and asks for no write in this very exchange.
+        let ended = running.thread.as_ref().is_none_or(JoinHandle::is_finished);
+        l.watchdog(
+            watchdog_limit(plan.program.interval_ms),
+            ended,
+            Instant::now(),
+        );
 
         let silent = l.silent_because();
         let samples = plan
@@ -1048,6 +1100,150 @@ impl RuntimeEngine for VmEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Drive a future of this engine to its end. Its calls never wait on anything, so polling
+    /// is enough; there is no async runtime in this crate to borrow.
+    fn finish<T>(future: impl std::future::Future<Output = T>) -> T {
+        struct Nothing;
+        impl std::task::Wake for Nothing {
+            fn wake(self: Arc<Self>) {}
+        }
+        let waker = std::task::Waker::from(Arc::new(Nothing));
+        let mut context = std::task::Context::from_waker(&waker);
+        let mut future = std::pin::pin!(future);
+        loop {
+            if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut context) {
+                return value;
+            }
+        }
+    }
+
+    fn live(mode: RuntimeMode, fed: bool, beat: Option<Instant>) -> Live {
+        Live {
+            memory: vec![0; 8],
+            mode,
+            fault: None,
+            scans: 3,
+            last_scan_us: 1,
+            max_scan_us: 1,
+            overruns: 0,
+            inputs: HashMap::new(),
+            fed,
+            since: Instant::now(),
+            forces: vec![Forced {
+                variable: "x".into(),
+                offset: 0,
+                value: VmValue::Int(1),
+            }],
+            beat,
+        }
+    }
+
+    #[test]
+    fn the_watchdog_allows_ten_intervals_and_never_less_than_two_seconds() {
+        assert_eq!(watchdog_limit(20), Duration::from_secs(2));
+        assert_eq!(watchdog_limit(200), Duration::from_secs(2));
+        assert_eq!(watchdog_limit(500), Duration::from_secs(5));
+        assert_eq!(watchdog_limit(u64::MAX), Duration::from_millis(u64::MAX));
+    }
+
+    #[test]
+    fn the_watchdog_faults_a_running_program_that_completes_no_scan_and_only_that() {
+        let now = Instant::now();
+        let limit = Duration::from_secs(1);
+        let long_ago = now - Duration::from_millis(1_500);
+
+        let mut quiet = live(RuntimeMode::Run, true, Some(long_ago));
+        quiet.watchdog(limit, false, now);
+        assert_eq!(quiet.mode, RuntimeMode::Fault);
+        assert!(
+            quiet
+                .fault
+                .as_deref()
+                .is_some_and(|f| f.starts_with("watchdog: no scan completed for 1500 ms")),
+            "{:?}",
+            quiet.fault
+        );
+        assert!(quiet.forces.is_empty(), "a fault releases every force");
+
+        let mut ended = live(RuntimeMode::Run, true, Some(now));
+        ended.watchdog(limit, true, now);
+        assert_eq!(ended.mode, RuntimeMode::Fault);
+        assert_eq!(
+            ended.fault.as_deref(),
+            Some("watchdog: the scan thread has ended; load the program again")
+        );
+
+        // Scanning, not yet fed, or not running: left as it is.
+        for (mode, fed, beat, thread_ended) in [
+            (
+                RuntimeMode::Run,
+                true,
+                Some(now - Duration::from_millis(900)),
+                false,
+            ),
+            (RuntimeMode::Run, false, None, true),
+            (RuntimeMode::Stop, true, Some(long_ago), true),
+            (RuntimeMode::Fault, true, Some(long_ago), true),
+        ] {
+            let mut l = live(mode, fed, beat);
+            l.watchdog(limit, thread_ended, now);
+            assert_eq!(l.mode, mode);
+            assert_eq!(l.forces.len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_program_whose_scan_thread_ends_is_faulted_at_the_next_exchange_and_reports_nothing() {
+        let bytes = include_bytes!(
+            "../../../crates/mythos-logic-compiler/tests/fixtures/format1/integers_and_control.mlbc"
+        );
+        let config = json!({ "run": true, "program": {
+            "name": "P", "version": "1", "interval_ms": 10,
+            "code": hex::encode(bytes), "symbols": [],
+        }});
+        let ctx = PluginContext::new("t", HashSet::new(), ".");
+        let mut engine = VmEngine::default();
+        finish(engine.start(&ctx, &config)).unwrap();
+        let first = finish(engine.exchange(&ctx, Vec::new())).unwrap();
+        assert_eq!(first.state.mode, RuntimeMode::Run);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while finish(engine.exchange(&ctx, Vec::new()))
+            .unwrap()
+            .state
+            .scans
+            == 0
+        {
+            assert!(Instant::now() < deadline, "the program never scanned");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // A healthy program runs past the watchdog's limit and is not stopped by it.
+        let past = Instant::now() + watchdog_limit(10) + Duration::from_millis(500);
+        while Instant::now() < past {
+            let healthy = finish(engine.exchange(&ctx, Vec::new())).unwrap();
+            assert_eq!(
+                healthy.state.mode,
+                RuntimeMode::Run,
+                "{:?}",
+                healthy.state.fault
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        // The scan thread ends, as a panic would end it.
+        let running = engine.running.as_mut().unwrap();
+        running.quit.store(true, Ordering::SeqCst);
+        running.thread.take().unwrap().join().unwrap();
+
+        let after = finish(engine.exchange(&ctx, Vec::new())).unwrap();
+        assert_eq!(after.state.mode, RuntimeMode::Fault);
+        assert_eq!(
+            after.state.fault.as_deref(),
+            Some("watchdog: the scan thread has ended; load the program again")
+        );
+        assert!(after.outputs.is_empty(), "nothing is asked to be written");
+    }
 
     #[test]
     fn a_tag_value_becomes_a_variable_only_when_it_is_one_never_wrapped_or_clamped() {
