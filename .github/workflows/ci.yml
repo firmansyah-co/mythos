@@ -225,9 +225,12 @@ jobs:
       # but this runner shares its cores with the agent fleet and its load swings from 1.2 to
       # 200+, so the larger margin is what makes the gate stable. The debug run above therefore
       # only smoke-checks the hot path; the acceptance assertion is gated on this release run.
+      # The same release run asserts the 300 ns tag read bound of NFR-001 and SYS-REQ-002 (the
+      # owner extended the swap's bound to reads on 2026-11-18): the best of five rounds of
+      # 1,000,000 reads, with zero corruption (test_tag_read_latency_under_300ns).
       # See the header of crates/mythos-shm/tests/shm_engine_tests.rs for the measurement regime,
       # the recorded distributions with their load conditions, and the local-runner fact.
-      - name: Run SHM Atomic Swap Latency Gate (release)
+      - name: Run SHM Swap and Read Latency Gates (release)
         run: |
           export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
           if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
@@ -235,7 +238,8 @@ jobs:
           fi
           cargo test --release -p mythos-shm --test shm_engine_tests -- --nocapture
 
-      # TSK-010's criterion is "< 100 ns p99 read/write under 16 concurrent threads". Nothing
+      # TSK-010's criterion is "< 100 ns p99 read/write under 16 concurrent threads" (a read is now
+      # compared against the owner's 300 ns of NFR-001; a write still against 100 ns). Nothing
       # computed a p99 until shm_p99_report.rs; the criterion suite below was only ever compiled
       # (--no-run), so TSK-010 had never actually been measured. Both now run:
       #   - shm_p99_report: real per-operation p99, 1 writer + 15 readers on a live SHM segment.

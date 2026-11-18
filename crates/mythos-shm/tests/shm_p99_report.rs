@@ -1,7 +1,9 @@
 //! TSK-010: what the criterion actually measures, and the verdict.
 //!
 //! `TSK-010` reads: *"Criterion benchmarks pass with < 100 ns p99 read/write operations under 16
-//! concurrent threads."*
+//! concurrent threads."* On 2026-11-18 the owner set a tag read's bound to 300 ns (NFR-001), so
+//! this report compares read p99 against 300 ns and write p99 against the original 100 ns. The
+//! table below was measured against 100 ns; read p99 misses 300 ns too.
 //!
 //! # Method and its known bias (read this before trusting any number below)
 //!
@@ -79,8 +81,14 @@ const TYPE_CODE_REAL: u16 = 4;
 const READER_THREADS: usize = 15;
 const SAMPLES_PER_THREAD: usize = 20_000;
 
-/// TSK-010's stated target for read and write.
-const SPEC_P99_NS: u64 = 100;
+/// The read target this report compares against: 300 ns, the owner's bound on a tag read
+/// (NFR-001, set 2026-11-18; TSK-010 stated 100 ns). The bound is enforced on an uncontended read
+/// in `shm_engine_tests.rs`; here, under 16 threads, it is only reported.
+const READ_P99_TARGET_NS: u64 = 300;
+
+/// The write target this report compares against: TSK-010's original 100 ns. No owner bound exists
+/// for a write; TSK-010 records it as under revision.
+const WRITE_P99_TARGET_NS: u64 = 100;
 
 /// Gross-breakage backstop for regime A (busy poll): p50, at **10x the worst p50 in the runs this
 /// constant was derived from** (see the table below). Pinned by decision, not recomputed per run —
@@ -270,7 +278,12 @@ fn retain_distributions(run: &[Retained], load: &str) {
     json.push_str(&format!(
         "  \"regime_b_p50_backstop_ns\": {REGIME_B_P50_BACKSTOP_NS},\n"
     ));
-    json.push_str(&format!("  \"spec_p99_ns\": {SPEC_P99_NS},\n"));
+    json.push_str(&format!(
+        "  \"read_p99_target_ns\": {READ_P99_TARGET_NS},\n"
+    ));
+    json.push_str(&format!(
+        "  \"write_p99_target_ns\": {WRITE_P99_TARGET_NS},\n"
+    ));
     json.push_str("  \"populations\": [\n");
     for (i, r) in run.iter().enumerate() {
         json.push_str(&format!(
@@ -459,7 +472,10 @@ fn report_tsk010_p99_read_write_under_16_concurrent_threads() {
     busy.report();
     swaps.report();
     writes.report();
-    println!("TSK-010 target {SPEC_P99_NS} ns p99, 1-min load average at measurement: {load}");
+    println!(
+        "TSK-010 targets: read {READ_P99_TARGET_NS} ns p99, write {WRITE_P99_TARGET_NS} ns p99; \
+         1-min load average at measurement: {load}"
+    );
 
     let _ = mythos_pal::DefaultShm::unlink(&name);
 
@@ -474,19 +490,20 @@ fn report_tsk010_p99_read_write_under_16_concurrent_threads() {
     // So: report the verdict unambiguously in the log, and assert only a gross-regression
     // backstop. The spec question is a finding for the board (see the PR body), not something a
     // CI threshold can decide.
-    let read_verdict = if swaps.p(0.99) < SPEC_P99_NS {
+    let read_verdict = if swaps.p(0.99) < READ_P99_TARGET_NS {
         "MET"
     } else {
         "NOT MET"
     };
-    let write_verdict = if writes.p(0.99) < SPEC_P99_NS {
+    let write_verdict = if writes.p(0.99) < WRITE_P99_TARGET_NS {
         "MET"
     } else {
         "NOT MET"
     };
     println!(
         "TSK-010 VERDICT: read p99={} ns -> {read_verdict}; write p99={} ns -> {write_verdict} \
-         (target {SPEC_P99_NS} ns, shared segment, 16 concurrent threads, pinned best-effort)",
+         (targets {READ_P99_TARGET_NS} / {WRITE_P99_TARGET_NS} ns, shared segment, 16 concurrent \
+         threads, pinned best-effort)",
         swaps.p(0.99),
         writes.p(0.99)
     );

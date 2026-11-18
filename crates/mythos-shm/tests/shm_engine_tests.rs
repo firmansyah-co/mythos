@@ -338,6 +338,92 @@ fn test_atomic_swap_latency_under_300ns() {
     );
 }
 
+/// The bound on one tag read, in ns: `NFR-001`, and `SYS-REQ-002`'s acceptance criterion
+/// ("1,000,000 tag reads complete with average latency < 300 ns. Zero data corruption."). The
+/// owner set it on 2026-11-18, extending the swap's 300 ns to reads; it was 100 ns, with a 50 ns
+/// target. A published figure, not one chosen here to make a test pass.
+#[cfg(not(debug_assertions))]
+const READ_BOUND_NS: f64 = 300.0;
+
+/// How many reads one round makes, as `SYS-REQ-002` states it.
+#[cfg(not(debug_assertions))]
+const READS_PER_ROUND: usize = 1_000_000;
+
+/// Rounds of [`READS_PER_ROUND`]. The best round is asserted, for the reason the header gives
+/// for the swap: a round the scheduler preempted on this shared host says nothing about the
+/// engine, while a regression in the read path slows every round.
+#[cfg(not(debug_assertions))]
+const READ_ROUNDS: usize = 5;
+
+/// `SYS-REQ-002` and `NFR-001` acceptance: 1,000,000 tag reads at an average under
+/// [`READ_BOUND_NS`], and every read returns what was written (zero data corruption).
+///
+/// The reads go through [`TagBusEngine::read_tag`], which takes the latest published snapshot
+/// (the state-word exchange) on every call: the costlier of the two read paths, so the bound
+/// covers [`ShmReaderHandle::read_tag`]'s plain read as well. All 32,768 slots are filled and
+/// read in turn, so the reads do not sit in one cache line. Measured on an optimised build only;
+/// CI runs it in the `cargo test --release -p mythos-shm` step.
+#[cfg(not(debug_assertions))]
+#[test]
+fn test_tag_read_latency_under_300ns() {
+    const SLOTS: usize = 32_768;
+    let mut engine =
+        TagBusEngine::<MemoryShm>::open_or_create("test_shm_read_latency", SLOTS).unwrap();
+    for slot in 0..SLOTS {
+        engine
+            .write_tag(
+                slot,
+                5, // LREAL
+                QualityCode::GOOD,
+                TagValueRaw::from_f64(slot as f64 * 0.5),
+                slot as u64,
+                TagFlags::ACCESS_RO,
+            )
+            .unwrap();
+    }
+    engine.publish_cycle();
+
+    let mut averages = Vec::with_capacity(READ_ROUNDS);
+    let mut corrupt = 0usize;
+    for _ in 0..READ_ROUNDS {
+        let start = Instant::now();
+        for i in 0..READS_PER_ROUND {
+            let slot = i % SLOTS;
+            let read = std::hint::black_box(engine.read_tag(std::hint::black_box(slot)).unwrap());
+            if read.tag_id as usize != slot
+                || read.value.as_f64() != slot as f64 * 0.5
+                || read.timestamp_ns != slot as u64
+                || read.quality != QualityCode::GOOD
+            {
+                corrupt += 1;
+            }
+        }
+        averages.push(start.elapsed().as_nanos() as f64 / READS_PER_ROUND as f64);
+    }
+
+    let best = averages.iter().cloned().fold(f64::INFINITY, f64::min);
+    println!(
+        "Tag read latency, {READ_ROUNDS} rounds x {READS_PER_ROUND} reads: averages {:?} ns/read, \
+         best {best:.2} ns; corrupt reads {corrupt}",
+        averages
+            .iter()
+            .map(|a| format!("{a:.2}"))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        corrupt,
+        0,
+        "{corrupt} of {} reads did not return what was written",
+        READ_ROUNDS * READS_PER_ROUND
+    );
+    assert!(
+        best < READ_BOUND_NS,
+        "The best round of {READS_PER_ROUND} tag reads averaged {best:.2} ns, over the \
+         {READ_BOUND_NS} ns of NFR-001 and SYS-REQ-002. This is a release build; the read path has \
+         regressed."
+    );
+}
+
 /// Debug-profile smoke check. Not the acceptance criterion - see the header.
 ///
 /// The bound is loose on purpose. Debug measures 26-32 ns at true idle but 75-87 ns when the fleet
