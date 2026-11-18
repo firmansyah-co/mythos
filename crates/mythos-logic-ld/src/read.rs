@@ -44,6 +44,11 @@ pub(crate) struct LdPou {
 pub(crate) struct Known {
     functions: Vec<(String, Option<TypeSpec>)>,
     blocks: Vec<String>,
+    /// The BOOL outputs of the function block types of the sources, by type and formal
+    /// parameter in upper case.
+    bool_outputs: Vec<(String, String)>,
+    /// Those of the standard library's, read from it when a body first asks.
+    library_bool_outputs: std::cell::OnceCell<Vec<(String, String)>>,
 }
 
 impl Known {
@@ -51,16 +56,40 @@ impl Known {
         let mut k = Known {
             functions: Vec::new(),
             blocks: Vec::new(),
+            bool_outputs: Vec::new(),
+            library_bool_outputs: std::cell::OnceCell::new(),
         };
         for p in st.pous.iter().chain(ld.map(|p| &p.tree)) {
             let upper = p.name.to_ascii_uppercase();
             match p.kind {
                 PouKind::Function => k.functions.push((upper, p.result.clone())),
-                PouKind::FunctionBlock => k.blocks.push(upper),
+                PouKind::FunctionBlock => {
+                    k.bool_outputs.extend(bool_outputs(p));
+                    k.blocks.push(upper);
+                }
                 PouKind::Program => {}
             }
         }
         k
+    }
+
+    /// Whether the output `formal` (upper case) of the function block type `upper` is
+    /// declared BOOL: the project's type, or else the standard library's.
+    pub fn output_is_bool(&self, upper: &str, formal: &str) -> bool {
+        let wanted = |(t, f): &(String, String)| t == upper && f == formal;
+        if self.blocks.iter().any(|b| b == upper) {
+            return self.bool_outputs.iter().any(wanted);
+        }
+        self.library_bool_outputs
+            .get_or_init(|| {
+                (0..mythos_logic_st::library::FILES.len())
+                    .flat_map(|file| mythos_logic_st::library::read(file).0.pous)
+                    .filter(|p| p.kind == PouKind::FunctionBlock)
+                    .flat_map(|p| bool_outputs(&p))
+                    .collect()
+            })
+            .iter()
+            .any(wanted)
     }
 
     /// A function block type: the project's or the standard library's.
@@ -79,6 +108,18 @@ impl Known {
             .find(|(n, _)| n == upper)
             .and_then(|(_, r)| r.as_ref())
     }
+}
+
+/// The BOOL outputs of function block `p`: its name and each output's, in upper case.
+fn bool_outputs(p: &ast::Pou) -> Vec<(String, String)> {
+    p.vars
+        .iter()
+        .filter(|v| v.section == mythos_logic_ir::Section::Output)
+        .filter(
+            |v| matches!(&v.ty.kind, ast::TypeSpecKind::Named(n) if n.eq_ignore_ascii_case("BOOL")),
+        )
+        .map(|v| (p.name.to_ascii_uppercase(), v.name.to_ascii_uppercase()))
+        .collect()
 }
 
 /// Whether `text` is a name a program may declare: one identifier (IEC 61131-3 ed. 3

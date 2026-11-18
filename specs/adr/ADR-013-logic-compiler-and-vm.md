@@ -531,8 +531,9 @@ returns and comments. An element it does not know (a connector) is listed as not
 POU of the document is drawn; a function's or function block's has no live state, since each
 call or instance has its own. A diagnostic with an `element` is drawn as a mark around it and
 listed as `<pou> element <localId>` (or `variable <name>`). It uses the workbench's tokens
-only (`--c-good` for ON, `--c-text-muted` for OFF, `--c-warn` dashed for UNKNOWN); its visual
-design is the owner's to lead.
+only (`--c-good` for powered, drawn solid; `--c-text-muted` for not powered, drawn dashed, the
+meaning of TIA Portal's convention; `--c-warn` dotted for UNKNOWN; `--c-text-faint` for a rung
+not executed); its visual design is the owner's to lead.
 
 **Live state is drawn only from watched values, and only of the version on screen**: while the
 check of the text shown is current, its `version` equals the runtime's, the runtime is in RUN
@@ -540,20 +541,25 @@ and the watch answer is of that version in RUN. Otherwise nothing is drawn live 
 says why (another version runs, the program is in STOP, it is not loaded, the text does not
 compile). Then:
 
-- a normally open contact is its variable's watched value, a negated one the negation; a
-  transition-sensing contact is not coloured, since it conducts for one scan only and its
-  variable does not say which;
-- a coil shows its variable's value (a negated, set or reset coil's variable, not the power
-  reaching it);
-- a link carries the power of the output it starts from where `power` names what holds it: ON
-  (from the left rail), or a variable's watched value. A link whose source no variable holds is
-  drawn with no state, never one worked out (§2.15, power flow);
+- every element that carries power (a contact, a coil, a BOOL variable) and every link is
+  drawn with the power the compiler kept for it when its rung was evaluated in the last scan
+  (L3b-2a, §2.15, power for monitoring): a link carries the power of the output it starts
+  from, and past the point where several links join, the junction's (`ld-junction`). ON (from
+  the left rail) needs no value. An output that carries no power (a value that is not a BOOL)
+  is drawn with no state, never one worked out;
+- a rung whose flag says it did not run in the last scan (a jump or a return skipped it) is
+  drawn as not executed: its number marked, and none of its elements or links with a power
+  state, since what they keep is from a scan that ran them; FORCED marks stay;
+- under a contact or a coil, its variable's value (a negated contact's negation; a
+  transition-sensing contact's none, since its variable does not say whether it conducted): a
+  contact may conduct while no power reaches it, and a coil's variable need not be its power
+  (a negated, set or reset coil);
 - a value that cannot be read (the watch fails, the runtime does not have the variable, it is
-  not a BOOL) is UNKNOWN, written under the element, never ON or OFF; when the runtimes can no
-  longer be read every state is UNKNOWN; a forced variable is marked FORCED under its element
-  (`variable-forced`), as in the table.
+  not a BOOL) is UNKNOWN, never ON or OFF, and a rung whose flag cannot be read is UNKNOWN as a
+  whole; when the runtimes can no longer be read every state is UNKNOWN; a forced variable is
+  marked FORCED under its element (`variable-forced`), as in the table.
 
-The front-end's hidden variables are watched for the links and not listed in the table. An
+The front-end's hidden variables are watched for the diagram and not listed in the table. An
 element's variable that is not a variable of the program by itself (an element of an array) is
 watched as well.
 
@@ -885,9 +891,10 @@ unchanged for every language; where implementations differ, the standard.
 - **Hidden variables.** What LD needs that the program did not declare is a variable of the
   POU whose name begins with two underscores, which §6.1.2 forbids in an identifier, so no
   name of the program meets it: `__EDGE_<localId>` (BOOL), the memory of an edge contact or
-  coil; `__LD_<localId>` and `__LD_<localId>_ENO`, a value more than one statement needs
-  (BOOL, or the declared type of a function of the project, of a conversion, or of the
-  variable read); `__JUMP` (DINT), when the body jumps or returns. Each is a symbol like any
+  coil; `__LD_<localId>` and `__LD_<localId>_<pin>`, the power of an element's output or of a
+  junction (BOOL, below), or a value more than one statement needs (the declared type of a
+  function of the project, of a conversion, or of the variable read); `__NET_<localId>`
+  (BOOL), whether a network ran (below); `__JUMP` (DINT), when the body jumps or returns. Each is a symbol like any
   variable, so RETAIN, watching and online change take it: it is unqualified, so not retained
   in a program and retained in an instance declared RETAIN (§6.5.6.2); online change carries it
   by its path, which names the element, so an edit that keeps an element's `localId` keeps its
@@ -915,26 +922,74 @@ unchanged for every language; where implementations differ, the standard.
   input variable read by more than one input that is not a variable by its name: each refused
   with what to write instead. Connectors, compare contacts (§2.13), in-out parameters, edges on
   a block's parameters, types declared in a document.
-- **Power flow for an editor** (L3b-1). `mythos_logic_ld::lower_with_probes` (and so
-  `compile_sources` and `compile_in` for LD, as `Compiled::probes`) says, for each output of an
-  element, what holds its state once a scan is over, wherever something holds it exactly:
-  `Holds::On` (the left rail, and what reaches it unchanged), or `Holds::Variable` with a path,
-  which is a hidden `__LD_<localId>` (or `_ENO`) variable assigned unconditionally whenever its
-  network runs (a branch point, a coil whose output goes on, an edge contact's output, a typed
-  value used twice; and a coil fed by such a value alone, which passes it on), or an output of a function block instance
-  named plainly (not an element of an array) and called by that block alone (nothing else
-  writes it, Figure 13 rule 4b). Nothing else is published: every other link's state is an
-  expression evaluated inside the scan and kept nowhere, and working it out afterwards from the
-  variables it reads would use their values at the end of the scan, not those it read (a
-  seal-in contact reads its coil's variable before the coil writes it), which would draw a
-  guess as a state. A body with a jump or a return publishes nothing: which networks ran in a
-  scan is not kept, and a network a jump skipped keeps the hidden variables of the last scan
-  that ran it. The front-end was not changed to keep more: keeping every element's output
-  would cost a byte and a store per element in every program to serve a view, and would still
-  say nothing of a skipped network. The logic module gives the PROGRAM's probes as `power` in
-  `check` (§2.6); `ladder_power_probes.rs` holds what is published, that a published variable
-  after a scan equals the power its output carried in it, and that a body with a jump or
-  return, or an instance called twice, publishes nothing of it.
+- **Power for monitoring** (L3b-2a). **Decided by the owner (2026-11-18):** for online
+  monitoring as TIA Portal gives it, the compiler always stores each graphical element's output
+  in a hidden private variable at the moment it is evaluated, in every build: there is no
+  build for monitoring. A flag per network says whether it ran in the scan, so that a network
+  a jump skipped shows as not executed. The cost is accepted: about one byte and one store per
+  element. FBD and SFC are to do the same in their own slices. (L3b-1 published only the
+  outputs some variable happened to hold, none in a body with a jump or a return; this
+  replaces it.)
+  - **What is kept**: the output of every contact, coil and BOOL variable read (`inVariable`,
+    `inOutVariable`) in `__LD_<localId>`; of a block, a function's BOOL result in
+    `__LD_<localId>`, a function block's BOOL output in `__LD_<localId>_<formal>`, ENO in
+    `__LD_<localId>_ENO`; every junction, where several links join an input (a vertical link,
+    §8.2.3), in `__LD_<localId>_IN`, or `__LD_<localId>_<formal>` at a block's input; each
+    network in `__NET_<localId>` of its first element in the order of evaluation. ON (the left
+    rail, and what it reaches through nothing that can switch it off) is kept nowhere. An
+    output that is not a BOOL (a timer's ET, an ADD's result), or a function's whose type is
+    not known before checking (SEL, MAX, …), carries no power and keeps none: a BOOL output of
+    a function block is known from its declaration, the project's or the standard library's.
+  - **When**: where the lowering evaluates the value, so storing it changes nothing the
+    program does. At once where it kept a value already (a branch point, a coil, an edge);
+    otherwise by a statement of its own just before the first statement that reads the value,
+    where the expression it stands for was evaluated before; only hidden variables are written
+    between. An output nothing reads is stored when its network ends. A power read under an
+    IF (a block's input under its EN) is stored before the IF, so it is the element's power
+    whether or not the block ran. A function's result is stored only where the function runs,
+    and FALSE where it does not (its EN, or the EN of a function before it, was FALSE): the
+    function is never called for it there. Two things change, both as §8.1.5.1 rule c has it
+    (every element is evaluated): an element that feeds nothing but the right rail, or feeds a
+    block whose EN is FALSE, is now evaluated, so what it reads is read (an index out of range
+    there faults where before it was never read); and a function whose BOOL result nothing
+    takes is now called, under its own EN. Equal to their ST twins as before
+    (`ladder_equals_st.rs`, unchanged: 1,020,000 values).
+  - **Networks**: each sets its flag TRUE as it starts. In a body with a jump or a return,
+    every flag is set FALSE first in the scan, so a network a jump or a return skipped reads
+    FALSE, and one run again by a backward jump reads TRUE. This is exact for the PROGRAM,
+    which runs every scan; an instance of an LD function block not called in a scan keeps its
+    flags and power from the call before, and is not drawn live (§2.8).
+  - Each is a symbol marked private (`Var::hidden`, `"private": true`): watching, RETAIN
+    (unqualified: not retained in a program) and online change (carried by its path, which
+    names the element) take it as any hidden variable.
+  - `lower_with_probes` (and so `Compiled::probes`) names, for every output (`At::Output`),
+    junction (`At::Input`) and network (`At::Network`, its elements' `localId`s in order), the
+    variable keeping it, or ON. The logic module gives the PROGRAM's in `check` as `power`:
+    `{local_id, output}`, `{local_id, input}` or `{local_id, network}`, each with `variable` and
+    `negated`, or `on: true` (§2.6).
+  - **Depth.** A series of contacts or of functions is a chain of kept values as long as the
+    series. Each is worked out one element at a time, the first first, in the order the
+    lowering reaches them through their inputs, so the series takes no stack for its length:
+    300 AND blocks in series compile and run (`a_long_series_of_functions_compiles_and_runs`),
+    where `dev` before this slice overflowed the stack of a test's thread (2 MiB, a debug build)
+    at 200 (and passed 150).
+  - **Cost, measured** (code and memory in bytes, `pc` profile; the oscillator `rp2040`; before
+    is `dev` at `eccfbb5`; kept is the number of `__LD_`/`__NET_` variables after):
+
+    | Program | Code before | Code after | Memory before | Memory after | Kept |
+    | :--- | ---: | ---: | ---: | ---: | ---: |
+    | contacts and coils (`ladder_equals_st.rs`) | 344 | 774 | 24 | 67 | 48 |
+    | TON and CTU | 497 | 607 | 61 | 72 | 12 |
+    | functions | 136 | 206 | 18 | 25 | 8 |
+    | jumps and a return | 452 | 662 | 13 | 27 | 14 |
+    | oscillator (`tests/ladder/oscillator.xml`) | 831 | 1,091 | 94 | 113 | 21 |
+
+    Each new kept BOOL is one byte of memory (the growth in memory is the number of new ones),
+    and its store ten to fifteen bytes of code (an expression or a load, and the store; a body
+    with a jump also clears each flag). The VM is unchanged, so its firmware is too: ESP32-C3 39,318 bytes of code,
+    RP2040 32,308 (`scripts/logic-vm-footprint.sh`, rustc 1.100.0, in the CI runner's image).
+    The oscillator, now with its stores, runs on both emulated instruction sets with every scan
+    equal to the host's (all 18 runs equal, QEMU 8.2.2).
 - **What the editor slice (L3b-2) needs.** Editing in the workbench: placing, moving, wiring
   and deleting elements, and the text of each, writing TC6 back through `save_logic_source`.
   It must keep the `localId` of every element it does not change (online change carries
@@ -944,8 +999,7 @@ unchanged for every language; where implementations differ, the standard.
   by this front-end alone, as now; nothing of another tool's is copied. The view of L3b-1 draws
   from positions, so the editor needs a grid and a rule for where a new element goes, and the
   owner's design pass before both. Undo is the editor's own; the module keeps one version.
-  Links stay without power where no variable holds it (above), unless the owner decides the
-  front-end should keep each element's output while monitoring, at its cost.
+  Power for monitoring is the compiler's (above): the editor writes no variable for it.
 
 ## 3. Order of work
 
@@ -1003,7 +1057,10 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   v2.01; an LD program compiled with the project's ST POUs and the standard library.
   **L3b-1** (done): the logic module stores, checks and builds LD programs, each an MCP tool,
   and the workbench draws an LD program read-only with its live state (§2.6, §2.8, §2.15).
-  **L3b-2** next: editing a Ladder Diagram in the workbench (§2.15, what L3b-2 needs). Then FBD (the same TC6 reader; FBD's own order of
+  **L3b-2a** (done): every element's output and every junction kept for monitoring in every
+  build, a flag per network, and the view drawing each element and link with its power and a
+  rung not run as not executed (§2.8, §2.15, power for monitoring).
+  **L3b-2b** next: editing a Ladder Diagram in the workbench (§2.15, what L3b-2 needs). Then FBD (the same TC6 reader; FBD's own order of
   evaluation, §8.3.3, and explicit feedback, §8.1.5.2) and SFC.
 - L4. **The standard library in ST** (done, §2.14): the standard function blocks written in
   Structured Text, with intrinsics for what ST cannot say (the scan clock, bytecode format 4);
@@ -1042,11 +1099,11 @@ Each step leaves `dev` working.
 | 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Forcing is built (`Call::Force`, `Call::Unforce`, C5c): `runtime_api.rs` forces an output, a setpoint and an input of the running module process over the API and watches the device follow, refuses an operator and a viewer, refuses what cannot be forced, and sees every force released by a stop and by loading the program again. The watchdog is built (C7a): a program in RUN that completes no scan within ten intervals (never less than two seconds), or whose scan thread has ended, is put in FAULT at the next exchange with the reason (`watchdog: …`), every force released, so the core writes the safe values; a scan itself is bounded by the instruction budget. Proven by the module's own tests: a healthy program runs past the limit untouched, and one whose scan thread ends is faulted and asks for no write. RETAIN is built in the runtime and the core (C7b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter and proves that it goes on after a stop and run, after the program is loaded again, after its module process is killed and started again (from the values kept last, not those it was loaded with), and after a load in STOP, while the other counter starts from zero each time, and that a cold start resets it; the module's tests prove that a value is taken only into a variable of the same name, type and size. Since L4 a standard block's state is variables of its own: `runtime_api.rs` runs a RETAIN TON beside a plain one through the real module process, and after a stop and run the RETAIN one carries on from its ET (the time stopped not timed) while the plain one times again from 0, and a cold start resets both. Online change is built (C6b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter, a plain counter, a TON and an output bound to a Modbus simulator, loads a build with one variable added and one removed while it runs, and proves that both counters and the timer go on without resetting, the added variable starts from its initial value, the removed one is reported as dropped, and the device's register, sampled about every millisecond through the load, never holds the safe value nor drops below what the old build commanded before the load; that a cold load resets both counters and what is kept; that a program of another name starts as before; and that an unknown `start` is refused. The module's tests prove the carry rule (same path, type and size; an array of structures or instances not carried; a value given twice taken once; what is not carried listed with why), and that a program started into RUN holds the carried values and clock before its first scan while one loaded in STOP takes none |
 | 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run` (a warm restart), `/cold-start`, `/stop`, `/watch`, `/force` and `/release`, `GET`/`PUT /api/v1/projects/:id/runtimes` (`?start=cold`, and `changes.runtimes` saying how each runtime started: C6b), each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; what is forced in each, a FORCED badge with each variable and its value (`forced UNKNOWN` when the controller does not say), and "Release all" for an engineer, asked first, with the controller's answer shown as it gave it; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
 | 2.6 The logic module | Built: `plugins/logic` (programs in ST or LD, bindings, check, build; eight MCP tools, each saying which languages it takes; module version 0.2.0), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes, an LD program among them (created as a TC6 document, a diagnostic at its element, built, loaded, and running a Modbus simulator; an ST program saved without a language beside it, unchanged); its workbench UI `frontend/packages/logic-ui` (tree section with each program's language, program editor, the read-only LD view with its live state, load, load cold, how a load started, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus, and an LD program added from the tree, given rungs over the API, checked with a mistake drawn at its element, bound, loaded and run shows its contacts change state with the device's counter. Not built: unit tests in ST, a library of POUs shared by a project's programs |
-| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); the read-only LD view with each diagnostic at its element and its live state from watched values (L3b-1, `ladder.test.tsx`); editing LD (L3b-2), editors for FBD, SFC are not built. 2.10: not built |
+| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); the read-only LD view with each diagnostic at its element and its live state from watched values (L3b-1, `ladder.test.tsx`), each element, link and junction with the power the compiler kept and a rung not run as not executed (L3b-2a); editing LD (L3b-2b), editors for FBD, SFC are not built. 2.10: not built |
 | 2.9 Emulators | Built: eight programs (`strings.st` since L2c-1, `library.st` since L2c-2), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else. Since L4 the timers and counters in them are the library's, in ST: all 16 runs equal Since L3a a Ladder Diagram joins them (`tests/ladder/oscillator.xml`: two TON, a CTU, rising and falling contacts, a set coil, a jump): all 18 runs equal (rustc 1.100.0, QEMU 8.2.2, run in the CI runner's image) |
 | 2.12 Oracle | `differential_strucpp.rs`: 8 programs, 60 cycles, 9,480 values, all agree except the five deliberate rows of §2.13 (287 values: 167 of the first three, 60 each of INSERT's position and a based literal read as an integer). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE. Unchanged by L4 (the standard blocks in ST): the same 9,480 values, the same 287 |
 | 2.14 Standard library in ST (L4) | `crates/mythos-logic-st/src/library/`: SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD and their INT, DINT and LINT variants, TP, TON, TOF and their TIME variants (22 POUs in 4 files, an index); the intrinsic `__NOW()`; names of the library refused to a program's POUs and types; the library's names resolved among its own; no diagnostic pointing into it. Proven by `standard_library.rs` (14) and `standard_blocks_run_as_the_native_ones.rs` (4: every native block against the library's, 400 sequences of 150 scans each, 540,000 scans in all) |
-| 2.15 Ladder Diagram (L3a) | `crates/mythos-logic-ld`: PLCopen TC6 XML v2.01 read with `quick-xml` (MIT); the subset of §2.15; the graph checked and lowered to the ST front-end's syntax tree; edges, values used twice and jumps in hidden private variables (`Var::hidden`, `IR_VERSION` 6); diagnostics naming the element (`element`) and the source (`source`); `compile_sources` and `Language::Ld` in the compiler; `layers.rs` gives LD its layer (the IR and the ST front-end) and feeds the guard an LD crate reaching the VM and an ST crate reaching LD. Proven by `ladder_runs_on_the_vm.rs` (26: every element, its table's behaviour scan by scan, EN and ENO, a function of ST and the standard functions as blocks, LD function blocks and functions, jumps both ways, a return, RETAIN and the edge memory of a RETAIN instance, 300 contacts in series and in parallel, the emulator's program), `refusals.rs` (28: every refusal of §2.15 with its message and its element, the JSON of a place, the sources named), `ladder_equals_st.rs` (4 LD programs and their ST twins, 200 random sequences of 100 scans each, every shared variable equal after every scan: 51 variables, 1,020,000 values compared) and `damaged_ladder_never_panics.rs` (3,000 damaged documents, each compiled or refused with a place). Mutation-checked in a copy of the tree (`git archive`, its own target directory; the clean copy passed before and after the restores): parallel branches made AND turned `series_is_and_and_parallel_is_or`, `a_long_series_and_a_wide_parallel_compile_and_run`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program` and `contacts_and_coils_equal_their_st_twin` red; a negated contact's negation dropped turned `a_normally_closed_contact_passes_power_when_its_variable_is_off`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program`, `the_oscillator_the_emulators_run_does_what_its_rungs_say` and `contacts_and_coils_equal_their_st_twin` red; an edge contact never writing its memory turned `a_rising_contact_is_on_for_one_scan_after_its_variable_goes_on`, `a_rising_contact_senses_its_variable_while_its_input_is_off`, `a_falling_contact_is_on_for_one_scan_after_its_variable_goes_off` and `contacts_and_coils_equal_their_st_twin` red; a dangling connection let through turned `a_dangling_connection_is_refused_naming_its_element_and_the_missing_id` and `a_damaged_ladder_document_is_compiled_or_refused_with_places_never_a_panic` red. Since L3b-1 the front-end publishes where an element output's power is held (`Compiled::probes`), proven by `ladder_power_probes.rs` (5), and the logic module stores, checks and builds LD programs (2.6). Not built: editing LD in the workbench (L3b-2) |
+| 2.15 Ladder Diagram (L3a) | `crates/mythos-logic-ld`: PLCopen TC6 XML v2.01 read with `quick-xml` (MIT); the subset of §2.15; the graph checked and lowered to the ST front-end's syntax tree; edges, values used twice and jumps in hidden private variables (`Var::hidden`, `IR_VERSION` 6); diagnostics naming the element (`element`) and the source (`source`); `compile_sources` and `Language::Ld` in the compiler; `layers.rs` gives LD its layer (the IR and the ST front-end) and feeds the guard an LD crate reaching the VM and an ST crate reaching LD. Proven by `ladder_runs_on_the_vm.rs` (26: every element, its table's behaviour scan by scan, EN and ENO, a function of ST and the standard functions as blocks, LD function blocks and functions, jumps both ways, a return, RETAIN and the edge memory of a RETAIN instance, 300 contacts in series and in parallel, the emulator's program), `refusals.rs` (28: every refusal of §2.15 with its message and its element, the JSON of a place, the sources named), `ladder_equals_st.rs` (4 LD programs and their ST twins, 200 random sequences of 100 scans each, every shared variable equal after every scan: 51 variables, 1,020,000 values compared) and `damaged_ladder_never_panics.rs` (3,000 damaged documents, each compiled or refused with a place). Mutation-checked in a copy of the tree (`git archive`, its own target directory; the clean copy passed before and after the restores): parallel branches made AND turned `series_is_and_and_parallel_is_or`, `a_long_series_and_a_wide_parallel_compile_and_run`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program` and `contacts_and_coils_equal_their_st_twin` red; a negated contact's negation dropped turned `a_normally_closed_contact_passes_power_when_its_variable_is_off`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program`, `the_oscillator_the_emulators_run_does_what_its_rungs_say` and `contacts_and_coils_equal_their_st_twin` red; an edge contact never writing its memory turned `a_rising_contact_is_on_for_one_scan_after_its_variable_goes_on`, `a_rising_contact_senses_its_variable_while_its_input_is_off`, `a_falling_contact_is_on_for_one_scan_after_its_variable_goes_off` and `contacts_and_coils_equal_their_st_twin` red; a dangling connection let through turned `a_dangling_connection_is_refused_naming_its_element_and_the_missing_id` and `a_damaged_ladder_document_is_compiled_or_refused_with_places_never_a_panic` red. Since L3b-1 the logic module stores, checks and builds LD programs (2.6). Since L3b-2a every element's output, every junction and every network's flag is kept in a hidden private variable in every build (`Compiled::probes`, §2.15, power for monitoring), proven by `ladder_power_probes.rs` (9) and `a_long_series_of_functions_compiles_and_runs`. Not built: editing LD in the workbench (L3b-2b) |
 
 Evidence of the spike (2026-11-17):
 

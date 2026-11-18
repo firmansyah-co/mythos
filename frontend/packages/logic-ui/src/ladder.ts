@@ -312,6 +312,6 @@ export function networks(pou: LdPou): number[][] {
     .map((members) => members.map((e) => e.localId));
 }
 
-/** Whether the body has a jump or a return: which of its networks ran in a scan is not kept. */
+/** Whether the body has a jump or a return: a rung the scan skips is drawn as not executed. */
 export const transfers = (pou: LdPou): boolean =>
   pou.elements.some((e) => e.kind === 'jump' || e.kind === 'return');

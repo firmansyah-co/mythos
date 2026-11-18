@@ -10,7 +10,7 @@
 //! R_TRIG and F_TRIG (Table 44), so this also holds the LD edges to the standard's blocks.
 //!
 //! What is compared: every symbol of the LD program but its hidden ones (`__EDGE_*`, `__LD_*`,
-//! `__JUMP`) is in the ST twin, and every one of the twin's but its edge detectors (`h_*`) is
+//! `__NET_*`, `__JUMP`) is in the ST twin, and every one of the twin's but its edge detectors (`h_*`) is
 //! in the LD program; each of those, read after each scan, is equal.
 
 mod support;
@@ -50,6 +50,16 @@ enum Input {
 
 fn compare(name: &str, ld: impl Fn() -> Run, st: impl Fn() -> Run, inputs: &[Input]) {
     let (l, s) = (ld(), st());
+    // What monitoring costs (ADR-013 §2.15): the variables keeping power and rung flags.
+    let kept =
+        l.c.symbols
+            .iter()
+            .filter(|sym| sym.path.starts_with("__LD_") || sym.path.starts_with("__NET_"))
+            .count();
+    eprintln!(
+        "{name}: the LD program is {} bytes of code and {} of memory, {kept} variables keeping power",
+        l.c.code_size, l.c.memory_size
+    );
     let shared: Vec<String> =
         l.c.symbols
             .iter()
