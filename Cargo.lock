@@ -1093,7 +1093,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2429,14 +2428,11 @@ dependencies = [
  "clap",
  "mythos-core",
  "mythos-pal",
- "mythos-plugin-sdk",
  "mythos-update",
  "semver",
- "serde",
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror 1.0.69",
  "tokio",
  "tower 0.4.13",
  "tracing",
@@ -2456,7 +2452,6 @@ dependencies = [
  "driver-modbus",
  "futures-util",
  "hex",
- "hyper",
  "hyper-util",
  "mythos-module",
  "mythos-pal",
@@ -2489,15 +2484,10 @@ dependencies = [
  "axum",
  "mythos-core",
  "mythos-pal",
- "mythos-shm",
- "serde",
- "serde_json",
- "sha2",
  "tauri",
  "tauri-build",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2509,7 +2499,6 @@ dependencies = [
  "mythos-module",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -2537,7 +2526,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tempfile",
  "tokio",
 ]
 
@@ -2599,7 +2587,6 @@ dependencies = [
  "mythos-plugin-sdk",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -2655,7 +2642,6 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2680,7 +2666,6 @@ dependencies = [
  "crc32fast",
  "criterion",
  "mythos-pal",
- "tempfile",
  "thiserror 1.0.69",
 ]
 
@@ -2694,7 +2679,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
- "tracing",
  "ureq",
  "zip",
 ]

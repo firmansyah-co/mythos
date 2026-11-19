@@ -14,14 +14,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri = { version = "2.12", features = [] }
 mythos-core = { workspace = true }
 mythos-pal = { workspace = true }
-mythos-shm = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-sha2 = { workspace = true }
 
 [build-dependencies]
 tauri-build = { version = "2.7", features = [] }

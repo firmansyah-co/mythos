@@ -19,7 +19,7 @@ if git rev-parse --verify --quiet "$base" >/dev/null; then
     if git merge-base --is-ancestor HEAD "$base" 2>/dev/null && [ "$head_sha" != "$base_sha" ]; then
         echo "pre-commit: REFUSED — HEAD is already an ancestor of $base." >&2
         echo "  This branch has shipped. You are editing a finished slice." >&2
-        echo "  Cut a new branch from $base, or ask dev_gatekeeper for a worktree." >&2
+        echo "  Cut a new branch from $base." >&2
         fail=1
     else
         behind=$(git rev-list --count "HEAD..$base" 2>/dev/null || echo 0)
@@ -48,7 +48,7 @@ fi
 
 # 2. Runtime state in the index
 runtime_hits=$(git diff --cached --name-only | grep -E \
-    '(^|/)\.claude/(worktrees|autospin-)|(^|/)autospin-(state|logs|.*\.pid)|(^|/)\.openrig/|CLAUDE\.local\.md$' \
+    '(^|/)\.claude/(worktrees|autospin-)|(^|/)autospin-(state|logs|.*\.pid)|CLAUDE\.local\.md$' \
     || true)
 if [ -n "$runtime_hits" ]; then
     echo "pre-commit: REFUSED — runtime state staged for commit:" >&2

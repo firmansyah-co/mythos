@@ -1,6 +1,6 @@
 # Contributing & Engineering Process Conventions
 
-Conventions this repository's engineering agents and contributors are held to. These are
+Conventions every contributor to this repository, human or AI agent, is held to. These are
 **process**, not product requirements — they do not belong in `specs/` and do not need the
 controlled-document amendment process.
 
@@ -70,27 +70,12 @@ guard sits at, or it will guard the wrong place and report green.
 
 ---
 
-## 3. Closing a queue row: `no-follow-on` for a verdict, `handoff --to` for real work
+## 3. Verify a finding against the current `dev`, not only when it was found
 
-- Delivering a **verdict or report** to the seat that owns the next step → close `no-follow-on`,
-  with the PR number, timestamp and what remains open in the resolution.
-- Passing **real work** to another seat → `rig queue handoff --to <seat>`, which creates the
-  successor row.
-
-`--closure-reason handed_off_to` records "delivery to the next stage", which the stuck sweep reads
-as intent to create a successor row. It therefore raises a successor-verification finding even when
-the successor already exists — the sweep cannot verify custody from the closure alone. So
-`handed_off_to` either nags or was unnecessary, and is never the right reason for "here is my
-verdict, the merge is yours".
-
----
-
-## 4. Verify at dispatch, not only at filing
-
-A row that names a symptom can go stale when another pull request merges under it. Re-read the
-current ref immediately before assigning work or a severity.
+A finding that names a symptom can go stale when another pull request merges under it. Re-read
+the current `origin/dev` immediately before acting on it or giving it a severity.
 
 Corollary: **a grep hit is not a finding.** A match may be a comment above deleted code, a name in
 a doc comment, or a fixture. Open the surrounding lines and the definition before labelling
-anything `LIVE` — and if the severity is `LIVE` or `CRITICAL`, record in the row what you opened to
+anything `LIVE` — and if the severity is `LIVE` or `CRITICAL`, record what you opened to
 establish reachability.

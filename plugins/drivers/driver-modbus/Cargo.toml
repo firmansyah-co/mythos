@@ -19,7 +19,6 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["full", "io-util", "net"] }
-tracing.workspace = true
 
 [[bin]]
 name = "mythos-module-modbus"
