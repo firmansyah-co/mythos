@@ -826,9 +826,14 @@ async fn a_program_that_publishes_no_tag_runs_and_writes_its_outputs() {
     outputs_only.instances[0].program.published.clear();
     let p = plant_running(outputs_only, 20).await;
     p.drive_is("the pump runs at 300", 1, 300).await;
-    let tank = p.tank();
-    assert_eq!(tank.mode, "run", "{tank:?}");
-    assert!(tank.scans.is_some_and(|n| n > 0), "{tank:?}");
+    // The drive is written by a scan, but the runtime's status is a report of its own that
+    // can come later (macOS showed scans: 0 here): wait for it rather than read it once.
+    p.until("it reports its scans", |s| {
+        s.tank
+            .as_ref()
+            .is_some_and(|t| t.mode == "run" && t.scans.is_some_and(|n| n > 0))
+    })
+    .await;
 
     // Stopped, its outputs go to their safe values like any other program's.
     assert!(p.states.command("tank", false));
