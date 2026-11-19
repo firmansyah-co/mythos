@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The one verification gate. If you are about to say "it passes", run this first
-# and paste what it printed. Scoped narrower slices name their judge in rig/SLICES.md.
+# and paste what it printed.
 #
 # Usage: ./scripts/check.sh [--rust] [--frontend] [--all]
 #   default: --all

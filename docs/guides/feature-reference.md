@@ -80,4 +80,3 @@ Everything that runs today, piece by piece, with where it lives in the tree. Thi
 | `frontend/` | Web workbench (pnpm workspace): the shell `packages/ui-shell`, the module contract `packages/workbench-sdk`, the HMI module's UI `packages/hmi-ui`, and the logic module's UI `packages/logic-ui`. |
 | `catalog/` | Device packages. |
 | `docs/`, `specs/` | Design documents and the requirements baseline. See [`docs/README.md`](../README.md). |
-| `rig/` | Definition of the agent team that works on this repository. |

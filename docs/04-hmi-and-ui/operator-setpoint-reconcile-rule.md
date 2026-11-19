@@ -8,7 +8,7 @@ each ruling and the evidence behind it.
 **Date:** 2026-10-26 (decisions recorded 2026-11-11)
 **Surfaces in scope:** `MotorFaceplate.inputSpeed`; `PidControllerFaceplate.targetSp`,
 `.targetCv`, `.tuneKp`, `.tuneTn`, `.tuneTv`.
-**Related:** qitem-20261026053023-3c4197fd2154e695 (the row this answers); SYS-REQ-096;
+**Related:** SYS-REQ-096;
 the Inspector drawer's draft handling (PR #27); the faceplate provenance work (PR #34).
 **Non-goals:** this record contains no implementation, does not change the `quality` gate, and
 does not decide anything about the transport.
