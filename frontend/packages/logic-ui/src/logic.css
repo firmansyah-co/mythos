@@ -234,6 +234,8 @@ button.logic-diagnostic:hover {
 
 .logic-panel__actions {
   display: flex;
+  /* A task card is narrow: the commands go on as many rows as they need, never past its edge. */
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
 }
@@ -343,11 +345,20 @@ button.logic-diagnostic:hover {
 
 .ld-palette .ld-instruction > .btn {
   flex: 1;
+  /* A flex item is as wide as its text unless told otherwise: a long name is cut with an
+     ellipsis, and the star beside it stays in the card. */
+  min-width: 0;
+  overflow: hidden;
   justify-content: flex-start;
   gap: 8px;
 }
 
+.ld-palette .ld-instruction > .icon-btn {
+  flex-shrink: 0;
+}
+
 .ld-instruction__name {
+  min-width: 0;
   font-size: var(--fs-xs);
   overflow: hidden;
   text-overflow: ellipsis;
