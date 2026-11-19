@@ -56,6 +56,11 @@ try {
     return m.result?.result?.value;
   };
   const shot = async (name) => { const m = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(join(outDir, `${name}.png`), Buffer.from(m.result.data, 'base64')); };
+  // Every control of the task cards and the inspector lies inside its pane (the window is 1440 px).
+  const panesFit = async (where) => {
+    const off = await evaluate(`__t.offPane()`);
+    check(`with ${where} open, every control of the task cards and the inspector fits in its pane`, off.length === 0, JSON.stringify(off));
+  };
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
   await send('Page.enable');
   await sleep(2500);
@@ -99,6 +104,22 @@ try {
       },
       text(sel) { return [...document.querySelectorAll(sel)].map((el) => el.textContent.trim()); },
       has(sel) { return document.querySelector(sel) !== null; },
+      // Controls of the side panes that do not fit in them: a DOM test cannot see one pushed out.
+      offPane() {
+        const out = [];
+        for (const pane of document.querySelectorAll('.pane--cards, .pv__inspector')) {
+          const p = pane.getBoundingClientRect();
+          if (p.width === 0) continue;
+          for (const c of pane.querySelectorAll('button, input, select, textarea')) {
+            const r = c.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            if (r.right > p.right + 0.5 || r.left < p.left - 0.5) {
+              out.push((c.getAttribute('data-testid') || c.getAttribute('aria-label') || c.textContent.trim()) + ' ' + Math.round(r.right - p.right) + 'px');
+            }
+          }
+        }
+        return out;
+      },
     }; true`);
 
   // Signing in. The address names a project, and nothing of it is shown until the controller
@@ -396,6 +417,7 @@ try {
     return { value: b.querySelector('[data-testid="tag-value"]')?.textContent, marked: !!b.querySelector('[data-testid="tag-forced"]') }; })()`);
   check('the published tag carries the forced value on the tag bus, marked FORCED', forcedTag.value === '1234' && forcedTag.marked, JSON.stringify(forcedTag));
   await shot('e2e_6d_forced');
+  await panesFit('the forced program');
   await evaluate(`__t.clickTestId('runtime-release-all')`); await sleep(2500);
   const releasedRuntime = (await (await api(base + '/api/v1/runtimes')).json()).runtimes[0];
   const releasedRow = await watchedNow();
@@ -592,6 +614,7 @@ try {
     'contact: start, contact: motor, contact: stop, coil: motor', 'contact: motor, block, coil: lamp']), JSON.stringify(drawn));
   check('the program is unsaved until it is saved', await evaluate(`__t.has('[data-testid="program-unsaved"]')`));
   await shot('e2e_6f_ladder_editor');
+  await panesFit('the Ladder Diagram editor');
   await evaluate(`__t.click('Check')`); await sleep(1500);
   check('what the editor built compiles', (await evaluate(`__t.text('[data-testid="check-ok"]')[0]`)) === 'COMPILES',
     JSON.stringify(await evaluate(`__t.text('[data-testid="diagnostic"]')`)));
@@ -638,6 +661,7 @@ try {
   const after = await sealLive();
   check('the motor coil stays off', after.motor === 'off', JSON.stringify(after));
   await shot('e2e_6g_ladder_editor_live');
+  await panesFit('the running Ladder Diagram');
   await api(`${base}/api/v1/runtimes/Seal/release`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
   await evaluate(`__t.clickTestId('runtime-stop')`); await sleep(2500);
   await evaluate(`__t.clickTestId('runtime-unload')`); await sleep(2500);
@@ -744,6 +768,7 @@ try {
   check('and they change with the device’s counter', new Set(fbdSeen.map((s) => s.odd)).size === 2 && new Set(fbdSeen.map((s) => s.tenfold)).size > 1,
     JSON.stringify(fbdSeen.map((s) => `${s.odd}/${s.tenfold}`)));
   await shot('e2e_6h_fbd');
+  await panesFit('the Function Block Diagram');
   await evaluate(`__t.clickTestId('runtime-stop')`); await sleep(2500);
   const fbdStopped = await fbdLive();
   check('a stopped Function Block Diagram is drawn with no values', fbdStopped.live === 'none' && fbdStopped.tenfold === undefined, JSON.stringify(fbdStopped));
