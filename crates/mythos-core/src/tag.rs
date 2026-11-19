@@ -28,7 +28,12 @@ pub enum AccessMode {
     ReadWrite,
 }
 
-/// Rich metadata attached to every registered process variable.
+/// What is known about a registered process variable.
+///
+/// Every field here is something a source stated. There is deliberately no scale range, raw
+/// range or deadband: nothing in the system supplies them, and the fields that used to hold
+/// them were filled with `0..100`, `0..65535` and `0 %` for every tag and published as though
+/// they described it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TagMetadata {
     /// Canonical dot-separated URI (e.g. "external.BoilerRoom.PT101.pressure.pv")
@@ -40,23 +45,8 @@ pub struct TagMetadata {
     /// Human-readable description
     pub description: String,
 
-    /// Engineering units (e.g. "bar", "°C", "RPM", "m³/h", "%")
+    /// Engineering units (e.g. "bar", "°C", "RPM", "m³/h", "%"). Empty when none were stated.
     pub engineering_units: String,
-
-    /// Lower physical limit of sensor scale
-    pub scale_min: f64,
-
-    /// Upper physical limit of sensor scale
-    pub scale_max: f64,
-
-    /// Raw register integer lower bound (e.g. 0)
-    pub raw_min: i64,
-
-    /// Raw register integer upper bound (e.g. 65535)
-    pub raw_max: i64,
-
-    /// Deadband filter percentage (0.0 to 100.0%)
-    pub deadband_percent: f64,
 
     /// Historical retention policy
     pub retention_mode: RetentionMode,
@@ -75,11 +65,6 @@ impl TagMetadata {
             slot_id,
             description: String::new(),
             engineering_units: String::new(),
-            scale_min: 0.0,
-            scale_max: 100.0,
-            raw_min: 0,
-            raw_max: 65535,
-            deadband_percent: 0.0,
             retention_mode: RetentionMode::Volatile,
             access_mode: AccessMode::ReadWrite,
         })
@@ -140,6 +125,13 @@ impl TagCatalog {
         self.by_slot.insert(slot, uri.clone());
         self.by_uri.insert(uri, metadata);
         Ok(())
+    }
+
+    /// Remove a tag, freeing its slot. Returns what was registered, if anything was.
+    pub fn unregister(&mut self, uri: &str) -> Option<TagMetadata> {
+        let metadata = self.by_uri.remove(uri)?;
+        self.by_slot.remove(&metadata.slot_id);
+        Some(metadata)
     }
 
     /// Lookup metadata by canonical URI.

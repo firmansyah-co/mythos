@@ -1,7 +1,7 @@
 //! High-concurrency Criterion micro-benchmark suite for MythOS Lock-Free SHM TagBus.
 //!
 //! Evaluates read/write throughput and p99 latency across 16 concurrent worker threads
-//! validating the acceptance criteria (< 100 ns operation latency).
+//! against TSK-010 (a read bounded at 300 ns by NFR-001; a write against the original 100 ns).
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use mythos_pal::MemoryShm;

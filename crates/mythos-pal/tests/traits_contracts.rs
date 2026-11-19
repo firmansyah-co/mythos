@@ -1,11 +1,14 @@
 //! Compile-time contract assertions for MythOS Platform Abstraction Layer (PAL).
 //! Enforces Send + Sync + 'static guarantees for public structures and traits.
 
+#[cfg(windows)]
+use mythos_pal::WindowsShm;
 use mythos_pal::{
-    DefaultScheduler, DefaultShm, DynamicLibrary, LinuxScheduler, MacOsScheduler, MacOsShm,
-    MemoryShm, NoopScheduler, PalError, PlatformLibrary, PlatformScheduler, PlatformShm, PosixShm,
-    WindowsScheduler, WindowsShm,
+    DefaultScheduler, DefaultShm, DynamicLibrary, LinuxScheduler, MacOsScheduler, MemoryShm,
+    NoopScheduler, PalError, PlatformLibrary, PlatformScheduler, PlatformShm, WindowsScheduler,
 };
+#[cfg(unix)]
+use mythos_pal::{MacOsShm, PosixShm};
 
 fn assert_send<T: Send>() {}
 fn assert_sync<T: Sync>() {}
@@ -22,8 +25,11 @@ fn test_compile_time_send_sync_contracts() {
 
     // Shared Memory Structures
     assert_send_sync_static::<MemoryShm>();
+    #[cfg(unix)]
     assert_send_sync_static::<PosixShm>();
+    #[cfg(unix)]
     assert_send_sync_static::<MacOsShm>();
+    #[cfg(windows)]
     assert_send_sync_static::<WindowsShm>();
     assert_send_sync_static::<DefaultShm>();
 
@@ -46,8 +52,11 @@ fn test_compile_time_send_sync_contracts() {
 #[test]
 fn test_trait_implementation_bounds() {
     assert_platform_shm::<MemoryShm>();
+    #[cfg(unix)]
     assert_platform_shm::<PosixShm>();
+    #[cfg(unix)]
     assert_platform_shm::<MacOsShm>();
+    #[cfg(windows)]
     assert_platform_shm::<WindowsShm>();
     assert_platform_shm::<DefaultShm>();
 

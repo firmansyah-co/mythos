@@ -1,18 +1,26 @@
 //! # MythOS Axum REST and SSE API Gateway
 //!
-//! Provides REST endpoints (`/api/v1/health`, `/api/v1/tags`, `/api/v1/projects`)
-//! and real-time SSE stream (`/api/v1/telemetry/stream`) with locked 100ms batch throttling.
+//! REST endpoints for health, tags (read-only), projects and their data-type and I/O
+//! configuration, the routes of service modules (the HMI among them), and the SSE telemetry stream (`/api/v1/telemetry/stream`, one batch
+//! every 100 ms).
 
+pub mod auth;
 pub mod datatypes;
-pub mod faceplates;
-pub mod mcp;
-mod screens;
+mod fleet;
+mod io;
+pub mod modules;
+mod node;
+mod pairing;
+mod plant;
+pub mod remote;
+mod runtimes;
+mod services;
 pub mod state;
 pub mod telemetry;
+mod updates;
 pub mod web;
 
-use crate::sdui::{DeploymentRequest, DeploymentResponse};
-use axum::extract::ws::WebSocketUpgrade;
+use crate::storage::StorageError;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -21,15 +29,12 @@ use axum::{Json, Router};
 use mythos_pal::PlatformShm;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
-use tracing::info;
 
-pub use mcp::{mcp_message_handler, mcp_sse_handler, McpSseTransport};
 pub use state::ApiState;
 pub use telemetry::{telemetry_stream_handler, TagValueUpdate, TelemetryBatch};
 pub use web::{
     asset_handler, index_handler, mime_type_for_path, sanitize_relative_path, spa_fallback_handler,
-    web_router, DEFAULT_INDEX_HTML, EMBEDDED_ARCH_SVG, EMBEDDED_BANNER_SVG,
+    web_router, DEFAULT_INDEX_HTML, EMBEDDED_BANNER_SVG,
 };
 
 /// Health response schema
@@ -38,15 +43,6 @@ pub struct HealthResponse {
     pub status: String,
     pub service: String,
     pub timestamp_ms: u64,
-}
-
-/// Tag registration schema for POST /api/v1/tags
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RegisterTagRequest {
-    pub uri: String,
-    pub slot_id: u32,
-    pub description: Option<String>,
-    pub engineering_units: Option<String>,
 }
 
 /// Project creation schema for POST /api/v1/projects
@@ -58,43 +54,138 @@ pub struct CreateProjectRequest {
     pub author: String,
 }
 
-/// Construct the complete Axum Router for MythOS REST and SSE APIs.
+/// Construct the complete Axum Router: the REST and SSE API, its MCP endpoint (`/mcp`), and the
+/// web workbench.
 pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
+    let mut routes = api_routes::<S>();
+    if let Some(accounts) = state.auth.clone() {
+        // A route layer, so the matched route pattern is known when the policy is looked up.
+        routes = routes.route_layer(axum::middleware::from_fn_with_state(
+            accounts,
+            auth::enforce,
+        ));
+    }
+    let api: Router = routes.with_state(state.clone());
+    Router::new()
+        .merge(api.clone())
+        .merge(crate::mcp::router(
+            api,
+            state.auth.clone(),
+            state.services.clone(),
+        ))
+        // Web HMI Static Asset Serving & SPA Routing
+        .merge(web::web_router::<S>().with_state(state))
+}
+
+/// Every `/api/v1` route. Each one has an MCP tool or a stated reason not to (`crate::mcp`).
+fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
     Router::new()
         // Health
         .route("/api/v1/health", get(health_handler))
-        // Tags
+        // Signing in, and one's own account
+        .route("/api/v1/auth/status", get(auth::status::<S>))
+        .route("/api/v1/auth/setup", post(auth::setup::<S>))
+        .route("/api/v1/auth/login", post(auth::login::<S>))
+        .route("/api/v1/auth/logout", post(auth::logout::<S>))
+        .route("/api/v1/auth/me", get(auth::me))
+        .route("/api/v1/auth/me/password", put(auth::change_password::<S>))
         .route(
-            "/api/v1/tags",
-            get(list_tags_handler::<S>).post(register_tag_handler::<S>),
+            "/api/v1/auth/me/tokens",
+            get(auth::list_tokens::<S>).post(auth::create_token::<S>),
+        )
+        .route(
+            "/api/v1/auth/me/tokens/:token",
+            axum::routing::delete(auth::revoke_token::<S>),
+        )
+        // Settings → Updates
+        // This installation as a node (ADR-012)
+        .route("/api/v1/node", get(node::get::<S>).put(node::update::<S>))
+        // Plant projects: devices, download, compare (ADR-012 §2.4, §2.5)
+        .route("/api/v1/projects/:id/plant", get(plant::get::<S>))
+        .route(
+            "/api/v1/projects/:id/plant/devices/:device",
+            put(plant::set_device::<S>).delete(plant::remove_device::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/plant/devices/:device/compare",
+            get(plant::compare::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/plant/devices/:device/download",
+            post(plant::download::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/plant/download",
+            post(plant::download_all::<S>),
+        )
+        .route(
+            "/api/v1/slices/:project",
+            get(plant::get_slice::<S>)
+                .put(plant::put_slice::<S>)
+                // A device's files, base64 in JSON: more than the default limit allows.
+                .layer(axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024)),
+        )
+        // Pairing with other nodes (ADR-012 §2.3)
+        .route("/api/v1/pairing/code", post(pairing::make_code::<S>))
+        .route("/api/v1/pairing/accept", post(pairing::accept::<S>))
+        .route(
+            "/api/v1/pairing/peers/:node",
+            axum::routing::delete(pairing::peer_left::<S>),
+        )
+        .route(
+            "/api/v1/pairings",
+            get(pairing::list::<S>).post(pairing::pair::<S>),
+        )
+        .route(
+            "/api/v1/pairings/:node",
+            axum::routing::delete(pairing::unpair::<S>).put(pairing::change::<S>),
+        )
+        .route("/api/v1/pairings/:node/status", get(pairing::status::<S>))
+        // The fleet and call home (ADR-012 §2.6). A poll brings an answer, which may be large.
+        .route("/api/v1/fleet", get(fleet::fleet::<S>))
+        .route(
+            "/api/v1/callhome",
+            post(fleet::poll::<S>).layer(axum::extract::DefaultBodyLimit::max(
+                crate::callhome::ANSWER_LIMIT + 1024 * 1024,
+            )),
+        )
+        .route("/api/v1/updates", get(updates::status::<S>))
+        .route("/api/v1/updates/releases", get(updates::releases::<S>))
+        .route("/api/v1/updates/follow", put(updates::follow::<S>))
+        .route("/api/v1/updates/install", post(updates::install::<S>))
+        .route("/api/v1/updates/rollback", post(updates::rollback::<S>))
+        // Accounts (administrators)
+        .route(
+            "/api/v1/users",
+            get(auth::list_users::<S>).post(auth::create_user::<S>),
+        )
+        .route(
+            "/api/v1/users/:username",
+            put(auth::update_user::<S>).delete(auth::delete_user::<S>),
+        )
+        // Tags
+        // Read-only. A tag exists because the field I/O runtime registered it and feeds it;
+        // there is no route to create one, because nothing would feed it.
+        .route("/api/v1/tags", get(list_tags_handler::<S>))
+        // The plant's other devices whose tags are read here, and their links.
+        .route("/api/v1/remote", get(remote::links::<S>))
+        .route(
+            "/api/v1/tags/values",
+            get(telemetry::tag_values_handler::<S>),
         )
         .route("/api/v1/tags/:uri", get(get_tag_handler::<S>))
+        // The one way to command a field device: an operator writes a value to a tag.
+        .route("/api/v1/tags/:uri/value", put(write_tag_handler::<S>))
         // Projects
         .route(
             "/api/v1/projects",
             get(list_projects_handler::<S>).post(create_project_handler::<S>),
         )
+        .route("/api/v1/projects/active", get(active_project_handler::<S>))
         .route("/api/v1/projects/:id", get(get_project_handler::<S>))
         .route(
             "/api/v1/projects/:id/activate",
             post(activate_project_handler::<S>),
-        )
-        // Project-scoped persisted HMI drafts
-        .route(
-            "/api/v1/projects/:id/hmi/screens",
-            get(screens::list::<S>).post(screens::create::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/hmi/screens/:screen/subscreens",
-            post(screens::create_subscreen::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/hmi/screens/:screen/draft",
-            axum::routing::put(screens::save_draft::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/hmi/commit",
-            post(screens::commit::<S>),
         )
         // Project-scoped DUT/UDT registry (logic editor data types)
         .route(
@@ -113,46 +204,81 @@ pub fn create_router<S: PlatformShm + 'static>(state: ApiState<S>) -> Router {
             "/api/v1/projects/:id/datatypes/:dut/release",
             post(datatypes::release::<S>),
         )
-        // Project-scoped master faceplate types and instances (TSK-309)
-        .route(
-            "/api/v1/projects/:id/faceplates/types",
-            get(faceplates::list_types::<S>).post(faceplates::create_type::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/faceplates/types/:type",
-            get(faceplates::get_type::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/faceplates/types/:type/draft",
-            put(faceplates::save_draft::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/faceplates/types/:type/release",
-            post(faceplates::release::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/faceplates/instances",
-            get(faceplates::list_instances::<S>).post(faceplates::create_instance::<S>),
-        )
-        .route(
-            "/api/v1/projects/:id/faceplates/instances/:instance",
-            put(faceplates::update_instance::<S>),
-        )
         // Telemetry Stream (100ms batched SSE)
         .route(
             "/api/v1/telemetry/stream",
             get(telemetry_stream_handler::<S>),
         )
-        // Model Context Protocol (MCP) Transports (TSK-501 / TSK-504)
-        .route("/api/v1/mcp/sse", get(mcp::mcp_sse_handler::<S>))
-        .route("/api/v1/mcp/message", post(mcp::mcp_message_handler::<S>))
-        // Control Logic Deployment (TSK-302 / SYS-REQ-021)
-        .route("/api/v1/control/deploy", post(control_deploy_handler::<S>))
-        // CRDT Collaboration WebSocket Gateway (TSK-311)
-        .route("/api/v1/collab/ws/:room_id", get(collab_ws_handler::<S>))
-        // Web HMI Static Asset Serving & SPA Routing
-        .merge(web::web_router::<S>())
-        .with_state(state)
+        // Field I/O runtime status
+        .route("/api/v1/io/status", get(io_status_handler::<S>))
+        .route("/api/v1/io/drivers", get(io::drivers::<S>))
+        .route("/api/v1/modules", get(io::modules::<S>))
+        .route("/api/v1/modules/rescan", post(io::rescan_modules::<S>))
+        // A module's workbench UI (ADR-011 §2.3)
+        .route("/modules/:module/ui/*path", get(modules::ui_file::<S>))
+        // Settings → Modules (administrators)
+        .route(
+            "/api/v1/modules/install",
+            post(modules::install::<S>)
+                // A package carries an executable per platform: allow far more than the default.
+                .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024)),
+        )
+        .route(
+            "/api/v1/modules/install-url",
+            post(modules::install_url::<S>),
+        )
+        .route(
+            "/api/v1/modules/:module/enabled",
+            put(modules::set_enabled::<S>),
+        )
+        .route(
+            "/api/v1/modules/:module",
+            axum::routing::delete(modules::remove::<S>),
+        )
+        // A project's field I/O configuration
+        .route(
+            "/api/v1/projects/:id/io",
+            get(io::get_config::<S>).put(io::put_config::<S>),
+        )
+        // Runtimes (ADR-013): what this node executes, and a project's programs for it
+        .route("/api/v1/runtimes", get(runtimes::list::<S>))
+        .route("/api/v1/runtimes/:runtime/run", post(runtimes::run::<S>))
+        .route("/api/v1/runtimes/:runtime/stop", post(runtimes::stop::<S>))
+        .route(
+            "/api/v1/runtimes/:runtime/cold-start",
+            post(runtimes::cold_start::<S>),
+        )
+        .route(
+            "/api/v1/runtimes/:runtime/force",
+            post(runtimes::force::<S>),
+        )
+        .route(
+            "/api/v1/runtimes/:runtime/release",
+            post(runtimes::release::<S>),
+        )
+        .route(
+            "/api/v1/runtimes/:runtime/watch",
+            post(runtimes::watch::<S>),
+        )
+        .route(
+            "/api/v1/projects/:id/runtimes",
+            get(runtimes::get_config::<S>).put(runtimes::put_config::<S>),
+        )
+        // Every route of a service module (ADR-011), forwarded to its process
+        .route(
+            "/api/v1/projects/:id/:module/*rest",
+            get(services::project_route::<S>)
+                .post(services::project_route::<S>)
+                .put(services::project_route::<S>)
+                .delete(services::project_route::<S>),
+        )
+        .route(
+            "/api/v1/m/:module/*rest",
+            get(services::global_route::<S>)
+                .post(services::global_route::<S>)
+                .put(services::global_route::<S>)
+                .delete(services::global_route::<S>),
+        )
 }
 
 // -----------------------------------------------------------------------------
@@ -172,38 +298,25 @@ async fn health_handler() -> impl IntoResponse {
     })
 }
 
+/// `GET /api/v1/io/status` — the connections feeding the tag bus and how their last poll went.
+async fn io_status_handler<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+) -> impl IntoResponse {
+    // A runtime is hosted as a connection, but it is not field I/O: what it does is at
+    // `GET /api/v1/runtimes`, and a field I/O view listing it would offer to edit it as one.
+    let mut status = state.io_status.snapshot();
+    status
+        .connections
+        .retain(|c| !crate::runtimes::is_runtime_connection(&c.id));
+    Json(status)
+}
+
 async fn list_tags_handler<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
 ) -> impl IntoResponse {
     let catalog = state.tag_catalog.read().await;
     let tags: Vec<crate::tag::TagMetadata> = catalog.iter().cloned().collect();
     Json(tags)
-}
-
-async fn register_tag_handler<S: PlatformShm + 'static>(
-    State(state): State<ApiState<S>>,
-    Json(payload): Json<RegisterTagRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let mut catalog = state.tag_catalog.write().await;
-    let mut meta = crate::tag::TagMetadata::new(&payload.uri, payload.slot_id).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": e.to_string()})),
-        )
-    })?;
-
-    if let Some(desc) = payload.description {
-        meta.description = desc;
-    }
-    if let Some(units) = payload.engineering_units {
-        meta.engineering_units = units;
-    }
-
-    catalog
-        .register(meta.clone())
-        .map_err(|e| (StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))))?;
-
-    Ok((StatusCode::CREATED, Json(meta)))
 }
 
 async fn get_tag_handler<S: PlatformShm + 'static>(
@@ -213,6 +326,70 @@ async fn get_tag_handler<S: PlatformShm + 'static>(
     let catalog = state.tag_catalog.read().await;
     let meta = catalog.get_by_uri(&uri).ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(meta.clone()))
+}
+
+/// The body of `PUT /api/v1/tags/:uri/value`.
+#[derive(Debug, Deserialize)]
+struct WriteTagRequest {
+    /// The value in engineering units, as the tag is read: a number or a boolean.
+    value: serde_json::Value,
+}
+
+/// `PUT /api/v1/tags/:uri/value` — write a value to the field device behind a tag.
+///
+/// `200` means the device confirmed the write. It does not change what the tag reads: the
+/// next poll does, by reading the device. Every refusal says whether anything reached the
+/// device: `written` is `false` when nothing did, and `"unknown"` when a request went out and
+/// no confirmation came back.
+async fn write_tag_handler<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    Path(uri): Path<String>,
+    identity: Option<axum::Extension<crate::auth::Identity>>,
+    Json(request): Json<WriteTagRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    use crate::io::WriteError;
+    let who = identity
+        .map(|axum::Extension(i)| format!("{} ({})", i.username, i.via))
+        .unwrap_or_else(|| "an unauthenticated caller".to_string());
+    let refuse = |status: StatusCode, written: serde_json::Value, error: String| {
+        tracing::warn!(target: "mythos::audit", "{who} could not write {} to '{uri}': {error}", request.value);
+        (
+            status,
+            Json(json!({ "uri": uri, "written": written, "error": error })),
+        )
+    };
+    // A tag of another device of the plant is read here over the pairing; this node has no
+    // driver for it, and commanding another controller's outputs from here is not built.
+    if uri.contains(':') {
+        return refuse(
+            StatusCode::CONFLICT,
+            json!(false),
+            "this is another device's tag, read here over the pairing; write it on the device that owns it".to_string(),
+        );
+    }
+    if !(request.value.is_number() || request.value.is_boolean()) {
+        return refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!(false),
+            "nothing was written: the value must be a number or a boolean".to_string(),
+        );
+    }
+    match state.io_status.write_tag(&uri, request.value.clone()).await {
+        Ok(()) => {
+            tracing::info!(target: "mythos::audit", "{who} wrote {} to '{uri}'", request.value);
+            (StatusCode::OK, Json(json!({ "uri": uri, "written": true })))
+        }
+        Err(e) => {
+            let (status, written) = match &e {
+                WriteError::UnknownTag => (StatusCode::NOT_FOUND, json!(false)),
+                WriteError::ReadOnly | WriteError::Owned(_) => (StatusCode::CONFLICT, json!(false)),
+                WriteError::Stopped => (StatusCode::SERVICE_UNAVAILABLE, json!(false)),
+                WriteError::Refused(_) => (StatusCode::UNPROCESSABLE_ENTITY, json!(false)),
+                WriteError::NotConfirmed(_) => (StatusCode::BAD_GATEWAY, json!("unknown")),
+            };
+            refuse(status, written, e.to_string())
+        }
+    }
 }
 
 async fn list_projects_handler<S: PlatformShm + 'static>(
@@ -249,11 +426,27 @@ async fn get_project_handler<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let config = state
-        .storage
-        .get_project(&id)
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let config = state.storage.get_project(&id).map_err(|e| match e {
+        StorageError::InvalidProjectId(_) => StatusCode::BAD_REQUEST,
+        _ => StatusCode::NOT_FOUND,
+    })?;
     Ok(Json(config))
+}
+
+/// `GET /api/v1/projects/active` — which project the controller runs, or `null` when none is.
+///
+/// The field I/O runtime serves the active project only, so a client needs this to know whether
+/// the live tags it sees belong to the project it has open.
+async fn active_project_handler<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let active = state.storage.get_active_project().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+    })?;
+    Ok(Json(json!({ "project_id": active })))
 }
 
 async fn activate_project_handler<S: PlatformShm + 'static>(
@@ -261,76 +454,18 @@ async fn activate_project_handler<S: PlatformShm + 'static>(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     state.storage.activate_project(&id).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
+        let status = match e {
+            StorageError::InvalidProjectId(_) => StatusCode::BAD_REQUEST,
+            StorageError::ProjectNotFound(_) => StatusCode::NOT_FOUND,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, Json(json!({"error": e.to_string()})))
     })?;
 
-    Ok(Json(json!({"status": "activated", "project_id": id})))
-}
-
-async fn control_deploy_handler<S: PlatformShm + 'static>(
-    State(_state): State<ApiState<S>>,
-    Json(payload): Json<DeploymentRequest>,
-) -> Result<Json<DeploymentResponse>, (StatusCode, Json<DeploymentResponse>)> {
-    let start = std::time::Instant::now();
-    info!(
-        target_block = %payload.target_block,
-        language = %payload.language,
-        hot_reload = %payload.hot_reload,
-        "Received control logic deployment request"
-    );
-
-    if payload.code.trim().is_empty() {
-        let elapsed = start.elapsed().as_millis() as u64;
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(DeploymentResponse {
-                success: false,
-                compilation_time_ms: elapsed,
-                message: "Deployment rejected: source code cannot be empty".to_string(),
-                binary_hash: None,
-            }),
-        ));
+    // The controller now runs a different project, so it runs that project's field I/O.
+    if let Some(io) = &state.io_manager {
+        io.reload().await;
     }
 
-    let target_block = if payload.target_block.trim().is_empty() {
-        "MainTask".to_string()
-    } else {
-        payload.target_block.trim().to_string()
-    };
-
-    let mut hasher = Sha256::new();
-    hasher.update(payload.code.as_bytes());
-    hasher.update(payload.language.as_bytes());
-    hasher.update(target_block.as_bytes());
-    let binary_hash = format!("{:x}", hasher.finalize());
-
-    let elapsed = start.elapsed().as_millis() as u64;
-    info!(
-        target_block = %target_block,
-        binary_hash = %binary_hash,
-        compilation_time_ms = elapsed,
-        "Successfully compiled and deployed logic block"
-    );
-
-    Ok(Json(DeploymentResponse {
-        success: true,
-        compilation_time_ms: elapsed,
-        message: format!(
-            "Successfully compiled and deployed block '{}' [lang={}, hot_reload={}]",
-            target_block, payload.language, payload.hot_reload
-        ),
-        binary_hash: Some(binary_hash),
-    }))
-}
-
-async fn collab_ws_handler<S: PlatformShm + 'static>(
-    ws: WebSocketUpgrade,
-    Path(room_id): Path<String>,
-    State(state): State<ApiState<S>>,
-) -> impl IntoResponse {
-    let room = state.room_manager.get_or_create_room(&room_id).await;
-    ws.on_upgrade(move |socket| crate::collab::handle_collab_ws(socket, room))
+    Ok(Json(json!({"status": "activated", "project_id": id})))
 }

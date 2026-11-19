@@ -1,5 +1,7 @@
 # MythOS Data Specification: Access Mode Matrix and Shadow Buffer Pattern
 
+> **Status:** Design only — No `DeviceExecutionMode`, shadow-buffer or dirty-flag dispatch exists in `crates/` or `plugins/`. Access control is the four roles viewer, operator, engineer and admin (`crates/mythos-core/src/auth/policy.rs`); the matrix beyond that is not built. Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-DATA-003
 - **Version**: 2.0.0
 - **Author**: Neo (VP Software & Infrastructure)

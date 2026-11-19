@@ -4,7 +4,8 @@ use crate::api::state::ApiState;
 use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use mythos_pal::PlatformShm;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::convert::Infallible;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
@@ -33,13 +34,17 @@ use tokio_stream::Stream;
 /// for `LINT`/`ULINT` should parse with a BigInt-aware reader. This is stated rather than solved
 /// here because the alternative (stringly-typed values) makes every consumer branch on `type`
 /// before it can do arithmetic, which is worse for the common case.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TagValueUpdate {
+    /// The tag's URI; a tag of another device of the plant is named with it,
+    /// `edge1:external.Boiler.U1.p` ([`crate::remote`]).
     pub uri: String,
-    pub slot_id: u32,
+    /// Its slot on this node's tag bus. Absent for a tag of another device, which has none here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_id: Option<u32>,
     /// Declared tag type name, or `"UNSPECIFIED"` when the slot carries no usable type code.
     #[serde(rename = "type")]
-    pub type_name: &'static str,
+    pub type_name: Cow<'static, str>,
     /// The value, decoded according to the slot's declared type. `null` when unspecified.
     pub value: serde_json::Value,
     /// The quality **class**: `"GOOD"`, `"BAD"` or `"UNCERTAIN"`.
@@ -59,7 +64,7 @@ pub struct TagValueUpdate {
     /// amount of frontend work could recover it — a slice sized as UI work would have been sized
     /// wrong. The name comes from `QualityCode::as_str`, the single code<->name mapping, so it
     /// cannot drift from `quality_code`.
-    pub quality_name: &'static str,
+    pub quality_name: Cow<'static, str>,
     pub timestamp_ns: u64,
 }
 
@@ -137,7 +142,7 @@ pub async fn telemetry_stream_handler<S: PlatformShm + 'static>(
                         Ok(hmi) => {
                             let data = serde_json::to_string(&hmi.data)
                                 .unwrap_or_else(|_| "{}".to_string());
-                            let event = Event::default().event(hmi.event).data(data);
+                            let event = Event::default().event(hmi.event.as_str()).data(data);
                             if tx.send(Ok(event)).await.is_err() {
                                 break;
                             }
@@ -160,6 +165,15 @@ pub async fn telemetry_stream_handler<S: PlatformShm + 'static>(
 async fn build_telemetry_event<S: PlatformShm + 'static>(
     state: &ApiState<S>,
 ) -> Result<Event, Infallible> {
+    let batch = snapshot_batch(state).await;
+    let json_data = serde_json::to_string(&batch).unwrap_or_else(|_| "{}".to_string());
+    Ok(Event::default().event("tag_update").data(json_data))
+}
+
+/// Every registered tag's current value and quality, read from the tag bus now.
+pub(crate) async fn snapshot_batch<S: PlatformShm + 'static>(
+    state: &ApiState<S>,
+) -> TelemetryBatch {
     let catalog_lock = state.tag_catalog.read().await;
     let tags: Vec<crate::tag::TagMetadata> = catalog_lock.iter().cloned().collect();
     drop(catalog_lock);
@@ -181,16 +195,23 @@ async fn build_telemetry_event<S: PlatformShm + 'static>(
                 let (type_name, value) = decode_slot_value(slot.type_code, &slot.value);
                 updates.push(TagValueUpdate {
                     uri: tag_meta.uri.clone(),
-                    slot_id: tag_meta.slot_id,
-                    type_name,
+                    slot_id: Some(tag_meta.slot_id),
+                    type_name: Cow::Borrowed(type_name),
                     value,
                     quality: slot.quality.class_str().to_string(),
                     quality_code: slot.quality.code(),
-                    quality_name: slot.quality.as_str(),
+                    quality_name: Cow::Borrowed(slot.quality.as_str()),
                     timestamp_ns: slot.timestamp_ns,
                 });
             }
         }
+    }
+
+    // The tags of the plant's other devices, named with the device; not current while their
+    // link is down.
+    if let Some(remote) = &state.remote {
+        let devices = remote.devices(|| crate::remote::devices_of_running_plant(state));
+        updates.extend(remote.updates(&devices));
     }
 
     let now_ms = std::time::SystemTime::now()
@@ -198,12 +219,31 @@ async fn build_telemetry_event<S: PlatformShm + 'static>(
         .unwrap_or_default()
         .as_millis() as u64;
 
-    let batch = TelemetryBatch {
+    TelemetryBatch {
         timestamp_ms: now_ms,
         batch_window_ms: 100,
         updates,
-    };
+    }
+}
 
-    let json_data = serde_json::to_string(&batch).unwrap_or_else(|_| "{}".to_string());
-    Ok(Event::default().event("tag_update").data(json_data))
+#[derive(Debug, serde::Deserialize)]
+pub struct ValuesQuery {
+    /// Only tags whose URI starts with this.
+    prefix: Option<String>,
+}
+
+/// `GET /api/v1/tags/values` — every tag's value and quality as of now, in the stream's shape.
+///
+/// The same reading the telemetry stream sends every 100 ms, once, for a client that wants an
+/// answer rather than a subscription.
+pub async fn tag_values_handler<S: PlatformShm + 'static>(
+    State(state): State<ApiState<S>>,
+    axum::extract::Query(query): axum::extract::Query<ValuesQuery>,
+) -> axum::Json<TelemetryBatch> {
+    let mut batch = snapshot_batch(&state).await;
+    if let Some(prefix) = &query.prefix {
+        batch.updates.retain(|u| u.uri.starts_with(prefix.as_str()));
+    }
+    batch.updates.sort_by(|a, b| a.uri.cmp(&b.uri));
+    axum::Json(batch)
 }

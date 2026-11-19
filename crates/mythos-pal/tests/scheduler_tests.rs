@@ -3,7 +3,9 @@
 //! Verifies monotonic sleep precision, core pinning contract handling,
 //! and real-time scheduling elevation without panics.
 
-use mythos_pal::{DefaultScheduler, LinuxScheduler, NoopScheduler, PalError, PlatformScheduler};
+use mythos_pal::{DefaultScheduler, NoopScheduler, PlatformScheduler};
+#[cfg(target_os = "linux")]
+use mythos_pal::{LinuxScheduler, PalError};
 use std::time::Instant;
 
 #[test]
@@ -45,6 +47,8 @@ fn test_noop_scheduler_contracts() {
     assert!(NoopScheduler::pin_to_core(0).is_ok());
 }
 
+// LinuxScheduler on another platform reports UnsupportedPlatform; that is not this contract.
+#[cfg(target_os = "linux")]
 #[test]
 fn test_linux_scheduler_pin_to_core_contract() {
     // Pin to core 0: in container or multi-core system, must either succeed or return PalError cleanly
@@ -65,6 +69,8 @@ fn test_linux_scheduler_pin_to_core_contract() {
     }
 }
 
+// LinuxScheduler on another platform reports UnsupportedPlatform; that is not this contract.
+#[cfg(target_os = "linux")]
 #[test]
 fn test_linux_scheduler_set_realtime_priority_contract() {
     // Set real-time priority 85: must either succeed (if CAP_SYS_NICE)

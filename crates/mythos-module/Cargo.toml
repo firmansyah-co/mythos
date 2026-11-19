@@ -1,0 +1,27 @@
+[package]
+name = "mythos-module"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "MythOS module contract: the process protocol between the host and a module, both sides of it, and module discovery"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+mythos-plugin-sdk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "io-std", "sync", "time", "macros", "rt-multi-thread"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile = "3.10"

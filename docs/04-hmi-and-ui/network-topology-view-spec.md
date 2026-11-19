@@ -1,5 +1,7 @@
 # MythOS Devices & Networks Specification: The 3 Canonical Hardware Views (Network View, Device View, Topology View)
 
+> **Status:** Design only — No network, device or topology view exists in `frontend/packages/`. Discovery is the `plugins/discovery` module (mDNS, with its own UI under `plugins/discovery/ui`); Layer-2 DCP discovery was removed. Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-HMI-004
 - **Version**: 3.0.0
 - **Author**: Iris (VP Design & Visual Architecture) & Neo (VP Software & Infrastructure)

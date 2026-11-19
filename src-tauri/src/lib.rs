@@ -1,78 +1,92 @@
 //! # MythOS Industrial Workbench - Desktop Core Library
 //!
-//! Provides the core entry point and microkernel supervisor for the Tauri v2 desktop application.
+//! Entry point for the Tauri v2 desktop application, which embeds the MythOS server.
 
-use mythos_core::api::{create_router, ApiState};
-use mythos_core::storage::{ControllerStorage, DEFAULT_PROJECTS_DIR};
-use mythos_core::tag::TagCatalog;
-use mythos_pal::PosixShm;
-use mythos_shm::ShmReaderHandle;
+use mythos_core::api::create_router;
+use mythos_core::server::{bootstrap_as, shm_name_from_env};
+use mythos_core::storage::default_projects_dir;
+use mythos_pal::DefaultShm;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tauri::{AppHandle, Manager, RunEvent};
-use tokio::sync::{oneshot, RwLock};
-use tracing::{error, info, warn};
+use tokio::sync::oneshot;
+use tracing::{error, info};
 
-/// Spawn the MythOS microkernel embedded service in a background tokio task.
+/// Spawn the embedded MythOS server in a background tokio task.
 pub fn spawn_microkernel(shutdown_rx: oneshot::Receiver<()>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let storage_root = std::env::var("MYTHOS_STORAGE_ROOT")
-            .unwrap_or_else(|_| DEFAULT_PROJECTS_DIR.to_string());
+        let storage_root = std::env::var_os("MYTHOS_STORAGE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(default_projects_dir);
 
-        let storage = match ControllerStorage::new(&storage_root) {
-            Ok(s) => Arc::new(s),
+        // The desktop app is an engineer's workstation (ADR-012 §2.1) on its first start.
+        let server = match bootstrap_as::<DefaultShm>(
+            &storage_root,
+            &shm_name_from_env(),
+            mythos_core::node::NodeRole::Workstation,
+        )
+        .await
+        {
+            Ok(server) => server,
             Err(e) => {
                 error!(
-                    "Desktop microkernel failed to initialize storage at {}: {}",
-                    storage_root, e
+                    "Embedded server failed to initialize storage at {}: {}",
+                    storage_root.display(),
+                    e
                 );
                 return;
             }
         };
-
-        let tag_catalog = Arc::new(RwLock::new(TagCatalog::new()));
-
-        let shm_name = "mythos_tagbus";
-        let shm_reader = match ShmReaderHandle::<PosixShm>::new(shm_name, 32768) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                warn!(
-                    "Embedded microkernel running without SHM backing ({}): {}",
-                    shm_name, e
-                );
-                None
-            }
-        };
-
-        let state = ApiState::new(storage, tag_catalog, shm_reader);
-        let app = create_router(state);
+        mythos_core::server::announce_setup_code(&server);
+        let io = server.io;
+        let services = server.services;
+        let node = server.node;
+        let app = create_router(server.state);
 
         let port: u16 = std::env::var("MYTHOS_HTTP_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(9090);
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        info!("Embedded MythOS Microkernel listening on http://{}", addr);
+        // A workstation listens on this computer only; another role, chosen in Settings → Node,
+        // on what that role says (MYTHOS_BIND overrides both).
+        // The desktop app answers plain HTTP to its own window; HTTPS for other nodes is
+        // mythos-server's (ADR-012 §2.3).
+        let ip = match node.http_ip() {
+            Ok(ip) => ip,
+            Err(e) => {
+                error!("{e}");
+                return;
+            }
+        };
+        let addr = SocketAddr::new(ip, port);
+        info!("Embedded MythOS server listening on http://{}", addr);
 
         let listener = match tokio::net::TcpListener::bind(&addr).await {
             Ok(l) => l,
             Err(e) => {
-                error!("Failed to bind microkernel listener to {}: {}", addr, e);
+                error!("Failed to bind embedded server listener to {}: {}", addr, e);
                 return;
             }
         };
-
-        let server = axum::serve(listener, app).with_graceful_shutdown(async move {
-            let _ = shutdown_rx.await;
-            info!("Received shutdown signal for embedded microkernel.");
-        });
-
-        if let Err(e) = server.await {
-            error!("Embedded microkernel server terminated with error: {}", e);
-        } else {
-            info!("Embedded microkernel server terminated cleanly.");
+        if let Ok(bound) = listener.local_addr() {
+            node.set_listening(bound);
+            services.node_changed().await;
         }
+
+        // Telemetry streams never end on their own, so stop serving on the signal rather than
+        // waiting for every stream to close.
+        tokio::select! {
+            result = axum::serve(listener, app) => {
+                if let Err(e) = result {
+                    error!("Embedded server terminated with error: {}", e);
+                }
+            }
+            _ = shutdown_rx => info!("Received shutdown signal for embedded server."),
+        }
+
+        io.shutdown().await;
+        services.shutdown().await;
+        info!("Embedded server terminated cleanly.");
     })
 }
 

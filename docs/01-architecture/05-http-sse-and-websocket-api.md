@@ -1,5 +1,7 @@
 # MythOS Architecture Specification: HTTP, SSE, and WebSocket API
 
+> **Status:** Partly built — The SSE stream `/api/v1/telemetry/stream`, the tag, node, pairing, fleet, runtime, update and auth routes, and `/mcp` exist (`crates/mythos-core/src/api/`). The collaboration WebSocket and `POST /api/v1/control/deploy` were removed in #155; the project hot-switch, autosave and staging endpoints are not verified in `mythos-core` (HMI and logic routes live in service modules). Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-ARCH-005
 - **Version**: 2.0.0
 - **Author**: Neo (VP Software & Infrastructure)
@@ -159,7 +161,7 @@ The base path for all REST interfaces is `/api/v1`.
 The target controller acts as the primary repository of all plant automation projects. Multiple project configurations exist on disk concurrently under `/var/lib/mythos/projects/<project_id>/`.
 
 ### 4.1 Project Status States
-- `ACTIVE`: The project currently executed by the Native STruC++ soft-logic engine and driver SPI. Exactly one project is `ACTIVE` at any time. Symlinked at `/var/lib/mythos/projects/active`.
+- `ACTIVE`: The project currently executed by the Native STruC++ soft-logic engine and driver SPI. Exactly one project is `ACTIVE` at any time. Named by the marker file `<storage root>/active`.
 - `LOADED_DRAFT`: A project opened in memory by one or more engineering clients for editing and validation. Runs collaborative CRDT rooms and syntax verification without affecting the `ACTIVE` control loop.
 - `IDLE_DRAFT`: A project stored on disk, not currently opened in memory.
 
@@ -219,7 +221,7 @@ Transitions a draft project to `ACTIVE`.
 3. Flushes current debounced autosave deltas to disk.
 4. Waits for the PLC cyclic dead-time window.
 5. Performs atomic pointer swap of the Native STruC++ `ConfigurationInstance` and rebinds `/dev/shm/mythos_tagbus`.
-6. Updates `/var/lib/mythos/projects/active` atomic symlink to point to the newly activated directory.
+6. Replaces the `<storage root>/active` marker file atomically with the newly activated project's id.
 7. Total dead-time jitter is measured and guaranteed to remain strictly below 50 ms.
 
 ```json
@@ -323,7 +325,7 @@ data: {"timestamp":1729005000350,"type_id":"fp_vfd_motor_v2","from_version":"1.2
 
 ---
 
-## 6. Multi-User Real-Time Collaborative IDE Protocol (`GET /api/v1/collab/ws`)
+## 6. Multi-User Real-Time Collaborative IDE Protocol (`GET /api/v1/collab/ws`) *(Not built / removed in #155.)*
 
 MythOS features a real-time collaborative editing environment inspired by Google Docs and VS Code Live Share. Multiple automation engineers, commissioning technicians, and control supervisors can open and edit the same project simultaneously across the local area network (LAN).
 
@@ -436,7 +438,7 @@ For sample rates exceeding 10 Hz (such as oscilloscope diagnostics at 100 Hz to 
 
 ---
 
-## 9. In-Canvas PLC Logic Compilation and Hot-Reload Endpoint
+## 9. In-Canvas PLC Logic Compilation and Hot-Reload Endpoint *(Not built / removed in #155.)*
 
 The integrated Monaco editor dispatches control logic directly to the target controller via `POST /api/v1/control/deploy`. There is no file upload form; the raw Structured Text string is submitted directly.
 

@@ -1,0 +1,479 @@
+/* The logic module's workbench UI. It uses the workbench's tokens and classes (btn, badge,
+   grid, field, notice, …); what is here is only what the workbench has no class for. */
+
+.logic-root {
+  display: contents;
+}
+
+.logic-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* The program's interface above its body, folded or not; the body takes the rest. */
+.logic-interface {
+  flex: none;
+  max-height: 40%;
+  overflow: auto;
+  border-bottom: 1px solid var(--c-chrome-border);
+  background: var(--c-surface-alt);
+}
+
+.logic-interface__summary {
+  cursor: pointer;
+  padding: 4px 10px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.logic-interface__summary .muted {
+  font-weight: 400;
+}
+
+/* One line under the toolbar: what the last request came to. */
+.logic-note {
+  flex: none;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--c-rule);
+  border-left: 3px solid var(--c-neutral);
+  background: var(--c-surface-alt);
+  font-size: var(--fs-sm);
+}
+
+.logic-note p {
+  margin: 0;
+}
+
+.logic-note--warn {
+  border-left-color: var(--c-warn);
+  background: var(--c-warn-soft);
+}
+
+.logic-note--bad {
+  border-left-color: var(--c-bad);
+  background: var(--c-bad-soft);
+}
+
+.logic-editor__source {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--c-surface);
+}
+
+/* The source: a text area over the same text painted in colour. Both use one font and one line
+   height, or the caret would not sit on the letters. */
+
+.logic-source {
+  display: flex;
+  min-height: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.logic-source__gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  min-width: 44px;
+  padding: 6px 0;
+  border-right: 1px solid var(--c-rule);
+  background: var(--c-surface-sunken);
+  color: var(--c-text-faint);
+  text-align: right;
+  user-select: none;
+}
+
+.logic-source__line {
+  padding: 0 8px;
+}
+
+.logic-source__line.has-error {
+  color: var(--c-bad);
+  background: var(--c-bad-soft);
+  font-weight: 600;
+}
+
+.logic-source__body {
+  position: relative;
+  flex: 1;
+}
+
+.logic-source__paint,
+.logic-source__area {
+  margin: 0;
+  padding: 6px 8px;
+  border: 0;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: 0;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.logic-source__paint {
+  color: var(--c-text);
+  pointer-events: none;
+}
+
+.logic-source__area {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  resize: none;
+  outline: 0;
+  background: transparent;
+  /* The letters shown are the painted ones beneath; the text area keeps the caret and the
+     selection. */
+  color: transparent;
+  caret-color: var(--c-text);
+}
+
+.logic-source__area::selection {
+  background: var(--c-select);
+  color: transparent;
+}
+
+.logic-tok--keyword {
+  color: var(--c-accent);
+  font-weight: 600;
+}
+
+.logic-tok--type {
+  color: var(--c-accent);
+}
+
+.logic-tok--comment {
+  color: var(--c-text-muted);
+  font-style: italic;
+}
+
+.logic-tok--string,
+.logic-tok--number {
+  color: var(--c-neutral);
+}
+
+.logic-tok--error {
+  text-decoration: underline wavy var(--c-bad);
+  text-decoration-skip-ink: none;
+}
+
+/* What the compiler said. */
+
+.logic-check {
+  flex: none;
+  max-height: 30%;
+  margin: 0;
+  padding: 6px 10px;
+  overflow: auto;
+  border-top: 1px solid var(--c-rule);
+  background: var(--c-surface-alt);
+  font-size: var(--fs-sm);
+}
+
+.logic-check p {
+  margin: 0 0 4px;
+}
+
+.logic-diagnostics {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.logic-diagnostic {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  padding: 2px 4px;
+  border: 0;
+  border-left: 3px solid var(--c-bad);
+  background: transparent;
+  text-align: left;
+}
+
+button.logic-diagnostic:hover {
+  background: var(--c-hover);
+}
+
+.logic-diagnostic--plain {
+  border-left-color: var(--c-warn);
+}
+
+.logic-diagnostic__at {
+  flex: none;
+  min-width: 48px;
+  color: var(--c-text-muted);
+}
+
+/* The panels beside the source. */
+
+.logic-panel {
+  padding: 8px 10px 12px;
+  border-bottom: 1px solid var(--c-rule);
+  font-size: var(--fs-sm);
+}
+
+.logic-panel__title {
+  margin: 0 0 6px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.logic-panel p {
+  margin: 0 0 6px;
+}
+
+.logic-panel__actions {
+  display: flex;
+  /* A task card is narrow: the commands go on as many rows as they need, never past its edge. */
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.logic-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 0;
+}
+
+.logic-facts dt {
+  color: var(--c-text-muted);
+}
+
+.logic-facts dd {
+  margin: 0;
+}
+
+.logic-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px 12px;
+  align-items: end;
+}
+
+.logic-binding {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.logic-binding__kind {
+  flex: none;
+  min-width: 96px;
+  color: var(--c-text-muted);
+}
+
+.logic-binding__tag {
+  flex: 1;
+  min-width: 160px;
+}
+
+.logic-binding__safe {
+  width: 84px;
+  text-align: right;
+}
+
+.logic-binding .field__error {
+  flex-basis: 100%;
+}
+
+.logic-binding__add {
+  color: var(--c-text-muted);
+}
+
+.logic-binding-orphan {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+/* The Ladder Diagram editor (L3b-2b): the favourites above, the networks and the instruction
+   palette beside them. Layout only: its visual design is the owner's to lead. */
+
+.ld-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  outline: none;
+}
+
+.ld-editor:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--c-focus);
+}
+
+.ld-editor__bar {
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ld-editor__body {
+  min-height: 0;
+}
+
+/* The Instructions task card. */
+.ld-palette {
+  padding: 4px 8px;
+}
+
+.ld-palette__group summary {
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  padding: 2px 0;
+}
+
+.ld-instruction {
+  display: inline-flex;
+  align-items: center;
+}
+
+.ld-palette .ld-instruction {
+  display: flex;
+}
+
+.ld-palette .ld-instruction > .btn {
+  flex: 1;
+  /* A flex item is as wide as its text unless told otherwise: a long name is cut with an
+     ellipsis, and the star beside it stays in the card. */
+  min-width: 0;
+  overflow: hidden;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.ld-palette .ld-instruction > .icon-btn {
+  flex-shrink: 0;
+}
+
+.ld-instruction__name {
+  min-width: 0;
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ld-network {
+  border-bottom: 1px solid var(--c-rule);
+  padding: 6px 0;
+}
+
+.ld-network.is-selected {
+  border-left: 3px solid var(--c-focus);
+  padding-left: 4px;
+}
+
+.ld-network__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ld-network__title {
+  flex: 1;
+  min-width: 120px;
+}
+
+.ld-network__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ld-network__actions {
+  display: inline-flex;
+}
+
+.ld-network__comment {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  margin: 4px 0;
+  font-size: var(--fs-sm);
+}
+
+.ld-network__diagram {
+  position: relative;
+  overflow-x: auto;
+}
+
+/* Each network is numbered in its header: the viewer's own number of a single rung is not shown. */
+.ld-network__diagram [data-testid='ld-rung'] {
+  display: none;
+}
+
+.ld-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+}
+
+.ld-overlay .ld-gap {
+  pointer-events: all;
+  cursor: pointer;
+}
+
+.ld-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 4px 0;
+}
+
+.ld-fields .form__error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.ld-pin,
+.ld-declare {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ld-operand {
+  position: relative;
+  display: inline-block;
+}
+
+.ld-suggestions {
+  position: absolute;
+  z-index: 10;
+  left: 0;
+  top: 100%;
+  min-width: 100%;
+  max-height: 200px;
+  overflow: auto;
+  margin: 0;
+  padding: 2px 0;
+  list-style: none;
+  background: var(--c-surface);
+  border: 1px solid var(--c-chrome-border);
+  font-size: var(--fs-sm);
+}
+
+.ld-suggestions li {
+  padding: 2px 8px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ld-suggestions li.is-picked {
+  background: var(--c-select);
+}

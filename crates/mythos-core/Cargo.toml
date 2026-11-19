@@ -14,34 +14,40 @@ workspace = true
 mythos-pal.workspace = true
 mythos-shm.workspace = true
 mythos-plugin-sdk.workspace = true
+mythos-module.workspace = true
+mythos-update.workspace = true
+semver = "1.0.28"
 async-trait.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true
-tokio-util = { workspace = true, features = ["codec"] }
-libc = { workspace = true }
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 crc32fast.workspace = true
-bytemuck.workspace = true
 sha2.workspace = true
 zip.workspace = true
-chacha20poly1305.workspace = true
 rand.workspace = true
-ed25519-dalek.workspace = true
 hex.workspace = true
+# A device's configuration, sent to its node in a JSON body (ADR-012 §2.5).
+base64 = "0.22"
+# Each node's own certificate and HTTPS, with ring only (no aws-lc-rs: no cmake or nasm on
+# Windows), and the pinned client nodes use to reach each other (ADR-012 §2.3).
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service"] }
 axum.workspace = true
 tower = { workspace = true, features = ["util"] }
-tower-http.workspace = true
 ts-rs = { workspace = true, features = ["serde-json-impl", "no-serde-warnings"] }
 
-yrs = { workspace = true }
-parquet.workspace = true
-arrow.workspace = true
+argon2 = "0.5"
 
 [dev-dependencies]
+# The Modbus driver in-process and its device simulator, for the read path tests. The
+# server itself has no driver compiled in: it runs driver modules.
+driver-modbus = { workspace = true, features = ["sim"] }
 tempfile = "3.10"
-tokio-tungstenite = "0.24"
 futures-util = "0.3"

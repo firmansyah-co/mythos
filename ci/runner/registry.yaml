@@ -1,0 +1,49 @@
+# The registry the cluster pulls the runner image from. It exists because the image is built on
+# this machine and containerd only takes images from a registry.
+#
+# It listens on 127.0.0.1:5000 of the host and nowhere else: not reachable from the network, and
+# not from a runner pod (a pod's 127.0.0.1 is its own), so a CI job cannot replace the image the
+# next job starts from. containerd reaches a registry on localhost over plain HTTP by itself.
+#
+#   kubectl apply -f ci/runner/registry.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ci-registry
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  namespace: ci-registry
+spec:
+  replicas: 1
+  # One host port: the old pod must be gone before the new one can bind it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: registry
+  template:
+    metadata:
+      labels:
+        app: registry
+    spec:
+      hostNetwork: true
+      containers:
+        - name: registry
+          image: docker.io/library/registry:2.8.3
+          env:
+            - name: REGISTRY_HTTP_ADDR
+              value: 127.0.0.1:5000
+            - name: REGISTRY_STORAGE_DELETE_ENABLED
+              value: "true"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/registry
+      volumes:
+        - name: data
+          hostPath:
+            # Beside the runners' other host-backed caches.
+            path: /home/adrian/.cache/ci-registry
+            type: DirectoryOrCreate

@@ -1,5 +1,7 @@
 # MythOS Architecture Specification: Universal Plugin Harness and Extensibility
 
+> **Status:** Superseded by ADR-010 — Plugins are not loaded as libraries; modules are separate processes (ADR-010) and service modules are `plugins/hmi`, `plugins/logic`, `plugins/discovery` (ADR-011). The `plugin.yaml` manifest, six-category taxonomy, hot reload, plugin registry and `.mythos-plugin` packaging are not built as written; the STruC++ compiler plugin was replaced by the own compiler and VM (ADR-013). Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-ARCH-006
 - **Version**: 2.0.0
 - **Author**: Neo (VP Software & Infrastructure)
@@ -16,7 +18,7 @@ MythOS eliminates monolithic software decay in industrial control and SCADA syst
 In MythOS, the Core Microkernel contains **zero application-domain logic**. The microkernel does not know what a PLC is, does not understand Modbus registers, does not hardcode alarm thresholds, and does not contain user interface screens.
 
 The **MythOS Core Microkernel** provides only four foundational primitives:
-1. **Lock-Free TagBus Engine**: Ultra-fast, triple-buffered shared memory (`/dev/shm/mythos_tagbus`) capable of $> 100,000$ tag updates/sec with $< 50\,\text{ns}$ atomic pointer swaps.
+1. **Lock-Free TagBus Engine**: Ultra-fast, triple-buffered shared memory (`/dev/shm/mythos_tagbus`) capable of $> 100,000$ tag updates/sec with atomic pointer swaps bounded at $< 300\,\text{ns}$ (TSK-002; 50 ns until the owner raised it on 2026-11-17) and a tag read bounded at $< 300\,\text{ns}$ (NFR-001; 100 ns until the owner extended the bound to reads on 2026-11-18). Both are asserted on a release build.
 2. **Plugin Host & Supervisor**: An asynchronous Tokio/WASI actor supervisor that loads, initializes, isolates, schedules, monitors, and hot-reloads plugin extensions.
 3. **Capability-Based Security Barrier**: A zero-trust capability validator enforcing memory quotas, CPU execution timeouts, and strict TagBus write fencing.
 4. **Unified MCP Aggregator**: A Model Context Protocol registry that dynamically exposes tools, prompts, and resources from all registered plugins to autonomous AI agents.
@@ -588,7 +590,7 @@ To eliminate dependency bottlenecks and enable distributed third-party developme
 
 ---
 
-## 12. Soft-Logic Compiler Plugins & Full 5-Language IEC 61131-3 Support
+## 12. Soft-Logic Compiler Plugins & Full 5-Language IEC 61131-3 Support *(Not built / removed in #155.)*
 
 MythOS supports all **5 standard IEC 61131-3 languages** through the pluggable `SoftLogicCompilerPlugin` SPI:
 1. **ST (Structured Text)**: High-level textual language (Pascal-like algorithmic logic).

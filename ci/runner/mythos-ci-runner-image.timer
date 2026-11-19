@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly rebuild of the MythOS CI runner image
+
+[Timer]
+OnCalendar=Mon 04:30
+# If the machine was off then, run at the next start.
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

@@ -1,12 +1,12 @@
 //! Project-scoped IEC 61131-3 user-defined data type (DUT/UDT) registry.
 //!
 //! Until this module existed the backend had **no** data-type store: the only DUT model lived in
-//! the frontend logic editor as a hardcoded sample list (`DEFAULT_SAMPLE_DATA_TYPES` in
-//! `frontend/plugins/ui-logic-editor/src/variables/DataTypeEditor.tsx`), so an engineer authoring a
+//! a frontend logic editor (since removed) as a hardcoded sample list, so an engineer authoring a
 //! DUT got no persistence and saw two types that belonged to no project (SYS-REQ-098).
 //!
-//! The UDT representation itself is shared with faceplate types ([`crate::faceplate`]): a faceplate
-//! type's inline `udt` is exactly a [`UdtDefinition`], the same shape a registry entry carries. That
+//! The UDT representation itself is shared with faceplate types (the HMI module's
+//! `mythos_hmi::udt`, the same JSON): a faceplate type's inline `udt` is exactly a
+//! [`UdtDefinition`], the same shape a registry entry carries. That
 //! is deliberate — it means a faceplate type can later reference a registry entry instead of
 //! inlining one without a data migration, and it means there is one representation rather than two.
 
@@ -17,8 +17,6 @@ use thiserror::Error;
 use ts_rs::TS;
 
 /// Kind of IEC 61131-3 user-defined type.
-///
-/// Mirrors the DUT model in `frontend/plugins/ui-logic-editor/src/variables/types.ts`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -139,10 +137,9 @@ fn validate_token(kind: &str, value: &str) -> Result<(), DataTypeError> {
 
 /// IEC 61131-3 elementary types a STRUCT member or ALIAS base may name.
 ///
-/// Kept in step with `ELEMENTARY_DATA_TYPES` in
-/// `frontend/plugins/ui-logic-editor/src/variables/types.ts`, which is what the editor's dropdown
-/// will offer. A member naming anything outside this set and outside the project's own defined
-/// types is unresolvable, so it is rejected rather than stored.
+/// This list is the authority: an editor offers these names. A member naming anything outside
+/// this set and outside the project's own defined types is unresolvable, so it is rejected
+/// rather than stored.
 pub const IEC_ELEMENTARY_TYPES: &[&str] = &[
     "BOOL",
     "BYTE",

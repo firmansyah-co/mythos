@@ -1,228 +1,331 @@
+//! The driver against a simulated Modbus TCP device: real sockets, real frames.
+
+use driver_modbus::sim::ModbusSimServer;
 use driver_modbus::ModbusDriver;
 use mythos_plugin_sdk::*;
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use std::collections::HashSet;
 
-/// Lightweight In-Memory Simulated Modbus TCP Slave Server
-struct SimulatedModbusSlave {
-    port: u16,
-    registers: Arc<Mutex<HashMap<u16, u16>>>,
-    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+fn ctx() -> PluginContext {
+    let mut caps = HashSet::new();
+    caps.insert("network:client".to_string());
+    PluginContext::new("org.mythos.driver.modbus", caps, "/tmp")
 }
 
-impl SimulatedModbusSlave {
-    async fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let registers = Arc::new(Mutex::new(HashMap::new()));
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+fn reading<'a>(samples: &'a [TagSample], uri: &str) -> &'a Result<SampleValue, SampleFault> {
+    &samples
+        .iter()
+        .find(|s| s.uri == uri)
+        .unwrap_or_else(|| panic!("no sample for {uri}"))
+        .reading
+}
 
-        let regs_clone = registers.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut shutdown_rx => {
-                        break;
-                    }
-                    Ok((mut socket, _)) = listener.accept() => {
-                        let regs = regs_clone.clone();
-                        tokio::spawn(async move {
-                            let mut buf = [0u8; 256];
-                            loop {
-                                let n = match socket.read(&mut buf).await {
-                                    Ok(0) => break,
-                                    Ok(n) => n,
-                                    Err(_) => break,
-                                };
-
-                                if n < 12 {
-                                    continue;
-                                }
-
-                                let tx_id = [buf[0], buf[1]];
-                                let unit_id = buf[6];
-                                let func = buf[7];
-
-                                match func {
-                                    // Read Holding Registers (FC 03)
-                                    0x03 => {
-                                        let addr = u16::from_be_bytes([buf[8], buf[9]]);
-                                        let count = u16::from_be_bytes([buf[10], buf[11]]);
-                                        let reg_lock = regs.lock().await;
-
-                                        let mut resp = Vec::new();
-                                        resp.extend_from_slice(&tx_id);
-                                        resp.extend_from_slice(&[0, 0]); // Proto ID
-                                        let byte_count = (count * 2) as u8;
-                                        let length = (byte_count as u16) + 3;
-                                        resp.extend_from_slice(&length.to_be_bytes());
-                                        resp.push(unit_id);
-                                        resp.push(0x03);
-                                        resp.push(byte_count);
-
-                                        for i in 0..count {
-                                            let val: u16 = *reg_lock.get(&(addr + i)).unwrap_or(&0);
-                                            resp.extend_from_slice(&val.to_be_bytes());
-                                        }
-
-                                        let _ = socket.write_all(&resp).await;
-                                    }
-                                    // Write Single Register (FC 06)
-                                    0x06 => {
-                                        let addr = u16::from_be_bytes([buf[8], buf[9]]);
-                                        let val = u16::from_be_bytes([buf[10], buf[11]]);
-                                        {
-                                            let mut reg_lock = regs.lock().await;
-                                            reg_lock.insert(addr, val);
-                                        }
-
-                                        // Echo back
-                                        let mut resp = Vec::new();
-                                        resp.extend_from_slice(&tx_id);
-                                        resp.extend_from_slice(&[0, 0]);
-                                        resp.extend_from_slice(&6u16.to_be_bytes());
-                                        resp.push(unit_id);
-                                        resp.push(0x06);
-                                        resp.extend_from_slice(&addr.to_be_bytes());
-                                        resp.extend_from_slice(&val.to_be_bytes());
-
-                                        let _ = socket.write_all(&resp).await;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        });
-                    }
-                }
-            }
-        });
-
-        Self {
-            port,
-            registers,
-            shutdown_tx: Some(shutdown_tx),
-        }
-    }
-
-    async fn set_register(&self, addr: u16, val: u16) {
-        let mut lock = self.registers.lock().await;
-        lock.insert(addr, val);
-    }
-
-    async fn get_register(&self, addr: u16) -> u16 {
-        let lock = self.registers.lock().await;
-        *lock.get(&addr).unwrap_or(&0)
-    }
-
-    fn stop(mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(());
-        }
-    }
+async fn started(config: serde_json::Value) -> ModbusDriver {
+    let mut driver = ModbusDriver::new();
+    driver.init(&ctx()).await.unwrap();
+    driver.start(&ctx(), &config).await.unwrap();
+    driver
 }
 
 #[tokio::test]
-async fn test_modbus_driver_full_integration() {
-    let slave = SimulatedModbusSlave::start().await;
-    // Set Register 100 to 452 (representing 45.2 bar pressure with 0.1 scale)
-    slave.set_register(100, 452).await;
+async fn reads_each_register_type_and_reports_one_sample_per_declared_tag() {
+    let sim = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
+    sim.set_holding(100, 452).await; // u16, scaled by 0.1
+    sim.set_holding(101, (-7i16) as u16).await; // i16
+    let bits = 21.5f32.to_bits();
+    sim.set_holding(102, (bits >> 16) as u16).await; // f32, high word first
+    sim.set_holding(103, (bits & 0xFFFF) as u16).await;
+    sim.set_holding(104, 0x5678).await; // u32, low word first: 0x1234_5678
+    sim.set_holding(105, 0x1234).await;
+    sim.set_input(7, 65000).await; // input register, u16
 
-    let mut caps = HashSet::new();
-    caps.insert("tagbus:write".to_string());
-    caps.insert("network:client".to_string());
-    let ctx = PluginContext::new("org.mythos.driver.modbus", caps, "/tmp");
-
-    let mut driver = ModbusDriver::new();
-    assert!(driver.init(&ctx).await.is_ok());
-
-    let config = json!({
+    let mut driver = started(json!({
         "transport": "tcp",
         "host": "127.0.0.1",
-        "port": slave.port,
+        "port": sim.port(),
         "slave_id": 1,
         "timeout_ms": 1000,
         "mappings": [
-            {
-                "uri": "external.BoilerRoom.PT101.pressure.pv",
-                "address": 100,
-                "function_code": 3,
-                "data_type": "u16",
-                "scale": 0.1
-            }
+            {"uri": "external.BoilerRoom.PT101.pressure", "address": 100, "function_code": 3, "scale": 0.1},
+            {"uri": "external.BoilerRoom.TT101.offset", "address": 101, "function_code": 3, "data_type": "i16"},
+            {"uri": "external.BoilerRoom.TT101.temperature", "address": 102, "function_code": 3, "data_type": "f32"},
+            {"uri": "external.BoilerRoom.FQ101.total", "address": 104, "function_code": 3, "data_type": "u32", "word_order": "low_first"},
+            {"uri": "external.BoilerRoom.LT101.level", "address": 7, "function_code": 4}
         ]
-    });
+    }))
+    .await;
 
-    assert!(driver.start(&ctx, &config).await.is_ok());
+    let declared = driver.declared_tags();
+    let samples = driver.poll_cycle(&ctx()).await.unwrap();
 
-    let health = driver.health_check().await.unwrap();
-    assert_eq!(health.status, HealthStatus::Healthy);
+    let declared_uris: Vec<&str> = declared.iter().map(|d| d.uri.as_str()).collect();
+    let sample_uris: Vec<&str> = samples.iter().map(|s| s.uri.as_str()).collect();
+    assert_eq!(sample_uris, declared_uris);
 
-    // Poll cycle
-    let updated = driver.poll_cycle(&ctx).await.unwrap();
-    assert_eq!(updated, 1);
+    match reading(&samples, "external.BoilerRoom.PT101.pressure") {
+        Ok(SampleValue::F64(v)) => assert!((v - 45.2).abs() < 1e-9, "got {v}"),
+        other => panic!("scaled u16 must be an f64, got {other:?}"),
+    }
+    assert_eq!(
+        reading(&samples, "external.BoilerRoom.TT101.offset"),
+        &Ok(SampleValue::I16(-7))
+    );
+    assert_eq!(
+        reading(&samples, "external.BoilerRoom.TT101.temperature"),
+        &Ok(SampleValue::F32(21.5))
+    );
+    assert_eq!(
+        reading(&samples, "external.BoilerRoom.FQ101.total"),
+        &Ok(SampleValue::U32(0x1234_5678))
+    );
+    assert_eq!(
+        reading(&samples, "external.BoilerRoom.LT101.level"),
+        &Ok(SampleValue::U16(65000))
+    );
 
-    // Verify cached tag value: 452 * 0.1 = 45.2
-    let val = driver
-        .get_cached_value("external.BoilerRoom.PT101.pressure.pv")
-        .unwrap();
-    assert!((val - 45.2).abs() < 1e-4);
-
-    // Test writing to tag (e.g. setpoint 50.0 bar -> register should receive 500)
-    let write_res = driver
-        .write_tag(&ctx, "external.BoilerRoom.PT101.pressure.pv", &json!(50.0))
-        .await;
-    assert!(write_res.is_ok());
-
-    assert_eq!(slave.get_register(100).await, 500);
-
-    // Test stop
-    assert!(driver.stop(&ctx).await.is_ok());
-    let health_stop = driver.health_check().await.unwrap();
-    assert_eq!(health_stop.status, HealthStatus::Stopped);
-
-    slave.stop();
+    assert_eq!(
+        driver.health_check().await.unwrap().status,
+        HealthStatus::Healthy
+    );
 }
 
 #[tokio::test]
-async fn test_modbus_driver_tag_namespace_validation() {
-    let mut caps = HashSet::new();
-    caps.insert("tagbus:write".to_string());
-    let ctx = PluginContext::new("org.mythos.driver.modbus", caps, "/tmp");
+async fn an_unmapped_register_is_a_config_fault_and_does_not_poison_its_neighbours() {
+    let sim = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
+    sim.set_holding(1, 11).await;
+    sim.set_holding(3, 33).await;
+    // Address 2 is never set: the simulated device answers exception 2 for it.
 
+    let mut driver = started(json!({
+        "transport": "tcp",
+        "host": "127.0.0.1",
+        "port": sim.port(),
+        "mappings": [
+            {"uri": "external.Plant.Dev.a", "address": 1, "function_code": 3},
+            {"uri": "external.Plant.Dev.b", "address": 2, "function_code": 3},
+            {"uri": "external.Plant.Dev.c", "address": 3, "function_code": 3}
+        ]
+    }))
+    .await;
+
+    let samples = driver.poll_cycle(&ctx()).await.unwrap();
+
+    assert_eq!(
+        reading(&samples, "external.Plant.Dev.a"),
+        &Ok(SampleValue::U16(11))
+    );
+    assert!(
+        matches!(
+            reading(&samples, "external.Plant.Dev.b"),
+            Err(SampleFault::ConfigError(_))
+        ),
+        "got {:?}",
+        reading(&samples, "external.Plant.Dev.b")
+    );
+    assert_eq!(
+        reading(&samples, "external.Plant.Dev.c"),
+        &Ok(SampleValue::U16(33))
+    );
+}
+
+#[tokio::test]
+async fn a_dead_link_faults_every_tag_and_never_returns_a_number() {
+    // Bind a port, then release it, so nothing is listening there.
+    let port = {
+        let probe = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
+        let port = probe.port();
+        probe.stop();
+        port
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut driver = started(json!({
+        "transport": "tcp",
+        "host": "127.0.0.1",
+        "port": port,
+        "timeout_ms": 300,
+        "mappings": [
+            {"uri": "external.Plant.Dev.a", "address": 1, "function_code": 3},
+            {"uri": "external.Plant.Dev.b", "address": 2, "function_code": 3}
+        ]
+    }))
+    .await;
+
+    let samples = driver.poll_cycle(&ctx()).await.unwrap();
+    assert_eq!(samples.len(), 2);
+    for sample in &samples {
+        assert!(
+            matches!(sample.reading, Err(SampleFault::CommFailure(_))),
+            "{} must be a comm failure, got {:?}",
+            sample.uri,
+            sample.reading
+        );
+    }
+    assert_ne!(
+        driver.health_check().await.unwrap().status,
+        HealthStatus::Healthy
+    );
+}
+
+#[tokio::test]
+async fn a_link_that_drops_after_a_good_read_turns_into_a_fault_then_recovers() {
+    let sim = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
+    let port = sim.port();
+    sim.set_holding(5, 500).await;
+
+    let mut driver = started(json!({
+        "transport": "tcp",
+        "host": "127.0.0.1",
+        "port": port,
+        "timeout_ms": 300,
+        "mappings": [{"uri": "external.Plant.Dev.a", "address": 5, "function_code": 3}]
+    }))
+    .await;
+
+    let first = driver.poll_cycle(&ctx()).await.unwrap();
+    assert_eq!(
+        reading(&first, "external.Plant.Dev.a"),
+        &Ok(SampleValue::U16(500))
+    );
+
+    sim.stop();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let second = driver.poll_cycle(&ctx()).await.unwrap();
+    assert!(
+        matches!(
+            reading(&second, "external.Plant.Dev.a"),
+            Err(SampleFault::CommFailure(_))
+        ),
+        "the value read before the drop must not be repeated, got {:?}",
+        reading(&second, "external.Plant.Dev.a")
+    );
+
+    // A device back on the same port is read again without restarting the driver.
+    let sim2 = ModbusSimServer::start(&format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    sim2.set_holding(5, 777).await;
+    let third = driver.poll_cycle(&ctx()).await.unwrap();
+    assert_eq!(
+        reading(&third, "external.Plant.Dev.a"),
+        &Ok(SampleValue::U16(777))
+    );
+}
+
+#[tokio::test]
+async fn writes_a_holding_register_and_refuses_what_it_cannot_write_exactly() {
+    let sim = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
+    sim.set_holding(100, 452).await;
+    sim.set_input(7, 1).await;
+
+    let mut driver = started(json!({
+        "transport": "tcp",
+        "host": "127.0.0.1",
+        "port": sim.port(),
+        "mappings": [
+            {"uri": "external.BoilerRoom.PT101.setpoint", "address": 100, "function_code": 3, "scale": 0.1},
+            {"uri": "external.BoilerRoom.LT101.level", "address": 7, "function_code": 4}
+        ]
+    }))
+    .await;
+
+    // 50.0 with a 0.1 scale is register value 500.
+    driver
+        .write_tag(&ctx(), "external.BoilerRoom.PT101.setpoint", &json!(50.0))
+        .await
+        .unwrap();
+    assert_eq!(sim.holding(100).await, Some(500));
+
+    // Out of range for a u16 register: refused, and the register keeps its value.
+    assert!(driver
+        .write_tag(&ctx(), "external.BoilerRoom.PT101.setpoint", &json!(9000.0))
+        .await
+        .is_err());
+    assert!(driver
+        .write_tag(&ctx(), "external.BoilerRoom.PT101.setpoint", &json!(-1.0))
+        .await
+        .is_err());
+    assert_eq!(sim.holding(100).await, Some(500));
+
+    // An input register is read-only.
+    assert!(driver
+        .write_tag(&ctx(), "external.BoilerRoom.LT101.level", &json!(1))
+        .await
+        .is_err());
+    // An unmapped tag.
+    assert!(driver
+        .write_tag(&ctx(), "external.BoilerRoom.Nope.x", &json!(1))
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn rejects_configurations_it_cannot_serve_honestly() {
     let mut driver = ModbusDriver::new();
-    assert!(driver.init(&ctx).await.is_ok());
+    driver.init(&ctx()).await.unwrap();
 
-    // Violating physical hierarchy: missing 'external.' prefix
-    let bad_config1 = json!({
-        "transport": "tcp",
-        "host": "127.0.0.1",
-        "port": 502,
-        "mappings": [
-            {
-                "uri": "internal.BoilerRoom.PT101.pv",
-                "address": 1,
-                "function_code": 3
-            }
-        ]
-    });
-    assert!(driver.start(&ctx, &bad_config1).await.is_err());
+    let cases = [
+        (
+            "RTU has no transport",
+            json!({"transport": "rtu", "serial_port": "/dev/ttyUSB0", "mappings": []}),
+        ),
+        (
+            "TCP without a host",
+            json!({"transport": "tcp", "mappings": []}),
+        ),
+        (
+            "tag outside the external namespace",
+            json!({"transport": "tcp", "host": "127.0.0.1", "mappings": [
+                {"uri": "internal.BoilerRoom.PT101.pv", "address": 1, "function_code": 3}]}),
+        ),
+        (
+            "protocol name used as a namespace",
+            json!({"transport": "tcp", "host": "127.0.0.1", "mappings": [
+                {"uri": "external.modbus.device1.val", "address": 1, "function_code": 3}]}),
+        ),
+        (
+            "the same tag mapped twice",
+            json!({"transport": "tcp", "host": "127.0.0.1", "mappings": [
+                {"uri": "external.Plant.Dev.a", "address": 1, "function_code": 3},
+                {"uri": "external.Plant.Dev.a", "address": 2, "function_code": 3}]}),
+        ),
+        (
+            "a write function code on a read mapping",
+            json!({"transport": "tcp", "host": "127.0.0.1", "mappings": [
+                {"uri": "external.Plant.Dev.a", "address": 1, "function_code": 6}]}),
+        ),
+        (
+            "an unknown register type",
+            json!({"transport": "tcp", "host": "127.0.0.1", "mappings": [
+                {"uri": "external.Plant.Dev.a", "address": 1, "function_code": 3, "data_type": "f64"}]}),
+        ),
+        (
+            "a zero scale",
+            json!({"transport": "tcp", "host": "127.0.0.1", "mappings": [
+                {"uri": "external.Plant.Dev.a", "address": 1, "function_code": 3, "scale": 0.0}]}),
+        ),
+        (
+            "slave id 0",
+            json!({"transport": "tcp", "host": "127.0.0.1", "slave_id": 0, "mappings": []}),
+        ),
+    ];
 
-    // Prohibited transport name in namespace: 'external.modbus.device1.val'
-    let bad_config2 = json!({
-        "transport": "tcp",
-        "host": "127.0.0.1",
-        "port": 502,
-        "mappings": [
-            {
-                "uri": "external.modbus.device1.val",
-                "address": 1,
-                "function_code": 3
-            }
-        ]
-    });
-    assert!(driver.start(&ctx, &bad_config2).await.is_err());
+    for (what, config) in cases {
+        assert!(
+            driver.start(&ctx(), &config).await.is_err(),
+            "must reject: {what}"
+        );
+        assert!(
+            driver.declared_tags().is_empty(),
+            "a rejected configuration must declare no tags: {what}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn requires_the_network_capability() {
+    let no_caps = PluginContext::new("org.mythos.driver.modbus", HashSet::new(), "/tmp");
+    let mut driver = ModbusDriver::new();
+    assert!(driver.init(&no_caps).await.is_err());
 }

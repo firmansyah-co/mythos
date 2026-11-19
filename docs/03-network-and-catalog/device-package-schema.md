@@ -1,5 +1,7 @@
 # MythOS Open Hardware Catalog: Device Package Schema and Standards
 
+> **Status:** Partly built — The catalog parser and fingerprinting are `crates/mythos-core/src/catalog` (`schema.rs`, `fingerprint.rs`) and cover Modbus RTU only. A catalog for every protocol is planned; the passive bus sniffing and the sweep tiers in section 5 are not built. Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-CAT-001
 - **Version**: 1.0.0
 - **Author**: Vulcan (VP Hardware & Robotics Engineering)

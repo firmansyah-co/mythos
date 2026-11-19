@@ -29,7 +29,7 @@ fn workspace_root() -> PathBuf {
 /// matches nothing is the same failure mode as a check that silently does not run.
 fn frontend_manifests(root: &Path) -> Vec<PathBuf> {
     let mut out = vec![root.join("frontend/package.json")];
-    for group in ["frontend/packages", "frontend/plugins"] {
+    for group in ["frontend/packages"] {
         let dir = root.join(group);
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
@@ -45,11 +45,46 @@ fn frontend_manifests(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn manifest_version(path: &Path) -> String {
+fn manifest_json(path: &Path) -> serde_json::Value {
     let text =
         fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-    let json: serde_json::Value = serde_json::from_str(&text)
-        .unwrap_or_else(|e| panic!("{} is not valid JSON: {e}", path.display()));
+    serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("{} is not valid JSON: {e}", path.display()))
+}
+
+/// The module crate a frontend package is the UI of (`"mythos": {"crate": "plugins/hmi"}`), if
+/// it is one. A module's UI carries the module's version, not the platform's (ADR-011 §2.6).
+fn module_crate_of(path: &Path) -> Option<String> {
+    manifest_json(path)["mythos"]["crate"]
+        .as_str()
+        .map(str::to_string)
+}
+
+/// `version = "…"` in the `[package]` section of a Cargo.toml.
+fn crate_version(cargo_toml: &Path) -> String {
+    let text = fs::read_to_string(cargo_toml)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", cargo_toml.display()));
+    let mut in_package = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+        } else if in_package {
+            if let Some(rest) = line.strip_prefix("version") {
+                if let Some(value) = rest.trim().strip_prefix('=') {
+                    return value.trim().trim_matches('"').to_string();
+                }
+            }
+        }
+    }
+    panic!(
+        "{} has no [package] version of its own",
+        cargo_toml.display()
+    )
+}
+
+fn manifest_version(path: &Path) -> String {
+    let json = manifest_json(path);
     json.get("version")
         .and_then(|v| v.as_str())
         .unwrap_or_else(|| panic!("{} has no string \"version\" field", path.display()))
@@ -62,15 +97,18 @@ fn every_manifest_agrees_with_the_crate_version() {
     let crate_version = env!("CARGO_PKG_VERSION");
     let manifests = frontend_manifests(&root);
 
+    // The workspace root and the workbench package. A lower count means the discovery above
+    // matched nothing, which would make every assertion below vacuous.
     assert!(
-        manifests.len() >= 7,
-        "expected at least 7 frontend manifests, found {}: {:?}",
+        manifests.len() >= 2,
+        "expected at least 2 frontend manifests, found {}: {:?}",
         manifests.len(),
         manifests
     );
 
     let mut mismatches = Vec::new();
-    for path in &manifests {
+    // A module's UI follows its module, checked below.
+    for path in manifests.iter().filter(|p| module_crate_of(p).is_none()) {
         let found = manifest_version(path);
         if found != crate_version {
             let rel = path.strip_prefix(&root).unwrap_or(path);
@@ -89,6 +127,30 @@ fn every_manifest_agrees_with_the_crate_version() {
          Fix by running scripts/version.sh --stamp, not by hand-editing one file.",
         mismatches.join("\n  ")
     );
+}
+
+/// A module's workbench UI and its executable are one module: they carry one version, the
+/// module's own, which is not the platform's (ADR-011 §2.6).
+#[test]
+fn a_module_ui_carries_its_module_version() {
+    let root = workspace_root();
+    let uis: Vec<(PathBuf, String)> = frontend_manifests(&root)
+        .into_iter()
+        .filter_map(|p| module_crate_of(&p).map(|c| (p, c)))
+        .collect();
+    assert!(
+        uis.iter().any(|(_, c)| c == "plugins/hmi"),
+        "the HMI's UI was not found among the module UIs: {uis:?}"
+    );
+    for (ui, module) in &uis {
+        let expected = crate_version(&root.join(module).join("Cargo.toml"));
+        assert_eq!(
+            manifest_version(ui),
+            expected,
+            "{} is the UI of {module}, which is version {expected}",
+            ui.strip_prefix(&root).unwrap_or(ui).display()
+        );
+    }
 }
 
 #[test]

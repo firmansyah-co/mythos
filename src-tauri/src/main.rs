@@ -6,6 +6,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    mythos_core::server::init_logging();
     mythos_desktop_lib::run()
 }

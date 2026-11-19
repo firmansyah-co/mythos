@@ -1,0 +1,138 @@
+[
+  {
+    "path": "i",
+    "type": "INT",
+    "section": "var",
+    "offset": 0,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "s",
+    "type": "SINT",
+    "section": "var",
+    "offset": 2,
+    "size": 1,
+    "writable": false
+  },
+  {
+    "path": "d",
+    "type": "DINT",
+    "section": "var",
+    "offset": 3,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "a",
+    "type": "INT",
+    "section": "var",
+    "offset": 7,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "b",
+    "type": "INT",
+    "section": "var",
+    "offset": 9,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "c",
+    "type": "INT",
+    "section": "var",
+    "offset": 11,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "n",
+    "type": "INT",
+    "section": "var",
+    "offset": 13,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "x",
+    "type": "REAL",
+    "section": "var",
+    "offset": 15,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "k",
+    "type": "DINT",
+    "section": "var",
+    "offset": 19,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "sel",
+    "type": "INT",
+    "section": "var",
+    "offset": 23,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "which",
+    "type": "INT",
+    "section": "var",
+    "offset": 25,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "sum",
+    "type": "DINT",
+    "section": "var",
+    "offset": 27,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "j",
+    "type": "INT",
+    "section": "var",
+    "offset": 31,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "m",
+    "type": "INT",
+    "section": "var",
+    "offset": 33,
+    "size": 2,
+    "writable": false
+  },
+  {
+    "path": "q",
+    "type": "DINT",
+    "section": "var",
+    "offset": 35,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "r",
+    "type": "DINT",
+    "section": "var",
+    "offset": 39,
+    "size": 4,
+    "writable": false
+  },
+  {
+    "path": "neg",
+    "type": "INT",
+    "section": "var",
+    "offset": 43,
+    "size": 2,
+    "writable": false
+  }
+]

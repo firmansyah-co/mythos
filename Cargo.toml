@@ -4,12 +4,22 @@ members = [
     "crates/mythos-pal",
     "crates/mythos-core",
     "crates/mythos-shm",
-    "crates/mythos-strucpp",
     "crates/mythos-plugin-sdk",
-    "crates/mythos-mcp",
-    "crates/mythos-mcp-macros",
+    "crates/mythos-module",
+    "crates/mythos-module-tests",
     "crates/mythos-cli",
+    "crates/mythos-update",
+    "crates/mythos-logic-ir",
+    "crates/mythos-logic-st",
+    "crates/mythos-logic-vm",
+    "crates/mythos-logic-backend-vm",
+    "crates/mythos-logic-compiler",
+    "crates/mythos-logic-graphic",
     "plugins/drivers/driver-modbus",
+    "plugins/hmi",
+    "plugins/discovery",
+    "plugins/runtime-vm",
+    "plugins/logic",
     "src-tauri",
 ]
 
@@ -28,43 +38,42 @@ warnings = "deny"
 mythos-pal = { path = "crates/mythos-pal" }
 mythos-shm = { path = "crates/mythos-shm" }
 mythos-core = { path = "crates/mythos-core" }
-mythos-strucpp = { path = "crates/mythos-strucpp" }
 mythos-plugin-sdk = { path = "crates/mythos-plugin-sdk" }
-mythos-mcp = { path = "crates/mythos-mcp" }
-mythos-mcp-macros = { path = "crates/mythos-mcp-macros" }
+mythos-module = { path = "crates/mythos-module" }
+mythos-update = { path = "crates/mythos-update" }
+mythos-logic-ir = { path = "crates/mythos-logic-ir" }
+mythos-logic-st = { path = "crates/mythos-logic-st" }
+mythos-logic-vm = { path = "crates/mythos-logic-vm" }
+mythos-logic-backend-vm = { path = "crates/mythos-logic-backend-vm" }
+mythos-logic-compiler = { path = "crates/mythos-logic-compiler" }
+mythos-logic-graphic = { path = "crates/mythos-logic-graphic" }
+driver-modbus = { path = "plugins/drivers/driver-modbus" }
 
 # Concurrency and Async
 tokio = { version = "1.40", features = ["full"] }
 tokio-stream = "0.1"
 futures-util = "0.3"
-tokio-util = { version = "0.7", features = ["codec"] }
 async-trait = "0.1"
-flume = "0.11"
-parking_lot = "0.12"
 
 # Web, Networking and API Gateway
 axum = { version = "0.7", features = ["macros", "ws"] }
 tower = "0.4"
-tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
 
 # CLI & Packaging
 clap = { version = "4.6", features = ["derive"] }
 sha2 = "0.10"
-chacha20poly1305 = "0.10.1"
 rand = "0.8"
-ed25519-dalek = { version = "2.1", features = ["rand_core", "serde"] }
 hex = "0.4"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 tempfile = "3.10"
 
-# Serialization, CRDT and Collaboration
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# PLCopen TC6 XML, read by the Ladder Diagram front-end. MIT.
+quick-xml = "0.42"
 bytemuck = { version = "1.18", features = ["derive"] }
-schemars = "0.8"
-specta = "2.0"
 ts-rs = "10.0"
-yrs = { version = "0.21", features = ["sync"] }
 
 # Logging and Diagnostics
 tracing = "0.1"
@@ -73,16 +82,27 @@ thiserror = "1.0"
 
 # Low-level and Systems
 libc = "0.2"
-memmap2 = "0.9"
 libloading = "0.8"
 crc32fast = "1.4"
 cfg-if = "1.0"
 
-# Time-Series Historian & Parquet
-arrow = { version = "54.3", default-features = false, features = ["csv", "ipc", "json"] }
-parquet = { version = "54.3", default-features = false, features = ["arrow", "zstd"] }
+# Hashing a release bundle (about 100 MB in a debug build) takes seconds unoptimised; the
+# updater's tests do it several times.
+[profile.dev.package.sha2]
+opt-level = 3
 
-# Proc-macro
-syn = { version = "2.0", features = ["full"] }
-quote = "1.0"
-proc-macro2 = "1.0"
+# Password hashing is deliberately slow; unoptimised, the auth tests would spend most of their
+# time in it.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
+
+# Packing a module package deflates whole executables; unoptimised that takes most of a test run.
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3

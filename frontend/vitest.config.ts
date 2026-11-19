@@ -1,34 +1,21 @@
 import { defineConfig } from 'vitest/config';
-import path from 'path';
 
-/**
- * Workspace packages resolve to their `src`, not their built `dist`.
- *
- * Tests that resolve a sibling workspace package through `node_modules` get whatever `dist`
- * happens to be on disk, which need not match the working tree. That silently invalidates a
- * red/green result: a test can pass against a stale build of the very code under test. Aliasing
- * to source makes every test independent of build artifacts.
- */
-const workspaceSrc = (name: string) => path.resolve(__dirname, 'plugins', name, 'src/index.ts');
+// How much longer a test may take before it counts as hung. GitHub Actions sets CI. There the
+// Rust and the frontend jobs run at once on one host's cores, with no limit between them: the
+// same suite took 160 s beside the Rust job and 27 s alone (PR #156, 2026-11-19), and the first
+// test to pass 20 s failed. Only the limits that catch a hang are stretched, never what a test
+// asserts. MYTHOS_TEST_TIME_SCALE sets the factor by hand.
+const timeScale = Number(process.env.MYTHOS_TEST_TIME_SCALE ?? (process.env.CI ? 6 : 1));
 
 export default defineConfig({
-  resolve: {
-    alias: [
-      {
-        find: 'monaco-editor/esm/vs/editor/editor.api.js',
-        replacement: 'monaco-editor',
-      },
-      { find: '@mythos/ui-faceplate-lib', replacement: workspaceSrc('ui-faceplate-lib') },
-      { find: '@mythos/ui-inspector', replacement: workspaceSrc('ui-inspector') },
-    ],
-  },
   test: {
-    globals: true,
+    testTimeout: 5_000 * timeScale,
+    hookTimeout: 10_000 * timeScale,
+    // Read by the tests that set a longer limit of their own (logic-ui's harness).
+    env: { MYTHOS_TEST_TIME_SCALE: String(timeScale) },
     environment: 'happy-dom',
-    server: {
-      deps: {
-        inline: ['y-monaco'],
-      },
-    },
+    include: ['packages/*/src/**/*.test.{ts,tsx}'],
+    // No test reaches the network: see test-setup.ts.
+    setupFiles: ['./test-setup.ts'],
   },
 });

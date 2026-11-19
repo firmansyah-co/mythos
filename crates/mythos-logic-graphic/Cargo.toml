@@ -1,0 +1,23 @@
+[package]
+name = "mythos-logic-graphic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "The graphical front-ends of MythOS control logic: IEC 61131-3 LD and FBD, stored as PLCopen TC6 XML, to the IR (ADR-013)"
+
+[lints]
+workspace = true
+
+# A front-end knows the IR and nothing downstream of it. A graphical language also reads the
+# common elements (declarations, types, literals, the text inside its elements) and the
+# standard library through the Structured Text front-end, so that both languages have one
+# rule for each (ADR-013 §2.1, §2.15).
+[dependencies]
+mythos-logic-ir.workspace = true
+mythos-logic-st.workspace = true
+quick-xml.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

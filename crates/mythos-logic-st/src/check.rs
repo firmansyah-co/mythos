@@ -1,0 +1,2860 @@
+//! From the syntax tree to the IR: resolve every name, type every expression, and refuse what
+//! IEC 61131-3 does not allow or this compiler does not support yet. Nothing unsupported is
+//! compiled into something else: it is a diagnostic.
+//!
+//! The order of a source does not matter: every type and POU is known by name before any
+//! declaration is read, and every declaration before any body.
+//!
+//! **One mistake, one message.** The tree may come from a source the parser could not read
+//! whole, and a declaration may be refused here. What follows from either is not a second
+//! mistake, so it is not told: the statements of a POU that was not read whole are not
+//! checked (its declarations are); a variable whose declaration was refused is known by
+//! name and nothing is said where it is used; a member or a parameter that is not found in
+//! a type or a POU with a gap in its declarations is not called missing.
+//!
+//! **Depth.** Types that contain one another are followed by recursive passes (here, in the
+//! IR, in a backend), so a structure that contains itself loses its members as soon as it is
+//! told, before anything follows them, and types nested deeper than [`MAX_TYPE_NESTING`] are
+//! refused. A type that holds one refused for its depth is refused silently: one message.
+
+use crate::ast::{self, BinOp, CaseLabel, ExprKind as A};
+use mythos_logic_ir::*;
+
+pub fn check(src: &ast::Source) -> Result<Unit, Vec<Diagnostic>> {
+    let mut c = Checker {
+        unit: Unit::new(),
+        names: Vec::new(),
+        aliases: vec![Alias::Unread; src.types.len()],
+        alias_specs: src
+            .types
+            .iter()
+            .map(|t| match &t.kind {
+                ast::TypeDeclKind::Alias(spec) => Some(spec.clone()),
+                ast::TypeDeclKind::Struct(_) | ast::TypeDeclKind::Unknown => None,
+            })
+            .collect(),
+        struct_of: Vec::new(),
+        pou_spans: src.pous.iter().map(|p| p.span).collect(),
+        calls: Vec::new(),
+        refused: vec![Vec::new(); src.pous.len()],
+        gaps: src.pous.iter().map(|p| p.partial_vars).collect(),
+        struct_gaps: Vec::new(),
+        struct_depth: Vec::new(),
+        struct_cycled: false,
+        resolving: 0,
+        result_unknown: vec![false; src.pous.len()],
+        lost: src.lost.clone(),
+        library: src.pous.iter().map(|p| p.library).collect(),
+        in_library: false,
+        diags: Vec::new(),
+        cur: 0,
+        loops: 0,
+        result_assigned: false,
+        untyped: Vec::new(),
+    };
+    c.names(src);
+    c.declarations(src);
+    let contained = c.containment(src) || c.struct_cycled;
+    for (i, p) in src.pous.iter().enumerate() {
+        // A POU that was not read whole: a statement may be missing, or a variable its
+        // statements use. Whatever they would be told here follows from that.
+        if p.partial_vars || p.partial_body {
+            continue;
+        }
+        c.cur = i;
+        c.in_library = p.library;
+        c.loops = 0;
+        c.result_assigned = false;
+        let body = c.stmts(&p.body);
+        c.in_library = false;
+        c.unit.pous[i].body = body;
+        // IEC 61131-3 ed. 3 §7.3.3.2.3: a POU with a result assigns it at least once.
+        if p.kind == ast::PouKind::Function && !c.result_assigned {
+            c.err(
+                p.span,
+                format!(
+                    "the function {} never assigns its result: write {} := …;",
+                    p.name, p.name
+                ),
+            );
+        }
+    }
+    if !contained {
+        c.recursion();
+    }
+    // Only a sound unit is walked through its instances: one refused for nesting too deep
+    // could exhaust the stack.
+    if c.diags.is_empty() {
+        c.retained_in_part(src);
+    }
+    if c.diags.is_empty() {
+        Ok(c.unit)
+    } else {
+        Err(c.diags)
+    }
+}
+
+/// What a name declared at the top of a source is.
+#[derive(Clone, Copy)]
+enum Named {
+    Struct(usize),
+    /// A name for an array type: an index into the source's type declarations.
+    Alias(usize),
+    Pou(usize),
+    /// A type the parser could not read: the name is taken, what it stands for is unknown.
+    Unknown,
+}
+
+/// How far a named array type has been worked out.
+#[derive(Clone, Copy)]
+enum Alias {
+    Unread,
+    Reading,
+    Known(Option<Ty>),
+}
+
+/// How a function block's member is used from outside.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Input,
+    Output,
+    Internal,
+}
+
+/// A place a program named, resolved.
+struct Target {
+    place: Place,
+    ty: Ty,
+    /// Why it may not be written, when it may not.
+    readonly: Option<String>,
+    /// Why it may not be read, when it may not.
+    unreadable: Option<String>,
+    /// It lies inside a function block instance: named through the instance, from outside.
+    inside_instance: bool,
+}
+
+struct Checker {
+    unit: Unit,
+    /// Every type and POU of the source and of the standard library, by its name in upper
+    /// case, and whether it is the library's.
+    names: Vec<(String, Named, bool)>,
+    aliases: Vec<Alias>,
+    /// For each type declaration of the source: the array type it names, if it names one.
+    alias_specs: Vec<Option<ast::TypeSpec>>,
+    /// For each type declaration of the source: its structure in the unit, if it is one.
+    struct_of: Vec<Option<usize>>,
+    pou_spans: Vec<Span>,
+    /// Every function call: (the POU it is in, the function called, where).
+    calls: Vec<(usize, usize, Span)>,
+    /// For each POU: the variables whose declaration was refused, in upper case. They are
+    /// known by name, so that their uses are not told as undeclared.
+    refused: Vec<Vec<String>>,
+    /// For each POU: its declarations have a gap (one the parser could not read, or one
+    /// refused here), so a member or parameter not found in it may be in the gap.
+    gaps: Vec<bool>,
+    /// The same for each structure of the unit.
+    struct_gaps: Vec<bool>,
+    /// For each structure of the unit: how deep it nests ([`Checker::type_depth`]).
+    struct_depth: Vec<usize>,
+    /// A structure that contains itself was told.
+    struct_cycled: bool,
+    /// How many named array types are being worked out, each within the one before.
+    resolving: usize,
+    /// For each POU: it is a function and what it returns is not known.
+    result_unknown: Vec<bool>,
+    /// What the source declares under names the parser could not read.
+    lost: Vec<ast::Lost>,
+    /// For each POU: it is of the standard library (ADR-013 L4).
+    library: Vec<bool>,
+    /// A POU of the library is being read. Its names are looked up among the library's
+    /// alone, so nothing a program declares can change what the library means, and an
+    /// intrinsic may be called.
+    in_library: bool,
+    diags: Vec<Diagnostic>,
+    /// The POU whose declarations or body are being read.
+    cur: usize,
+    loops: usize,
+    result_assigned: bool,
+    /// The variables typed by their value (`ast::TypeSpecKind::OfValue`) that no statement has
+    /// assigned yet: (POU, variable). Each stands with a type nothing reads until then.
+    untyped: Vec<(usize, usize)>,
+}
+
+/// A literal's value before it knows its type.
+fn fits(ty: Ty, v: i128) -> bool {
+    ty.int_range().is_some_and(|(lo, hi)| v >= lo && v <= hi)
+}
+
+/// The integer type a truncation names: `TRUNC_INT` (Table 22 feature 2c) or
+/// `REAL_TRUNC_INT`, `LREAL_TRUNC_INT` (feature 2b). The old TRUNC alone (2a) is deprecated
+/// and not taken.
+fn truncation(upper: &str) -> Option<Ty> {
+    let (from, to) = upper.split_once("TRUNC_")?;
+    let to = Ty::from_name(to).filter(|t| t.is_int())?;
+    match from {
+        "" | "REAL_" | "LREAL_" => Some(to),
+        _ => None,
+    }
+}
+
+/// The operators that are also functions by name (Table 29, Table 33): ADD and MUL take two
+/// or more, the comparisons other than NE two or more, the rest two (MOVE one). MOD, AND,
+/// OR, XOR and NOT are keywords of ST and are written as operators.
+fn operator_function(upper: &str) -> Option<BinOp> {
+    Some(match upper {
+        "ADD" => BinOp::Add,
+        "SUB" => BinOp::Sub,
+        "MUL" => BinOp::Mul,
+        "DIV" => BinOp::Div,
+        "GT" => BinOp::Gt,
+        "GE" => BinOp::Ge,
+        "EQ" => BinOp::Eq,
+        "LE" => BinOp::Le,
+        "LT" => BinOp::Lt,
+        "NE" => BinOp::Ne,
+        // MOVE: OUT := IN; marked by an operator it never applies.
+        "MOVE" => BinOp::Or,
+        _ => return None,
+    })
+}
+
+/// The most characters the decimal text of a value of the integer type `ty` takes, its sign
+/// included: what `<int>_TO_STRING` gives.
+fn decimal_width(ty: Ty) -> u16 {
+    let (lo, hi) = ty.int_range().unwrap_or((0, 0));
+    lo.to_string().len().max(hi.to_string().len()) as u16
+}
+
+/// `A calls B, which calls A`, from the names round a cycle.
+fn chain(names: &[String], verb: &str) -> String {
+    let Some((first, rest)) = names.split_first() else {
+        return String::new();
+    };
+    let Some((second, more)) = rest.split_first() else {
+        return format!("{first} {verb} itself");
+    };
+    let mut s = format!("{first} {verb} {second}");
+    for n in more.iter().chain(std::iter::once(first)) {
+        s.push_str(&format!(", which {verb} {n}"));
+    }
+    s
+}
+
+/// What is said of a type, `what`, nested deeper than [`MAX_TYPE_NESTING`].
+fn too_deep(what: &str) -> String {
+    format!(
+        "{what} is nested more than {MAX_TYPE_NESTING} deep: structures, arrays and function block instances within one another each count"
+    )
+}
+
+/// The most elements an array may have. A backend's and a target's limits on memory are far
+/// below it; this one only keeps the arithmetic on sizes inside 32 bits.
+const MAX_ELEMENTS: i128 = u32::MAX as i128;
+
+impl Checker {
+    /// Tell a mistake, unless the same has been told of the same place: `a, b : Nope;` names
+    /// one type that does not exist, not two.
+    fn err(&mut self, span: Span, msg: impl Into<String>) {
+        let d = Diagnostic::at(span, msg);
+        if !self.diags.contains(&d) {
+            self.diags.push(d);
+        }
+    }
+
+    /// A type's name as the program writes it.
+    fn n(&self, ty: Ty) -> String {
+        self.unit.ty_name(ty)
+    }
+
+    /// The declaration of `name` in the POU being read was refused.
+    fn is_refused(&self, name: &str) -> bool {
+        let upper = name.to_ascii_uppercase();
+        self.refused[self.cur].contains(&upper)
+    }
+
+    /// Remember that the declaration of `name` was refused, and why is already told.
+    fn refuse(&mut self, name: &str) {
+        self.refused[self.cur].push(name.to_ascii_uppercase());
+        self.gaps[self.cur] = true;
+    }
+
+    /// `ty` is a function block type whose declarations have a gap.
+    fn has_gap(&self, ty: Ty) -> bool {
+        matches!(ty, Ty::Instance(p) if self.gaps[p])
+    }
+
+    /// The type or POU `name` stands for where it is read: in a program, any of the source's
+    /// and the library's (no name is both, `names` refuses that); in the library, only the
+    /// library's.
+    fn named(&self, name: &str) -> Option<Named> {
+        let upper = name.to_ascii_uppercase();
+        self.names
+            .iter()
+            .find(|(n, _, library)| *n == upper && (*library || !self.in_library))
+            .map(|(_, x, _)| *x)
+    }
+
+    /// The function named `name`, if there is one.
+    fn function(&self, name: &str) -> Option<usize> {
+        match self.named(name) {
+            Some(Named::Pou(p)) if matches!(self.unit.pous[p].kind, PouKind::Function { .. }) => {
+                Some(p)
+            }
+            _ => None,
+        }
+    }
+
+    /// The function named `name` declared where the POU being read is: in the program's
+    /// source, or in the library. A function of the library is a standard function, and a
+    /// variable may bear the name of one, as of LEN or MAX.
+    fn own_function(&self, name: &str) -> Option<usize> {
+        self.function(name)
+            .filter(|f| self.library.get(*f).copied().unwrap_or(false) == self.in_library)
+    }
+
+    /// First pass: every type and POU by name, so that a later one can be used earlier.
+    fn names(&mut self, src: &ast::Source) {
+        fn taken(c: &mut Checker, name: &str, span: Span, what: Named, library: bool) {
+            let upper = name.to_ascii_uppercase();
+            let conversion = upper
+                .split_once("_TO_")
+                .is_some_and(|(a, b)| Ty::from_name(a).is_some() && Ty::from_name(b).is_some());
+            let standard = StdFn::by_name(&upper).is_some()
+                || truncation(&upper).is_some()
+                || operator_function(&upper).is_some()
+                // Every name the library declares, whether this program uses it or not: a
+                // program that took one would change meaning when the library is used.
+                || (!library && crate::library::declares(&upper));
+            if Ty::from_name(&upper).is_some() || conversion || standard {
+                // A keyword as a name is told by the parser, once.
+                if !is_keyword(&upper) {
+                    c.err(
+                        span,
+                        format!("{name} is a name of the standard; choose another"),
+                    );
+                }
+            } else if c.names.iter().any(|(n, _, _)| *n == upper) {
+                c.err(span, format!("{name} is declared twice"));
+            } else {
+                c.names.push((upper, what, library));
+            }
+        }
+        for (i, t) in src.types.iter().enumerate() {
+            let what = match t.kind {
+                ast::TypeDeclKind::Struct(_) => {
+                    self.unit.structs.push(StructTy {
+                        name: t.name.clone(),
+                        fields: Vec::new(),
+                    });
+                    self.struct_of.push(Some(self.unit.structs.len() - 1));
+                    self.struct_gaps.push(t.partial);
+                    Named::Struct(self.unit.structs.len() - 1)
+                }
+                ast::TypeDeclKind::Unknown => {
+                    self.struct_of.push(None);
+                    Named::Unknown
+                }
+                ast::TypeDeclKind::Alias(_) => {
+                    self.struct_of.push(None);
+                    Named::Alias(i)
+                }
+            };
+            taken(self, &t.name, t.span, what, false);
+        }
+        let mut programs = 0;
+        for (i, p) in src.pous.iter().enumerate() {
+            let kind = match p.kind {
+                ast::PouKind::Program => {
+                    programs += 1;
+                    if programs == 1 {
+                        self.unit.entry = i;
+                    } else {
+                        self.err(
+                            p.span,
+                            format!(
+                                "{} is a second PROGRAM; a source has one, where a scan starts",
+                                p.name
+                            ),
+                        );
+                    }
+                    PouKind::Program
+                }
+                ast::PouKind::FunctionBlock => PouKind::FunctionBlock,
+                ast::PouKind::Function => PouKind::Function { result: 0 },
+            };
+            self.unit.pous.push(Pou {
+                name: p.name.clone(),
+                kind,
+                vars: Vec::new(),
+                body: Vec::new(),
+            });
+            taken(self, &p.name, p.span, Named::Pou(i), p.library);
+        }
+        // A PROGRAM the parser could not read the name of is one all the same.
+        if programs == 0 && !self.lost.contains(&ast::Lost::Program) {
+            self.diags.push(Diagnostic::whole(
+                "the source has no PROGRAM; it needs one, where a scan starts",
+            ));
+        }
+    }
+
+    /// Second pass: the members of every structure and the variables of every POU.
+    fn declarations(&mut self, src: &ast::Source) {
+        // Each member read, with its structure: what is checked once all are read.
+        let mut members: Vec<(usize, &ast::VarDecl)> = Vec::new();
+        for (k, t) in src.types.iter().enumerate() {
+            let fields = match &t.kind {
+                ast::TypeDeclKind::Struct(fields) => fields,
+                ast::TypeDeclKind::Alias(_) => {
+                    // Read a named array type even when nothing uses it, so its mistakes
+                    // are told.
+                    self.resolve(&ast::TypeSpec {
+                        span: t.span,
+                        kind: ast::TypeSpecKind::Named(t.name.clone()),
+                    });
+                    continue;
+                }
+                ast::TypeDeclKind::Unknown => continue,
+            };
+            let Some(at) = self.struct_of[k] else {
+                continue;
+            };
+            if fields.is_empty() && !t.partial {
+                self.err(t.span, format!("the structure {} has no members", t.name));
+            }
+            for f in fields {
+                if self.unit.structs[at]
+                    .fields
+                    .iter()
+                    .any(|x| x.name.eq_ignore_ascii_case(&f.name))
+                {
+                    self.err(f.span, format!("{} is declared twice", f.name));
+                    continue;
+                }
+                let Some(ty) = self.resolve(&f.ty) else {
+                    self.struct_gaps[at] = true;
+                    continue;
+                };
+                self.unit.structs[at].fields.push(Field {
+                    name: f.name.clone(),
+                    ty,
+                    init: None,
+                });
+                members.push((at, f));
+            }
+        }
+        // Every member's type is known: what follows members can be followed now.
+        self.struct_shapes(src);
+        for (at, f) in members {
+            let fields = &self.unit.structs[at].fields;
+            let Some(i) = fields
+                .iter()
+                .position(|x| x.name.eq_ignore_ascii_case(&f.name))
+            else {
+                // Its structure lost its members.
+                continue;
+            };
+            let ty = fields[i].ty;
+            if self.unit.holds_instance(ty) {
+                self.err(
+                    f.ty.span,
+                    "a function block instance inside a structure is not supported yet",
+                );
+                self.struct_gaps[at] = true;
+                self.unit.structs[at].fields.remove(i);
+                continue;
+            }
+            let init = f.init.as_ref().and_then(|i| self.init(i, ty));
+            self.unit.structs[at].fields[i].init = init;
+        }
+        for (i, p) in src.pous.iter().enumerate() {
+            self.cur = i;
+            self.in_library = p.library;
+            if p.kind == ast::PouKind::Function {
+                // A function's result is its variable 0, named as the function. When its
+                // type is not known (the parser or this has said why), the variable stands
+                // in with a type nothing reads: no call of the function is typed.
+                let ty = match p.result.as_ref().map(|spec| (spec, self.resolve(spec))) {
+                    Some((_, Some(t))) if t.is_elementary() || t.is_string() => Some(t),
+                    Some((spec, Some(t))) => {
+                        let what = self.n(t);
+                        self.err(
+                            spec.span,
+                            format!(
+                                "a function returning a {what} is not supported yet; a result is of an elementary type or a STRING"
+                            ),
+                        );
+                        None
+                    }
+                    Some((_, None)) | None => None,
+                };
+                self.result_unknown[i] = ty.is_none();
+                let ty = ty.unwrap_or(Ty::Bool);
+                self.unit.pous[i].vars.push(Var {
+                    name: p.name.clone(),
+                    ty,
+                    section: Section::Var,
+                    retention: Retention::Unqualified,
+                    init: None,
+                    hidden: false,
+                });
+            }
+            for d in &p.vars {
+                self.declare(d, p);
+            }
+            self.in_library = false;
+        }
+    }
+
+    fn find(&self, name: &str) -> Option<usize> {
+        self.unit.pous[self.cur]
+            .vars
+            .iter()
+            .position(|v| v.name.eq_ignore_ascii_case(name))
+    }
+
+    fn declare(&mut self, d: &ast::VarDecl, pou: &ast::Pou) {
+        if self.find(&d.name).is_some() || self.is_refused(&d.name) {
+            self.err(d.span, format!("{} is declared twice", d.name));
+            return;
+        }
+        if let ast::TypeSpecKind::OfValue = d.ty.kind {
+            // A front-end's own: its type is the value's, given at the first assignment.
+            let at = self.unit.pous[self.cur].vars.len();
+            self.unit.pous[self.cur].vars.push(Var {
+                name: d.name.clone(),
+                ty: Ty::Bool,
+                section: d.section,
+                retention: d.retention,
+                init: None,
+                hidden: d.hidden,
+            });
+            self.untyped.push((self.cur, at));
+            return;
+        }
+        // IEC 61131-3 ed. 3 §6.6.3.2 rule 18 advises against an instance named as a function;
+        // here no variable may be, so `name(…)` is never two things. A variable named as a
+        // type (`pump : Pump`) is no ambiguity: a type is named only in a declaration.
+        if self.own_function(&d.name).is_some() {
+            self.err(
+                d.span,
+                format!(
+                    "{} is also the name of a function; a variable needs its own",
+                    d.name
+                ),
+            );
+            self.refuse(&d.name);
+            return;
+        }
+        let Some(ty) = self.resolve(&d.ty) else {
+            self.refuse(&d.name);
+            return;
+        };
+        if self.unit.holds_instance(ty) {
+            let instance = self.n(ty);
+            match (pou.kind, d.section) {
+                (ast::PouKind::Function, _) => {
+                    // §6.6.2.1: a function does not store its state.
+                    self.err(
+                        d.ty.span,
+                        format!(
+                            "a function keeps nothing between calls, so {} cannot hold a {instance}",
+                            pou.name
+                        ),
+                    );
+                    self.refuse(&d.name);
+                    return;
+                }
+                (ast::PouKind::FunctionBlock, Section::Input | Section::Output) => {
+                    self.err(
+                        d.ty.span,
+                        "a function block instance as an input or an output of a function block is not supported yet",
+                    );
+                    self.refuse(&d.name);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let init = d.init.as_ref().and_then(|i| self.init(i, ty));
+        self.unit.pous[self.cur].vars.push(Var {
+            name: d.name.clone(),
+            ty,
+            section: d.section,
+            retention: d.retention,
+            init,
+            hidden: d.hidden,
+        });
+    }
+
+    /// The type a declaration names.
+    fn resolve(&mut self, spec: &ast::TypeSpec) -> Option<Ty> {
+        match &spec.kind {
+            ast::TypeSpecKind::Named(name) => {
+                if let Some(ty) = Ty::from_name(&name.to_ascii_uppercase()) {
+                    return Some(ty);
+                }
+                match self.named(name) {
+                    Some(Named::Struct(i)) => Some(Ty::Struct(i)),
+                    Some(Named::Pou(p)) => match self.unit.pous[p].kind {
+                        PouKind::FunctionBlock => Some(Ty::Instance(p)),
+                        PouKind::Function { .. } => {
+                            self.err(spec.span, format!("{name} is a function, not a type"));
+                            None
+                        }
+                        PouKind::Program => {
+                            self.err(spec.span, format!("{name} is a program, not a type"));
+                            None
+                        }
+                    },
+                    Some(Named::Alias(k)) => self.alias(k, name, spec.span),
+                    Some(Named::Unknown) => None,
+                    // It may be one of the types whose name the parser could not read.
+                    None if self.lost.contains(&ast::Lost::Type) => None,
+                    None => {
+                        self.err(
+                            spec.span,
+                            format!("{name} is not a type this compiler knows"),
+                        );
+                        None
+                    }
+                }
+            }
+            ast::TypeSpecKind::String(length) => {
+                let Some((n, at)) = length else {
+                    return Some(Ty::String(DEFAULT_STRING_LENGTH));
+                };
+                // Table 10 footnote k: the longest a STRING may be is the implementer's.
+                if *n < 1 || *n > MAX_STRING_LENGTH as i128 {
+                    self.err(
+                        *at,
+                        format!("a STRING holds 1 to {MAX_STRING_LENGTH} characters, not {n}"),
+                    );
+                    return None;
+                }
+                Some(Ty::String(*n as u16))
+            }
+            ast::TypeSpecKind::Array(dims, elem) => {
+                let elem = self.resolve(elem);
+                let mut ok = true;
+                let mut count: i128 = 1;
+                for (lo, hi) in dims {
+                    if !fits(Ty::Dint, *lo) || !fits(Ty::Dint, *hi) {
+                        self.err(
+                            spec.span,
+                            format!("the bounds {lo}..{hi} do not fit in a DINT"),
+                        );
+                        ok = false;
+                    } else if hi < lo {
+                        self.err(spec.span, format!("the range {lo}..{hi} is empty"));
+                        ok = false;
+                    } else {
+                        count = count.saturating_mul(hi - lo + 1);
+                    }
+                }
+                if ok && count > MAX_ELEMENTS {
+                    self.err(
+                        spec.span,
+                        format!("an array of {count} elements is too large"),
+                    );
+                    ok = false;
+                }
+                let elem = elem?;
+                if !ok {
+                    return None;
+                }
+                let mut within = elem;
+                let mut arrays = 1;
+                while let Ty::Array(a) = within {
+                    arrays += 1;
+                    within = self.unit.arrays[a].elem;
+                }
+                if arrays > MAX_TYPE_NESTING {
+                    self.err(spec.span, too_deep("this array type"));
+                    return None;
+                }
+                let dims = dims
+                    .iter()
+                    .map(|(lo, hi)| (*lo as i64, *hi as i64))
+                    .collect();
+                Some(self.unit.array(dims, elem))
+            }
+            // Only a variable a front-end declares is typed by its value, and `declare` takes
+            // it before it would come here.
+            ast::TypeSpecKind::OfValue => {
+                self.err(
+                    spec.span,
+                    "a type given by a value is a front-end's own, for its own variables; this is a fault of the compiler, not of the program",
+                );
+                None
+            }
+        }
+    }
+
+    /// The array type a TYPE declaration gave a name to.
+    fn alias(&mut self, k: usize, name: &str, span: Span) -> Option<Ty> {
+        match self.aliases[k] {
+            Alias::Known(ty) => ty,
+            Alias::Reading => {
+                self.err(span, format!("the type {name} is defined by itself"));
+                None
+            }
+            Alias::Unread => {
+                // Each named array type within another adds an array: past the limit, this
+                // one is too deep whatever it names, and is not followed further.
+                if self.resolving >= MAX_TYPE_NESTING {
+                    self.err(span, too_deep(&format!("the type {name}")));
+                    self.aliases[k] = Alias::Known(None);
+                    return None;
+                }
+                self.aliases[k] = Alias::Reading;
+                self.resolving += 1;
+                let ty = self
+                    .alias_specs
+                    .get(k)
+                    .cloned()
+                    .flatten()
+                    .and_then(|spec| self.resolve(&spec));
+                self.resolving -= 1;
+                self.aliases[k] = Alias::Known(ty);
+                ty
+            }
+        }
+    }
+
+    /// An initial value for a variable or a member of type `ty`.
+    fn init(&mut self, init: &ast::Init, ty: Ty) -> Option<Init> {
+        match (init, ty) {
+            (ast::Init::Value(e), Ty::String(n)) => {
+                let A::Str(text) = &e.kind else {
+                    self.err(e.span, "an initial value must be a literal");
+                    return None;
+                };
+                // Cutting it, as an assignment would, would hide a mistake there is no
+                // warning to tell.
+                if text.len() > n as usize {
+                    self.err(
+                        e.span,
+                        format!(
+                            "the initial value has {} characters; a STRING[{n}] holds {n}",
+                            text.len()
+                        ),
+                    );
+                    return None;
+                }
+                Some(Init::Str(text.clone()))
+            }
+            (ast::Init::Value(e), ty) if ty.is_elementary() => {
+                self.constant(e, ty).map(Init::Value)
+            }
+            (ast::Init::Value(e), Ty::Instance(_)) => {
+                self.err(
+                    e.span,
+                    "a function block instance cannot be given an initial value",
+                );
+                None
+            }
+            (ast::Init::Value(e), Ty::Array(_)) => {
+                self.err(
+                    e.span,
+                    "an array starts from a list of values: [1, 2, 3] or [3(0)]",
+                );
+                None
+            }
+            (ast::Init::Value(e), _) => {
+                self.err(
+                    e.span,
+                    "an initial value for a whole structure is not supported yet; give its members theirs in the TYPE",
+                );
+                None
+            }
+            (ast::Init::Array(items, span), Ty::Array(a)) => {
+                let (elem, len) = (self.unit.arrays[a].elem, self.unit.arrays[a].len());
+                if elem.is_string() {
+                    let mut values: Vec<Vec<u8>> = Vec::new();
+                    let mut text = |c: &mut Checker, e: &ast::Expr| match c
+                        .init(&ast::Init::Value(e.clone()), elem)
+                    {
+                        Some(Init::Str(t)) => Some(t),
+                        _ => None,
+                    };
+                    if !self.elements(items, len, &mut values, &mut text) {
+                        return None;
+                    }
+                    if values.len() as u64 > len {
+                        self.err(
+                            *span,
+                            format!(
+                                "the list has more initial values than the array's {len} elements"
+                            ),
+                        );
+                        return None;
+                    }
+                    return Some(Init::Texts(values));
+                }
+                if !elem.is_elementary() {
+                    let what = self.n(elem);
+                    self.err(
+                        *span,
+                        format!(
+                            "a list of initial values for an array of {what} is not supported yet"
+                        ),
+                    );
+                    return None;
+                }
+                let mut values = Vec::new();
+                let mut constant = |c: &mut Checker, e: &ast::Expr| c.constant(e, elem);
+                if !self.elements(items, len, &mut values, &mut constant) {
+                    return None;
+                }
+                // IEC 61131-3 ed. 3 §6.4.4.5.2 has values beyond the array ignored with a
+                // warning. There is no warning here to give, so it is refused.
+                if values.len() as u64 > len {
+                    self.err(
+                        *span,
+                        format!("the list has more initial values than the array's {len} elements"),
+                    );
+                    return None;
+                }
+                Some(Init::Elements(values))
+            }
+            (ast::Init::Array(_, span), ty) => {
+                let what = self.n(ty);
+                self.err(
+                    *span,
+                    format!("a {what} is not an array: it does not start from a list"),
+                );
+                None
+            }
+        }
+    }
+
+    /// The values of an array initialiser, repetitions written out. Stops with `false` at a
+    /// mistake; stops adding once there is one value more than the array holds.
+    fn elements<T: Clone>(
+        &mut self,
+        items: &[ast::ArrayInit],
+        len: u64,
+        out: &mut Vec<T>,
+        value: &mut dyn FnMut(&mut Checker, &ast::Expr) -> Option<T>,
+    ) -> bool {
+        for item in items {
+            match item {
+                ast::ArrayInit::Value(e) => match value(self, e) {
+                    Some(k) => {
+                        if out.len() as u64 <= len {
+                            out.push(k);
+                        }
+                    }
+                    None => return false,
+                },
+                ast::ArrayInit::Repeat(times, inner, span) => {
+                    if *times < 0 {
+                        self.err(*span, format!("{times} is not a number of repetitions"));
+                        return false;
+                    }
+                    let mut once = Vec::new();
+                    if !self.elements(inner, len, &mut once, value) {
+                        return false;
+                    }
+                    if once.is_empty() {
+                        self.err(*span, "a repetition of nothing");
+                        return false;
+                    }
+                    for _ in 0..*times {
+                        if out.len() as u64 > len {
+                            break;
+                        }
+                        out.extend(once.iter().cloned());
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// An initial value: a literal of the variable's type.
+    fn constant(&mut self, e: &ast::Expr, ty: Ty) -> Option<Const> {
+        if !matches!(
+            e.kind,
+            A::Int(_) | A::Real(_) | A::Bool(_) | A::Time(_) | A::Str(_)
+        ) {
+            self.err(e.span, "an initial value must be a literal");
+            return None;
+        }
+        let x = self.expr(e, Some(ty))?;
+        match x.kind {
+            ExprKind::Const(k) if x.ty == ty => Some(k),
+            _ => {
+                let (want, got) = (self.n(ty), self.n(x.ty));
+                self.err(e.span, format!("a {want} cannot start as a {got}"));
+                None
+            }
+        }
+    }
+
+    /// A type that contains itself has no size, and a function block that holds an instance
+    /// of itself would be recursion. Returns whether one was found.
+    fn containment(&mut self, src: &ast::Source) -> bool {
+        // No body has been read yet, so a cycle here is one of instances held.
+        let order = match self.unit.order() {
+            Ok(order) => order,
+            Err(cycle) => {
+                let names: Vec<String> = cycle
+                    .iter()
+                    .map(|p| self.unit.pous[*p].name.clone())
+                    .collect();
+                self.err(
+                    self.pou_spans[cycle[0]],
+                    format!(
+                        "recursion is not allowed: the function block {} would hold an instance of itself: {}",
+                        names[0],
+                        chain(&names, "holds")
+                    ),
+                );
+                return true;
+            }
+        };
+        // How deep each function block type nests, each after those it holds.
+        let mut depth = vec![0; self.unit.pous.len()];
+        let mut refused = vec![false; self.unit.pous.len()];
+        for p in order {
+            let vars = &self.unit.pous[p].vars;
+            let follows = vars
+                .iter()
+                .any(|v| matches!(self.unit.innermost(v.ty), Ty::Instance(q) if refused[q]));
+            let d = 1 + vars
+                .iter()
+                .map(|v| self.type_depth(v.ty, &depth))
+                .max()
+                .unwrap_or(0);
+            depth[p] = d;
+            let is_fb = src.pous[p].kind == ast::PouKind::FunctionBlock;
+            if is_fb && (follows || d > MAX_TYPE_NESTING) {
+                refused[p] = true;
+                if !follows {
+                    let what = format!("the function block {}", self.unit.pous[p].name);
+                    self.err(self.pou_spans[p], too_deep(&what));
+                }
+            }
+        }
+        false
+    }
+
+    /// An array is one symbol, kept across a warm restart or not as a whole. One the rules of
+    /// IEC 61131-3 ed. 3 §6.5.6.2 would keep in part (an array of function block instances
+    /// whose type declares a member RETAIN or NON_RETAIN, or holds an instance) is refused at
+    /// its declaration, once, naming where in the program it is.
+    fn retained_in_part(&mut self, src: &ast::Source) {
+        let entry = self.unit.entry;
+        if src.pous.get(entry).map(|p| p.kind) != Some(ast::PouKind::Program) {
+            return;
+        }
+        let mut told: Vec<(usize, usize)> = Vec::new();
+        for (path, p, k) in self.unit.arrays_retained_in_part() {
+            if told.contains(&(p, k)) {
+                continue;
+            }
+            told.push((p, k));
+            let name = &self.unit.pous[p].vars[k].name;
+            let span = src.pous[p]
+                .vars
+                .iter()
+                .find(|d| d.name.eq_ignore_ascii_case(name))
+                .map_or(src.pous[p].span, |d| d.span);
+            self.err(
+                span,
+                format!(
+                    "{path} would be retained in part: some members of its elements are retained across a warm restart and some are not (IEC 61131-3 ed. 3 §6.5.6.2); an array retained in part is not supported yet"
+                ),
+            );
+        }
+    }
+
+    /// How deep a value of `ty` nests: 0 for an elementary type or a standard function
+    /// block, and one more for each array, structure or instance it is within. `pous` holds
+    /// the depths of the function block types known so far.
+    fn type_depth(&self, ty: Ty, pous: &[usize]) -> usize {
+        let mut arrays = 0;
+        let mut ty = ty;
+        while let Ty::Array(a) = ty {
+            arrays += 1;
+            ty = self.unit.arrays[a].elem;
+        }
+        arrays
+            + match ty {
+                Ty::Struct(i) => self.struct_depth[i],
+                // An instance in a structure is refused once structures are measured.
+                Ty::Instance(p) => pous.get(p).copied().unwrap_or(0),
+                _ => 0,
+            }
+    }
+
+    /// Before anything follows a structure into its members: a structure that contains
+    /// itself is told and loses its members, and so does one nested deeper than
+    /// [`MAX_TYPE_NESTING`]; one that holds a structure refused for its depth loses them
+    /// silently. Leaves how deep each structure nests in `struct_depth`.
+    fn struct_shapes(&mut self, src: &ast::Source) {
+        while let Some(cycle) = self.unit.struct_cycle() {
+            let names: Vec<String> = cycle
+                .iter()
+                .map(|s| self.unit.structs[*s].name.clone())
+                .collect();
+            self.diags.push(Diagnostic::whole(format!(
+                "the structure {} contains itself: {}",
+                names[0],
+                chain(&names, "holds")
+            )));
+            for s in cycle {
+                self.unit.structs[s].fields.clear();
+                self.struct_gaps[s] = true;
+            }
+            self.struct_cycled = true;
+        }
+        let n = self.unit.structs.len();
+        let mut spans = vec![Span::default(); n];
+        for (k, t) in src.types.iter().enumerate() {
+            if let Some(s) = self.struct_of[k] {
+                spans[s] = t.span;
+            }
+        }
+        // The structures `s` holds directly (through arrays, not through structures).
+        let held = |u: &Unit, s: usize| -> Vec<usize> {
+            u.structs[s]
+                .fields
+                .iter()
+                .filter_map(|f| match u.innermost(f.ty) {
+                    Ty::Struct(i) => Some(i),
+                    _ => None,
+                })
+                .collect()
+        };
+        // Each structure after those it holds; no cycle is left, so this ends.
+        let mut known = vec![false; n];
+        let mut refused = vec![false; n];
+        self.struct_depth = vec![0; n];
+        for root in 0..n {
+            let mut todo = vec![root];
+            while let Some(&s) = todo.last() {
+                if known[s] {
+                    todo.pop();
+                    continue;
+                }
+                let inner = held(&self.unit, s);
+                if let Some(&next) = inner.iter().find(|i| !known[**i]) {
+                    todo.push(next);
+                    continue;
+                }
+                todo.pop();
+                known[s] = true;
+                let follows = inner.iter().any(|i| refused[*i]);
+                let d = 1 + self.unit.structs[s]
+                    .fields
+                    .iter()
+                    .map(|f| self.type_depth(f.ty, &[]))
+                    .max()
+                    .unwrap_or(0);
+                if follows || d > MAX_TYPE_NESTING {
+                    if !follows {
+                        let what = format!("the structure {}", self.unit.structs[s].name);
+                        self.err(spans[s], too_deep(&what));
+                    }
+                    refused[s] = true;
+                    self.unit.structs[s].fields.clear();
+                    self.struct_gaps[s] = true;
+                    self.struct_depth[s] = 1;
+                } else {
+                    self.struct_depth[s] = d;
+                }
+            }
+        }
+    }
+
+    /// IEC 61131-3 ed. 3 §6.6.1.1 leaves recursion to the implementer. Here it is refused, so
+    /// that every variable has one fixed place and a scan's memory is known before it runs.
+    fn recursion(&mut self) {
+        let Err(cycle) = self.unit.order() else {
+            return;
+        };
+        let names: Vec<String> = cycle
+            .iter()
+            .map(|p| self.unit.pous[*p].name.clone())
+            .collect();
+        let next = cycle.get(1).copied().unwrap_or(cycle[0]);
+        let span = self
+            .calls
+            .iter()
+            .find(|(from, to, _)| *from == cycle[0] && *to == next)
+            .map(|(_, _, span)| *span)
+            .unwrap_or(self.pou_spans[cycle[0]]);
+        self.err(
+            span,
+            format!("recursion is not allowed: {}", chain(&names, "calls")),
+        );
+    }
+
+    /// The member `name` of a function block instance of type `ty`: its index, type and role.
+    fn fb_member(&self, ty: Ty, name: &str) -> Option<(usize, Ty, Role)> {
+        match ty {
+            Ty::Instance(p) => {
+                let vars = &self.unit.pous[p].vars;
+                let i = vars
+                    .iter()
+                    .position(|v| v.name.eq_ignore_ascii_case(name))?;
+                let role = match vars[i].section {
+                    Section::Input => Role::Input,
+                    Section::Output => Role::Output,
+                    Section::Var => Role::Internal,
+                };
+                Some((i, vars[i].ty, role))
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolve a place: the variable, then each step of its path, with what may be done there.
+    fn place(&mut self, p: &ast::Place) -> Option<Target> {
+        let mut t = self.place_root(p)?;
+        let mut text = p.name.clone();
+        for sel in &p.path {
+            match sel {
+                ast::Selector::Member(m, mspan) => {
+                    self.member_step(&mut t, p, &text, m, *mspan)?;
+                    text.push('.');
+                    text.push_str(m);
+                }
+                ast::Selector::Index(subscripts, ispan) => {
+                    self.index_step(&mut t, &text, subscripts, *ispan)?;
+                    text.push_str("[…]");
+                }
+            }
+        }
+        Some(t)
+    }
+
+    /// The variable a place starts from, before its members and elements.
+    fn place_root(&mut self, p: &ast::Place) -> Option<Target> {
+        let Some(var) = self.find(&p.name) else {
+            if !self.is_refused(&p.name) {
+                self.err(p.span, format!("{} is not declared", p.name));
+            }
+            return None;
+        };
+        if self.untyped.contains(&(self.cur, var)) {
+            // Its value could not be typed, and that was said.
+            if self.is_refused(&p.name) {
+                return None;
+            }
+            // Only a front-end declares one, and it assigns it before it reads it.
+            self.err(
+                p.span,
+                format!(
+                    "{} is used before a value gives it its type; this is a fault of the compiler, not of the program",
+                    p.name
+                ),
+            );
+            return None;
+        }
+        let pou = &self.unit.pous[self.cur];
+        // IEC 61131-3 ed. 3 Figure 7: VAR_INPUT is "not modifiable within the entity"
+        // (Figure 13 rule 2a says the same of a function block's inputs). A PROGRAM's too: its
+        // inputs are what the runtime binds to tags.
+        let readonly = (pou.vars[var].section == Section::Input).then(|| {
+            format!(
+                "{} is an input of {}; it cannot be written inside it",
+                p.name, pou.name
+            )
+        });
+        Some(Target {
+            place: Place {
+                var,
+                path: Vec::new(),
+            },
+            ty: pou.vars[var].ty,
+            readonly,
+            unreadable: None,
+            inside_instance: false,
+        })
+    }
+
+    /// The member `m` of the place `t`, written `text` so far.
+    fn member_step(
+        &mut self,
+        t: &mut Target,
+        p: &ast::Place,
+        text: &str,
+        m: &str,
+        mspan: Span,
+    ) -> Option<()> {
+        match t.ty {
+            Ty::Struct(i) => {
+                let fields = &self.unit.structs[i].fields;
+                let Some(at) = fields.iter().position(|f| f.name.eq_ignore_ascii_case(m)) else {
+                    if !self.struct_gaps[i] {
+                        let what = self.n(t.ty);
+                        self.err(mspan, format!("{what} has no member {m}"));
+                    }
+                    return None;
+                };
+                t.ty = fields[at].ty;
+                t.place.path.push(Sel::Member(at));
+            }
+            Ty::Instance(_) => {
+                let block = self.n(t.ty);
+                let Some((at, mty, role)) = self.fb_member(t.ty, m) else {
+                    if !self.has_gap(t.ty) {
+                        self.err(p.span, format!("{block} has no member {m}"));
+                    }
+                    return None;
+                };
+                match role {
+                    Role::Output => {
+                        t.readonly.get_or_insert(format!(
+                            "{text}.{m} is an output of the block; it cannot be written"
+                        ));
+                    }
+                    // Figure 13 rule 2b: an input may be set from outside, separately
+                    // from the call. Only the POU that holds the instance does so.
+                    Role::Input => {
+                        // Figure 13 rule 1b: an input is not read from outside.
+                        t.unreadable.get_or_insert(format!(
+                            "{text}.{m} is an input of the block; it is set from outside, not read there"
+                        ));
+                        if t.inside_instance {
+                            t.readonly.get_or_insert(format!(
+                                "{text} is inside another function block instance; only that block's body sets {m}"
+                            ));
+                        }
+                    }
+                    // §6.6.3.2 rule 11: a VAR of a function block is private. An
+                    // instance held there can still be looked into; nothing else.
+                    Role::Internal => {
+                        if !self.unit.holds_instance(mty) {
+                            self.err(
+                                mspan,
+                                format!(
+                                    "{m} is an internal variable of {block}; only its inputs and outputs can be named from outside"
+                                ),
+                            );
+                            return None;
+                        }
+                        t.readonly.get_or_insert(format!(
+                            "{text}.{m} is inside the function block {block}; only its body writes there"
+                        ));
+                    }
+                }
+                t.inside_instance = true;
+                t.ty = mty;
+                t.place.path.push(Sel::Member(at));
+            }
+            other => {
+                let what = self.n(other);
+                self.err(
+                    p.span,
+                    format!("{text} is a {what}, which has no member {m}"),
+                );
+                return None;
+            }
+        }
+        Some(())
+    }
+
+    /// The element `[subscripts]` of the place `t`, written `text` so far.
+    fn index_step(
+        &mut self,
+        t: &mut Target,
+        text: &str,
+        subscripts: &[ast::Expr],
+        ispan: Span,
+    ) -> Option<()> {
+        let (dims, elem) = self.dims(t.ty, text, subscripts.len(), ispan)?;
+        let mut lowered = Vec::with_capacity(dims.len());
+        for (e, (lo, hi)) in subscripts.iter().zip(dims) {
+            // §6.4.4.5.1: a subscript is an expression of an integer type.
+            let x = self.expr(e, Some(Ty::Dint))?;
+            lowered.push(self.subscript(x, e.span, lo, hi)?);
+        }
+        t.ty = elem;
+        t.place.path.push(Sel::Index(lowered));
+        Some(())
+    }
+
+    /// The ranges and the element type of the array `ty`, when `given` subscripts fit it.
+    fn dims(
+        &mut self,
+        ty: Ty,
+        text: &str,
+        given: usize,
+        ispan: Span,
+    ) -> Option<(Vec<(i64, i64)>, Ty)> {
+        let Ty::Array(a) = ty else {
+            let what = self.n(ty);
+            self.err(ispan, format!("{text} is a {what}, not an array"));
+            return None;
+        };
+        let array = &self.unit.arrays[a];
+        if given != array.dims.len() {
+            let msg = format!(
+                "{text} has {} dimension(s); {given} subscript(s) given",
+                array.dims.len(),
+            );
+            self.err(ispan, msg);
+            return None;
+        }
+        Some((array.dims.clone(), array.elem))
+    }
+
+    /// A subscript `x` within `lo..hi`.
+    fn subscript(&mut self, x: Expr, span: Span, lo: i64, hi: i64) -> Option<Expr> {
+        if !x.ty.is_int() {
+            let what = self.n(x.ty);
+            self.err(
+                span,
+                format!("a subscript must be an integer; this is a {what}"),
+            );
+            return None;
+        }
+        // The same section makes a subscript outside its range an error. A literal one is
+        // found here; a computed one stops the scan.
+        if let ExprKind::Const(Const::Int(v)) = x.kind {
+            if v < lo || v > hi {
+                self.err(span, format!("the subscript {v} is outside {lo}..{hi}"));
+                return None;
+            }
+        }
+        Some(x)
+    }
+
+    /// `value` where `want` is needed: as is, widened, or a diagnostic.
+    fn coerce(&mut self, value: Expr, want: Ty, span: Span) -> Option<Expr> {
+        // §6.6.1.2.2: a STRING goes where any STRING is wanted; where it is stored, it is cut
+        // to the length there. It keeps its own type, which says how long it may be.
+        if value.ty == want || (value.ty.is_string() && want.is_string()) {
+            return Some(value);
+        }
+        if value.ty.widens_to(want) {
+            if let ExprKind::Const(k) = value.kind {
+                return Some(Expr {
+                    ty: want,
+                    kind: ExprKind::Const(match (k, want.is_real()) {
+                        (Const::Int(v), true) => Const::Real(v as f64),
+                        (k, _) => k,
+                    }),
+                });
+            }
+            return Some(Expr {
+                ty: want,
+                kind: ExprKind::Convert(Box::new(value)),
+            });
+        }
+        let (from, to) = (self.n(value.ty), self.n(want));
+        let single = |t: Ty| t.is_elementary() || t.is_string();
+        if single(value.ty) && single(want) {
+            // A conversion is named by the types' names, without a STRING's length.
+            let name = |t: Ty| t.builtin_name().unwrap_or("?");
+            let (f, t) = (name(value.ty), name(want));
+            self.err(
+                span,
+                format!(
+                    "a {from} cannot be used as a {to} without a conversion: write {f}_TO_{t}(…)"
+                ),
+            );
+        } else {
+            // IEC 61131-3 ed. 3 §7.3.3.2.1: multi-element variables are assigned only to
+            // their own type.
+            self.err(span, format!("a {from} cannot be used as a {to}"));
+        }
+        None
+    }
+
+    /// A place to be read or written as a value: not a whole function block instance.
+    fn assign_to(&mut self, place: &ast::Place, writing: bool) -> Option<(Place, Ty)> {
+        let t = self.place(place)?;
+        if let Ty::Instance(_) = t.ty {
+            self.err(
+                place.span,
+                format!(
+                    "{} is a function block instance; call it, or name one of its members",
+                    place.text()
+                ),
+            );
+            return None;
+        }
+        if self.unit.holds_instance(t.ty) {
+            self.err(
+                place.span,
+                format!(
+                    "{} holds function block instances; it cannot be assigned as a whole",
+                    place.text()
+                ),
+            );
+            return None;
+        }
+        if writing {
+            if let Some(why) = t.readonly {
+                self.err(place.span, why);
+                return None;
+            }
+        }
+        Some((t.place, t.ty))
+    }
+
+    fn stmts(&mut self, s: &[ast::Stmt]) -> Vec<Stmt> {
+        // A loop and not an iterator: a statement within statements comes back here, and
+        // each frame on that way counts against the stack (see MAX_NESTING).
+        let mut out = Vec::with_capacity(s.len());
+        for x in s {
+            if let Some(st) = self.stmt(x) {
+                out.push(st);
+            }
+        }
+        out
+    }
+
+    /// One statement. Each kind is a function of its own, so that what a statement within
+    /// statements keeps on the stack is the frame of its own kind only.
+    fn stmt(&mut self, s: &ast::Stmt) -> Option<Stmt> {
+        match s {
+            ast::Stmt::Assign(place, value) => self.assign_stmt(place, value),
+            ast::Stmt::Call(called, args) => self.call_stmt(called, args),
+            ast::Stmt::If(branches, otherwise) => self.if_stmt(branches, otherwise.as_deref()),
+            ast::Stmt::Case(sel, arms, otherwise) => {
+                self.case_stmt(sel, arms, otherwise.as_deref())
+            }
+            ast::Stmt::For {
+                var,
+                from,
+                to,
+                by,
+                body,
+            } => self.for_stmt(var, from, to, by.as_ref(), body),
+            ast::Stmt::While(c, b) => {
+                let c = self.condition(c);
+                self.loops += 1;
+                let b = self.stmts(b);
+                self.loops -= 1;
+                Some(Stmt::While(c?, b))
+            }
+            ast::Stmt::Repeat(b, c) => {
+                self.loops += 1;
+                let b = self.stmts(b);
+                self.loops -= 1;
+                let c = self.condition(c);
+                Some(Stmt::Repeat(b, c?))
+            }
+            ast::Stmt::Exit(span) => {
+                if self.loops == 0 {
+                    self.err(*span, "EXIT outside a loop");
+                    return None;
+                }
+                Some(Stmt::Exit)
+            }
+            ast::Stmt::Return(_) => Some(Stmt::Return),
+        }
+    }
+
+    fn assign_stmt(&mut self, place: &ast::Place, value: &ast::Expr) -> Option<Stmt> {
+        if let Some(stmt) = self.assign_typed_by_value(place, value) {
+            return stmt;
+        }
+        let target = self.assign_to(place, true);
+        let v = self.expr(value, target.as_ref().map(|t| t.1));
+        let (p, ty) = target?;
+        if p.var == 0 && matches!(self.unit.pous[self.cur].kind, PouKind::Function { .. }) {
+            self.result_assigned = true;
+        }
+        let v = self.coerce(v?, ty, value.span)?;
+        Some(Stmt::Assign(p, v))
+    }
+
+    /// The first assignment of a variable typed by its value: the value is typed with nothing
+    /// asked of it, and the variable takes its type. `None` when `place` is not such a
+    /// variable still untyped; `Some(None)` when the value could not be typed (what was wrong
+    /// is said, and the variable is refused, so nothing more is said where it is read).
+    fn assign_typed_by_value(
+        &mut self,
+        place: &ast::Place,
+        value: &ast::Expr,
+    ) -> Option<Option<Stmt>> {
+        if !place.path.is_empty() {
+            return None;
+        }
+        let var = self.find(&place.name)?;
+        let at = self.untyped.iter().position(|u| *u == (self.cur, var))?;
+        let Some(v) = self.expr(value, None) else {
+            self.refuse(&place.name);
+            return Some(None);
+        };
+        self.untyped.remove(at);
+        self.unit.pous[self.cur].vars[var].ty = v.ty;
+        let Some((p, ty)) = self.assign_to(place, true) else {
+            self.refuse(&place.name);
+            return Some(None);
+        };
+        Some(self.coerce(v, ty, value.span).map(|v| Stmt::Assign(p, v)))
+    }
+
+    fn call_stmt(&mut self, called: &ast::Place, args: &[ast::Arg]) -> Option<Stmt> {
+        let name = &called.name;
+        if called.path.is_empty() && self.find(name).is_none() {
+            if self.is_refused(name) {
+                return None;
+            }
+            let upper = name.to_ascii_uppercase();
+            let standard = StdFn::by_name(&upper).is_some()
+                || truncation(&upper).is_some()
+                || operator_function(&upper).is_some();
+            let msg = if self.function(name).is_some() || standard {
+                // Table 72 lets a function be called as a statement, its result
+                // discarded; a function here has no other effect, so that is refused.
+                format!("{name} is a function: use its result, as in x := {name}(…);")
+            } else if matches!(self.named(name), Some(Named::Pou(_))) {
+                format!("{name} is a function block type; declare an instance of it and call that")
+            } else if name.to_ascii_uppercase().contains("_TO_") {
+                format!("{name}(…) gives a value; assign it: x := {name}(…);")
+            } else {
+                format!("{name} is not declared")
+            };
+            self.err(called.span, msg);
+            return None;
+        }
+        let t = self.place(called)?;
+        let block = self.n(t.ty);
+        if !matches!(t.ty, Ty::Instance(_)) {
+            self.err(
+                called.span,
+                format!(
+                    "{} is a {block}, not a function block instance",
+                    called.text()
+                ),
+            );
+            return None;
+        }
+        if t.inside_instance {
+            self.err(
+                called.span,
+                format!(
+                    "{} is inside another function block instance; only that block's body calls it",
+                    called.text()
+                ),
+            );
+            return None;
+        }
+        let mut inputs: Vec<(usize, Expr)> = Vec::new();
+        let mut outputs: Vec<(usize, Place)> = Vec::new();
+        for a in args {
+            let (pname, pspan) = match a {
+                ast::Arg::In(n, _, s) | ast::Arg::Out(n, _, s) => (n, *s),
+                ast::Arg::Value(e) => {
+                    self.err(
+                        e.span,
+                        "a call of a function block names each parameter: IN := …, or Q => …",
+                    );
+                    continue;
+                }
+            };
+            let Some((mi, mty, role)) = self.fb_member(t.ty, pname) else {
+                if !self.has_gap(t.ty) {
+                    self.err(pspan, format!("{block} has no parameter {pname}"));
+                }
+                continue;
+            };
+            if role == Role::Internal {
+                self.err(
+                    pspan,
+                    format!("{pname} is an internal variable of {block}, not a parameter"),
+                );
+                continue;
+            }
+            match a {
+                ast::Arg::In(_, e, _) => {
+                    if role != Role::Input {
+                        self.err(
+                            pspan,
+                            format!(
+                                "{pname} is an output of {block}: read it with {pname} => variable"
+                            ),
+                        );
+                        continue;
+                    }
+                    if inputs.iter().any(|(m, _)| *m == mi) {
+                        self.err(pspan, format!("{pname} is given twice"));
+                        continue;
+                    }
+                    if let Some(v) = self
+                        .expr(e, Some(mty))
+                        .and_then(|v| self.coerce(v, mty, e.span))
+                    {
+                        inputs.push((mi, v));
+                    }
+                }
+                ast::Arg::Value(_) => {}
+                ast::Arg::Out(_, target, _) => {
+                    if role != Role::Output {
+                        self.err(
+                            pspan,
+                            format!("{pname} is an input of {block}: set it with {pname} := value"),
+                        );
+                        continue;
+                    }
+                    if let Some((p, ty)) = self.assign_to(target, true) {
+                        if !mty.widens_to(ty) {
+                            let (from, to) = (self.n(mty), self.n(ty));
+                            self.err(
+                                target.span,
+                                format!("{pname} is a {from}, which does not fit in a {to}"),
+                            );
+                            continue;
+                        }
+                        outputs.push((mi, p));
+                    }
+                }
+            }
+        }
+        Some(Stmt::Call {
+            instance: t.place,
+            inputs,
+            outputs,
+        })
+    }
+
+    fn if_stmt(
+        &mut self,
+        branches: &[(ast::Expr, Vec<ast::Stmt>)],
+        otherwise: Option<&[ast::Stmt]>,
+    ) -> Option<Stmt> {
+        let mut out = Vec::new();
+        for (c, b) in branches {
+            let c = self.condition(c);
+            let b = self.stmts(b);
+            out.push((c?, b));
+        }
+        let e = match otherwise {
+            Some(b) => self.stmts(b),
+            None => Vec::new(),
+        };
+        Some(Stmt::If(out, e))
+    }
+
+    fn case_stmt(
+        &mut self,
+        sel: &ast::Expr,
+        arms: &[(Vec<CaseLabel>, Vec<ast::Stmt>)],
+        otherwise: Option<&[ast::Stmt]>,
+    ) -> Option<Stmt> {
+        let s = self.expr(sel, None);
+        let sty = s.as_ref().map(|s| s.ty);
+        if let Some(t) = sty {
+            if !t.is_int() {
+                let what = self.n(t);
+                self.err(
+                    sel.span,
+                    format!("CASE needs an integer selector; this is a {what}"),
+                );
+            }
+        }
+        let mut out = Vec::new();
+        let mut seen: Vec<(i64, i64)> = Vec::new();
+        for (labels, body) in arms {
+            let mut ranges = Vec::new();
+            for l in labels {
+                let (lo, hi, span) = match l {
+                    CaseLabel::One(e) => (self.label(e, sty), None, e.span),
+                    CaseLabel::Range(a, b) => (self.label(a, sty), self.label(b, sty), a.span),
+                };
+                let Some(lo) = lo else { continue };
+                let hi = match l {
+                    CaseLabel::One(_) => lo,
+                    CaseLabel::Range(..) => match hi {
+                        Some(h) => h,
+                        None => continue,
+                    },
+                };
+                if hi < lo {
+                    self.err(span, format!("the range {lo}..{hi} is empty"));
+                    continue;
+                }
+                if seen.iter().any(|(a, b)| lo <= *b && *a <= hi) {
+                    self.err(span, "this label is already covered by an earlier one");
+                    continue;
+                }
+                seen.push((lo, hi));
+                ranges.push((lo, hi));
+            }
+            let b = self.stmts(body);
+            out.push((ranges, b));
+        }
+        let e = match otherwise {
+            Some(b) => self.stmts(b),
+            None => Vec::new(),
+        };
+        Some(Stmt::Case(s?, out, e))
+    }
+
+    fn for_stmt(
+        &mut self,
+        var: &ast::Place,
+        from: &ast::Expr,
+        to: &ast::Expr,
+        by: Option<&ast::Expr>,
+        body: &[ast::Stmt],
+    ) -> Option<Stmt> {
+        let target = self.assign_to(var, true);
+        if let Some((_, ty)) = &target {
+            if !ty.is_int() {
+                let what = self.n(*ty);
+                self.err(
+                    var.span,
+                    format!(
+                        "a FOR variable must be an integer; {} is a {what}",
+                        var.name
+                    ),
+                );
+            }
+        }
+        let ty = target.as_ref().map(|t| t.1);
+        let f = self
+            .expr(from, ty)
+            .and_then(|f| ty.and_then(|t| self.coerce(f, t, from.span)));
+        let t = self
+            .expr(to, ty)
+            .and_then(|x| ty.and_then(|tt| self.coerce(x, tt, to.span)));
+        let step = match by {
+            None => Some(1),
+            Some(e) => match self.expr(e, ty) {
+                Some(Expr {
+                    kind: ExprKind::Const(Const::Int(0)),
+                    ..
+                }) => {
+                    self.err(e.span, "BY 0 never ends");
+                    None
+                }
+                Some(Expr {
+                    kind: ExprKind::Const(Const::Int(v)),
+                    ..
+                }) => Some(v),
+                Some(_) => {
+                    self.err(e.span, "BY must be a constant integer for now");
+                    None
+                }
+                None => None,
+            },
+        };
+        self.loops += 1;
+        let b = self.stmts(body);
+        self.loops -= 1;
+        Some(Stmt::For {
+            var: target?.0,
+            from: f?,
+            to: t?,
+            by: step?,
+            body: b,
+        })
+    }
+
+    fn label(&mut self, e: &ast::Expr, sel: Option<Ty>) -> Option<i64> {
+        match e.kind {
+            A::Int(v) => {
+                if let Some(t) = sel {
+                    if t.is_int() && !fits(t, v) {
+                        let what = self.n(t);
+                        self.err(e.span, format!("{v} is outside the range of {what}"));
+                        return None;
+                    }
+                }
+                Some(v as i64)
+            }
+            _ => {
+                self.err(e.span, "a CASE label must be an integer literal for now");
+                None
+            }
+        }
+    }
+
+    fn condition(&mut self, e: &ast::Expr) -> Option<Expr> {
+        let x = self.expr(e, Some(Ty::Bool))?;
+        if x.ty != Ty::Bool {
+            let what = self.n(x.ty);
+            self.err(
+                e.span,
+                format!("a condition must be BOOL; this is a {what}"),
+            );
+            return None;
+        }
+        Some(x)
+    }
+
+    fn is_untyped_literal(e: &ast::Expr) -> bool {
+        matches!(e.kind, A::Int(_) | A::Real(_))
+    }
+
+    /// Type an expression. `want` is the type its context needs; it decides what type a bare
+    /// literal takes, and nothing else.
+    fn expr(&mut self, e: &ast::Expr, want: Option<Ty>) -> Option<Expr> {
+        // What an expression within expressions keeps on the stack is this frame and the
+        // one of its own kind: every arm that says something is a function of its own.
+        let span = e.span;
+        match &e.kind {
+            A::Int(_) | A::Real(_) | A::Bool(_) | A::Time(_) => self.literal(e, want),
+            A::Str(text) => Some(Expr {
+                ty: Ty::String(text.len() as u16),
+                kind: ExprKind::Str(text.clone()),
+            }),
+            A::Var(p) => self.load(p, span),
+            A::Not(inner) => {
+                let x = self.expr(inner, Some(Ty::Bool))?;
+                self.not(x, span)
+            }
+            A::Neg(inner) => {
+                let x = self.expr(inner, want)?;
+                self.neg(x, span)
+            }
+            A::Binary(op, l, r) => self.binary(*op, l, r, want, span),
+            A::Call(name, args) => self.call(name, args, span, want),
+        }
+    }
+
+    /// A literal where `want` is needed.
+    fn literal(&mut self, e: &ast::Expr, want: Option<Ty>) -> Option<Expr> {
+        let (ty, k) = match e.kind {
+            A::Int(v) => return self.int_literal(v, want, e.span),
+            A::Real(v) if want == Some(Ty::Real) => (Ty::Real, Const::Real(v)),
+            A::Real(v) => (Ty::Lreal, Const::Real(v)),
+            A::Bool(b) => (Ty::Bool, Const::Bool(b)),
+            A::Time(t) => (Ty::Time, Const::Time(t)),
+            _ => return None,
+        };
+        Some(Expr {
+            ty,
+            kind: ExprKind::Const(k),
+        })
+    }
+
+    /// The value of a variable or a part of one.
+    fn load(&mut self, p: &ast::Place, span: Span) -> Option<Expr> {
+        let t = self.place(p)?;
+        self.value_of(t, p, span)
+    }
+
+    /// An integer literal where `want` is needed.
+    fn int_literal(&mut self, v: i128, want: Option<Ty>, span: Span) -> Option<Expr> {
+        let ty = match want {
+            Some(t) if t.is_int() => {
+                if !fits(t, v) {
+                    let what = self.n(t);
+                    self.err(span, format!("{v} is outside the range of {what}"));
+                    return None;
+                }
+                t
+            }
+            Some(t) if t.is_real() => {
+                return Some(Expr {
+                    ty: t,
+                    kind: ExprKind::Const(Const::Real(v as f64)),
+                })
+            }
+            _ if fits(Ty::Dint, v) => Ty::Dint,
+            _ if fits(Ty::Lint, v) => Ty::Lint,
+            _ => {
+                self.err(span, format!("{v} is too large for any integer type"));
+                return None;
+            }
+        };
+        Some(Expr {
+            ty,
+            kind: ExprKind::Const(Const::Int(v as i64)),
+        })
+    }
+
+    /// The value of the place `p` names, resolved as `t`.
+    fn value_of(&mut self, t: Target, p: &ast::Place, span: Span) -> Option<Expr> {
+        if let Some(why) = t.unreadable {
+            self.err(span, why);
+            return None;
+        }
+        let text = p.text();
+        match t.ty {
+            Ty::Instance(p) => {
+                // An input is not read from outside (Figure 13 rule 1b): name an output.
+                let output = self.unit.pous[p]
+                    .vars
+                    .iter()
+                    .find(|v| v.section == Section::Output);
+                let msg = match output {
+                    Some(q) => format!(
+                        "{text} is a function block instance; name one of its outputs, like {text}.{}",
+                        q.name
+                    ),
+                    None => format!("{text} is a function block instance; it has no output to read"),
+                };
+                self.err(span, msg);
+                return None;
+            }
+            ty if self.unit.holds_instance(ty) => {
+                self.err(
+                    span,
+                    format!("{text} holds function block instances; it is not a value"),
+                );
+                return None;
+            }
+            _ => {}
+        }
+        Some(Expr {
+            ty: t.ty,
+            kind: ExprKind::Load(t.place),
+        })
+    }
+
+    fn not(&mut self, x: Expr, span: Span) -> Option<Expr> {
+        if x.ty != Ty::Bool {
+            let what = self.n(x.ty);
+            self.err(
+                span,
+                format!("NOT on a {what} (bit operations on integers are not supported yet)"),
+            );
+            return None;
+        }
+        Some(Expr {
+            ty: Ty::Bool,
+            kind: ExprKind::Not(Box::new(x)),
+        })
+    }
+
+    fn neg(&mut self, x: Expr, span: Span) -> Option<Expr> {
+        if !(x.ty.is_int() || x.ty.is_real() || x.ty == Ty::Time) {
+            let what = self.n(x.ty);
+            self.err(span, format!("a {what} cannot be negated"));
+            return None;
+        }
+        Some(Expr {
+            ty: x.ty,
+            kind: ExprKind::Neg(Box::new(x)),
+        })
+    }
+
+    fn binary(
+        &mut self,
+        op: BinOp,
+        l: &ast::Expr,
+        r: &ast::Expr,
+        want: Option<Ty>,
+        span: Span,
+    ) -> Option<Expr> {
+        if op == BinOp::Pow {
+            return self.expt(l, r, want);
+        }
+        let comparison = matches!(
+            op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+        );
+        let logical = matches!(op, BinOp::And | BinOp::Or | BinOp::Xor);
+        // A bare literal takes the type of the other side; otherwise, outside a comparison,
+        // the context's.
+        let hint = if comparison || logical { None } else { want };
+        let (a, b) = if Self::is_untyped_literal(l) && !Self::is_untyped_literal(r) {
+            let b = self.expr(r, hint);
+            let a = self.expr(l, b.as_ref().map(|b| b.ty).or(hint));
+            (a, b)
+        } else {
+            let a = self.expr(l, if logical { Some(Ty::Bool) } else { hint });
+            let rhint = match (&a, op) {
+                (Some(a), BinOp::Mul | BinOp::Div) if a.ty == Ty::Time => Some(Ty::Lint),
+                (Some(a), _) => Some(a.ty),
+                (None, _) => hint,
+            };
+            let b = self.expr(r, rhint);
+            (a, b)
+        };
+        self.combine(op, a?, b?, l.span, r.span, span)
+    }
+
+    /// The operation `op` on `a` and `b`, typed: `lspan` and `rspan` are where each is.
+    fn combine(
+        &mut self,
+        op: BinOp,
+        a: Expr,
+        b: Expr,
+        lspan: Span,
+        rspan: Span,
+        span: Span,
+    ) -> Option<Expr> {
+        let comparison = matches!(
+            op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+        );
+        let logical = matches!(op, BinOp::And | BinOp::Or | BinOp::Xor);
+        if logical {
+            if a.ty != Ty::Bool || b.ty != Ty::Bool {
+                self.err(span, "AND, OR and XOR take BOOL operands (bit operations on integers are not supported yet)");
+                return None;
+            }
+            let lop = match op {
+                BinOp::And => Logic::And,
+                BinOp::Or => Logic::Or,
+                _ => Logic::Xor,
+            };
+            return Some(Expr {
+                ty: Ty::Bool,
+                kind: ExprKind::Logic(lop, Box::new(a), Box::new(b)),
+            });
+        }
+        // TIME * integer, TIME / integer
+        if a.ty == Ty::Time && matches!(op, BinOp::Mul | BinOp::Div) {
+            if !b.ty.is_int() {
+                let what = self.n(b.ty);
+                self.err(
+                    span,
+                    format!("a TIME can be multiplied or divided by an integer only, not a {what}"),
+                );
+                return None;
+            }
+            let b = self.coerce(b, Ty::Lint, rspan)?;
+            let aop = if op == BinOp::Mul {
+                Arith::Mul
+            } else {
+                Arith::Div
+            };
+            return Some(Expr {
+                ty: Ty::Time,
+                kind: ExprKind::Arith(aop, Box::new(a), Box::new(b)),
+            });
+        }
+        if a.ty.is_string() || b.ty.is_string() {
+            return self.string_operation(op, a, b, comparison, span);
+        }
+        // widens_to is reflexive, so this also covers equal types.
+        let common = if b.ty.widens_to(a.ty) {
+            a.ty
+        } else if a.ty.widens_to(b.ty) {
+            b.ty
+        } else if a.ty.widens_to(Ty::Lreal) && b.ty.widens_to(Ty::Lreal) {
+            Ty::Lreal
+        } else {
+            let (x, y) = (self.n(a.ty), self.n(b.ty));
+            self.err(
+                span,
+                format!("a {x} and a {y} cannot be combined without a conversion"),
+            );
+            return None;
+        };
+        let a = self.coerce(a, common, lspan)?;
+        let b = self.coerce(b, common, rspan)?;
+        if !common.is_elementary() {
+            // IEC 61131-3 ed. 3 §7.3.3.2.2 compares multi-element variables of one type.
+            let what = self.n(common);
+            self.err(
+                span,
+                if comparison {
+                    format!("comparing a whole {what} is not supported yet; compare its members")
+                } else {
+                    format!("a {what} is not a number")
+                },
+            );
+            return None;
+        }
+        if comparison {
+            if common == Ty::Bool && !matches!(op, BinOp::Eq | BinOp::Ne) {
+                let what = self.n(common);
+                self.err(span, format!("{what} values cannot be ordered"));
+                return None;
+            }
+            let c = match op {
+                BinOp::Eq => Cmp::Eq,
+                BinOp::Ne => Cmp::Ne,
+                BinOp::Lt => Cmp::Lt,
+                BinOp::Le => Cmp::Le,
+                BinOp::Gt => Cmp::Gt,
+                _ => Cmp::Ge,
+            };
+            return Some(Expr {
+                ty: Ty::Bool,
+                kind: ExprKind::Cmp(c, Box::new(a), Box::new(b)),
+            });
+        }
+        let aop = match op {
+            BinOp::Add => Arith::Add,
+            BinOp::Sub => Arith::Sub,
+            BinOp::Mul => Arith::Mul,
+            BinOp::Div => Arith::Div,
+            _ => Arith::Mod,
+        };
+        let ok = match common {
+            t if t.is_int() => true,
+            t if t.is_real() => aop != Arith::Mod,
+            Ty::Time => matches!(aop, Arith::Add | Arith::Sub),
+            _ => false,
+        };
+        if !ok {
+            let what = self.n(common);
+            self.err(span, format!("{aop:?} is not defined on {what}"));
+            return None;
+        }
+        Some(Expr {
+            ty: common,
+            kind: ExprKind::Arith(aop, Box::new(a), Box::new(b)),
+        })
+    }
+
+    /// An operation with a STRING on one side: only a comparison (§6.6.2.5.11), of two
+    /// strings.
+    fn string_operation(
+        &mut self,
+        op: BinOp,
+        a: Expr,
+        b: Expr,
+        comparison: bool,
+        span: Span,
+    ) -> Option<Expr> {
+        let (x, y) = (self.n(a.ty), self.n(b.ty));
+        if !(a.ty.is_string() && b.ty.is_string()) {
+            self.err(
+                span,
+                format!("a {x} and a {y} cannot be combined without a conversion"),
+            );
+            return None;
+        }
+        if !comparison {
+            let hint = if op == BinOp::Add {
+                "; join strings with CONCAT(…)"
+            } else {
+                ""
+            };
+            self.err(span, format!("a STRING is not a number{hint}"));
+            return None;
+        }
+        let c = match op {
+            BinOp::Eq => Cmp::Eq,
+            BinOp::Ne => Cmp::Ne,
+            BinOp::Lt => Cmp::Lt,
+            BinOp::Le => Cmp::Le,
+            BinOp::Gt => Cmp::Gt,
+            _ => Cmp::Ge,
+        };
+        Some(Expr {
+            ty: Ty::Bool,
+            kind: ExprKind::Cmp(c, Box::new(a), Box::new(b)),
+        })
+    }
+
+    /// A function call in an expression: a function of the source, a function of the
+    /// standard library, or one of the type conversions `<A>_TO_<B>` between the elementary
+    /// numeric types and BOOL, and between the integer types and STRING.
+    fn call(
+        &mut self,
+        name: &str,
+        args: &[ast::CallArg],
+        span: Span,
+        want: Option<Ty>,
+    ) -> Option<Expr> {
+        if let Some(f) = self.function(name) {
+            return self.call_function(f, args, span);
+        }
+        let upper = name.to_ascii_uppercase();
+        // Only the library can write an intrinsic's name (§6.1.2 forbids it to a program,
+        // and the lexer refuses it there); this holds the line in the checker as well.
+        if let Some(i) = Intrinsic::by_name(&upper).filter(|_| self.in_library) {
+            if !args.is_empty() {
+                self.err(span, format!("{name} takes no argument"));
+                return None;
+            }
+            return Some(Expr {
+                ty: i.ty(),
+                kind: ExprKind::Intrinsic(i),
+            });
+        }
+        if let Some(f) = StdFn::by_name(&upper) {
+            if f.is_string_function() {
+                return self.call_std(f, args, span);
+            }
+            return self.call_numeric(f, args, span, want);
+        }
+        if let Some(to) = truncation(&upper) {
+            return self.call_trunc(&upper, to, args, span);
+        }
+        if let Some(op) = operator_function(&upper) {
+            return self.call_operator(&upper, op, args, span, want);
+        }
+        let (from, to) = self.conversion(name, args, span)?;
+        let x = self.expr(&args[0].value, Some(from))?;
+        let x = self.coerce(x, from, args[0].value.span)?;
+        if from == to {
+            return Some(x);
+        }
+        // §6.6.2.5.2, Table 22 footnote e: an integer as a STRING is its decimal text, as
+        // long as the widest value of its type writes it.
+        let to = match to {
+            Ty::String(_) => Ty::String(decimal_width(from)),
+            to => to,
+        };
+        Some(Expr {
+            ty: to,
+            kind: ExprKind::Convert(Box::new(x)),
+        })
+    }
+
+    /// The arguments of a call of the standard function `f`, each set against the input it
+    /// gives (by position, or all by name), in the order of `f`'s inputs; `None` when what
+    /// is wrong has been told.
+    fn std_args<'a>(
+        &mut self,
+        f: StdFn,
+        args: &'a [ast::CallArg],
+        span: Span,
+    ) -> Option<Vec<&'a ast::Expr>> {
+        let name = f.name();
+        // An extensible function takes as many as it is given: CONCAT, MAX and MIN IN1 … INn
+        // (Table 34 feature 5, Table 32), MUX K then IN0 … INn-1 (Table 32 footnote b).
+        let inputs: Vec<String> = match f {
+            StdFn::Mux => {
+                if args.len() < 3 {
+                    self.err(span, "MUX takes K and two or more inputs");
+                    return None;
+                }
+                std::iter::once("K".to_string())
+                    .chain((0..args.len() - 1).map(|k| format!("IN{k}")))
+                    .collect()
+            }
+            f if f.is_extensible() => {
+                if args.len() < 2 {
+                    let what = if f == StdFn::Concat {
+                        "strings"
+                    } else {
+                        "inputs"
+                    };
+                    self.err(span, format!("{name} takes two or more {what}"));
+                    return None;
+                }
+                (1..=args.len()).map(|k| format!("IN{k}")).collect()
+            }
+            f => f.inputs().iter().map(|s| s.to_string()).collect(),
+        };
+        self.arguments(name, args, inputs, span)
+    }
+
+    /// The arguments of a call of `name`, whose inputs are `inputs`, each set against the
+    /// input it gives (by position, or all by name), in the order of `inputs`.
+    fn arguments<'a>(
+        &mut self,
+        name: &str,
+        args: &'a [ast::CallArg],
+        inputs: Vec<String>,
+        span: Span,
+    ) -> Option<Vec<&'a ast::Expr>> {
+        let named = args.iter().filter(|a| a.name.is_some()).count();
+        if named != 0 && named != args.len() {
+            self.err(
+                span,
+                format!("the arguments of {name} are either all named or all by position"),
+            );
+            return None;
+        }
+        if named == 0 {
+            if args.len() != inputs.len() {
+                self.err(
+                    span,
+                    format!(
+                        "{name} takes {} argument(s), {}; {} given",
+                        inputs.len(),
+                        inputs.join(", "),
+                        args.len()
+                    ),
+                );
+                return None;
+            }
+            return Some(args.iter().map(|a| &a.value).collect());
+        }
+        let mut given: Vec<Option<&ast::Expr>> = vec![None; inputs.len()];
+        let mut ok = true;
+        for a in args {
+            let Some((pname, pspan)) = &a.name else {
+                continue;
+            };
+            match inputs.iter().position(|i| i.eq_ignore_ascii_case(pname)) {
+                None => {
+                    self.err(*pspan, format!("{name} has no input {pname}"));
+                    ok = false;
+                }
+                Some(k) if given[k].is_some() => {
+                    self.err(*pspan, format!("{pname} is given twice"));
+                    ok = false;
+                }
+                Some(k) => given[k] = Some(&a.value),
+            }
+        }
+        if !ok {
+            return None;
+        }
+        // A standard function's inputs have no initial value to fall back on.
+        let missing: Vec<&str> = inputs
+            .iter()
+            .zip(&given)
+            .filter(|(_, g)| g.is_none())
+            .map(|(i, _)| i.as_str())
+            .collect();
+        if !missing.is_empty() {
+            self.err(span, format!("{name} needs {} as well", missing.join(", ")));
+            return None;
+        }
+        Some(given.into_iter().flatten().collect())
+    }
+
+    /// An operator called as a function (Table 29, Table 33): `ADD(a, b, c)` is `a + b + c`,
+    /// `GT(a, b, c)` is `(a > b) AND (b > c)`, `MOVE(a)` is `a`. Typed as the operators are.
+    fn call_operator(
+        &mut self,
+        upper: &str,
+        op: BinOp,
+        args: &[ast::CallArg],
+        span: Span,
+        want: Option<Ty>,
+    ) -> Option<Expr> {
+        let (least, most) = match upper {
+            "MOVE" => (1, 1),
+            "ADD" | "MUL" | "GT" | "GE" | "EQ" | "LE" | "LT" => (2, usize::MAX),
+            _ => (2, 2),
+        };
+        if args.len() < least || args.len() > most {
+            let many = match (least, most) {
+                (1, 1) => "one input".to_string(),
+                (2, 2) => "two inputs".to_string(),
+                _ => "two or more inputs".to_string(),
+            };
+            self.err(span, format!("{upper} takes {many}"));
+            return None;
+        }
+        let inputs: Vec<String> = if upper == "MOVE" {
+            vec!["IN".into()]
+        } else {
+            (1..=args.len()).map(|k| format!("IN{k}")).collect()
+        };
+        let values = self.arguments(upper, args, inputs, span)?;
+        if upper == "MOVE" {
+            return self.expr(values[0], want);
+        }
+        let binary = |op: BinOp, l: &ast::Expr, r: &ast::Expr| ast::Expr {
+            kind: A::Binary(op, Box::new(l.clone()), Box::new(r.clone())),
+            span,
+        };
+        let comparison = matches!(
+            op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+        );
+        let tree = if comparison {
+            // Each neighbouring pair, all of them true.
+            let mut t = binary(op, values[0], values[1]);
+            for k in 2..values.len() {
+                t = binary(BinOp::And, &t, &binary(op, values[k - 1], values[k]));
+            }
+            t
+        } else {
+            let mut t = binary(op, values[0], values[1]);
+            for v in &values[2..] {
+                t = binary(op, &t, v);
+            }
+            t
+        };
+        self.expr(&tree, want)
+    }
+
+    /// `TRUNC_<int>(x)`: a real toward zero, as the integer type named.
+    fn call_trunc(
+        &mut self,
+        upper: &str,
+        to: Ty,
+        args: &[ast::CallArg],
+        span: Span,
+    ) -> Option<Expr> {
+        let values = self.arguments(upper, args, vec!["IN".into()], span)?;
+        let from = if upper.starts_with("LREAL_") {
+            Some(Ty::Lreal)
+        } else if upper.starts_with("REAL_") {
+            Some(Ty::Real)
+        } else {
+            None
+        };
+        let x = self.expr(values[0], from)?;
+        let x = match from {
+            Some(t) => self.coerce(x, t, values[0].span)?,
+            None => x,
+        };
+        if !x.ty.is_real() {
+            let what = self.n(x.ty);
+            self.err(
+                values[0].span,
+                format!("IN of {upper} is a REAL or an LREAL; this is a {what}"),
+            );
+            return None;
+        }
+        Some(Expr {
+            ty: to,
+            kind: ExprKind::Std(StdFn::Trunc, vec![x]),
+        })
+    }
+
+    /// The real type an argument of a function of reals takes: its own if it is one; for an
+    /// integer, the real it widens to (Figure 11: SINT and INT to REAL, DINT to LREAL; LINT to
+    /// neither); `None`, told, otherwise.
+    fn real_type(&mut self, ty: Ty, span: Span, what: &str) -> Option<Ty> {
+        Some(match ty {
+            t if t.is_real() => t,
+            Ty::Sint | Ty::Int => Ty::Real,
+            Ty::Dint => Ty::Lreal,
+            other => {
+                let n = self.n(other);
+                self.err(span, format!("{what} is a REAL or an LREAL; this is a {n}"));
+                return None;
+            }
+        })
+    }
+
+    /// Values of one type, for the inputs of a function overloaded on a generic type: typed
+    /// as the operands of an operation are (a bare literal takes the type of the others),
+    /// then each widened to the type all of them widen to.
+    fn common(
+        &mut self,
+        name: &str,
+        values: &[&ast::Expr],
+        want: Option<Ty>,
+        span: Span,
+    ) -> Option<Vec<Expr>> {
+        let mut typed: Vec<Option<Expr>> = vec![None; values.len()];
+        let mut ok = true;
+        for (k, e) in values.iter().enumerate() {
+            if !Self::is_untyped_literal(e) {
+                match self.expr(e, want) {
+                    Some(x) => typed[k] = Some(x),
+                    None => ok = false,
+                }
+            }
+        }
+        if !ok {
+            return None;
+        }
+        let join = |c: &mut Checker, acc: Option<Ty>, t: Ty| -> Result<Option<Ty>, ()> {
+            let Some(a) = acc else { return Ok(Some(t)) };
+            if t.widens_to(a) {
+                Ok(Some(a))
+            } else if a.widens_to(t) {
+                Ok(Some(t))
+            } else if a.widens_to(Ty::Lreal) && t.widens_to(Ty::Lreal) {
+                Ok(Some(Ty::Lreal))
+            } else {
+                let (x, y) = (c.n(a), c.n(t));
+                c.err(
+                    span,
+                    format!(
+                        "the inputs of {name} are a {x} and a {y}, which have no type in common"
+                    ),
+                );
+                Err(())
+            }
+        };
+        let mut acc: Option<Ty> = None;
+        for x in typed.iter().flatten() {
+            acc = join(self, acc, x.ty).ok()?;
+        }
+        let hint = acc.or(want);
+        for (k, e) in values.iter().enumerate() {
+            if typed[k].is_none() {
+                let x = self.expr(e, hint)?;
+                acc = join(self, acc, x.ty).ok()?;
+                typed[k] = Some(x);
+            }
+        }
+        let ty = acc?;
+        let mut out = Vec::with_capacity(values.len());
+        for (k, x) in typed.into_iter().enumerate() {
+            out.push(self.coerce(x?, ty, values[k].span)?);
+        }
+        Some(out)
+    }
+
+    /// A call of a numeric or selection function of IEC 61131-3 ed. 3 (Table 28, Table 29's
+    /// EXPT, Table 32).
+    fn call_numeric(
+        &mut self,
+        f: StdFn,
+        args: &[ast::CallArg],
+        span: Span,
+        want: Option<Ty>,
+    ) -> Option<Expr> {
+        let values = self.std_args(f, args, span)?;
+        let name = f.name();
+        let real_want = want.filter(|t| t.is_real());
+        let made = |ty: Ty, args: Vec<Expr>| {
+            Some(Expr {
+                ty,
+                kind: ExprKind::Std(f, args),
+            })
+        };
+        match f {
+            StdFn::Abs => {
+                let x = self.expr(values[0], want)?;
+                if !(x.ty.is_int() || x.ty.is_real()) {
+                    let what = self.n(x.ty);
+                    self.err(
+                        values[0].span,
+                        format!("IN of ABS is a number; this is a {what}"),
+                    );
+                    return None;
+                }
+                made(x.ty, vec![x])
+            }
+            StdFn::Atan2 => {
+                let xs = self.common(name, &values, real_want, span)?;
+                let what = format!("each input of {name}");
+                let ty = self.real_type(xs[0].ty, span, &what)?;
+                let mut out = Vec::new();
+                for (k, x) in xs.into_iter().enumerate() {
+                    out.push(self.coerce(x, ty, values[k].span)?);
+                }
+                made(ty, out)
+            }
+            StdFn::Expt => self.expt(values[0], values[1], want),
+            StdFn::Sel => {
+                let g = self.condition(values[0]);
+                let xs = self.common(name, &values[1..], want, span);
+                let (g, xs) = (g?, xs?);
+                let ty = self.selectable(name, xs[0].ty, span)?;
+                made(ty, std::iter::once(g).chain(xs).collect())
+            }
+            StdFn::Max | StdFn::Min | StdFn::Limit => {
+                let xs = self.common(name, &values, want, span)?;
+                let ty = self.selectable(name, xs[0].ty, span)?;
+                made(ty, xs)
+            }
+            StdFn::Mux => {
+                let k = self.expr(values[0], Some(Ty::Dint));
+                let xs = self.common(name, &values[1..], want, span);
+                let (k, xs) = (k?, xs?);
+                if !k.ty.is_int() {
+                    let what = self.n(k.ty);
+                    self.err(
+                        values[0].span,
+                        format!("K of MUX is an integer; this is a {what}"),
+                    );
+                    return None;
+                }
+                // Table 32 footnote e: a K outside 0 … n-1 is an error; a literal one is
+                // found here.
+                if let ExprKind::Const(Const::Int(v)) = k.kind {
+                    if v < 0 || v >= xs.len() as i64 {
+                        let last = xs.len() - 1;
+                        self.err(
+                            values[0].span,
+                            format!("K of MUX is {v}; this MUX has inputs IN0 to IN{last}"),
+                        );
+                        return None;
+                    }
+                }
+                let k = self.coerce(k, Ty::Lint, values[0].span)?;
+                let ty = self.selectable(name, xs[0].ty, span)?;
+                made(ty, std::iter::once(k).chain(xs).collect())
+            }
+            // Of one real: SQRT, LN, LOG, EXP and the trigonometric functions.
+            _ => {
+                let x = self.expr(values[0], real_want)?;
+                let ty = self.real_type(x.ty, values[0].span, &format!("IN of {name}"))?;
+                let x = self.coerce(x, ty, values[0].span)?;
+                made(ty, vec![x])
+            }
+        }
+    }
+
+    /// `EXPT(base, exponent)`, and `base ** exponent` (Table 71 footnote b): the base a real,
+    /// the result of its type; the exponent an integer (as a LINT) or a real.
+    fn expt(&mut self, base: &ast::Expr, exponent: &ast::Expr, want: Option<Ty>) -> Option<Expr> {
+        let b = self.expr(base, want.filter(|t| t.is_real()));
+        let ty = b
+            .as_ref()
+            .and_then(|b| self.real_type(b.ty, base.span, "IN1 of EXPT"));
+        let hint = match exponent.kind {
+            A::Real(_) => ty,
+            _ => Some(Ty::Lint),
+        };
+        let e = self.expr(exponent, hint);
+        let (b, ty, e) = (b?, ty?, e?);
+        let b = self.coerce(b, ty, base.span)?;
+        let e = match e.ty {
+            t if t.is_int() => self.coerce(e, Ty::Lint, exponent.span)?,
+            t if t.is_real() => e,
+            other => {
+                let what = self.n(other);
+                self.err(
+                    exponent.span,
+                    format!("IN2 of EXPT is a number; this is a {what}"),
+                );
+                return None;
+            }
+        };
+        Some(Expr {
+            ty,
+            kind: ExprKind::Std(StdFn::Expt, vec![b, e]),
+        })
+    }
+
+    /// What SEL, MAX, MIN, LIMIT and MUX choose among: a number, a TIME or a BOOL.
+    fn selectable(&mut self, name: &str, ty: Ty, span: Span) -> Option<Ty> {
+        if ty.is_elementary() {
+            return Some(ty);
+        }
+        let what = self.n(ty);
+        let msg = if ty.is_string() {
+            format!("{name} of strings is not supported yet")
+        } else {
+            format!("{name} chooses among numbers, TIMEs or BOOLs; this is a {what}")
+        };
+        self.err(span, msg);
+        None
+    }
+
+    /// A call of a function of IEC 61131-3 ed. 3 Table 34.
+    fn call_std(&mut self, f: StdFn, args: &[ast::CallArg], span: Span) -> Option<Expr> {
+        let values = self.std_args(f, args, span)?;
+        let name = f.name();
+        // Which inputs are strings (ANY_STRING, ANY_CHARS); the others are ANY_INT.
+        let is_text = |k: usize| match f {
+            StdFn::Concat | StdFn::Len | StdFn::Find => true,
+            StdFn::Left | StdFn::Right | StdFn::Mid | StdFn::Delete => k == 0,
+            StdFn::Insert | StdFn::Replace => k < 2,
+            _ => unreachable!("{} is not a string function", f.name()),
+        };
+        let inputs = f.inputs();
+        let mut lowered = Vec::with_capacity(values.len());
+        let mut ok = true;
+        for (k, e) in values.iter().enumerate() {
+            let input = inputs.get(k).copied().unwrap_or("IN");
+            let Some(x) = self.expr(e, if is_text(k) { None } else { Some(Ty::Dint) }) else {
+                ok = false;
+                continue;
+            };
+            let what = self.n(x.ty);
+            if is_text(k) && !x.ty.is_string() {
+                self.err(
+                    e.span,
+                    format!("{input} of {name} is a STRING; this is a {what}"),
+                );
+                ok = false;
+            } else if !is_text(k) && !x.ty.is_int() {
+                self.err(
+                    e.span,
+                    format!("{input} of {name} is an integer; this is a {what}"),
+                );
+                ok = false;
+            } else if let ExprKind::Const(Const::Int(v)) = x.kind {
+                // §6.6.2.5.11: an integer input below zero is an error; a literal one is
+                // found here.
+                if v < 0 {
+                    self.err(e.span, format!("{input} of {name} may not be below zero"));
+                    ok = false;
+                }
+            }
+            lowered.push(x);
+        }
+        if !ok {
+            return None;
+        }
+        let len = |k: usize| match lowered[k].ty {
+            Ty::String(n) => n as u32,
+            _ => 0,
+        };
+        // As long as any result its arguments can give, up to the longest a STRING may be:
+        // past that, a result is an error found when it is made.
+        let longest = match f {
+            StdFn::Len | StdFn::Find => None,
+            StdFn::Left | StdFn::Right | StdFn::Mid | StdFn::Delete => Some(len(0)),
+            StdFn::Insert | StdFn::Replace => Some(len(0) + len(1)),
+            StdFn::Concat => Some((0..lowered.len()).map(len).sum()),
+            _ => unreachable!("{} is not a string function", f.name()),
+        };
+        let ty = match longest {
+            None => Ty::Int,
+            Some(n) => Ty::String(n.min(MAX_STRING_LENGTH as u32) as u16),
+        };
+        Some(Expr {
+            ty,
+            kind: ExprKind::Std(f, lowered),
+        })
+    }
+
+    /// What `name(args)` converts from and to, when it is a conversion that can be called
+    /// with these arguments; otherwise what is wrong is told (or follows from something told)
+    /// and the call is not typed.
+    fn conversion(&mut self, name: &str, args: &[ast::CallArg], span: Span) -> Option<(Ty, Ty)> {
+        if matches!(self.named(name), Some(Named::Pou(_))) {
+            self.err(
+                span,
+                format!(
+                    "{name} is not a function; a function block is called as a statement, through an instance"
+                ),
+            );
+            return None;
+        }
+        if self.is_refused(name) {
+            return None;
+        }
+        if let Some(v) = self.find(name) {
+            let ty = self.unit.pous[self.cur].vars[v].ty;
+            let msg = if matches!(ty, Ty::Instance(_)) {
+                format!(
+                    "{name} is a function block instance: call it as a statement, {name}(…); then read its outputs"
+                )
+            } else {
+                format!("{name} is a variable, not a function")
+            };
+            self.err(span, msg);
+            return None;
+        }
+        let upper = name.to_ascii_uppercase();
+        let conv = upper
+            .split_once("_TO_")
+            .and_then(|(f, t)| Some((Ty::from_name(f)?, Ty::from_name(t)?)));
+        let Some((from, to)) = conv else {
+            // It may be the function whose name the parser could not read.
+            if self.lost.contains(&ast::Lost::Function) {
+                return None;
+            }
+            self.err(
+                span,
+                format!(
+                    "{name} is not a function this compiler knows yet (the *_TO_* conversions are, the string functions of the standard, and the functions of this source)"
+                ),
+            );
+            return None;
+        };
+        let numeric = |t: Ty| t.is_int() || t.is_real() || t == Ty::Bool;
+        let text = (from.is_int() && to.is_string()) || (from.is_string() && to.is_int());
+        if !text && (!numeric(from) || !numeric(to)) {
+            self.err(span, format!("{upper} is not supported yet"));
+            return None;
+        }
+        if from.is_real() && to == Ty::Bool {
+            self.err(span, format!("{upper} is not supported yet"));
+            return None;
+        }
+        if args.len() != 1 {
+            self.err(span, format!("{upper} takes one argument"));
+            return None;
+        }
+        if let Some((_, nspan)) = &args[0].name {
+            self.err(*nspan, format!("{upper} takes its argument by position"));
+            return None;
+        }
+        Some((from, to))
+    }
+
+    /// A call of the function `f` of this source (IEC 61131-3 ed. 3 §6.6.1.4.2, Table 20):
+    /// by position, every input in the order declared; or by name, in any order, an input
+    /// left out starting at its initial value.
+    fn call_function(&mut self, f: usize, args: &[ast::CallArg], span: Span) -> Option<Expr> {
+        self.calls.push((self.cur, f, span));
+        let named = self.call_shape(f, args, span)?;
+        let mut lowered: Vec<(usize, Expr)> = Vec::new();
+        let mut ok = true;
+        for (k, a) in args.iter().enumerate() {
+            let input = if named {
+                self.named_input(f, a, &lowered)
+            } else {
+                self.input(f, k)
+            };
+            let Some((vi, ty)) = input else {
+                ok = false;
+                continue;
+            };
+            match self
+                .expr(&a.value, Some(ty))
+                .and_then(|v| self.coerce(v, ty, a.value.span))
+            {
+                Some(v) => lowered.push((vi, v)),
+                None => ok = false,
+            }
+        }
+        if !ok {
+            return None;
+        }
+        Some(Expr {
+            ty: self.unit.pous[f].vars[0].ty,
+            kind: ExprKind::Call {
+                pou: f,
+                args: lowered,
+            },
+        })
+    }
+
+    /// Whether the arguments of a call of `f` are named (or by position), once what is wrong
+    /// with them as a whole has been told; `None` when the call is not typed.
+    fn call_shape(&mut self, f: usize, args: &[ast::CallArg], span: Span) -> Option<bool> {
+        if self.result_unknown[f] {
+            return None;
+        }
+        let name = self.unit.pous[f].name.clone();
+        let named = args.iter().filter(|a| a.name.is_some()).count();
+        if named != 0 && named != args.len() {
+            self.err(
+                span,
+                format!("the arguments of {name} are either all named or all by position"),
+            );
+            return None;
+        }
+        let inputs = self.unit.pous[f]
+            .vars
+            .iter()
+            .filter(|v| v.section == Section::Input)
+            .count();
+        if named == 0 && args.len() != inputs {
+            if self.gaps[f] {
+                return None;
+            }
+            self.err(
+                span,
+                format!(
+                    "{name} takes {inputs} argument(s) by position; {} given",
+                    args.len()
+                ),
+            );
+            return None;
+        }
+        Some(named != 0)
+    }
+
+    /// The `k`th input of `f`: its variable and type.
+    fn input(&self, f: usize, k: usize) -> Option<(usize, Ty)> {
+        self.unit.pous[f]
+            .vars
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.section == Section::Input)
+            .nth(k)
+            .map(|(i, v)| (i, v.ty))
+    }
+
+    /// The input of `f` the named argument `a` gives, unless it has none of that name or
+    /// is given it twice (told).
+    fn named_input(
+        &mut self,
+        f: usize,
+        a: &ast::CallArg,
+        lowered: &[(usize, Expr)],
+    ) -> Option<(usize, Ty)> {
+        let (pname, pspan) = a.name.as_ref()?;
+        let found = self.unit.pous[f]
+            .vars
+            .iter()
+            .enumerate()
+            .find(|(_, v)| v.section == Section::Input && v.name.eq_ignore_ascii_case(pname))
+            .map(|(i, v)| (i, v.ty));
+        let Some((vi, ty)) = found else {
+            if !self.gaps[f] {
+                let name = &self.unit.pous[f].name;
+                let msg = format!("{name} has no input {pname}");
+                self.err(*pspan, msg);
+            }
+            return None;
+        };
+        if lowered.iter().any(|(i, _)| *i == vi) {
+            self.err(*pspan, format!("{pname} is given twice"));
+            return None;
+        }
+        Some((vi, ty))
+    }
+}

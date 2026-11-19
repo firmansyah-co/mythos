@@ -1,0 +1,17 @@
+[package]
+name = "mythos-logic-backend-vm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "The logic VM backend of MythOS control logic: lays an IR program out in memory and emits VM bytecode (ADR-013)"
+
+[lints]
+workspace = true
+
+# A backend knows the IR and its own target (here the VM's format): no front-end, no language.
+[dependencies]
+mythos-logic-ir.workspace = true
+mythos-logic-vm.workspace = true
+serde.workspace = true

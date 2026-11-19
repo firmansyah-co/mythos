@@ -1,0 +1,86 @@
+[package]
+name = "mythos-module-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "End-to-end tests of MythOS modules running as real processes"
+
+[lints]
+workspace = true
+
+# A module executable built from this package, so its tests can find it through
+# CARGO_BIN_EXE_*. It runs exactly the Modbus module entry point the shipped
+# `mythos-module-modbus` runs. Its name lacks the `mythos-module-` prefix on purpose: a server
+# started from the same target directory must not discover it as a second Modbus module. The
+# tests copy it into a directory of their own under the shipped name.
+[[bin]]
+name = "modbus-module-under-test"
+path = "src/bin/modbus-module-under-test.rs"
+
+# A module that misbehaves as the file beside it says (see the source). No `mythos-module-`
+# prefix, for the same reason.
+[[bin]]
+name = "module-fixture"
+path = "src/bin/module-fixture.rs"
+
+# A service module (ADR-011) for the service module tests; see its source.
+[[bin]]
+name = "service-module-under-test"
+path = "src/bin/service-module-under-test.rs"
+
+# The HMI service module (ADR-011 step 4), for the screens and faceplate tests.
+[[bin]]
+name = "hmi-module-under-test"
+path = "src/bin/hmi-module-under-test.rs"
+
+# The discovery service module (ADR-012 §2.2).
+[[bin]]
+name = "discovery-module-under-test"
+path = "src/bin/discovery-module-under-test.rs"
+
+# The logic runtime module (ADR-013 §2.4).
+[[bin]]
+name = "runtime-vm-module-under-test"
+path = "src/bin/runtime-vm-module-under-test.rs"
+
+# A runtime module that ignores STOP, for the tests of what the core does not leave to one.
+[[bin]]
+name = "stubborn-runtime-under-test"
+path = "src/bin/stubborn-runtime-under-test.rs"
+
+# The logic authoring module (ADR-013 §2.6).
+[[bin]]
+name = "logic-module-under-test"
+path = "src/bin/logic-module-under-test.rs"
+
+[dependencies]
+mythos-plugin-sdk.workspace = true
+driver-modbus.workspace = true
+mythos-runtime-vm = { path = "../../plugins/runtime-vm" }
+mythos-discovery = { path = "../../plugins/discovery" }
+mythos-hmi = { path = "../../plugins/hmi" }
+mythos-logic = { path = "../../plugins/logic" }
+mythos-module.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+zip.workspace = true
+axum.workspace = true
+tower = { workspace = true, features = ["util"] }
+driver-modbus = { workspace = true, features = ["sim"] }
+mythos-core.workspace = true
+mythos-logic-compiler.workspace = true
+hex.workspace = true
+mythos-module.workspace = true
+mythos-pal.workspace = true
+mythos-plugin-sdk.workspace = true
+mythos-shm.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tempfile = "3.10"
+futures-util.workspace = true
+sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }

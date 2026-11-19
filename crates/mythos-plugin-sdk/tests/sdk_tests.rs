@@ -31,7 +31,7 @@ impl MythosPlugin for MockDriver {
         _ctx: &PluginContext,
         config: &serde_json::Value,
     ) -> Result<(), PluginError> {
-        self.validate_config(config)?;
+        self.describe_config(config).await?;
         Ok(())
     }
 
@@ -51,17 +51,37 @@ impl MythosPlugin for MockDriver {
 
 #[async_trait::async_trait]
 impl ProtocolDriver for MockDriver {
-    fn validate_config(&self, config: &serde_json::Value) -> Result<(), PluginError> {
+    async fn describe_config(
+        &self,
+        config: &serde_json::Value,
+    ) -> Result<Vec<TagDeclaration>, PluginError> {
         if config.get("port").is_none() {
             return Err(PluginError::InvalidConfiguration("Missing 'port'".into()));
         }
-        Ok(())
+        Ok(self.declared_tags())
     }
 
-    async fn poll_cycle(&mut self, ctx: &PluginContext) -> Result<u32, PluginError> {
+    fn declared_tags(&self) -> Vec<TagDeclaration> {
+        vec![TagDeclaration {
+            uri: "external.Plant.PT101.pv".to_string(),
+            description: "mock register".to_string(),
+            writable: false,
+        }]
+    }
+
+    async fn poll_cycle(&mut self, ctx: &PluginContext) -> Result<Vec<TagSample>, PluginError> {
         ctx.check_capability("tagbus:write")?;
         self.poll_count += 1;
-        Ok(self.poll_count)
+        // Odd cycles read a value, even cycles report the link down: both outcomes are samples.
+        let sample = if self.poll_count % 2 == 1 {
+            TagSample::value("external.Plant.PT101.pv", SampleValue::U16(42))
+        } else {
+            TagSample::fault(
+                "external.Plant.PT101.pv",
+                SampleFault::CommFailure("no answer".into()),
+            )
+        };
+        Ok(vec![sample])
     }
 
     async fn write_tag(
@@ -114,8 +134,19 @@ async fn test_protocol_driver_lifecycle() {
     let health = driver.health_check().await.unwrap();
     assert_eq!(health.status, HealthStatus::Healthy);
 
-    let polled = driver.poll_cycle(&ctx).await.unwrap();
-    assert_eq!(polled, 1);
+    // Every declared tag gets exactly one sample per cycle, whether or not it could be read.
+    let declared = driver.declared_tags();
+    let first = driver.poll_cycle(&ctx).await.unwrap();
+    assert_eq!(first.len(), declared.len());
+    assert_eq!(first[0].uri, declared[0].uri);
+    assert_eq!(first[0].reading, Ok(SampleValue::U16(42)));
+
+    let second = driver.poll_cycle(&ctx).await.unwrap();
+    assert_eq!(second.len(), declared.len());
+    assert_eq!(
+        second[0].reading,
+        Err(SampleFault::CommFailure("no answer".into()))
+    );
 
     // Write valid tag
     assert!(driver

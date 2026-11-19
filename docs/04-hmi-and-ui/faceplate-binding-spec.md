@@ -1,5 +1,7 @@
 # MythOS Reusable Function Block Faceplate Binding Specification
 
+> **Status:** Partly built — Faceplate types and UDTs are in `plugins/hmi` (`faceplate.rs`, `udt.rs`) with the editor and runtime in `frontend/packages/hmi-ui`. The four presentation modes, the library propagation engine and the TypeScript contracts here are not verified against that code. Checked against the code on 2026-11-19.
+
 ## 1. Executive Summary & Purpose
 This document specifies the architecture, data binding engine, and visual rendering models for reusable industrial SCADA Faceplates in MythOS. 
 

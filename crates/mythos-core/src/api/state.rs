@@ -1,8 +1,6 @@
 //! Shared state for Axum API Gateway.
 
-use crate::api::mcp::McpSseTransport;
-use crate::auth::{Ed25519TokenManager, MerkleAuditLedger};
-use crate::collab::RoomManager;
+use crate::io::{IoManager, IoStatusHandle};
 use crate::storage::ControllerStorage;
 use crate::tag::TagCatalog;
 use mythos_pal::PlatformShm;
@@ -17,13 +15,17 @@ use tokio::sync::{broadcast::Sender as BroadcastSender, RwLock};
 /// screen reaches every open operator station through the stream that is already open.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HmiEvent {
-    pub event: &'static str,
+    /// The SSE event name. A service module chooses its own (ADR-011 §2.2).
+    pub event: String,
     pub data: serde_json::Value,
 }
 
 impl HmiEvent {
-    pub fn new(event: &'static str, data: serde_json::Value) -> Self {
-        Self { event, data }
+    pub fn new(event: impl Into<String>, data: serde_json::Value) -> Self {
+        Self {
+            event: event.into(),
+            data,
+        }
     }
 }
 
@@ -33,12 +35,33 @@ pub struct ApiState<S: PlatformShm + 'static = mythos_pal::DefaultShm> {
     pub tag_catalog: Arc<RwLock<TagCatalog>>,
     pub shm_reader: Option<Arc<RwLock<ShmReaderHandle<S>>>>,
     pub static_dir: Option<PathBuf>,
-    pub room_manager: Arc<RoomManager>,
-    pub mcp_transport: Arc<McpSseTransport>,
-    pub token_manager: Option<Arc<Ed25519TokenManager>>,
-    pub audit_ledger: Option<Arc<MerkleAuditLedger>>,
     /// Definition-change notifications relayed to every open operator station.
     pub hmi_events: BroadcastSender<HmiEvent>,
+    /// What the field I/O runtime is doing, or why none is running.
+    pub io_status: IoStatusHandle,
+    /// The manager of the field I/O runtime, when this server has one. Without it an I/O
+    /// configuration can be read and saved but not applied.
+    pub io_manager: Option<Arc<IoManager<S>>>,
+    /// The controller's accounts. With them every route requires what `crate::auth::policy`
+    /// says; without them (a state built for a test, or for embedding) nothing is checked. The
+    /// server always has them: `crate::server` attaches them.
+    pub auth: Option<Arc<crate::auth::Auth>>,
+    /// The server's own version and installation, and the published releases.
+    pub updates: Option<Arc<crate::updates::Updates>>,
+    /// The service modules (ADR-011) whose routes this server forwards.
+    pub services: Option<Arc<crate::services::ServiceHost>>,
+    /// Which modules are switched off, and where packages are installed.
+    pub modules: Option<Arc<crate::modules::ModuleSettings>>,
+    /// This installation as a node: its id, name and role (ADR-012).
+    pub node: Option<Arc<crate::node::Node>>,
+    /// The nodes this one is paired with (ADR-012 §2.3).
+    pub pairings: Option<Arc<crate::pairing::Pairings>>,
+    /// The links to the plant's other devices, whose tags are read over the pairing (ADR-012
+    /// §2.6). Made with the pairings.
+    pub remote: Option<Arc<crate::remote::RemoteTags>>,
+    /// The paired nodes calling this one home, and the requests waiting for them (ADR-012
+    /// §2.6). Made with the pairings.
+    pub call_home: Option<Arc<crate::callhome::CallHome>>,
 }
 
 impl<S: PlatformShm + 'static> Clone for ApiState<S> {
@@ -48,11 +71,17 @@ impl<S: PlatformShm + 'static> Clone for ApiState<S> {
             tag_catalog: Arc::clone(&self.tag_catalog),
             shm_reader: self.shm_reader.clone(),
             static_dir: self.static_dir.clone(),
-            room_manager: Arc::clone(&self.room_manager),
-            mcp_transport: Arc::clone(&self.mcp_transport),
-            token_manager: self.token_manager.clone(),
-            audit_ledger: self.audit_ledger.clone(),
             hmi_events: self.hmi_events.clone(),
+            io_status: self.io_status.clone(),
+            io_manager: self.io_manager.clone(),
+            auth: self.auth.clone(),
+            updates: self.updates.clone(),
+            services: self.services.clone(),
+            modules: self.modules.clone(),
+            node: self.node.clone(),
+            pairings: self.pairings.clone(),
+            remote: self.remote.clone(),
+            call_home: self.call_home.clone(),
         }
     }
 }
@@ -73,11 +102,19 @@ impl<S: PlatformShm + 'static> ApiState<S> {
             tag_catalog,
             shm_reader: shm_reader.map(|r| Arc::new(RwLock::new(r))),
             static_dir,
-            room_manager: Arc::new(RoomManager::new()),
-            mcp_transport: Arc::new(McpSseTransport::new()),
-            token_manager: None,
-            audit_ledger: None,
             hmi_events: BroadcastSender::new(256),
+            io_status: IoStatusHandle::not_running(
+                "no field I/O runtime is attached to this server",
+            ),
+            io_manager: None,
+            auth: None,
+            updates: None,
+            services: None,
+            modules: None,
+            node: None,
+            pairings: None,
+            remote: None,
+            call_home: None,
         }
     }
 
@@ -89,27 +126,58 @@ impl<S: PlatformShm + 'static> ApiState<S> {
         let _ = self.hmi_events.send(event);
     }
 
+    /// Attach the field I/O manager. Its status becomes the one reported at
+    /// `GET /api/v1/io/status`.
+    pub fn with_io_manager(mut self, manager: Arc<IoManager<S>>) -> Self {
+        self.io_status = manager.status();
+        self.io_manager = Some(manager);
+        self
+    }
+
+    /// Attach the status of a field I/O runtime, reported at `GET /api/v1/io/status`.
+    pub fn with_io_status(mut self, io_status: IoStatusHandle) -> Self {
+        self.io_status = io_status;
+        self
+    }
+
     /// Configure custom static asset directory for Web HMI serving.
+    /// Require accounts: every route is checked against `crate::auth::policy`.
+    pub fn with_auth(mut self, auth: Arc<crate::auth::Auth>) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
+    pub fn with_modules(mut self, modules: Arc<crate::modules::ModuleSettings>) -> Self {
+        self.modules = Some(modules);
+        self
+    }
+
+    pub fn with_services(mut self, services: Arc<crate::services::ServiceHost>) -> Self {
+        self.services = Some(services);
+        self
+    }
+
+    pub fn with_pairings(mut self, pairings: Arc<crate::pairing::Pairings>) -> Self {
+        self.remote = Some(Arc::new(crate::remote::RemoteTags::new(Arc::clone(
+            &pairings,
+        ))));
+        self.call_home = Some(Arc::new(crate::callhome::CallHome::new()));
+        self.pairings = Some(pairings);
+        self
+    }
+
+    pub fn with_node(mut self, node: Arc<crate::node::Node>) -> Self {
+        self.node = Some(node);
+        self
+    }
+
+    pub fn with_updates(mut self, updates: Arc<crate::updates::Updates>) -> Self {
+        self.updates = Some(updates);
+        self
+    }
+
     pub fn with_static_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.static_dir = Some(path.into());
-        self
-    }
-
-    /// Configure custom RoomManager instance for CRDT collaboration.
-    pub fn with_room_manager(mut self, room_manager: Arc<RoomManager>) -> Self {
-        self.room_manager = room_manager;
-        self
-    }
-
-    /// Configure Ed25519 Token Manager for cryptographic AI token authentication.
-    pub fn with_token_manager(mut self, token_manager: Arc<Ed25519TokenManager>) -> Self {
-        self.token_manager = Some(token_manager);
-        self
-    }
-
-    /// Configure Merkle Audit Ledger for audit tracking.
-    pub fn with_audit_ledger(mut self, audit_ledger: Arc<MerkleAuditLedger>) -> Self {
-        self.audit_ledger = Some(audit_ledger);
         self
     }
 }
