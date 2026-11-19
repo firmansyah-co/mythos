@@ -180,7 +180,18 @@ jobs:
           export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
           export RUSTC_WRAPPER="/opt/hostedtoolcache/cargo/bin/sccache"
           if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1 && rustup component list | grep -q "rustfmt.*(installed)" && rustup component list | grep -q "clippy.*(installed)"; then
-            echo "Rust toolchain already present in cache, skipping re-download."
+            # The cache outlives the runner pod. Without an update it kept the stable of the day
+            # it was filled (1.99.1 while Windows and macOS, on dtolnay/rust-toolchain@stable,
+            # had 1.100.0), so a lint could pass here and fail there. Up to date, this is one
+            # manifest check.
+            echo "Rust toolchain present in cache; bringing it to the current stable."
+            updated=no
+            for i in 1 2 3; do
+              rustup update stable --no-self-update && { updated=yes; break; } || sleep 5
+            done
+            if [ "$updated" = no ]; then
+              echo "::warning title=Rust toolchain not updated::rustup could not reach the release server; this job runs on the cached toolchain."
+            fi
           else
             echo "Installing or updating Rust toolchain via rustup..."
             for i in 1 2 3 4 5; do
