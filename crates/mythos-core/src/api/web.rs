@@ -22,9 +22,6 @@ pub const DEFAULT_INDEX_HTML: &str = include_str!("default_hmi.html");
 /// Embedded MythOS SVG banner asset.
 pub const EMBEDDED_BANNER_SVG: &[u8] = include_bytes!("../../../../assets/mythos-banner.svg");
 
-/// Embedded MythOS Architecture diagram SVG asset.
-pub const EMBEDDED_ARCH_SVG: &[u8] = include_bytes!("../../../../assets/mythos-architecture.svg");
-
 /// Construct the Axum Router for Web HMI static assets and SPA client-side routing.
 pub fn web_router<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
     Router::new()
@@ -85,14 +82,6 @@ pub async fn spa_fallback_handler<S: PlatformShm + 'static>(
             StatusCode::OK,
             [(header::CONTENT_TYPE, "image/svg+xml")],
             EMBEDDED_BANNER_SVG,
-        )
-            .into_response();
-    }
-    if trimmed == "assets/mythos-architecture.svg" || trimmed == "mythos-architecture.svg" {
-        return (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "image/svg+xml")],
-            EMBEDDED_ARCH_SVG,
         )
             .into_response();
     }
@@ -207,17 +196,6 @@ async fn serve_asset_response<S: PlatformShm + 'static>(
                 (header::CACHE_CONTROL, "public, max-age=86400"),
             ],
             EMBEDDED_BANNER_SVG,
-        )
-            .into_response();
-    }
-    if filename == "mythos-architecture.svg" {
-        return (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "image/svg+xml"),
-                (header::CACHE_CONTROL, "public, max-age=86400"),
-            ],
-            EMBEDDED_ARCH_SVG,
         )
             .into_response();
     }

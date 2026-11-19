@@ -34,7 +34,7 @@ pub use state::ApiState;
 pub use telemetry::{telemetry_stream_handler, TagValueUpdate, TelemetryBatch};
 pub use web::{
     asset_handler, index_handler, mime_type_for_path, sanitize_relative_path, spa_fallback_handler,
-    web_router, DEFAULT_INDEX_HTML, EMBEDDED_ARCH_SVG, EMBEDDED_BANNER_SVG,
+    web_router, DEFAULT_INDEX_HTML, EMBEDDED_BANNER_SVG,
 };
 
 /// Health response schema
