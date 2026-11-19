@@ -158,19 +158,13 @@ async fn test_embedded_asset_serving() {
         .unwrap();
     assert_eq!(content_type, "image/svg+xml");
 
+    // The old architecture diagram showed parts MythOS does not have; it is no longer served.
     let req2 = Request::builder()
         .uri("/assets/mythos-architecture.svg")
         .body(Body::empty())
         .unwrap();
-
     let resp2 = router.oneshot(req2).await.unwrap();
-    assert_eq!(resp2.status(), StatusCode::OK);
-    let content_type2 = resp2
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap();
-    assert_eq!(content_type2, "image/svg+xml");
+    assert_eq!(resp2.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
