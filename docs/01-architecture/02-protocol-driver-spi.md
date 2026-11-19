@@ -1,5 +1,7 @@
 # MythOS Architecture Specification: Protocol Driver SPI
 
+> **Status:** Partly built — The `ProtocolDriver` and `MythosPlugin` traits exist in `crates/mythos-plugin-sdk/src/lib.rs` and the Modbus driver is `plugins/drivers/driver-modbus`. Drivers now run as separate processes (ADR-010); the paths in the table below (`mythos-core/src/plugin/`, `discovery/`, `device/mode.rs`, `mythos-strucpp`) no longer exist; discovery is the `plugins/discovery` module (mDNS). Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-ARCH-002
 - **Version**: 1.3.0
 - **Author**: Neo (VP Software & Infrastructure)

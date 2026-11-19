@@ -1,5 +1,7 @@
 # MythOS Architecture Specification: HTTP, SSE, and WebSocket API
 
+> **Status:** Partly built — The SSE stream `/api/v1/telemetry/stream`, the tag, node, pairing, fleet, runtime, update and auth routes, and `/mcp` exist (`crates/mythos-core/src/api/`). The collaboration WebSocket and `POST /api/v1/control/deploy` were removed in #155; the project hot-switch, autosave and staging endpoints are not verified in `mythos-core` (HMI and logic routes live in service modules). Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-ARCH-005
 - **Version**: 2.0.0
 - **Author**: Neo (VP Software & Infrastructure)
@@ -323,7 +325,7 @@ data: {"timestamp":1729005000350,"type_id":"fp_vfd_motor_v2","from_version":"1.2
 
 ---
 
-## 6. Multi-User Real-Time Collaborative IDE Protocol (`GET /api/v1/collab/ws`)
+## 6. Multi-User Real-Time Collaborative IDE Protocol (`GET /api/v1/collab/ws`) *(Not built / removed in #155.)*
 
 MythOS features a real-time collaborative editing environment inspired by Google Docs and VS Code Live Share. Multiple automation engineers, commissioning technicians, and control supervisors can open and edit the same project simultaneously across the local area network (LAN).
 
@@ -436,7 +438,7 @@ For sample rates exceeding 10 Hz (such as oscilloscope diagnostics at 100 Hz to 
 
 ---
 
-## 9. In-Canvas PLC Logic Compilation and Hot-Reload Endpoint
+## 9. In-Canvas PLC Logic Compilation and Hot-Reload Endpoint *(Not built / removed in #155.)*
 
 The integrated Monaco editor dispatches control logic directly to the target controller via `POST /api/v1/control/deploy`. There is no file upload form; the raw Structured Text string is submitted directly.
 

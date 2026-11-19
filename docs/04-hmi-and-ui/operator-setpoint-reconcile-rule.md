@@ -1,5 +1,7 @@
 # Operator Setpoint Reconcile Rule (draft vs committed)
 
+> **Status:** Current — This is a decision record with its own DECIDED status. The rule is applied by the HMI runtime view (`frontend/packages/hmi-ui/src/runtime.ts`); full conformance to every ruling is not verified. Checked against the code on 2026-11-19.
+
 **Status:** DECIDED. §5 was rewritten from OPEN to DECIDED on 2026-11-11 after the live-telemetry
 slice (S-004) landed; every question it carried is now answered or explicitly struck. See §5 for
 each ruling and the evidence behind it.

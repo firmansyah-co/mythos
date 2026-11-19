@@ -1,5 +1,7 @@
 # MythOS Data and Addressing Specification: Tag Namespace Rules
 
+> **Status:** Partly built — Tags live on the bus in `crates/mythos-shm` and are served by `crates/mythos-core/src/tag.rs` and `/api/v1/tags`. Enforcement of the full grammar and the metadata attributes is not verified. Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-DATA-001
 - **Version**: 2.0.0
 - **Author**: Neo (VP Software & Infrastructure)

@@ -1,15 +1,27 @@
 # MythOS documentation
 
-**These are design documents, not a status report.** Most were written before the code they
-describe, and a `SHALL` or an "is implemented" in one of them is not evidence that anything
-ships. What actually runs is stated in the [root README](../README.md); when a document here
-disagrees with the code, the code is right and the document is stale.
+## Guides: how to use what is built
+
+- [Getting started](guides/getting-started.md): build, run, first sign-in, environment
+  variables, verifying a change.
+- [Reading a field device](guides/field-io.md): the I/O configuration and the Modbus TCP driver.
+- [Connecting an AI agent](guides/ai-agents.md): access tokens and the MCP endpoint.
+- [Installing and updating](guides/installing-and-updating.md): release bundles, channels,
+  pinning and rollback.
+- [Feature reference](guides/feature-reference.md): everything that runs, piece by piece, and
+  the repository layout. **This is the project's detailed status.**
+
+## Design documents
+
+**The documents below are designs, not a status report.** Most were written before the code
+they describe. Each now opens with a **Status** line saying what of it is built, checked against
+the code on 2026-11-19. When a document disagrees with the code, the code is right and the
+document is stale.
 
 Handbooks for subsystems that have no code in the tree (the logic engine bridge, the earlier
-MCP subsystem design, Layer 2 DCP discovery, the alarm engine, the recipe model, the historian, the RBAC
-matrix and the disaster-recovery package) were removed together with the unwired code they
-described. They remain in git history. The MCP endpoint that does exist is described in the root
-README and in `crates/mythos-core/src/mcp.rs`.
+MCP subsystem design, Layer 2 DCP discovery, the alarm engine, the recipe model, the historian,
+the RBAC matrix and the disaster-recovery package) were removed together with the unwired code
+they described, and so was the collaboration room (#155). They remain in git history.
 
 ## Requirements and decisions (`specs/`)
 
@@ -26,7 +38,7 @@ README and in `crates/mythos-core/src/mcp.rs`.
 ## Architecture (`docs/01-architecture/`)
 
 - [00 Cargo workspace and crates](01-architecture/00-cargo-workspace-and-crates-design.md) —
-  stale: lists crates that have been removed.
+  partly stale: lists crates that were never built or have been removed.
 - [01 Microkernel and shared memory](01-architecture/01-microkernel-and-shm.md) — the tag bus
   in `crates/mythos-shm`.
 - [02 Protocol driver SPI](01-architecture/02-protocol-driver-spi.md) — stale: predates the
@@ -53,14 +65,16 @@ README and in `crates/mythos-core/src/mcp.rs`.
 ## Device catalog (`docs/03-network-and-catalog/`)
 
 - [Device package schema](03-network-and-catalog/device-package-schema.md) — the manifest
-  format parsed by `crates/mythos-core/src/catalog`. Reference packages:
+  format parsed by `crates/mythos-core/src/catalog` (Modbus RTU only today; a catalog for every
+  protocol is planned). Reference packages:
   `catalog/devices/supmea-p300/` and `catalog/devices/sentec-rainfall/`.
 
 ## HMI (`docs/04-hmi-and-ui/`)
 
-These describe the previous workbench, which has been replaced. The current one
-(`frontend/packages/ui-shell`) follows a portal view / project view layout and is described by
-its own source.
+Most of these describe the previous workbench, which has been replaced. The current one
+(`frontend/packages/ui-shell` and the module UIs `hmi-ui` and `logic-ui`) follows a portal view /
+project view layout with task cards and an inspector, and is described by its own source and
+[ADR-011](../specs/adr/ADR-011-the-core-and-service-modules.md) §2.3.
 
 - [Frontend application architecture](04-hmi-and-ui/00-frontend-application-architecture.md)
 - [Design tokens](04-hmi-and-ui/design-tokens-dtcg.json)

@@ -1,5 +1,7 @@
 # MythOS Workspace Task Cards & Context-Sensitive Inspector Architecture
 
+> **Status:** Partly built — The workbench shell and the panes for logic and HMI exist in `frontend/packages/ui-shell` and `logic-ui`. The Alarms tab has no engine behind it (alarm engine removed), and the component names and stores listed here are not verified. Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-HMI-002
 - **Version**: 3.0.0
 - **Author**: Iris (VP Design & Visual Architecture) & Neo (VP Software & Infrastructure)

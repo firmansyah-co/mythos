@@ -1,5 +1,7 @@
 # MythOS Master System Specification (SyRS)
 
+> **Status:** Requirements baseline. By design it carries no implementation status: a SHALL here is not a claim about what ships; what is built is recorded in [`docs/guides/feature-reference.md`](../docs/guides/feature-reference.md). Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-SPEC-001
 - **Standard Compliance**: ISO/IEC/IEEE 29148:2018 (Systems and Software Engineering — Life Cycle Processes — Requirements Engineering)
 - **Controlled Language**: ASD-STE100 Simplified Technical English

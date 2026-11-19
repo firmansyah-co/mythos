@@ -1,5 +1,7 @@
 # MythOS Work Breakdown Structure & Sprint Roadmap
 
+> **Status:** Plan and roadmap, not a record of what is built. Items may be done, changed or dropped (for example the STruC++ engine, alarm engine, historian and collaboration were removed); the code and `specs/adr/` are the source of truth. Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-PLAN-001
 - **Controlled Language**: ASD-STE100 Simplified Technical English
 - **Standard Reference**: ISO/IEC/IEEE 29148 & Agile Scrum Enterprise Delivery
