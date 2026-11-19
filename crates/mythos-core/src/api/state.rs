@@ -1,6 +1,5 @@
 //! Shared state for Axum API Gateway.
 
-use crate::collab::RoomManager;
 use crate::io::{IoManager, IoStatusHandle};
 use crate::storage::ControllerStorage;
 use crate::tag::TagCatalog;
@@ -36,7 +35,6 @@ pub struct ApiState<S: PlatformShm + 'static = mythos_pal::DefaultShm> {
     pub tag_catalog: Arc<RwLock<TagCatalog>>,
     pub shm_reader: Option<Arc<RwLock<ShmReaderHandle<S>>>>,
     pub static_dir: Option<PathBuf>,
-    pub room_manager: Arc<RoomManager>,
     /// Definition-change notifications relayed to every open operator station.
     pub hmi_events: BroadcastSender<HmiEvent>,
     /// What the field I/O runtime is doing, or why none is running.
@@ -73,7 +71,6 @@ impl<S: PlatformShm + 'static> Clone for ApiState<S> {
             tag_catalog: Arc::clone(&self.tag_catalog),
             shm_reader: self.shm_reader.clone(),
             static_dir: self.static_dir.clone(),
-            room_manager: Arc::clone(&self.room_manager),
             hmi_events: self.hmi_events.clone(),
             io_status: self.io_status.clone(),
             io_manager: self.io_manager.clone(),
@@ -105,7 +102,6 @@ impl<S: PlatformShm + 'static> ApiState<S> {
             tag_catalog,
             shm_reader: shm_reader.map(|r| Arc::new(RwLock::new(r))),
             static_dir,
-            room_manager: Arc::new(RoomManager::new()),
             hmi_events: BroadcastSender::new(256),
             io_status: IoStatusHandle::not_running(
                 "no field I/O runtime is attached to this server",
@@ -182,12 +178,6 @@ impl<S: PlatformShm + 'static> ApiState<S> {
 
     pub fn with_static_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.static_dir = Some(path.into());
-        self
-    }
-
-    /// Configure custom RoomManager instance for CRDT collaboration.
-    pub fn with_room_manager(mut self, room_manager: Arc<RoomManager>) -> Self {
-        self.room_manager = room_manager;
         self
     }
 }

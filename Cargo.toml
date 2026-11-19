@@ -67,14 +67,13 @@ hex = "0.4"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 tempfile = "3.10"
 
-# Serialization, CRDT and Collaboration
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # PLCopen TC6 XML, read by the Ladder Diagram front-end. MIT.
 quick-xml = "0.42"
 bytemuck = { version = "1.18", features = ["derive"] }
 ts-rs = "10.0"
-yrs = { version = "0.21", features = ["sync"] }
 
 # Logging and Diagnostics
 tracing = "0.1"

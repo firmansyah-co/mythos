@@ -43,7 +43,6 @@ axum.workspace = true
 tower = { workspace = true, features = ["util"] }
 ts-rs = { workspace = true, features = ["serde-json-impl", "no-serde-warnings"] }
 
-yrs = { workspace = true }
 argon2 = "0.5"
 
 [dev-dependencies]
@@ -51,5 +50,4 @@ argon2 = "0.5"
 # server itself has no driver compiled in: it runs driver modules.
 driver-modbus = { workspace = true, features = ["sim"] }
 tempfile = "3.10"
-tokio-tungstenite = "0.24"
 futures-util = "0.3"

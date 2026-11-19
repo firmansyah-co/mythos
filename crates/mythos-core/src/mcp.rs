@@ -93,16 +93,6 @@ pub const NOT_TOOLS: &[NotATool] = &[
             "an endless Server-Sent Events stream; read_tag_values returns the same reading once",
     },
     NotATool {
-        method: "GET",
-        path: "/api/v1/collab/ws/:room_id",
-        reason: "a WebSocket for live co-editing between workbenches",
-    },
-    NotATool {
-        method: "POST",
-        path: "/api/v1/control/deploy",
-        reason: "answers 501: there is no logic engine, so there is nothing to deploy",
-    },
-    NotATool {
         method: "POST",
         path: "/api/v1/auth/setup",
         reason:

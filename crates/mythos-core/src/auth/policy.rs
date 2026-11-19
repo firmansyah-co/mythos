@@ -126,7 +126,6 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     ("POST", "/api/v1/runtimes/:runtime/force", E),
     ("POST", "/api/v1/runtimes/:runtime/release", E),
     ("POST", "/api/v1/modules/rescan", E),
-    ("POST", "/api/v1/control/deploy", E),
     // A service module's routes: any signed-in account gets as far as the module host, which
     // then requires the role the module's manifest declares for the route (crate::services).
     (
@@ -153,8 +152,6 @@ pub const POLICY: &[(&str, &str, Access)] = &[
     ("POST", "/api/v1/m/:module/*rest", Access::SignedIn),
     ("PUT", "/api/v1/m/:module/*rest", Access::SignedIn),
     ("DELETE", "/api/v1/m/:module/*rest", Access::SignedIn),
-    // Editing together: the collaboration room changes what it edits.
-    ("GET", "/api/v1/collab/ws/:room_id", E),
 ];
 
 /// What `method pattern` requires. Unlisted is administrators only.
