@@ -40,12 +40,11 @@ intent and may describe things that do not exist.
 | API server | `crates/mythos-core` (`mythos-server`) | HTTP API for projects, data types and each project's I/O configuration, and the routes of service modules; a 100 ms SSE telemetry stream of the tag bus; `GET /api/v1/io/status` for the state of each connection. |
 | Web workbench | `frontend/packages/ui-shell` | Portal view (open or create a project) and project view: project tree, devices & networks, a connection editor whose driver form is drawn from the driver module's JSON Schema (a new driver module brings its own form; a configuration without a drawable schema is shown and saved back as stored), live tag tables, connection diagnostics, inspector, Settings, and whatever the modules' UIs add (the HMI module: HMI screens with text fields and I/O fields bound to tags, saved as a draft and released, and an operator runtime that shows the released screens full window and follows a new release without a reload). |
 | Modbus TCP driver | `plugins/drivers/driver-modbus` (module `mythos-module-modbus`) | Reads holding and input registers as `u16`, `i16`, `u32`, `i32` or `f32`, with scaling and selectable word order. Exercised end to end against a simulated device, not yet against hardware. |
-| MCP endpoint | `crates/mythos-core/src/mcp.rs` | `POST /mcp`, the Model Context Protocol over Streamable HTTP. Every API route is a tool (61), or is listed with the reason it is not (the telemetry stream, the collaboration WebSocket, the 501 deploy route, static files); a test reads the router and fails on a route that is neither. A tool sends its route's own request through the same router. Checked with the official MCP TypeScript SDK client. |
+| MCP endpoint | `crates/mythos-core/src/mcp.rs` | `POST /mcp`, the Model Context Protocol over Streamable HTTP. Every API route is a tool (61), or is listed with the reason it is not (the telemetry stream, static files); a test reads the router and fails on a route that is neither. A tool sends its route's own request through the same router. Checked with the official MCP TypeScript SDK client. |
 | Platforms | `crates/mythos-pal`, CI | Linux, macOS and Windows. CI builds every Rust crate and runs the whole Rust test suite on each, the module and tag bus tests included. The tag bus is POSIX shared memory on Linux and macOS and a paging-file mapping on Windows. Real-time thread priority and core pinning exist on Linux and Windows; on macOS they report that they are not implemented. |
 | Accounts | `crates/mythos-core/src/auth`, Settings in the workbench | Every route requires an account with enough of a role: viewer (reads), operator (also writes values to field devices), engineer (changes projects), admin (manages accounts). The workbench signs in with a session cookie; programs and MCP agents use personal access tokens. A new controller prints a one-time setup code in its log for creating the first administrator. Passwords are Argon2id hashes; sessions live in memory, so a restart signs everyone out. |
 | Device catalog | `catalog/`, `crates/mythos-core/src/catalog` | Manifest format and parser, with two reference device packages. |
 | Desktop shell | `src-tauri` | A Tauri window that embeds the same API server. |
-| Collaboration | `crates/mythos-core/src/collab` | A Yjs (`yrs`) WebSocket room. Not verified end to end. |
 
 ### What does not exist
 
@@ -55,11 +54,11 @@ intent and may describe things that do not exist.
   alarm displays.
 - **Editors for faceplate types, data types and networks in the workbench.** The server still
   stores faceplate types and data types; the workbench has no editors for them.
-- **Control logic in a language other than Structured Text.** A program is written, checked,
+- **A function block diagram editor and sequential function charts.** A program is written, checked,
   bound to tags and loaded in the program editor (see Logic module above) and watched, stopped
-  and run again in Settings → Runtimes, in a subset of Structured Text. Ladder, function block
-  diagram and sequential function chart are not built.
-  `POST /api/v1/control/deploy` answers `501` and compiles nothing.
+  and run again in Settings → Runtimes, in a subset of Structured Text. A Ladder Diagram is
+  edited and run too; a function block diagram runs and is watched live but is not yet edited
+  in the workbench; sequential function chart is not built.
 - **Writes to field devices from the HMI.** The API has one (`PUT /api/v1/tags/<uri>/value`,
   see below); no screen element writes yet.
 - **Alarms, historian, recipes, device discovery, disaster recovery.**

@@ -20,9 +20,7 @@ pub mod telemetry;
 mod updates;
 pub mod web;
 
-use crate::sdui::{DeploymentRequest, DeploymentResponse};
 use crate::storage::StorageError;
-use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -266,8 +264,6 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
             "/api/v1/projects/:id/runtimes",
             get(runtimes::get_config::<S>).put(runtimes::put_config::<S>),
         )
-        // Control logic deployment: answers 501, nothing is compiled (see the handler)
-        .route("/api/v1/control/deploy", post(control_deploy_handler::<S>))
         // Every route of a service module (ADR-011), forwarded to its process
         .route(
             "/api/v1/projects/:id/:module/*rest",
@@ -283,8 +279,6 @@ fn api_routes<S: PlatformShm + 'static>() -> Router<ApiState<S>> {
                 .put(services::global_route::<S>)
                 .delete(services::global_route::<S>),
         )
-        // CRDT Collaboration WebSocket Gateway (TSK-311)
-        .route("/api/v1/collab/ws/:room_id", get(collab_ws_handler::<S>))
 }
 
 // -----------------------------------------------------------------------------
@@ -474,37 +468,4 @@ async fn activate_project_handler<S: PlatformShm + 'static>(
     }
 
     Ok(Json(json!({"status": "activated", "project_id": id})))
-}
-
-/// `POST /api/v1/control/deploy` — not implemented.
-///
-/// No compiler and no logic runtime are linked into this build, so nothing can be compiled or
-/// deployed. The route answers `501` with `success: false` instead of being absent so that a
-/// client sees an explicit refusal in the response shape it already parses. It must never
-/// report success: the handler it replaces hashed the request text and answered
-/// "Successfully compiled and deployed" for any input.
-async fn control_deploy_handler<S: PlatformShm + 'static>(
-    State(_state): State<ApiState<S>>,
-    Json(_payload): Json<DeploymentRequest>,
-) -> (StatusCode, Json<DeploymentResponse>) {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(DeploymentResponse {
-            success: false,
-            compilation_time_ms: 0,
-            message: "Logic deployment is not implemented in this build: no compiler or logic \
-                      runtime is present. Nothing was compiled and nothing was deployed."
-                .to_string(),
-            binary_hash: None,
-        }),
-    )
-}
-
-async fn collab_ws_handler<S: PlatformShm + 'static>(
-    ws: WebSocketUpgrade,
-    Path(room_id): Path<String>,
-    State(state): State<ApiState<S>>,
-) -> impl IntoResponse {
-    let room = state.room_manager.get_or_create_room(&room_id).await;
-    ws.on_upgrade(move |socket| crate::collab::handle_collab_ws(socket, room))
 }

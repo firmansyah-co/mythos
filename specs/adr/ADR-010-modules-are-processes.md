@@ -73,7 +73,7 @@ tags than the one it replaces is refused.
 ### 2.5 Every feature is reachable over MCP
 
 Every HTTP route of the API has a Model Context Protocol tool, or an entry in an explicit list
-of routes that cannot be one (streams, the WebSocket collaboration room, static files), with
+of routes that cannot be one (streams, static files), with
 the reason. A test fails when a route has neither. A tool calls its route through the same
 router, so an agent and the workbench cannot get different behaviour.
 
