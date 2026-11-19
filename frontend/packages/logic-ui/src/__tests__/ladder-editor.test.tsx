@@ -31,6 +31,7 @@ import {
   useController,
   useSession,
   useShell,
+  timeScale,
   type Backend,
 } from './harness';
 
@@ -144,7 +145,7 @@ const elementOf = (container: HTMLElement, operandText: string, kind = 'contact'
 // A test here makes dozens of edits, each re-laid out and checked. On a CI runner sharing its
 // cores with builds the first one went past 20 s (collecting alone took 235 s there); the bound
 // is for a test that hangs, so it is set to what the work takes under that load.
-vi.setConfig({ testTimeout: 60_000 });
+vi.setConfig({ testTimeout: 60_000 * timeScale });
 
 beforeEach(() => {
   resetStores();
