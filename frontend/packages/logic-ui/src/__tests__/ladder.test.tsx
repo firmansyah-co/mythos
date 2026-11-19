@@ -34,6 +34,7 @@ import {
   useSession,
   useShell,
   watchOf,
+  timeScale,
   type Backend,
 } from './harness';
 
@@ -163,7 +164,7 @@ const link = (container: HTMLElement, from: number, to: number) => {
   return found.getAttribute('data-state');
 };
 
-vi.setConfig({ testTimeout: 20_000 });
+vi.setConfig({ testTimeout: 20_000 * timeScale });
 
 beforeEach(() => {
   resetStores();

@@ -297,12 +297,15 @@ export async function settle(): Promise<void> {
   }
 }
 
+/** How much longer a wait may take before it counts as hung: see `frontend/vitest.config.ts`. */
+export const timeScale = Number(process.env.MYTHOS_TEST_TIME_SCALE ?? '1');
+
 /**
  * Let the event loop turn until `holds` is true, and fail naming `what` when it never is.
  * `settle` turns it a fixed four times, which is enough on a quiet machine; a response body is
  * read through a stream, and on a loaded CI runner that takes more turns than timers do.
  */
-export async function until(what: string, holds: () => unknown, withinMs = 10_000): Promise<void> {
+export async function until(what: string, holds: () => unknown, withinMs = 10_000 * timeScale): Promise<void> {
   const deadline = Date.now() + withinMs;
   while (!holds()) {
     if (Date.now() > deadline) throw new Error(`never: ${what}`);

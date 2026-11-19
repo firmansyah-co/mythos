@@ -33,6 +33,7 @@ import {
   useController,
   useShell,
   watchOf,
+  timeScale,
   type Backend,
 } from './harness';
 
@@ -190,7 +191,7 @@ const value = (container: HTMLElement, from: number, output: string) => {
 const live = async (container: HTMLElement) =>
   until('the diagram is live', () => (byTestId(container, 'fbd-live')?.getAttribute('data-live') === 'live' ? true : null));
 
-vi.setConfig({ testTimeout: 20_000 });
+vi.setConfig({ testTimeout: 20_000 * timeScale });
 
 beforeEach(() => {
   resetStores();
