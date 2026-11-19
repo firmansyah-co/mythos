@@ -1,5 +1,7 @@
 # MythOS Architecture Specification: Universal Plugin Harness and Extensibility
 
+> **Status:** Superseded by ADR-010 — Plugins are not loaded as libraries; modules are separate processes (ADR-010) and service modules are `plugins/hmi`, `plugins/logic`, `plugins/discovery` (ADR-011). The `plugin.yaml` manifest, six-category taxonomy, hot reload, plugin registry and `.mythos-plugin` packaging are not built as written; the STruC++ compiler plugin was replaced by the own compiler and VM (ADR-013). Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-ARCH-006
 - **Version**: 2.0.0
 - **Author**: Neo (VP Software & Infrastructure)
@@ -588,7 +590,7 @@ To eliminate dependency bottlenecks and enable distributed third-party developme
 
 ---
 
-## 12. Soft-Logic Compiler Plugins & Full 5-Language IEC 61131-3 Support
+## 12. Soft-Logic Compiler Plugins & Full 5-Language IEC 61131-3 Support *(Not built / removed in #155.)*
 
 MythOS supports all **5 standard IEC 61131-3 languages** through the pluggable `SoftLogicCompilerPlugin` SPI:
 1. **ST (Structured Text)**: High-level textual language (Pascal-like algorithmic logic).

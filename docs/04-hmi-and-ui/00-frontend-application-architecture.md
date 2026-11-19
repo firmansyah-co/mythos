@@ -1,5 +1,7 @@
 # MythOS HMI & UI Specification: Frontend Application Architecture
 
+> **Status:** Partly built — The frontend is `frontend/packages/` `ui-shell`, `hmi-ui`, `logic-ui` and `workbench-sdk` (React, Zustand, no Dockview, Monaco or Yjs). The collaboration room (section 5), the Monaco editor and the deploy bar (section 6.4) were removed or never built (#155); the store names and hooks shown are not verified. Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-HMI-000
 - **Version**: 3.0.0
 - **Author**: Neo (VP Software & Infrastructure), Iris (VP Design & Visual Architecture) & Adrian (Board of Commissioners Directive)
@@ -831,7 +833,7 @@ export function useSseTelemetry({
 
 ---
 
-## 5. Multi-User Real-Time Collaboration (CRDT / Yjs)
+## 5. Multi-User Real-Time Collaboration (CRDT / Yjs) *(Not built / removed in #155.)*
 
 The collaborative editing engine enables simultaneous engineering without locking files:
 
@@ -862,7 +864,7 @@ The collaborative editing engine enables simultaneous engineering without lockin
 +───────────────────────────────────────────────────────────────────────────────────+
 ```
 
-### 5.1 Collaboration Room Binder Hook (`useCollabRoom`)
+### 5.1 Collaboration Room Binder Hook (`useCollabRoom`) *(Not built / removed in #155.)*
 
 ```typescript
 // frontend/src/hooks/useCollabRoom.ts
@@ -919,7 +921,7 @@ export function useCollabRoom(projectId: string, currentUser: CollabUser) {
 }
 ```
 
-### 5.2 Monaco Collaborative Editor (`MonacoStEditor.tsx`)
+### 5.2 Monaco Collaborative Editor (`MonacoStEditor.tsx`) *(Not built / removed in #155.)*
 Binds the Monaco editor instance to the shared `Y.Text` CRDT type:
 
 ```typescript
@@ -1049,7 +1051,7 @@ The logic IDE provides deterministic online observability and manual test inject
    - **SYS-REQ-096 Safety Invariant**: Forcing is strictly prohibited in pure `PhysicalHardware` mode without activating `ManualSimulation` or explicit safety authorization.
    - Any force action triggers a prominent top-level orange warning banner and records a permanent, cryptographically signed audit entry in the Merkle-chained JSONL ledger.
 
-### 6.4 Deploy Action Bar Component (`DeployControlBar.tsx`)
+### 6.4 Deploy Action Bar Component (`DeployControlBar.tsx`) *(Not built / removed in #155.)*
 
 ```typescript
 // frontend/src/features/logic-editor/DeployControlBar.tsx
@@ -1186,7 +1188,7 @@ export function useDebouncedAutosave(
 
 ---
 
-## 8. Dockview 5-Zone Workbench Shell Integration (Siemens TIA Portal Parity)
+## 8. Dockview 5-Zone Workbench Shell Integration (Siemens TIA Portal Parity) *(Not built / removed in #155.)*
 
 The engineering workbench shell provides dual-mode workspace paradigms directly mirroring **Siemens TIA Portal**:
 1. **Portal View**: Task-oriented welcome launchpad for rapid project lifecycle management, guided commissioning, and device onboarding.

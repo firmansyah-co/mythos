@@ -1,5 +1,7 @@
 # MythOS Senior Programmer Design: Cargo Workspace and Crate Architecture
 
+> **Status:** Partly built — Real crates are `mythos-shm`, `mythos-core`, `mythos-pal`, `mythos-plugin-sdk`, `mythos-cli`, `mythos-update`, `mythos-module` and the `mythos-logic-*` crates, plus `plugins/` (`drivers/driver-modbus`, `hmi`, `logic`, `discovery`, `runtime-vm`). `mythos-strucpp`, `mythos-mcp(-macros)` and `driver-mqtt` do not exist (MCP is `crates/mythos-core/src/mcp.rs`); the Modbus driver is TCP only. Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-ARCH-000
 - **Version**: 1.1.0
 - **Author**: Neo (VP Software & Infrastructure)
@@ -153,7 +155,7 @@ Universal plugins depend on the SDK only. `plugins/drivers/driver-modbus` declar
 
 Opaque JSON configuration validation is a responsibility of `ProtocolDriver::validate_config`. The SDK defines no separate validator trait.
 
-### 4.3 `crates/mythos-strucpp` (Native STruC++ Runtime Engine)
+### 4.3 `crates/mythos-strucpp` (Native STruC++ Runtime Engine) *(Not built / STruC++ engine removed; see ADR-013.)*
 - **Role**: Structured Text compilation pipeline and dynamic in-process runtime execution harness based on the STruC++ architecture, executing soft-logic without external PLC daemons.
 - **Core Abstractions**:
   * `CompilerPipeline`: Automates compilation of IEC 61131-3 Structured Text to C++17 via STruC++ (`strucpp compile`), generating `generated.cpp`, `generated.hpp`, `generated_debug.cpp`, and `debug-map.json`, compiled to a dynamic shared object (`.so`) with Clang/G++.
@@ -163,7 +165,7 @@ Opaque JSON configuration validation is a responsibility of `ProtocolDriver::val
   * `IoBufferBridge`: Direct memory bridge between STruC++ `strucpp::locatedVars[]` (`LocatedVar`) pointers and MythOS POSIX shared memory bus (`/dev/shm/mythos_tagbus`).
   * `HierarchicalDebugEngine`: Bridges `debug_dispatch.hpp` PDU handlers and `IECVar<T>` forcing APIs with MythOS diagnostic and MCP inspection tools.
 
-### 4.4 `mythos-mcp` and `mythos-mcp-macros` (Model Context Protocol Subsystem)
+### 4.4 `mythos-mcp` and `mythos-mcp-macros` (Model Context Protocol Subsystem) *(Crate not built; MCP is `crates/mythos-core/src/mcp.rs`.)*
 - **Role**: Native AI integration engine exposing real-time SCADA state and control tools to autonomous LLM agents.
 - **Transports**: Stdio (process standard input/output) and Server-Sent Events (SSE) over HTTP.
 - **Core Abstractions**:

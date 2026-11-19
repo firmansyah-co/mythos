@@ -1,5 +1,7 @@
 # MythOS Data and Storage Specification: Project File and Directory Structure
 
+> **Status:** Partly built — A project store and write-ahead log exist (`crates/mythos-core/src/storage/project.rs`, `wal.rs`). The dual-buffer draft/active staging, the full `project.json` schema and `.mythos-pkg` signing are not verified. Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-DATA-004
 - **Version**: 2.0.0
 - **Author**: Neo (VP Software & Infrastructure)

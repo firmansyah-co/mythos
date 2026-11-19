@@ -1,5 +1,7 @@
 # MythOS Data Specification: UDT Layout and Memory Retention
 
+> **Status:** Partly built — The UDT/DUT registry exists (`crates/mythos-core/src/datatype/mod.rs`, shared with `plugins/hmi/src/udt.rs`). The NVRAM write-ahead-log engine and the retention classes do not exist; no `nvram` code was found. Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-DATA-002
 - **Version**: 1.0.0
 - **Author**: Neo (VP Software & Infrastructure)

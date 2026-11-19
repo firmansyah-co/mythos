@@ -1,5 +1,7 @@
 # MythOS Architecture Specification: One-Click Desktop Installers & Universal Distribution
 
+> **Status:** Partly built — `scripts/install.sh`, `scripts/install.ps1`, `scripts/build-installers.sh`, `scripts/package-release.py`, `crates/mythos-update` and `mythos update` exist. The graphical installers and the exact channel and rollback behaviour described here are not verified. Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-ARCH-008
 - **Version**: 1.2.0
 - **Author**: Neo (VP Software & Infrastructure), Scribe (VP Publication & Documentation)

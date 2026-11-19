@@ -1,5 +1,7 @@
 # MythOS Architecture Specification: Microkernel and Shared Memory Bus
 
+> **Status:** Current — The triple-buffered tag bus is `crates/mythos-shm` (`buffer.rs`, `slot.rs`, `superblock.rs`, `engine.rs`). Struct layouts and the timing figures in section 5 are not verified here. Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-ARCH-001
 - **Version**: 1.0.0
 - **Author**: Neo (VP Software & Infrastructure)

@@ -1,5 +1,7 @@
 # MythOS Architecture Specification: Cross-Platform Hardware Abstraction Layer & Containerization
 
+> **Status:** Partly built — `crates/mythos-pal` exists, and `Dockerfile` and `compose.yaml` are in the repository root. The trait signatures and the Dockerfile text shown here are not verified against those files. Checked against the code on 2026-11-19.
+
 - **Document Identifier**: MYTHOS-ARCH-007
 - **Version**: 1.1.0
 - **Author**: Neo (VP Software & Infrastructure)
