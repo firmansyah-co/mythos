@@ -143,6 +143,24 @@ export interface VarInfo {
   section: string;
 }
 
+/** What a POU's head gives: enough to offer it as a box. */
+export interface PouHead {
+  name: string;
+  pouType: string;
+  iface: XNode | null;
+  vars: VarInfo[];
+}
+
+/** What the writers of a POU's interface, record and network headers need of it. */
+export interface PouParts {
+  node: XNode;
+  iface: XNode | null;
+  byId: Map<number, XNode>;
+}
+
+/** A network's header as it is written: its title, comment and label, with their ids. */
+export type Header = Pick<Network, 'title' | 'comment' | 'label' | 'commentId' | 'labelId'>;
+
 interface SourcePou {
   node: XNode;
   name: string;
@@ -173,31 +191,31 @@ export type Opened = { ok: true; source: Source; model: DocModel } | { ok: false
 // Reading
 // ---------------------------------------------------------------------------------------------
 
-const intOf = (text: string | null): number | null => {
+export const intOf = (text: string | null): number | null => {
   if (text === null || !/^\s*\d+\s*$/.test(text)) return null;
   return Number(text.trim());
 };
-const numOf = (text: string | null): number | null => {
+export const numOf = (text: string | null): number | null => {
   if (text === null || text.trim() === '') return null;
   const v = Number(text);
   return Number.isFinite(v) ? v : null;
 };
-const flag = (node: XNode, name: string) => {
+export const flag = (node: XNode, name: string) => {
   const v = attr(node, name);
   return v === 'true' || v === '1';
 };
-const posOf = (node: XNode) => {
+export const posOf = (node: XNode) => {
   const p = child(node, 'position');
   return { x: numOf(p ? attr(p, 'x') : null) ?? 0, y: numOf(p ? attr(p, 'y') : null) ?? 0 };
 };
 /** All the text inside an element: each paragraph of a comment on its own line. */
-function deepText(node: XNode): string {
+export function deepText(node: XNode): string {
   const inner = node.children.filter((c) => !c.name.startsWith('#'));
   if (inner.length === 0) return node.text;
   return inner.map(deepText).join('\n');
 }
 
-function typeOf(typeNode: XNode | null): string {
+export function typeOf(typeNode: XNode | null): string {
   const t = typeNode?.children.find((c) => c.name !== 'addData' && c.name !== 'documentation' && !c.name.startsWith('#'));
   if (!t) return 'UNKNOWN';
   if (t.name === 'derived') return attr(t, 'name') ?? 'UNKNOWN';
@@ -206,7 +224,7 @@ function typeOf(typeNode: XNode | null): string {
   return t.name;
 }
 
-function varsOf(iface: XNode | null): VarInfo[] {
+export function varsOf(iface: XNode | null): VarInfo[] {
   if (!iface) return [];
   const out: VarInfo[] = [];
   for (const section of iface.children) {
@@ -219,7 +237,7 @@ function varsOf(iface: XNode | null): VarInfo[] {
 }
 
 /** A POU of the document as a box another POU may call. */
-export function boxOfPou(source: Source, index: number): BoxDef | null {
+export function boxOfPou(source: { pous: readonly PouHead[] }, index: number): BoxDef | null {
   const p = source.pous[index];
   if (!p || (p.pouType !== 'functionBlock' && p.pouType !== 'function')) return null;
   const pins = (section: string) =>
@@ -233,7 +251,7 @@ export function boxOfPou(source: Source, index: number): BoxDef | null {
 }
 
 /** The document's own function and function block POUs as boxes. */
-export const ownBoxes = (source: Source): BoxDef[] =>
+export const ownBoxes = (source: { pous: readonly PouHead[] }): BoxDef[] =>
   source.pous.map((_, i) => boxOfPou(source, i)).filter((d): d is BoxDef => d !== null);
 
 /** A connection into an input. */
@@ -317,7 +335,7 @@ export function open(text: string): Opened {
 }
 
 /** The `next` of the editor's record of used localIds on a POU, when it has one. */
-function idsRecord(pou: XNode): number | null {
+export function idsRecord(pou: XNode): number | null {
   const add = child(pou, 'addData');
   const data = add ? childrenNamed(add, 'data').find((d) => attr(d, 'name') === IDS_DATA) : undefined;
   const ids = data ? child(data, 'localIds') : null;
@@ -325,7 +343,7 @@ function idsRecord(pou: XNode): number | null {
 }
 
 /** The title a comment keeps in its `addData`, or `null` when it keeps none. */
-function titleOf(comment: XNode): string | null {
+export function titleOf(comment: XNode): string | null {
   const add = child(comment, 'addData');
   const data = add ? childrenNamed(add, 'data').find((d) => attr(d, 'name') === NETWORK_DATA) : undefined;
   if (!data) return null;
@@ -674,9 +692,9 @@ function rungOf(source: Source, sp: SourcePou, group: XNode[]): { rung: Item[]; 
 
 /** The grid every position the editor writes is on. */
 export const GRID = 10;
-const up = (v: number) => Math.ceil(v / GRID) * GRID;
+export const up = (v: number) => Math.ceil(v / GRID) * GRID;
 /** About the width of one character of the diagram's small monospace text. */
-const CHAR = 7;
+export const CHAR = 7;
 const GAP = 30;
 
 /** The size of an element as written, and where its power pins are from its top. */
@@ -796,7 +814,7 @@ export interface Ids {
 
 export const idsFor = (source: Source): Ids => ({ next: source.firstFree, used: new Set() });
 
-const indentOf = (src: string, ld: XNode): { inner: string; close: string } => {
+export const indentOf = (src: string, ld: XNode): { inner: string; close: string } => {
   const first = ld.children[0];
   if (!first) return { inner: '\n  ', close: '\n' };
   const inner = src.slice(ld.openEnd, first.start);
@@ -805,7 +823,7 @@ const indentOf = (src: string, ld: XNode): { inner: string; close: string } => {
 };
 
 /** The children of an element the editor does not write (its addData, documentation, …), as found. */
-function extrasOf(src: string, node: XNode | undefined, written: string[]): string {
+export function extrasOf(src: string, node: XNode | undefined, written: string[]): string {
   if (!node) return '';
   return node.children
     .filter((c) => !written.includes(c.name))
@@ -814,7 +832,7 @@ function extrasOf(src: string, node: XNode | undefined, written: string[]): stri
 }
 
 /** Its attributes the editor does not write, as found. */
-function extraAttrs(node: XNode | undefined, written: string[]): Array<[string, string]> {
+export function extraAttrs(node: XNode | undefined, written: string[]): Array<[string, string]> {
   return node ? node.attrs.filter((a) => !written.includes(a.name)).map((a) => [a.qname, a.value]) : [];
 }
 
@@ -845,7 +863,7 @@ export function write(source: Source, model: DocModel, ids: Ids): Written {
 }
 
 /** The variables declared in the editor, put into the interface: each in its section. */
-function declare(sp: SourcePou, declared: Declared[]): Splice[] {
+export function declare(sp: PouParts, declared: Declared[]): Splice[] {
   const prefix = sp.node.qname.includes(':') ? `${sp.node.qname.split(':')[0]}:` : '';
   const variable = (d: Declared) => {
     const elementary = ['BOOL', 'SINT', 'INT', 'DINT', 'LINT', 'REAL', 'LREAL', 'TIME', 'STRING'];
@@ -885,7 +903,7 @@ function declare(sp: SourcePou, declared: Declared[]): Splice[] {
 }
 
 /** The record of the localIds the editor has used, in the POU's `addData`. */
-function record(sp: SourcePou, next: number): Splice {
+export function record(sp: PouParts, next: number): Splice {
   const prefix = sp.node.qname.includes(':') ? `${sp.node.qname.split(':')[0]}:` : '';
   const data = `<${prefix}data name="${IDS_DATA}" handleUnknown="preserve"><localIds xmlns="${IDS_DATA}" next="${next}"/></${prefix}data>`;
   const add = child(sp.node, 'addData');
@@ -1032,13 +1050,13 @@ function layoutPou(source: Source, sp: SourcePou, pou: PouModel): { parts: strin
   return { parts, drawn };
 }
 
-const commentHeight = (net: Network) => 16 * Math.max(1, net.comment.split('\n').length) + 8;
+export const commentHeight = (net: Pick<Network, 'comment'>) => 16 * Math.max(1, net.comment.split('\n').length) + 8;
 
 /** A network's comment: as found when nothing of it changed, else written with its title. */
-function commentPart(
+export function commentPart(
   src: string,
-  sp: SourcePou,
-  net: Network,
+  sp: PouParts,
+  net: Header,
   q: (name: string) => string,
   x: number,
   y: number
@@ -1068,7 +1086,7 @@ function commentPart(
   return { text: `${openTag(found?.qname ?? q('comment'), attrs)}<${q('position')} x="${num(x)}" y="${num(y)}"/>${content}${addText}${rest}</${found?.qname ?? q('comment')}>`, h };
 }
 
-function labelPart(src: string, sp: SourcePou, net: Network, q: (name: string) => string, x: number, y: number): string | null {
+export function labelPart(src: string, sp: PouParts, net: Header, q: (name: string) => string, x: number, y: number): string | null {
   if (net.labelId === null || net.label === '') return null;
   const found = sp.byId.get(net.labelId);
   const attrs: Array<[string, string]> = [

@@ -4,7 +4,8 @@
 // each line with the value the compiler kept for its output (a BOOL on or off, a number as its
 // value), a function that did not run as not computed, a network the scan did not run as not
 // executed, UNKNOWN where a value cannot be read, FORCED kept. Every assertion reads a rendered
-// element by its data-testid.
+// element by its data-testid. Since the FBD editor (L3c-2) an engineer edits the diagram in place,
+// so the tests of the read-only view sign in as a viewer, who sees it as L3c-1 drew it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CheckResult, ValueProbe, Variable } from '../bridge';
@@ -30,6 +31,7 @@ import {
   texts,
   typeInto,
   until,
+  useSession,
   useController,
   useShell,
   watchOf,
@@ -170,7 +172,7 @@ async function opened(backend: Backend, name = 'Main') {
   await settle();
   const container = render(<ProgramEditor name={name} />);
   await settle();
-  await until('the Function Block Diagram is drawn', () => byTestId(container, 'fbd-view') ?? byTestId(container, 'fbd-unreadable'));
+  await until('the Function Block Diagram is drawn', () => byTestId(container, 'fbd-view') ?? byTestId(container, 'fbd-editor') ?? byTestId(container, 'fbd-unreadable'));
   return { calls, container };
 }
 
@@ -222,13 +224,20 @@ describe('a Function Block Diagram in the tree', () => {
   });
 });
 
+/** Signed in as a viewer: the read-only view, drawn where the document puts each element. */
+const asViewer = () =>
+  useSession.setState({ phase: 'signed-in', user: { username: 'vera', display_name: 'Vera', role: 'viewer', via: 'session' } });
+
 describe('drawing a Function Block Diagram', () => {
+  beforeEach(asViewer);
+
   it('draws every kind of element where the document puts it, and numbers the networks in evaluation order', async () => {
     const { container } = await opened(main({ check: () => ({ ok: true, diagnostics: [], program: 'Main', version: 'other', variables: [] }) }));
 
-    // Read-only, for an engineer too: no text area, no editor.
+    // Read-only for a viewer: no text area, no editor.
     expect(container.querySelector('textarea')).toBeNull();
     expect(byTestId(container, 'ld-editor')).toBeNull();
+    expect(byTestId(container, 'fbd-editor')).toBeNull();
     const kinds = [...container.querySelectorAll('[data-testid="fbd-element"]')].map(
       (e) => `${e.getAttribute('data-kind')}:${e.getAttribute('data-local-id')}`
     );
@@ -325,6 +334,8 @@ describe('drawing a Function Block Diagram', () => {
 });
 
 describe('the live state of a running Function Block Diagram', () => {
+  beforeEach(asViewer);
+
   it('draws each line with the value its output kept: a BOOL on or off, a number as its value', async () => {
     const { calls, container } = await opened(main());
     await live(container);
