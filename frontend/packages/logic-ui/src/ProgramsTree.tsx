@@ -11,8 +11,13 @@ import { anyDirty, isDirty, usePrograms } from './programs';
 export const NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 /** A language as the tree names it. */
-export const LANGUAGE_LABEL: Record<string, string> = { st: 'ST', ld: 'LD', fbd: 'FBD' };
-const LANGUAGE_TITLE: Record<string, string> = { st: 'Structured Text', ld: 'Ladder Diagram', fbd: 'Function Block Diagram' };
+export const LANGUAGE_LABEL: Record<string, string> = { st: 'ST', ld: 'LD', fbd: 'FBD', sfc: 'SFC' };
+const LANGUAGE_TITLE: Record<string, string> = {
+  st: 'Structured Text',
+  ld: 'Ladder Diagram',
+  fbd: 'Function Block Diagram',
+  sfc: 'Sequential Function Chart',
+};
 
 interface NodeProps {
   depth: number;

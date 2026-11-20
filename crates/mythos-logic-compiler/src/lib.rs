@@ -32,6 +32,8 @@ pub enum Language {
     Ld,
     /// Function Block Diagram, as a PLCopen TC6 XML v2.01 document (ADR-013 §2.16).
     Fbd,
+    /// Sequential Function Chart, as a PLCopen TC6 XML v2.01 document (ADR-013 §2.17).
+    Sfc,
 }
 
 /// The sources of one program: at most one Structured Text source, and PLCopen TC6
@@ -41,8 +43,8 @@ pub enum Language {
 pub struct Sources<'a> {
     /// `(name, text)` of the Structured Text source.
     pub st: Option<(&'a str, &'a str)>,
-    /// `(name, text)` of each TC6 document: its POUs' bodies are in LD or in FBD, one
-    /// document may hold both, and a POU of either may call one of the other.
+    /// `(name, text)` of each TC6 document: its POUs' bodies are in LD, FBD or SFC, one
+    /// document may hold all three, and a POU of any may call one of the others.
     pub tc6: &'a [(&'a str, &'a str)],
 }
 
@@ -64,8 +66,9 @@ pub struct Compiled {
     /// For each output, junction and network of a Ladder Diagram, the hidden variable that
     /// keeps its power, and for each output and network of a Function Block Diagram, the one
     /// that keeps its value, each assigned when it is evaluated in the scan (ADR-013 §2.15,
-    /// §2.16): what an editor shows power flow and values from. Empty for a program of
-    /// Structured Text alone.
+    /// §2.16), and for each step, transition and action of a Sequential Function Chart, the
+    /// variable keeping its state (§2.17): what an editor shows power flow and values from.
+    /// Empty for a program of Structured Text alone.
     pub probes: Vec<Probe>,
 }
 
@@ -81,7 +84,7 @@ impl Compiled {
 pub fn lower(source: &str, language: Language) -> Result<mythos_logic_ir::Unit, Vec<Diagnostic>> {
     match language {
         Language::St => mythos_logic_st::lower(source),
-        Language::Ld | Language::Fbd => mythos_logic_graphic::lower(
+        Language::Ld | Language::Fbd | Language::Sfc => mythos_logic_graphic::lower(
             &[mythos_logic_graphic::Source {
                 name: "",
                 text: source,
@@ -140,7 +143,7 @@ pub fn compile_in(
 ) -> Result<Compiled, Vec<Diagnostic>> {
     match language {
         Language::St => compile_unit(lower(source, language)?, target),
-        Language::Ld | Language::Fbd => compile_sources(
+        Language::Ld | Language::Fbd | Language::Sfc => compile_sources(
             &Sources {
                 st: None,
                 tc6: &[("", source)],

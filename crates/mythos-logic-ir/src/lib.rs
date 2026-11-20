@@ -121,6 +121,7 @@ pub struct Diagnostic {
 /// {"pou": "Main", "local_id": 7, "x": 120, "y": 40,
 ///  "text": {"field": "variable", "col": 1, "end_col": 6}}
 /// {"pou": "Main", "variable": "count", "text": {"field": "initialValue", "col": 1, "end_col": 4}}
+/// {"pou": "Main", "action": "Fill", "text": {"field": "body", "col": 5, "end_col": 9, "line": 2}}
 /// ```
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Element {
@@ -139,6 +140,14 @@ pub struct Element {
     /// The variable of the interface the message is about, by its name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variable: Option<String>,
+    /// The action of a Sequential Function Chart the message is about, by its name, when it is
+    /// one the POU declares (TC6 `actions/action`), not one written in an action block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// The transition of a Sequential Function Chart the message is about, by its name, when it
+    /// is one the POU declares (TC6 `transitions/transition`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<String>,
     /// The text of the element or declaration the message is about, and which characters of
     /// it. Absent when it is about the element as a whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,11 +159,17 @@ pub struct Element {
 /// `instanceName` and `typeName` of a block, `type` and `initialValue` of a declaration, a
 /// block's input by its formal parameter). `col` and `end_col` count characters from 1, the
 /// end exclusive, as [`Diagnostic`]'s columns do.
+///
+/// A text of more than one line (the Structured Text body of a Sequential Function Chart's
+/// action or transition, `body`) also gives `line`, the line of the text from 1 that `col`
+/// and `end_col` are on; a range that goes on past that line ends at its end.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TextRange {
     pub field: String,
     pub col: u32,
     pub end_col: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
 }
 
 impl Diagnostic {

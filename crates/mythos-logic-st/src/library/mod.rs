@@ -234,7 +234,8 @@ fn expr_names(e: &ast::Expr, out: &mut Vec<String>) {
         | ast::ExprKind::Real(_)
         | ast::ExprKind::Bool(_)
         | ast::ExprKind::Time(_)
-        | ast::ExprKind::Str(_) => {}
+        | ast::ExprKind::Str(_)
+        | ast::ExprKind::Intrinsic(_) => {}
     }
 }
 

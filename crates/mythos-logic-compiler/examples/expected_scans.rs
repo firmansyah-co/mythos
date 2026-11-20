@@ -4,7 +4,8 @@
 //!   expected_scans <program.st | program.xml> <profile> <bytecode out>
 //!
 //! A `.st` program is Structured Text; an `.xml` one a PLCopen TC6 XML document, its POUs in
-//! Ladder Diagram or Function Block Diagram (ADR-013 §2.15, §2.16; one reader takes both). Compiles the program for the profile, writes its bytecode, and prints, for 60 scans 20 ms
+//! Ladder Diagram, Function Block Diagram or Sequential Function Chart (ADR-013 §2.15, §2.16,
+//! §2.17; one reader takes all three). Compiles the program for the profile, writes its bytecode, and prints, for 60 scans 20 ms
 //! apart, `scan <n> <crc32 of the whole memory> <instructions>`, then `done`.
 
 use mythos_logic_compiler::{compile_in, Language, TargetProfile};

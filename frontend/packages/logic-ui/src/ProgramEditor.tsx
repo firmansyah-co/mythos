@@ -15,7 +15,7 @@
 // in the editor, the text that is saved, and the program that runs. Nothing that runs changes
 // until "Load" builds the saved text and puts it into the project's runtimes.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type Ref } from 'react';
 import { Check, CirclePlay, CircleStop, Download, Lock, LockOpen, Save, Trash2, Undo2, Upload } from 'lucide-react';
 import type { Panel } from '@mythos/workbench-sdk';
 import { ForcedMark, TagValue } from '@mythos/workbench-sdk/react';
@@ -937,6 +937,31 @@ function liveOf(doc: ProgramDoc, state: RunState, watch: WatchView | undefined):
 }
 
 /**
+ * A Sequential Function Chart is not drawn yet (its view is ADR-013 L3d-2, its editor L3d-3): its
+ * TC6 document is shown as text, read-only, with each diagnostic underlined at the element it is
+ * about, and nothing is drawn live. It is written over the API (`save_logic_source`).
+ */
+function SfcPanel({
+  doc,
+  diagnostics,
+  editor,
+}: {
+  doc: ProgramDoc;
+  diagnostics: Diagnostic[];
+  editor: Ref<SourceEditorHandle>;
+}) {
+  return (
+    <div className="logic-panel" data-testid="sfc-panel">
+      <p className="muted" data-testid="sfc-not-drawn">
+        This Sequential Function Chart is not drawn yet, and its live state is not shown: its PLCopen TC6 document is shown
+        as text, read-only. It is checked, built and loaded as any program, and written over the API (save_logic_source).
+      </p>
+      <SourceEditor ref={editor} source={doc.source ?? ''} readOnly diagnostics={diagnostics} onChange={() => undefined} />
+    </div>
+  );
+}
+
+/**
  * The Function Block Diagram of the program with its live state, read-only for everyone: its
  * editor is the next slice (ADR-013 L3c-2). Its TC6 document is saved over the API
  * (`save_logic_source`), and the view follows a source saved elsewhere.
@@ -1078,6 +1103,7 @@ const LANGUAGE: Record<string, string> = {
   st: 'Structured Text (ST)',
   ld: 'Ladder Diagram (LD)',
   fbd: 'Function Block Diagram (FBD)',
+  sfc: 'Sequential Function Chart (SFC)',
 };
 
 /** The "Runtime" task card: what the controller's runtime does with the program, and its commands. */
@@ -1176,6 +1202,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
   const ladderSource = isLadder ? (doc?.source ?? null) : null;
   const ladder = useMemo(() => (ladderSource === null ? null : readLadder(ladderSource)), [ladderSource]);
   const isFbd = doc?.entry.language === 'fbd';
+  const isSfc = doc?.entry.language === 'sfc';
   const fbdSource = isFbd ? (doc?.source ?? null) : null;
   const fbd = useMemo(() => (fbdSource === null ? null : readFbd(fbdSource)), [fbdSource]);
   const sourceRead = doc?.source !== null && doc?.source !== undefined;
@@ -1440,6 +1467,8 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
             <LadderPanel doc={doc} ladder={ladder} state={state} may={may} />
           ) : isFbd && fbd !== null ? (
             <FbdPanel doc={doc} fbd={fbd} state={state} />
+          ) : isSfc ? (
+            <SfcPanel doc={doc} diagnostics={diagnostics} editor={editor} />
           ) : (
             <SourceEditor
               ref={editor}

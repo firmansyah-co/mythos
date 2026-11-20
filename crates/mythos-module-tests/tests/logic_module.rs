@@ -132,6 +132,50 @@ const BLENDER: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 </project>
 "#;
 
+/// The tank as a Sequential Function Chart (ADR-013 §2.17): Wait, the initial step, until
+/// `level_ok AND level > 5`; then Drive, whose action `Pump` (statements) commands
+/// `speed := level * 10` and whose N action `running` is a BOOL variable; back to Wait by a
+/// jump when the level is not good. `{level}` is what the first condition reads.
+const FILLER: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <types><dataTypes/><pous>
+    <pou name="Filler" pouType="program">
+      <interface>
+        <inputVars>
+          <variable name="level"><type><INT/></type></variable>
+          <variable name="level_ok"><type><BOOL/></type></variable>
+        </inputVars>
+        <outputVars>
+          <variable name="speed"><type><INT/></type></variable>
+          <variable name="running"><type><BOOL/></type></variable>
+        </outputVars>
+      </interface>
+      <actions>
+        <action name="Pump"><body><ST><xhtml:p>speed := level * 10;</xhtml:p></ST></body></action>
+      </actions>
+      <body><SFC>
+        <step localId="1" name="Wait" initialStep="true"><position x="100" y="0"/></step>
+        <transition localId="2"><position x="100" y="40"/><connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+          <condition><inline name=""><ST><xhtml:p>level_ok AND {level} &gt; 5</xhtml:p></ST></inline></condition></transition>
+        <step localId="3" name="Drive"><position x="100" y="80"/><connectionPointIn><connection refLocalId="2"/></connectionPointIn></step>
+        <transition localId="4"><position x="100" y="120"/><connectionPointIn><connection refLocalId="3"/></connectionPointIn>
+          <condition><inline name=""><ST><xhtml:p>NOT level_ok</xhtml:p></ST></inline></condition></transition>
+        <jumpStep localId="5" targetName="Wait"><position x="100" y="160"/><connectionPointIn><connection refLocalId="4"/></connectionPointIn></jumpStep>
+        <actionBlock localId="6"><position x="200" y="80"/><connectionPointIn><connection refLocalId="3"/></connectionPointIn>
+          <action localId="7" qualifier="N"><relPosition x="0" y="0"/><reference name="Pump"/></action>
+          <action localId="8" qualifier="N"><relPosition x="0" y="20"/><reference name="running"/></action>
+        </actionBlock>
+      </SFC></body>
+    </pou>
+  </pous></types>
+  <instances><configurations/></instances>
+</project>
+"#;
+
+fn filler(level: &str) -> String {
+    FILLER.replace("{level}", level)
+}
+
 fn blender(level: &str) -> String {
     BLENDER.replace("{level}", level)
 }
@@ -573,7 +617,7 @@ async fn a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_p
         .eng(
             "POST",
             PROGRAMS,
-            Some(json!({"name": "Pump", "language": "sfc"})),
+            Some(json!({"name": "Pump", "language": "il"})),
             400,
         )
         .await;
@@ -581,7 +625,7 @@ async fn a_ladder_diagram_program_is_written_checked_built_loaded_and_runs_the_p
         refused["error"]
             .as_str()
             .unwrap()
-            .contains("'sfc' is not a language"),
+            .contains("'il' is not a language"),
         "{refused}"
     );
 
@@ -826,6 +870,119 @@ async fn a_function_block_diagram_program_is_written_checked_built_loaded_and_ru
             .unwrap();
     assert_eq!(list["programs"][0]["language"], "st", "{list}");
     assert_eq!(list["programs"][1]["language"], "fbd", "{list}");
+    rig.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sequential_function_chart_program_is_written_checked_built_loaded_and_runs_the_plant() {
+    let rig = rig().await;
+    let data = rig.project.join("logic");
+    let fill = format!("{PROGRAMS}/Filler");
+    let created = rig
+        .eng(
+            "POST",
+            PROGRAMS,
+            Some(json!({"name": "Filler", "language": "sfc"})),
+            201,
+        )
+        .await;
+    assert_eq!(created["program"]["language"], "sfc", "{created}");
+    let source = created["source"].as_str().unwrap();
+    assert!(
+        source.contains(r#"name="Start" initialStep="true""#),
+        "{source}"
+    );
+    assert!(data.join("programs/Filler.xml").is_file());
+    let checked = rig.eng("POST", &format!("{fill}/check"), None, 200).await;
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert_eq!(
+        checked["chart"],
+        json!([
+            {"local_id": 1, "step": "X", "variable": "Start.X", "negated": false},
+            {"local_id": 1, "step": "T", "variable": "Start.T", "negated": false},
+        ]),
+        "{checked}"
+    );
+
+    // A diagnostic of an unsaved chart names the transition and the characters of its
+    // condition.
+    let checked = rig
+        .eng(
+            "POST",
+            &format!("{fill}/check"),
+            Some(json!({"source": filler("levl")})),
+            200,
+        )
+        .await;
+    assert_eq!(checked["ok"], false, "{checked}");
+    assert_eq!(checked["diagnostics"][0]["message"], "levl is not declared");
+    assert_eq!(
+        checked["diagnostics"][0]["element"],
+        json!({"pou": "Filler", "local_id": 2, "x": 100.0, "y": 40.0,
+               "text": {"field": "condition", "col": 14, "end_col": 18, "line": 1}}),
+        "{checked}"
+    );
+
+    rig.eng(
+        "PUT",
+        &format!("{fill}/source"),
+        Some(json!({"source": filler("level")})),
+        200,
+    )
+    .await;
+    let mut bound = settings();
+    bound["published"] = json!([]);
+    rig.eng("PUT", &format!("{fill}/settings"), Some(bound), 200)
+        .await;
+    let checked = rig.eng("POST", &format!("{fill}/check"), None, 200).await;
+    assert_eq!(checked["binding_problems"], json!([]), "{checked}");
+    let chart = checked["chart"].as_array().unwrap();
+    for want in [
+        json!({"local_id": 3, "step": "X", "variable": "Drive.X", "negated": false}),
+        json!({"local_id": 2, "transition": true, "variable": "__SFC_2", "negated": false, "ran": "__SFC_2_EN"}),
+        json!({"local_id": 7, "action": "Q", "variable": "Pump.Q", "negated": false}),
+        json!({"local_id": 8, "action": "Q", "variable": "running", "negated": false}),
+    ] {
+        assert!(chart.contains(&want), "{want} in {checked}");
+    }
+    rig.eng(
+        "PUT",
+        "/api/v1/projects/plant/io",
+        Some(rig.io_config()),
+        200,
+    )
+    .await;
+    let built = rig.eng("POST", &format!("{fill}/build"), None, 200).await;
+    assert_eq!(built["warnings"], json!([]), "{built}");
+    rig.eng(
+        "PUT",
+        "/api/v1/projects/plant/runtimes",
+        Some(json!({"instances": [built["instance"]]})),
+        200,
+    )
+    .await;
+    rig.speed_is("the chart's Drive commands 200", 200).await;
+    // What the check named, read from the running module process as any variable is.
+    let kept = rig
+        .eng(
+            "POST",
+            "/api/v1/runtimes/Filler/watch",
+            Some(json!({"variables": ["Drive.X", "Wait.X", "__SFC_2", "__SFC_4_EN", "Pump.Q", "running", "Drive.T"]})),
+            200,
+        )
+        .await;
+    let v = |k: usize| kept["values"][k]["value"].clone();
+    assert_eq!(v(0), true, "{kept}");
+    assert_eq!(v(1), false, "{kept}");
+    assert_eq!(v(2), true, "the condition that cleared, kept: {kept}");
+    assert_eq!(v(3), true, "Drive's transition is enabled: {kept}");
+    assert_eq!(v(4), true, "{kept}");
+    assert_eq!(v(5), true, "{kept}");
+    assert_eq!(kept["values"][6]["type"], "TIME", "{kept}");
+    let list: Value =
+        serde_json::from_str(&std::fs::read_to_string(data.join("programs.json")).unwrap())
+            .unwrap();
+    assert_eq!(list["programs"][0]["language"], "sfc", "{list}");
     rig.close().await;
 }
 
@@ -1113,10 +1270,41 @@ async fn an_agent_writes_checks_and_builds_a_program_over_mcp() {
         assert!(
             said.contains("Structured Text")
                 && said.contains("Ladder Diagram")
-                && said.contains("Function Block Diagram"),
+                && said.contains("Function Block Diagram")
+                && said.contains("Sequential Function Chart"),
             "{name}: {said}"
         );
     }
+    // The check says what a chart keeps for monitoring.
+    assert!(description("check_logic_program").contains("'chart'"));
+
+    // A chart, written and checked over MCP alone.
+    let (error, created) = tool(
+        "create_logic_program",
+        json!({"project_id": "plant", "body": {"name": "Filler", "language": "sfc"}}),
+    )
+    .await;
+    assert!(!error, "{created}");
+    assert_eq!(created["program"]["language"], "sfc", "{created}");
+    let (error, saved) = tool(
+        "save_logic_source",
+        json!({"project_id": "plant", "program": "Filler", "body": {"source": filler("level")}}),
+    )
+    .await;
+    assert!(!error, "{saved}");
+    let (error, checked) = tool(
+        "check_logic_program",
+        json!({"project_id": "plant", "program": "Filler", "body": {}}),
+    )
+    .await;
+    assert!(!error, "{checked}");
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert!(
+        checked["chart"].as_array().unwrap().contains(
+            &json!({"local_id": 3, "step": "X", "variable": "Drive.X", "negated": false})
+        ),
+        "{checked}"
+    );
 
     let (error, created) = tool(
         "create_logic_program",
