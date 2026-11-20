@@ -551,3 +551,137 @@ fn a_diagnostic_in_a_body_of_several_lines_is_json_with_its_line() {
     assert_eq!(json["element"]["text"]["field"], "body");
     assert_eq!(json["element"]["text"]["col"], 6);
 }
+
+#[test]
+fn a_step_after_a_transition_that_never_clears_is_refused_as_never_active() {
+    // §6.7.5, an unreachable chart: Figure 26 b), but t6 leads to a step H of its own (and H
+    // back to A by a jump step), so H is never active.
+    let p = Pou::program("Main")
+        .sfc()
+        .vars(&[
+            ("t1", "BOOL"),
+            ("t2", "BOOL"),
+            ("t3", "BOOL"),
+            ("t4", "BOOL"),
+            ("t5", "BOOL"),
+            ("t6", "BOOL"),
+            ("t7", "BOOL"),
+        ])
+        .step(1, 200, 0, "A", true, &[])
+        .trans(2, 200, 40, "t1", &["1"])
+        .sim_div(3, 200, 60, &["2"])
+        .step(4, 100, 80, "B", false, &["3"])
+        .step(5, 300, 80, "C", false, &["3"])
+        .sel_div(6, 300, 110, &["5"])
+        .trans(7, 300, 130, "t2", &["6"])
+        .trans(8, 400, 130, "t3", &["6"])
+        .step(9, 300, 160, "D", false, &["7"])
+        .step(10, 400, 160, "E", false, &["8"])
+        .sim_conv(11, 200, 190, &["4", "9"])
+        .trans(12, 200, 210, "t4", &["11"])
+        .trans(13, 400, 210, "t5", &["10"])
+        .step(14, 200, 240, "F", false, &["12"])
+        .step(15, 400, 240, "G", false, &["13"])
+        .sim_conv(18, 300, 270, &["14", "15"])
+        .trans(30, 300, 290, "t6", &["18"])
+        .step(31, 300, 320, "H", false, &["30"])
+        .trans(32, 300, 350, "t7", &["31"])
+        .jump_step(33, 300, 380, "A", &["32"]);
+    let d = refused(&[p]);
+    let h = d
+        .iter()
+        .find(|d| d.message.starts_with("step H can never be active"))
+        .unwrap_or_else(|| panic!("no diagnostic for step H: {d:#?}"));
+    assert_eq!(h.element.as_ref().and_then(|e| e.local_id), Some(31));
+    assert_eq!(
+        h.message,
+        "step H can never be active: no situation the chart reaches activates it (IEC 61131-3 ed. 3 §6.7.5, an unreachable chart)"
+    );
+}
+
+#[test]
+fn two_time_related_associations_in_two_steps_active_together_are_refused() {
+    // §6.7.4.6 rule d, across two steps of simultaneous sequences.
+    let p = Pou::program("Main")
+        .sfc()
+        .vars(&[("go", "BOOL"), ("stop", "BOOL"), ("lamp", "BOOL")])
+        .step(1, 100, 0, "Idle", true, &[])
+        .trans(2, 100, 40, "go", &["1"])
+        .sim_div(3, 100, 60, &["2"])
+        .step(4, 0, 80, "A", false, &["3"])
+        .step(5, 200, 80, "B", false, &["3"])
+        .sim_conv(6, 100, 110, &["4", "5"])
+        .trans(7, 100, 130, "stop", &["6"])
+        .jump_step(8, 100, 160, "Idle", &["7"])
+        .actions_of(
+            9,
+            300,
+            80,
+            "4",
+            &[(10, "L", Some("T#1s"), Act::Name("lamp"))],
+        )
+        .actions_of(
+            11,
+            400,
+            80,
+            "5",
+            &[(12, "D", Some("T#2s"), Act::Name("lamp"))],
+        );
+    let d = refused(&[p]);
+    assert!(
+        d.iter().any(|d| d.message
+            == "the action lamp has time-related associations in steps A and B, which can be active together; one action has at most one active time-related association (IEC 61131-3 ed. 3 §6.7.4.6 rule d)"),
+        "{d:#?}"
+    );
+}
+
+/// From an initial step, simultaneous loops of `sizes` steps each: 1 + the product of the
+/// sizes situations.
+fn loops(sizes: &[usize]) -> Pou {
+    let mut p = Pou::program("Main")
+        .sfc()
+        .vars(&[("c", "BOOL")])
+        .step(1, 0, 0, "I", true, &[])
+        .trans(2, 0, 10, "c", &["1"])
+        .sim_div(3, 0, 20, &["2"]);
+    let mut id = 10u64;
+    for (k, &n) in sizes.iter().enumerate() {
+        let x = 100 * k as i32;
+        let mut prev = "3".to_string();
+        for i in 0..n {
+            let sid = id;
+            id += 1;
+            p = p.step(
+                sid,
+                x,
+                100 + 20 * i as i32,
+                &format!("L{k}_{i}"),
+                false,
+                &[&prev],
+            );
+            let tid = id;
+            id += 1;
+            p = p.trans(tid, x, 110 + 20 * i as i32, "c", &[&sid.to_string()]);
+            prev = tid.to_string();
+        }
+        let jid = id;
+        id += 1;
+        p = p.jump_step(jid, x, 9000, &format!("L{k}_0"), &[&prev]);
+    }
+    p
+}
+
+#[test]
+fn a_chart_of_exactly_the_most_situations_checked_is_taken() {
+    // 1 + 9 × 41 × 271 = 100,000 situations: exactly MAX_SITUATIONS, so checked and taken.
+    assert_eq!(MAX_SITUATIONS, 100_000);
+    lowers(&[loops(&[9, 41, 271])]);
+    // One loop step more: 1 + 9 × 41 × 272 = 100,369, refused.
+    let d = refused(&[loops(&[9, 41, 272])]);
+    assert!(
+        d.iter().any(|d| d.message.starts_with(&format!(
+            "the chart can be in more than {MAX_SITUATIONS} situations"
+        ))),
+        "{d:#?}"
+    );
+}

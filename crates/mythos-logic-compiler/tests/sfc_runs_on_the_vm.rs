@@ -975,3 +975,154 @@ fn the_doors_the_emulators_run_open_and_close_as_their_charts_say() {
         (r.bool("back.Open.X"), r.int("back.Open.T"))
     );
 }
+
+/// A chart function block: Ready (initial) --Ready.T >= T#10s--> Busy (N working) --NOT t--> Ready.
+fn seq_fb() -> Pou {
+    Pou::function_block("Seq")
+        .sfc()
+        .inputs(&[("t", "BOOL")])
+        .outputs(&[("working", "BOOL")])
+        .step(1, 100, 0, "Ready", true, &["4"])
+        .trans(2, 100, 40, "Ready.T >= T#10s", &["1"])
+        .step(3, 100, 80, "Busy", false, &["2"])
+        .trans(4, 100, 120, "NOT t", &["3"])
+        .actions_of(5, 200, 80, "3", &[(6, "N", None, Act::Name("working"))])
+}
+
+/// An FBD program calling `n` instances of `Seq` (a, b), each output to ya, yb.
+fn seq_caller(n: usize) -> Pou {
+    let mut m = Pou::program("Main").fbd();
+    let mut vars = vec![("x", "BOOL")];
+    let names = ["a", "b"];
+    let outs = ["ya", "yb"];
+    for k in 0..n {
+        vars.push((names[k], "Seq"));
+        vars.push((outs[k], "BOOL"));
+    }
+    m = m.vars(&vars).invar(1, 0, 0, "x");
+    for k in 0..n {
+        let id = 10 + 10 * k as u64;
+        m = m
+            .block(
+                id,
+                100,
+                100 * k as i32,
+                "Seq",
+                Some(names[k]),
+                &[("t", tc6::In::From(&["1"]))],
+                &["working"],
+            )
+            .outvar(
+                id + 1,
+                200,
+                100 * k as i32,
+                outs[k],
+                &[&format!("{id}.working")],
+            );
+    }
+    m
+}
+
+#[test]
+fn a_chart_instance_added_by_an_online_change_times_its_initial_step_from_its_first_scan() {
+    // §6.7.2: the initial step's elapsed time starts at t#0s. An instance added to a runtime
+    // whose clock has run an hour must not take the hour as its initial step's time.
+    let mut r = run(&[seq_fb(), seq_caller(1)]);
+    r.set("x", Value::Bool(true));
+    for k in 0..=360 {
+        r.scan_at(k * 10_000);
+    }
+    let mut r = take_over(&r, &project(&[seq_fb(), seq_caller(2)]));
+    r.scan_at(3_600_010);
+    assert!(r.bool("b.Ready.X"));
+    assert_eq!(r.int("b.Ready.T"), 0, "b.Ready.T at b's first scan");
+    r.scan_at(3_600_020);
+    assert_eq!(r.int("b.Ready.T"), 10 * support::MS);
+    assert!(
+        !r.bool("b.Busy.X") && !r.bool("yb"),
+        "Busy 10 ms after b's first scan"
+    );
+    // Ten seconds after its first scan, Busy.
+    r.scan_at(3_610_010);
+    r.scan_at(3_610_020);
+    assert!(r.bool("b.Busy.X") && r.bool("yb"));
+}
+
+#[test]
+fn a_chart_instance_first_called_late_times_its_initial_step_from_its_first_call() {
+    let main = Pou::program("Main")
+        .sfc()
+        .vars(&[("go", "BOOL"), ("x", "BOOL"), ("y", "BOOL"), ("a", "Seq")])
+        .action("Call", "a(t := x); y := a.working;")
+        .step(1, 100, 0, "Idle", true, &["4"])
+        .trans(2, 100, 40, "go", &["1"])
+        .step(3, 100, 80, "Run", false, &["2"])
+        .trans(4, 100, 120, "FALSE", &["3"])
+        .actions_of(5, 200, 80, "3", &[(6, "N", None, Act::Name("Call"))]);
+    let mut r = run(&[seq_fb(), main]);
+    r.set("x", Value::Bool(true));
+    for k in 0..=360 {
+        r.scan_at(k * 10_000);
+    }
+    r.set("go", Value::Bool(true));
+    r.scan_at(3_600_010); // Run activated
+    r.scan_at(3_600_020); // Call runs: a's first scan
+    assert_eq!(r.int("a.Ready.T"), 0);
+    r.scan_at(3_600_030);
+    r.scan_at(3_600_040);
+    assert!(
+        !r.bool("a.Busy.X") && !r.bool("y"),
+        "Busy 20 ms after a's first call"
+    );
+}
+
+#[test]
+fn a_step_that_loops_to_itself_restarts_its_time_and_keeps_its_actions_as_figure_23_draws() {
+    // §6.7.5 and Figure 23 b): clearing S's transition deactivates and activates S in one
+    // scan, so S.T starts again; the action control sees S's flag, which stays TRUE, so a P
+    // action does not pulse again and an L action's limit counts from the first activation.
+    let main = Pou::program("Main")
+        .sfc()
+        .vars(&[
+            ("go", "BOOL"),
+            ("again", "BOOL"),
+            ("n", "INT"),
+            ("lamp", "BOOL"),
+        ])
+        .action("Count", "n := n + 1;")
+        .step(1, 100, 0, "Idle", true, &[])
+        .trans(2, 100, 40, "go", &["1"])
+        .step(3, 100, 80, "S", false, &["2"])
+        .trans(4, 100, 120, "again", &["3"])
+        .jump_step(5, 100, 160, "S", &["4"])
+        .actions_of(
+            6,
+            200,
+            80,
+            "3",
+            &[
+                (7, "P", None, Act::Name("Count")),
+                (8, "L", Some("T#25ms"), Act::Name("lamp")),
+            ],
+        );
+    let mut r = run(&[main]);
+    r.set("go", Value::Bool(true));
+    r.scan_at(0);
+    r.set("again", Value::Bool(true));
+    let mut lamp = String::new();
+    for k in 1..8 {
+        r.scan_at(k * 10);
+        assert!(r.bool("S.X"));
+        assert!(
+            r.int("S.T") <= 10 * support::MS,
+            "S.T starts again: {}",
+            r.int("S.T")
+        );
+        lamp.push(if r.bool("lamp") { '1' } else { '0' });
+    }
+    assert_eq!(r.int("n"), 1, "P pulsed once, not at each re-entry");
+    assert!(
+        lamp.starts_with('1') && lamp.ends_with('0'),
+        "L ended after its limit: {lamp}"
+    );
+}

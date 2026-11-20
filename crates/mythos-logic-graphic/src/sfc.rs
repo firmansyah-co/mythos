@@ -1474,6 +1474,9 @@ impl Chart {
                     }
                     set(&mut next, s, true);
                 }
+                if seen.contains(&next) {
+                    continue;
+                }
                 if seen.len() >= MAX_SITUATIONS {
                     diags.push(places.diag(
                         self.elems[tr.el].line,
@@ -1578,6 +1581,11 @@ impl Chart {
         }
         let clock = hidden.var("__SFC_CLOCK".into(), time_ty(), span);
         let dt = hidden.var("__SFC_DT".into(), time_ty(), span);
+        // Whether this instance has been scanned: an instance first called after the runtime's
+        // clock has run (added by an online change, or first called from a step entered late)
+        // takes the clock at its first scan, so its initial step's time starts at zero there
+        // and not at the runtime's uptime.
+        let started = hidden.var("__SFC_STARTED".into(), named_ty("BOOL"), span);
         // What starts the chart again: every step as it starts, every action control idle.
         let mut reset: Vec<Stmt> = Vec::new();
         for (name, initial, _) in &self.steps {
@@ -1773,6 +1781,23 @@ impl Chart {
             kind: ExprKind::Intrinsic(Intrinsic::Now),
             span,
         };
+        out.push(Stmt::If(
+            vec![(
+                Expr {
+                    kind: ExprKind::Binary(
+                        BinOp::Eq,
+                        Box::new(var(started.clone())),
+                        Box::new(bool_expr(false, span)),
+                    ),
+                    span,
+                },
+                vec![
+                    Stmt::Assign(clock.clone(), now.clone()),
+                    Stmt::Assign(started, bool_expr(true, span)),
+                ],
+            )],
+            None,
+        ));
         out.push(Stmt::Assign(
             dt.clone(),
             Expr {

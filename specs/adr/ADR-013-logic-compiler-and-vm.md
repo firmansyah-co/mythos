@@ -892,9 +892,9 @@ Adrian, 2026-11-17: where an implementation and the standard differ, follow the 
 | Propagation before testing | §6.7.5: the successor transitions of an active step are not tested until the effects of its activation have propagated; a step's activity never lasts zero | a scan runs the actions with the steps as they are, then tests the transitions; a step activated in a scan runs its actions in the next before any transition after it is tested, the initial step at the first scan (`a_step_activated_in_a_scan_is_active_for_a_whole_scan_before_the_transition_after_it_is_tested`) | not compared |
 | Alternation | §6.7.5: two steps never directly linked, nor two transitions | refused, naming both elements (`two_steps_linked_without_a_transition_between_them_are_refused`, `two_transitions_linked_without_a_step_between_them_are_refused`) | not compared |
 | Priority in a selection | Table 61 features 2a (left to right), 2b (numbered branches, the lowest first), 2c (mutual exclusion, the user's to assure); §6.7.5: an error if non-prioritized transitions can be true at once | 2a by the transitions' positions; 2b where every transition of the divergence has a TC6 `priority` (some with and some without refused); TC6 cannot draw 2c, so every selection has a priority and the error cannot arise (`a_selection_divergence_clears_the_leftmost_transition_whose_condition_is_true`, `numbered_branches_clear_the_lowest_numbered_transition_whose_condition_is_true`) | not compared |
-| Unsafe and unreachable charts | §6.7.5, Figure 26: the system shall treat them as errors | every situation reachable with any condition TRUE or FALSE explored: activating a step already active, a step never active, a transition never enabled, each refused naming them; more than 100,000 situations refused as not checked (`an_unsafe_chart_is_refused_naming_the_situation_and_the_step`, `an_unreachable_chart_is_refused_naming_the_transition_never_cleared`, `a_chart_too_large_to_check_is_refused_saying_so`) | not compared |
+| Unsafe and unreachable charts | §6.7.5, Figure 26: the system shall treat them as errors | every situation reachable with any condition TRUE or FALSE explored: activating a step already active, a step never active, a transition never enabled, each refused naming them; more than 100,000 situations refused as not checked (`an_unsafe_chart_is_refused_naming_the_situation_and_the_step`, `an_unreachable_chart_is_refused_naming_the_transition_never_cleared`, `a_step_after_a_transition_that_never_clears_is_refused_as_never_active`, `a_chart_too_large_to_check_is_refused_saying_so`, `a_chart_of_exactly_the_most_situations_checked_is_taken`) | not compared |
 | Action control | §6.7.4.6 rules a–e, Figure 22, Figure 23, Table 60: with or without final scan, the implementer's | without final scan (feature 2, Figure 23 b), from the library's RS, TON, R_TRIG: N, R, S, L, D, P, P1, DS. Feature 1's F_TRIG of Q is TRUE at a cold start (Table 44), which would run every action of statements then (§2.17) (`an_n_action_is_active_exactly_while_its_step_is`, `an_s_action_stays_active_after_its_step_until_an_r_association_resets_it`, `an_l_action_is_active_for_its_duration_at_most`, `a_d_action_starts_after_its_duration_and_only_while_its_step_is_active`, `a_p_action_is_active_for_one_scan_when_its_step_becomes_active`, `a_ds_action_is_stored_only_if_its_step_lasted_its_delay`, `an_action_of_statements_runs_while_it_is_active_and_its_flag_says_so`) | not compared |
-| The T input of action control | §6.7.4.6 rule c: the duration of an active time-related association, t#0s if none; rule d: an error if two are active at once | as rule c; two time-related associations of one action whose steps can be active together refused (`two_time_related_associations_of_one_action_active_together_are_refused`) | not compared |
+| The T input of action control | §6.7.4.6 rule c: the duration of an active time-related association, t#0s if none; rule d: an error if two are active at once | as rule c; two time-related associations of one action whose steps can be active together refused (`two_time_related_associations_of_one_action_active_together_are_refused`, in one step; `two_time_related_associations_in_two_steps_active_together_are_refused`, in two simultaneous sequences) | not compared |
 | SD, SL and P0 | Table 59 features 8, 10, 12; by rule c and Figure 23 an SD action whose step is left before its delay starts at once, an SL one ends at once; P0's F_TRIG is TRUE at a cold start (Table 44) | refused with the reason, for the owner to decide (§2.17) (`the_qualifiers_sd_sl_and_p0_are_refused_with_the_reason`) | not compared |
 | A BOOL variable as an action | Table 56 feature 1 (of VAR or VAR_OUTPUT); §6.7.4.1: an error if it is modified other than as the action | its value is Q; one of another type or section refused; a write to it in an action refused (`a_variable_that_is_an_action_written_elsewhere_is_refused`) | not compared |
 | An indicator variable | §6.7.4.4: deprecated | refused (`an_indicator_variable_is_refused_as_deprecated`) | not compared |
@@ -1329,7 +1329,8 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
   it does not deactivate (unsafe, with the situation and the step); a step no situation makes
   active; a transition whose preceding steps are never active together (unreachable). The
   structure is judged, as Figure 26 judges it: a chart that only its conditions would keep safe
-  is refused too. The exploration stops at `MAX_SITUATIONS` (100,000) and refuses what it could
+  is refused too. The exploration checks at most `MAX_SITUATIONS` (100,000) situations, a chart of exactly
+  that many included (`a_chart_of_exactly_the_most_situations_checked_is_taken`), and refuses what it could
   not check, saying so: 18 simultaneous sequences of two steps each (3^18 situations) are
   refused; the charts of the tests and the corpus are explored whole in well under a second.
 - **A scan, in order.** (1) Every active step's time grows by the scan clock since the last
@@ -1342,8 +1343,16 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
   starts from `T#0s`. So a step activated in a scan runs its actions in the next scan before any
   transition after it is tested, and is active for one scan at least: the rule that testing waits
   until the effects of an activation have propagated (§6.7.5), the initial step included. An
-  initial step's time counts from the clock's zero (its initialization), a step's from the scan
-  that activated it. Actions run in the order of the steps they are associated with (top to
+  initial step's time counts from the first scan of its chart's instance (`__SFC_STARTED`, FALSE
+  until then): an instance added by an online change, or first called from a step entered an
+  hour after the runtime started, does not take the hour as its initial step's time (found in
+  review: `a_chart_instance_added_by_an_online_change_times_its_initial_step_from_its_first_scan`,
+  `a_chart_instance_first_called_late_times_its_initial_step_from_its_first_call`); a step's
+  time counts from the scan that activated it. A step whose transition leads back to itself (a
+  jump step to it) is deactivated and activated in one scan: its time starts again, while its
+  flag stays TRUE, so the action control, which sees only the flag (Figure 23 b), does not
+  pulse a P action again nor restart an L action's limit; that is the letter of Figure 23, and
+  is pinned (`a_step_that_loops_to_itself_restarts_its_time_and_keeps_its_actions_as_figure_23_draws`). Actions run in the order of the steps they are associated with (top to
   bottom, then left), each once.
 - **Action control** (§6.7.4.6): the functional equivalent of ACTION_CONTROL **without final
   scan** (Table 60 feature 2, Figure 23 b), built from the standard library's RS, TON and R_TRIG,
@@ -1376,7 +1385,8 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
   action block keeps Q in `__SFC_<localId>_Q`; each transition keeps its condition in
   `__SFC_<localId>`, assigned where it is evaluated, and `__SFC_<localId>_EN`, TRUE where it
   was enabled; the action control's blocks are `__SFC_<action>_<part>` (`_S_FF`, `_L_TMR`, …)
-  and `__SFC_<action>_T`; `__SFC_CLOCK` and `__SFC_DT` the scan clock's last value and step.
+  and `__SFC_<action>_T`; `__SFC_CLOCK` and `__SFC_DT` the scan clock's last value and step, `__SFC_STARTED` whether the
+  instance has been scanned.
   Every one is a private symbol (`Var::hidden`): no tag is bound to write a step's flag or time,
   which Table 54 footnote a calls an error, and the front-end refuses an action's text that
   writes one (`Idle.X := TRUE` in an action is refused at its characters), or a variable that is
