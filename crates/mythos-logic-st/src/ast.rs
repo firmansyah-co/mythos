@@ -245,4 +245,10 @@ pub enum ExprKind {
     Binary(BinOp, Box<Expr>, Box<Expr>),
     /// A function call in an expression: `INT_TO_REAL(x)`, `Scale(raw := x, gain := 2.0)`
     Call(String, Vec<CallArg>),
+    /// An intrinsic that another front-end writes into its own statements, never from ST
+    /// text: the Sequential Function Chart front-end reads the scan clock (`__NOW()`) for its
+    /// steps' elapsed times (ADR-013 §2.17). A program cannot write an intrinsic's name (the
+    /// lexer refuses it, §6.1.2), and the checker takes an intrinsic by name only in the
+    /// library; this node is how a front-end says it, as `TypeSpecKind::OfValue` is.
+    Intrinsic(mythos_logic_ir::Intrinsic),
 }

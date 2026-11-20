@@ -18,8 +18,9 @@
 //!     type). `enum`, `struct`, the subranges, `pointer` and the generic types are refused.
 //!   - `initialValue`: `simpleValue` (its `value` read as ST reads an initial value) and
 //!     `arrayValue` (with `repetitionValue`); `structValue` is refused.
-//!   - one `body` holding `LD` (lowered by `ld`) or `FBD` (lowered by `fbd`); `actions` and
-//!     `transitions` must be empty, and a body in IL, ST or SFC is refused.
+//!   - one `body` holding `LD` (lowered by `ld`), `FBD` (lowered by `fbd`) or `SFC` (lowered
+//!     by `sfc`, in a program or a function block, IEC 61131-3 ed. 3 §6.7.1); `actions` and
+//!     `transitions`, read only in a POU whose body is SFC; a body in IL or ST is refused.
 
 use crate::graph::Lang;
 use crate::xml::Node;
@@ -34,8 +35,12 @@ pub(crate) struct GPou {
     pub doc: usize,
     /// Its name, kind, result type and variables; no statements.
     pub tree: ast::Pou,
-    /// Its `LD` or `FBD` element, when it has one that can be lowered, with its language.
+    /// Its `LD`, `FBD` or `SFC` element, when it has one that can be lowered, with its
+    /// language.
     pub body: Option<(Lang, Node)>,
+    /// Its `actions` and `transitions` elements, read when its body is SFC.
+    pub actions: Option<Node>,
+    pub transitions: Option<Node>,
     /// The keywords its interface declared as names.
     pub keywords_as_names: Vec<String>,
 }
@@ -211,8 +216,10 @@ pub(crate) fn document(
         local_id: None,
         position: None,
         variable: None,
+        owner: None,
         field: None,
         len: 0,
+        text_line: None,
         tag: root.span,
     });
     let whole = |places: &Places, message: String| {
@@ -285,8 +292,10 @@ fn read_pou(
         local_id: None,
         position: None,
         variable: None,
+        owner: None,
         field: None,
         len: 0,
+        text_line: None,
         tag: node.span,
     });
     if !name(places, line, "name", &pou_name, diags) {
@@ -328,11 +337,6 @@ fn read_pou(
             format!("the function {pou_name} has no returnType in its interface"),
         ));
     }
-    for what in ["actions", "transitions"] {
-        if node.child(what).is_some_and(|n| !n.children.is_empty()) {
-            diags.push(places.diag(line, format!("{what} of a POU are not read yet (SFC)")));
-        }
-    }
     tree.partial_vars = diags.len() != before;
     let bodies: Vec<&Node> = node.children_named("body").collect();
     let mut body = None;
@@ -346,10 +350,21 @@ fn read_pou(
             match lang {
                 Some(l) if l.name == "LD" => body = Some((Lang::Ld, l.clone())),
                 Some(l) if l.name == "FBD" => body = Some((Lang::Fbd, l.clone())),
+                // §6.7.1: SFC elements keep state, so only a function block or a program is
+                // structured with them.
+                Some(l) if l.name == "SFC" && kind == PouKind::Function => {
+                    diags.push(places.diag(
+                        line,
+                        format!(
+                            "the function {pou_name} has a body in SFC; a Sequential Function Chart keeps the state of its steps, so only a program or a function block has one (IEC 61131-3 ed. 3 §6.7.1)"
+                        ),
+                    ))
+                }
+                Some(l) if l.name == "SFC" => body = Some((Lang::Sfc, l.clone())),
                 Some(l) => diags.push(places.diag(
                     line,
                     format!(
-                        "{pou_name} has a body in {}; this front-end reads LD and FBD (write ST in a .st source)",
+                        "{pou_name} has a body in {}; this front-end reads LD, FBD and SFC (write ST in a .st source)",
                         l.name
                     ),
                 )),
@@ -361,13 +376,35 @@ fn read_pou(
             format!("{pou_name} has {} bodies; a POU has one", bodies.len()),
         )),
     }
+    // Actions and transitions are a chart's (§6.7.3, §6.7.4); in another body they are refused.
+    let sfc = matches!(body, Some((Lang::Sfc, _)));
+    let mut parts = [None, None];
+    for (k, what) in ["actions", "transitions"].into_iter().enumerate() {
+        let Some(n) = node.child(what).filter(|n| !n.children.is_empty()) else {
+            continue;
+        };
+        if sfc {
+            parts[k] = Some(n.clone());
+        } else if bodies.len() == 1 && body.is_some() {
+            diags.push(places.diag(
+                line,
+                format!(
+                    "{pou_name} declares {what}; actions and transitions belong to a POU whose body is a Sequential Function Chart (IEC 61131-3 ed. 3 §6.7)"
+                ),
+            ));
+            body = None;
+        }
+    }
     if body.is_none() {
         tree.partial_body = true;
     }
+    let [actions, transitions] = parts;
     Some(GPou {
         doc,
         tree,
         body,
+        actions,
+        transitions,
         keywords_as_names: std::mem::take(&mut places.keywords_as_names),
     })
 }
@@ -386,8 +423,10 @@ fn interface_of(
             local_id: None,
             position: None,
             variable: None,
+            owner: None,
             field: None,
             len: 0,
+            text_line: None,
             tag: section.span,
         });
         let kind = match section.name.as_str() {
@@ -492,8 +531,10 @@ fn variable(
         local_id: None,
         position: None,
         variable: Some(var_name.clone()),
+        owner: None,
         field: None,
         len: 0,
+        text_line: None,
         tag: v.span,
     });
     if !name(places, at, "name", &var_name, diags) {

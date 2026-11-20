@@ -22,6 +22,8 @@ pub(crate) enum Lang {
     Ld,
     /// Function Block Diagram (§8.3).
     Fbd,
+    /// Sequential Function Chart (§6.7), lowered by `sfc`.
+    Sfc,
 }
 
 impl Lang {
@@ -29,6 +31,7 @@ impl Lang {
         match self {
             Lang::Ld => "a Ladder Diagram",
             Lang::Fbd => "a Function Block Diagram",
+            Lang::Sfc => "a Sequential Function Chart",
         }
     }
 }
@@ -194,8 +197,10 @@ pub(crate) fn read_body(
             local_id: id,
             position: pos,
             variable: None,
+            owner: None,
             field: None,
             len: 0,
+            text_line: None,
             tag: node.span,
         });
         let Some(id) = id else {
@@ -710,7 +715,7 @@ pub(crate) fn check_graph(
         {
             let to = match lang {
                 Lang::Ld => "to the left power rail or to an element before it",
-                Lang::Fbd => "to a variable or to a block's output",
+                Lang::Fbd | Lang::Sfc => "to a variable or to a block's output",
             };
             diags.push(places.diag(
                 e.line,

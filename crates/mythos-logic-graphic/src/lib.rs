@@ -42,7 +42,10 @@ mod fbd;
 mod graph;
 mod ld;
 mod read;
+mod sfc;
 pub mod xml;
+
+pub use sfc::MAX_SITUATIONS;
 
 use mythos_logic_ir::{Diagnostic, Element, Span, TextRange, Unit};
 use mythos_logic_st::{ast, lexer, parser};
@@ -70,13 +73,26 @@ pub(crate) struct Place {
     pub local_id: Option<u64>,
     pub position: Option<(f64, f64)>,
     pub variable: Option<String>,
+    /// The action or transition of the POU this place is in (a Sequential Function Chart's).
+    pub owner: Option<Owner>,
     /// The text of the element this place is, by the TC6 name of what holds it; `None` for
     /// the element as a whole.
     pub field: Option<String>,
-    /// How many characters that text has.
+    /// How many characters that text has (of this line of it, for a text of several).
     pub len: u32,
+    /// The line of the text, from 1, for a text of several lines.
+    pub text_line: Option<u32>,
     /// Where the element's tag is in its document.
     pub tag: Span,
+}
+
+/// A part of a POU that a Sequential Function Chart declares by name (ADR-013 §2.17).
+#[derive(Debug, Clone)]
+pub(crate) enum Owner {
+    /// `actions/action`, by its name.
+    Action(String),
+    /// `transitions/transition`, by its name.
+    Transition(String),
 }
 
 /// Every place of the documents being lowered, each a line of the syntax tree.
@@ -101,6 +117,23 @@ impl Places {
         place.field = Some(field.to_string());
         place.len = text.chars().count() as u32;
         self.add(place)
+    }
+
+    /// The place itself as the place of a text of several lines (the Structured Text body of
+    /// an action or a transition): a line of the syntax tree for each line of the text, one
+    /// after the other. The line that stands for its first line.
+    pub fn lines(&mut self, line: u32, field: &str, text: &str) -> u32 {
+        let base = self.list[(line - FIRST_LINE) as usize].clone();
+        let mut first = None;
+        for (k, part) in text.split('\n').enumerate() {
+            let mut place = base.clone();
+            place.field = Some(field.to_string());
+            place.len = part.trim_end_matches('\r').chars().count() as u32;
+            place.text_line = Some(k as u32 + 1);
+            let at = self.add(place);
+            first.get_or_insert(at);
+        }
+        first.unwrap_or(line)
     }
 
     /// The span of the whole of the place `line` stands for: all of its text, or, for an
@@ -169,6 +202,17 @@ pub enum At {
     /// The network of these elements, by `localId` in the order they are evaluated: whether it
     /// ran in the last scan.
     Network(Vec<u64>),
+    /// A step of a Sequential Function Chart: whether it is active, its flag `***.X`
+    /// (IEC 61131-3 ed. 3 Table 54).
+    Step,
+    /// A step: its elapsed time `***.T`, a TIME.
+    StepTime,
+    /// A transition: its condition as it was last evaluated, which is only while the
+    /// transition is enabled ([`Holds::Guarded`] by whether it was).
+    Transition,
+    /// An action of an action block (the association, by its `localId`): the state Q of the
+    /// action it names, its action flag (§6.7.4.6).
+    Action,
 }
 
 /// What holds a point's power.
@@ -233,14 +277,24 @@ pub fn lower_with_probes(
     }
     let known = read::Known::of(&tree, pous.iter());
     let mut probes = Vec::new();
+    let mut charts = false;
     for pou in &pous {
         let lowered = match &pou.body {
             Some((graph::Lang::Fbd, _)) => {
                 fbd::pou(pou, &known, &mut places, &mut diags, &mut probes)
             }
+            Some((graph::Lang::Sfc, _)) => {
+                charts = true;
+                sfc::pou(pou, &mut places, &mut diags, &mut probes)
+            }
             _ => ld::pou(pou, &known, &mut places, &mut diags, &mut probes),
         };
         tree.pous.push(lowered);
+    }
+    if charts {
+        // The structures of a chart's steps and actions (§2.17), declared once; no program
+        // can name them (two underscores, §6.1.2).
+        tree.types.extend(sfc::types(Span::default()));
     }
     let mut out = match mythos_logic_st::lower_tree(tree, diags) {
         Ok(unit) if said_about_documents.is_empty() => return Ok((unit, probes)),
@@ -289,7 +343,13 @@ fn map(
         } else {
             place.len + 1
         },
+        line: place.text_line,
     });
+    let (action, transition) = match &place.owner {
+        Some(Owner::Action(a)) => (Some(a.clone()), None),
+        Some(Owner::Transition(t)) => (None, Some(t.clone())),
+        None => (None, None),
+    };
     Diagnostic {
         line: place.tag.line,
         col: place.tag.col,
@@ -303,6 +363,8 @@ fn map(
             x: place.position.map(|p| p.0),
             y: place.position.map(|p| p.1),
             variable: place.variable.clone(),
+            action,
+            transition,
             text,
         })),
     }

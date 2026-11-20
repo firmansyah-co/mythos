@@ -456,6 +456,28 @@ impl Parser {
         (read, self.diags)
     }
 
+    /// Statements and nothing after them: the Structured Text body of an action of a
+    /// Sequential Function Chart (ADR-013 §2.17). The statements read, and whether all of the
+    /// text was read (when not, the diagnostics say what was not).
+    pub fn statements_alone(mut self) -> (Vec<Stmt>, bool, Vec<Diagnostic>) {
+        let mut out = Vec::new();
+        loop {
+            out.append(&mut self.stmts());
+            if self.at_eof() {
+                break;
+            }
+            // A keyword that ends a statement which is not open (END_IF, ELSE, UNTIL, …), or
+            // one that begins a declaration: neither belongs in a list of statements.
+            let _ = self.unexpected::<()>("a statement");
+            self.bump();
+            if self.is_sym(";") {
+                self.bump();
+            }
+        }
+        let whole = self.failures == 0;
+        (out, whole, self.diags)
+    }
+
     /// A source: any number of TYPE blocks, functions and function block types, and the
     /// program, in any order; with everything that could not be read of it.
     pub fn source(mut self) -> (Source, Vec<Diagnostic>) {

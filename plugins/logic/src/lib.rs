@@ -58,8 +58,9 @@ const SOURCES_DIR: &str = "programs";
 pub struct ProgramEntry {
     /// Its name in the project, and the id of the runtime instance it becomes.
     pub name: String,
-    /// The language of its source: `st` (Structured Text), `ld` (Ladder Diagram) or `fbd`
-    /// (Function Block Diagram), each diagram a TC6 document. A `programs.json` written before
+    /// The language of its source: `st` (Structured Text), `ld` (Ladder Diagram), `fbd`
+    /// (Function Block Diagram) or `sfc` (Sequential Function Chart), each diagram a TC6
+    /// document. A `programs.json` written before
     /// there was a choice has none, which is `st`.
     #[serde(default = "structured_text")]
     pub language: String,
@@ -91,11 +92,11 @@ fn structured_text() -> String {
 }
 
 /// The languages a program may be written in, each with the extension of its file.
-const LANGUAGES: &[(&str, &str)] = &[("st", "st"), ("ld", "xml"), ("fbd", "xml")];
+const LANGUAGES: &[(&str, &str)] = &[("st", "st"), ("ld", "xml"), ("fbd", "xml"), ("sfc", "xml")];
 
 /// Whether a program in `language` is a PLCopen TC6 document.
 fn is_tc6(language: &str) -> bool {
-    matches!(language, "ld" | "fbd")
+    matches!(language, "ld" | "fbd" | "sfc")
 }
 
 type Refusal = (u16, Value);
@@ -175,7 +176,10 @@ fn find<'a>(programs: &'a Programs, name: &str) -> Result<&'a ProgramEntry, Refu
 /// What a new program starts as. In Structured Text, every section a program may have, empty.
 /// In a Ladder Diagram, a TC6 project holding the PROGRAM with no variable and a body of the
 /// two power rails and no rung between them; in a Function Block Diagram, the PROGRAM with no
-/// variable and an empty FBD body. Either compiles to a program that does nothing.
+/// variable and an empty FBD body; in a Sequential Function Chart, the PROGRAM with no
+/// variable and one initial step, `Start`, with no action and no transition (a chart has
+/// exactly one initial step, IEC 61131-3 ed. 3 §6.7.2). Each compiles to a program that does
+/// nothing.
 fn template(name: &str, language: &str, now: std::time::SystemTime) -> String {
     if !is_tc6(language) {
         return format!(
@@ -184,6 +188,14 @@ fn template(name: &str, language: &str, now: std::time::SystemTime) -> String {
     }
     let body = if language == "fbd" {
         "          <FBD/>\n"
+    } else if language == "sfc" {
+        r#"          <SFC>
+            <step localId="1" name="Start" initialStep="true">
+              <position x="0" y="0"/>
+              <connectionPointOut formalParameter=""/>
+            </step>
+          </SFC>
+"#
     } else {
         r#"          <LD>
             <leftPowerRail localId="1">
@@ -261,7 +273,7 @@ fn date_time(time: std::time::SystemTime) -> String {
 fn check_entry(entry: &ProgramEntry) -> Result<(), String> {
     if !LANGUAGES.iter().any(|(l, _)| *l == entry.language) {
         return Err(format!(
-            "'{}' is not a language this module compiles; 'st' (Structured Text), 'ld' (Ladder Diagram) and 'fbd' (Function Block Diagram) are",
+            "'{}' is not a language this module compiles; 'st' (Structured Text), 'ld' (Ladder Diagram), 'fbd' (Function Block Diagram) and 'sfc' (Sequential Function Chart) are",
             entry.language
         ));
     }
@@ -466,6 +478,10 @@ fn probes(compiled: &mythos_logic_compiler::Compiled) -> Vec<Value> {
                 At::Output(output) => json!({"local_id": p.local_id, "output": output}),
                 At::Input(input) => json!({"local_id": p.local_id, "input": input}),
                 At::Network(members) => json!({"local_id": p.local_id, "network": members}),
+                At::Step => json!({"local_id": p.local_id, "step": "X"}),
+                At::StepTime => json!({"local_id": p.local_id, "step": "T"}),
+                At::Transition => json!({"local_id": p.local_id, "transition": true}),
+                At::Action => json!({"local_id": p.local_id, "action": "Q"}),
             };
             match &p.holds {
                 Holds::On => entry["on"] = json!(true),
@@ -529,6 +545,7 @@ fn check(entry: &ProgramEntry, source: &str) -> Value {
             match entry.language.as_str() {
                 "ld" => answer["power"] = Value::Array(probes(&compiled)),
                 "fbd" => answer["values"] = Value::Array(probes(&compiled)),
+                "sfc" => answer["chart"] = Value::Array(probes(&compiled)),
                 _ => {}
             }
             answer
@@ -683,34 +700,34 @@ pub fn manifest() -> ModuleManifest {
         version: env!("CARGO_PKG_VERSION").into(),
         kind: ModuleKind::Service,
         provides: PROVIDES.into(),
-        description: "Control programs in Structured Text, Ladder Diagram or Function Block Diagram: their source, their bindings to tags, check and build".into(),
+        description: "Control programs in Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart: their source, their bindings to tags, check and build".into(),
         capabilities: vec![],
         config_schema: Value::Null,
         always_on: false,
         profile: Value::Null,
         routes: vec![
             route("GET", "/programs", "viewer", "list_logic_programs",
-                "A project's control programs with their settings and bindings, each with its language: st (Structured Text), ld (Ladder Diagram) or fbd (Function Block Diagram).", None, &[]),
+                "A project's control programs with their settings and bindings, each with its language: st (Structured Text), ld (Ladder Diagram), fbd (Function Block Diagram) or sfc (Sequential Function Chart).", None, &[]),
             route("POST", "/programs", "engineer", "create_logic_program",
-                "Add a program to a project, in Structured Text (st, the default), Ladder Diagram (ld) or Function Block Diagram (fbd): an empty PROGRAM, not run when loaded until its settings say so. A Ladder Diagram starts as a PLCopen TC6 XML v2.01 document holding the PROGRAM, with the two power rails and no rung; a Function Block Diagram as one holding the PROGRAM with an empty FBD body.",
+                "Add a program to a project, in Structured Text (st, the default), Ladder Diagram (ld), Function Block Diagram (fbd) or Sequential Function Chart (sfc): an empty PROGRAM, not run when loaded until its settings say so. A Ladder Diagram starts as a PLCopen TC6 XML v2.01 document holding the PROGRAM, with the two power rails and no rung; a Function Block Diagram as one holding the PROGRAM with an empty FBD body; a Sequential Function Chart as one holding the PROGRAM with one initial step, Start, and nothing else.",
                 Some(json!({
                     "type": "object",
                     "required": ["name"],
                     "properties": {
                         "name": { "type": "string", "description": "A letter, then letters, digits or _; at most 64" },
-                        "language": { "type": "string", "enum": ["st", "ld", "fbd"], "default": "st",
-                            "description": "st: Structured Text. ld: Ladder Diagram. fbd: Function Block Diagram. Each diagram is stored as a PLCopen TC6 XML v2.01 document. It cannot be changed later" },
+                        "language": { "type": "string", "enum": ["st", "ld", "fbd", "sfc"], "default": "st",
+                            "description": "st: Structured Text. ld: Ladder Diagram. fbd: Function Block Diagram. sfc: Sequential Function Chart. Each diagram is stored as a PLCopen TC6 XML v2.01 document. It cannot be changed later" },
                         "interval_ms": { "type": "integer", "minimum": 1, "default": 100 }
                     }
                 })), &[]),
             route("GET", "/programs/:program", "viewer", "get_logic_program",
-                "A program's settings, bindings and source: Structured Text, or for a Ladder Diagram (language ld) or a Function Block Diagram (fbd) the PLCopen TC6 XML v2.01 document.", None, &[]),
+                "A program's settings, bindings and source: Structured Text, or for a Ladder Diagram (language ld), a Function Block Diagram (fbd) or a Sequential Function Chart (sfc) the PLCopen TC6 XML v2.01 document.", None, &[]),
             route("PUT", "/programs/:program/source", "engineer", "save_logic_source",
-                "Replace a program's source, in its language: Structured Text, or for a Ladder Diagram (language ld) or a Function Block Diagram (fbd) a PLCopen TC6 XML v2.01 document whose POUs include the PROGRAM (its body LD or FBD; one document may hold POUs of both). Nothing is compiled or loaded: check_logic_program and build_logic_program do that.",
+                "Replace a program's source, in its language: Structured Text, or for a Ladder Diagram (language ld), a Function Block Diagram (fbd) or a Sequential Function Chart (sfc) a PLCopen TC6 XML v2.01 document whose POUs include the PROGRAM (its body LD, FBD or SFC; one document may hold POUs of all three; a chart's actions and transitions in its POU's actions and transitions, their bodies in ST). Nothing is compiled or loaded: check_logic_program and build_logic_program do that.",
                 Some(json!({
                     "type": "object",
                     "required": ["source"],
-                    "properties": { "source": { "type": "string", "description": "Structured Text, or for a Ladder Diagram or a Function Block Diagram the TC6 XML document" } }
+                    "properties": { "source": { "type": "string", "description": "Structured Text, or for a Ladder Diagram, a Function Block Diagram or a Sequential Function Chart the TC6 XML document" } }
                 })), &[]),
             route("PUT", "/programs/:program/settings", "engineer", "save_logic_settings",
                 "Replace a program's settings and its bindings to tags.",
@@ -719,13 +736,13 @@ pub fn manifest() -> ModuleManifest {
                 "Remove a program and its source from a project. A runtime that already runs it is not touched.",
                 None, &[]),
             route("POST", "/programs/:program/check", "viewer", "check_logic_program",
-                "Compile a program, Structured Text, Ladder Diagram or Function Block Diagram, without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program; in a diagram the range is the element's tag in the document and 'element' names it: pou, local_id, x, y, or the interface's variable, and the characters of its text), or its variables (hidden: made by the diagram front-end for itself), what its bindings get wrong and the version a build of it would have. A Ladder Diagram that compiles also gives 'power', to watch for power flow: for each output of an element that carries power ('output') and each input where links join ('input'), the hidden variable assigned when it is evaluated in the scan (or on: ON whenever its network runs); for each network ('network': its elements' local_ids), the variable that is TRUE when it ran in the last scan. A Function Block Diagram that compiles gives 'values' of the same shape: for every output of every element (a block's by its formal parameter, ENO among them; '' for a variable's), the hidden variable holding the value it gave when it was evaluated in the scan, of the output's own type (or on: ENO always TRUE), with 'ran' where the value is computed only where that BOOL is TRUE (a function under EN); for each network the variable that is TRUE when it ran. With 'source' it checks that text instead of the saved one.",
+                "Compile a program, Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart, without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program; in a diagram the range is the element's tag in the document and 'element' names it: pou, local_id, x, y, or the interface's variable, or a chart's action or transition by name, and the characters of its text, with the line of the text when it has several), or its variables (hidden: made by the diagram front-end for itself), what its bindings get wrong and the version a build of it would have. A Ladder Diagram that compiles also gives 'power', to watch for power flow: for each output of an element that carries power ('output') and each input where links join ('input'), the hidden variable assigned when it is evaluated in the scan (or on: ON whenever its network runs); for each network ('network': its elements' local_ids), the variable that is TRUE when it ran in the last scan. A Function Block Diagram that compiles gives 'values' of the same shape: for every output of every element (a block's by its formal parameter, ENO among them; '' for a variable's), the hidden variable holding the value it gave when it was evaluated in the scan, of the output's own type (or on: ENO always TRUE), with 'ran' where the value is computed only where that BOOL is TRUE (a function under EN); for each network the variable that is TRUE when it ran. A Sequential Function Chart that compiles gives 'chart' of the same shape: for each step ('step': 'X') the variable that is TRUE while it is active and ('step': 'T') its elapsed time, a TIME; for each transition ('transition': true) the variable holding its condition, with 'ran', the variable that is TRUE when the transition was enabled and its condition evaluated in the last scan; for each action of an action block ('action': 'Q', by the action's local_id) the variable holding the state of the action it names. With 'source' it checks that text instead of the saved one.",
                 Some(json!({
                     "type": "object",
                     "properties": { "source": { "type": "string" } }
                 })), &[]),
             route("POST", "/programs/:program/build", "engineer", "build_logic_program",
-                "Compile the saved source, Structured Text, Ladder Diagram or Function Block Diagram, and pack it as a runtime instance. The answer's 'instance' is what save_runtimes_config takes in its 'instances' (replace the one with the same id); nothing is loaded by this call.",
+                "Compile the saved source, Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart, and pack it as a runtime instance. The answer's 'instance' is what save_runtimes_config takes in its 'instances' (replace the one with the same id); nothing is loaded by this call.",
                 None, &["tags"]),
         ],
     }
@@ -1274,6 +1291,124 @@ mod tests {
         );
     }
 
+    fn sfc_entry() -> ProgramEntry {
+        let mut e = ld_entry();
+        e.language = "sfc".into();
+        e
+    }
+
+    /// Tank as a chart: Filling while the level is below `limit`, then Pumping, the pump's speed
+    /// the action of a step of statements; back when it is low.
+    fn chart(limit: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <types><dataTypes/><pous>
+    <pou name="Tank" pouType="program">
+      <interface>
+        <inputVars><variable name="level"><type><INT/></type></variable></inputVars>
+        <outputVars>
+          <variable name="speed"><type><INT/></type></variable>
+          <variable name="valve"><type><BOOL/></type></variable>
+        </outputVars>
+      </interface>
+      <actions>
+        <action name="Pump"><body><ST><xhtml:p>speed := 50;</xhtml:p></ST></body></action>
+      </actions>
+      <body><SFC>
+        <step localId="1" name="Filling" initialStep="true"><position x="100" y="0"/></step>
+        <transition localId="2"><position x="100" y="40"/><connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+          <condition><inline name=""><ST><xhtml:p>level &gt;= {limit}</xhtml:p></ST></inline></condition></transition>
+        <step localId="3" name="Pumping"><position x="100" y="80"/><connectionPointIn><connection refLocalId="2"/></connectionPointIn></step>
+        <transition localId="4"><position x="100" y="120"/><connectionPointIn><connection refLocalId="3"/></connectionPointIn>
+          <condition><inline name=""><ST><xhtml:p>level &lt; 10</xhtml:p></ST></inline></condition></transition>
+        <jumpStep localId="5" targetName="Filling"><position x="100" y="160"/><connectionPointIn><connection refLocalId="4"/></connectionPointIn></jumpStep>
+        <actionBlock localId="6"><position x="200" y="0"/><connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+          <action localId="7" qualifier="N"><relPosition x="0" y="0"/><reference name="valve"/></action></actionBlock>
+        <actionBlock localId="8"><position x="200" y="80"/><connectionPointIn><connection refLocalId="3"/></connectionPointIn>
+          <action localId="9" qualifier="N"><relPosition x="0" y="0"/><reference name="Pump"/></action></actionBlock>
+      </SFC></body>
+    </pou>
+  </pous></types>
+  <instances><configurations/></instances>
+</project>
+"#
+        )
+    }
+
+    #[test]
+    fn a_new_sequential_function_chart_is_a_tc6_document_with_one_initial_step_doing_nothing() {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_795_000_000);
+        let source = template("Tank", "sfc", at);
+        assert!(
+            source.contains(r#"<step localId="1" name="Start" initialStep="true">"#),
+            "{source}"
+        );
+        let checked = check(&sfc_entry(), &source);
+        assert_eq!(checked["ok"], true, "{checked}");
+        assert_eq!(checked["program"], "Tank");
+        // Its one step, a variable of the program by its name, private: only the chart writes it.
+        let vars = checked["variables"].as_array().unwrap();
+        let start = vars.iter().find(|v| v["path"] == "Start.X").unwrap();
+        assert_eq!(start["private"], true, "{checked}");
+        assert_eq!(
+            checked["chart"],
+            json!([
+                {"local_id": 1, "step": "X", "variable": "Start.X", "negated": false},
+                {"local_id": 1, "step": "T", "variable": "Start.T", "negated": false},
+            ])
+        );
+        assert!(checked.get("power").is_none() && checked.get("values").is_none());
+        assert_eq!(
+            source_path(Path::new("/d"), &sfc_entry()),
+            Path::new("/d/programs/Tank.xml")
+        );
+    }
+
+    #[test]
+    fn a_sequential_function_chart_is_checked_with_where_each_step_transition_and_action_is_kept() {
+        let checked = check(&sfc_entry(), &chart("90"));
+        assert_eq!(checked["ok"], true, "{checked}");
+        assert_eq!(checked["binding_problems"], json!([]), "{checked}");
+        let chart = checked["chart"].as_array().unwrap();
+        let has = |want: Value| assert!(chart.contains(&want), "{want} in {chart:?}");
+        has(json!({"local_id": 3, "step": "X", "variable": "Pumping.X", "negated": false}));
+        has(
+            json!({"local_id": 2, "transition": true, "variable": "__SFC_2", "negated": false, "ran": "__SFC_2_EN"}),
+        );
+        has(json!({"local_id": 7, "action": "Q", "variable": "valve", "negated": false}));
+        has(json!({"local_id": 9, "action": "Q", "variable": "Pump.Q", "negated": false}));
+        let vars = checked["variables"].as_array().unwrap();
+        let var = |path: &str| {
+            vars.iter()
+                .find(|v| v["path"] == path)
+                .unwrap_or_else(|| panic!("{path}"))
+        };
+        assert_eq!(var("__SFC_2")["hidden"], true);
+        assert_eq!(var("Pumping.T")["type"], "TIME");
+        assert_eq!(var("Pumping.X")["private"], true);
+    }
+
+    #[test]
+    fn a_sequential_function_chart_diagnostic_names_its_element_and_its_build_runs_like_any() {
+        let checked = check(&sfc_entry(), &chart("levle"));
+        assert_eq!(checked["ok"], false, "{checked}");
+        let d = &checked["diagnostics"][0];
+        assert_eq!(d["message"], "levle is not declared", "{checked}");
+        assert_eq!(
+            d["element"],
+            json!({"pou": "Tank", "local_id": 2, "x": 100.0, "y": 40.0,
+                   "text": {"field": "condition", "col": 10, "end_col": 15, "line": 1}}),
+            "{checked}"
+        );
+        let built = build(&sfc_entry(), &chart("90"), None).unwrap();
+        assert_eq!(built["instance"]["program"]["name"], "Tank");
+        assert_eq!(
+            check(&sfc_entry(), &chart("90"))["version"],
+            built["version"]
+        );
+    }
+
     #[test]
     fn a_name_is_a_letter_then_letters_digits_or_underscores() {
         for ok in ["Tank", "a", "Pump_2", "x9"] {
@@ -1302,8 +1437,8 @@ mod tests {
             change(&mut e);
             check_entry(&e).unwrap_err()
         };
-        assert!(with(&|e| e.language = "sfc".into()).contains("is not a language"));
-        for language in ["ld", "fbd"] {
+        assert!(with(&|e| e.language = "il".into()).contains("is not a language"));
+        for language in ["ld", "fbd", "sfc"] {
             let mut e = entry();
             e.language = language.into();
             assert_eq!(check_entry(&e), Ok(()), "{language}");

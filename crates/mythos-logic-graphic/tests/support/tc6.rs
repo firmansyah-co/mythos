@@ -1,4 +1,4 @@
-//! TC6 XML for tests, written element by element as an LD or FBD editor would write it.
+//! TC6 XML for tests, written element by element as an LD, FBD or SFC editor would write it.
 //!
 //! Connections are named as `"7"` (the one output of element 7) or `"7.Q"` (the output Q of
 //! block 7). Positions are given; the front-end orders by them.
@@ -61,8 +61,26 @@ pub struct Pou {
     result: Option<String>,
     sections: Vec<(String, String)>,
     body: String,
-    /// The body's language as TC6 writes it: `LD` or `FBD`.
+    /// The body's language as TC6 writes it: `LD`, `FBD` or `SFC`.
     lang: &'static str,
+    /// A chart's `actions` and `transitions`, as XML.
+    actions: String,
+    transitions: String,
+}
+
+/// What an action of an action block is: an action of the POU or a BOOL variable by name, or
+/// statements in ST.
+pub enum Act<'a> {
+    Name(&'a str),
+    St(&'a str),
+}
+
+/// A `body` holding Structured Text.
+pub fn st_body(text: &str) -> String {
+    format!(
+        "<body><ST><xhtml:p xmlns:xhtml=\"http://www.w3.org/1999/xhtml\">{}</xhtml:p></ST></body>",
+        esc(text)
+    )
 }
 
 impl Pou {
@@ -74,7 +92,146 @@ impl Pou {
             sections: Vec::new(),
             body: String::new(),
             lang: "LD",
+            actions: String::new(),
+            transitions: String::new(),
         }
+    }
+    /// The body is a Sequential Function Chart.
+    pub fn sfc(mut self) -> Pou {
+        self.lang = "SFC";
+        self
+    }
+    /// A step; `from` the transition (or convergence, divergence) before it, none for an
+    /// initial step with no predecessor.
+    pub fn step(self, id: u64, x: i32, y: i32, name: &str, initial: bool, from: &[&str]) -> Pou {
+        let init = if initial { " initialStep=\"true\"" } else { "" };
+        let cp = if from.is_empty() {
+            String::new()
+        } else {
+            conns(from)
+        };
+        let e = format!(
+            "<step localId=\"{id}\" name=\"{name}\"{init}>{}{cp}<connectionPointOut formalParameter=\"\"/><connectionPointOutAction formalParameter=\"\"/></step>",
+            pos(x, y)
+        );
+        self.raw(&e)
+    }
+    /// A transition with its condition in ST, inline.
+    pub fn trans(self, id: u64, x: i32, y: i32, cond: &str, from: &[&str]) -> Pou {
+        let e = format!(
+            "<transition localId=\"{id}\">{}{}<connectionPointOut/><condition><inline name=\"\">{}</inline></condition></transition>",
+            pos(x, y),
+            conns(from),
+            st_body(cond).trim_start_matches("<body>").trim_end_matches("</body>")
+        );
+        self.raw(&e)
+    }
+    /// A transition with a priority (Table 61 feature 2b).
+    pub fn trans_prio(self, id: u64, x: i32, y: i32, prio: u64, cond: &str, from: &[&str]) -> Pou {
+        let e = format!(
+            "<transition localId=\"{id}\" priority=\"{prio}\">{}{}<connectionPointOut/><condition><inline name=\"\">{}</inline></condition></transition>",
+            pos(x, y),
+            conns(from),
+            st_body(cond).trim_start_matches("<body>").trim_end_matches("</body>")
+        );
+        self.raw(&e)
+    }
+    /// A transition whose condition is a transition of the POU, by name.
+    pub fn trans_ref(self, id: u64, x: i32, y: i32, name: &str, from: &[&str]) -> Pou {
+        let e = format!(
+            "<transition localId=\"{id}\">{}{}<connectionPointOut/><condition><reference name=\"{name}\"/></condition></transition>",
+            pos(x, y),
+            conns(from)
+        );
+        self.raw(&e)
+    }
+    pub fn sel_div(self, id: u64, x: i32, y: i32, from: &[&str]) -> Pou {
+        let e = format!(
+            "<selectionDivergence localId=\"{id}\">{}{}</selectionDivergence>",
+            pos(x, y),
+            conns(from)
+        );
+        self.raw(&e)
+    }
+    pub fn sel_conv(self, id: u64, x: i32, y: i32, from: &[&str]) -> Pou {
+        let mut e = format!("<selectionConvergence localId=\"{id}\">{}", pos(x, y));
+        for f in from {
+            e.push_str(&conns(&[f]));
+        }
+        e.push_str("<connectionPointOut/></selectionConvergence>");
+        self.raw(&e)
+    }
+    pub fn sim_div(self, id: u64, x: i32, y: i32, from: &[&str]) -> Pou {
+        let e = format!(
+            "<simultaneousDivergence localId=\"{id}\">{}{}</simultaneousDivergence>",
+            pos(x, y),
+            conns(from)
+        );
+        self.raw(&e)
+    }
+    pub fn sim_conv(self, id: u64, x: i32, y: i32, from: &[&str]) -> Pou {
+        let mut e = format!("<simultaneousConvergence localId=\"{id}\">{}", pos(x, y));
+        for f in from {
+            e.push_str(&conns(&[f]));
+        }
+        e.push_str("<connectionPointOut/></simultaneousConvergence>");
+        self.raw(&e)
+    }
+    pub fn jump_step(self, id: u64, x: i32, y: i32, target: &str, from: &[&str]) -> Pou {
+        let e = format!(
+            "<jumpStep localId=\"{id}\" targetName=\"{target}\">{}{}</jumpStep>",
+            pos(x, y),
+            conns(from)
+        );
+        self.raw(&e)
+    }
+    /// An action block on step `step`: each action `(localId, qualifier, duration, what)`.
+    pub fn actions_of(
+        self,
+        id: u64,
+        x: i32,
+        y: i32,
+        step: &str,
+        actions: &[(u64, &str, Option<&str>, Act)],
+    ) -> Pou {
+        let mut e = format!(
+            "<actionBlock localId=\"{id}\">{}{}",
+            pos(x, y),
+            conns(&[step])
+        );
+        for (aid, qual, duration, what) in actions {
+            let d = duration
+                .map(|d| format!(" duration=\"{}\"", esc(d)))
+                .unwrap_or_default();
+            e.push_str(&format!(
+                "<action localId=\"{aid}\" qualifier=\"{qual}\"{d}><relPosition x=\"0\" y=\"0\"/>"
+            ));
+            match what {
+                Act::Name(n) => e.push_str(&format!("<reference name=\"{n}\"/>")),
+                Act::St(text) => e.push_str(
+                    &st_body(text)
+                        .replace("<body>", "<inline>")
+                        .replace("</body>", "</inline>"),
+                ),
+            }
+            e.push_str("</action>");
+        }
+        e.push_str("</actionBlock>");
+        self.raw(&e)
+    }
+    /// An action of the POU, in ST.
+    pub fn action(mut self, name: &str, st: &str) -> Pou {
+        self.actions
+            .push_str(&format!("<action name=\"{name}\">{}</action>", st_body(st)));
+        self
+    }
+    /// A transition of the POU, its condition in ST.
+    pub fn transition(mut self, name: &str, st: &str) -> Pou {
+        self.transitions.push_str(&format!(
+            "<transition name=\"{name}\">{}</transition>",
+            st_body(st)
+        ));
+        self
     }
     /// The body is a Function Block Diagram.
     pub fn fbd(mut self) -> Pou {
@@ -377,8 +534,15 @@ impl Pou {
             };
             s.push_str(&format!("<{open}>{vars}</{close}>"));
         }
+        s.push_str("</interface>");
+        if !self.actions.is_empty() {
+            s.push_str(&format!("<actions>{}</actions>", self.actions));
+        }
+        if !self.transitions.is_empty() {
+            s.push_str(&format!("<transitions>{}</transitions>", self.transitions));
+        }
         s.push_str(&format!(
-            "</interface><body><{lang}>{}</{lang}></body></pou>",
+            "<body><{lang}>{}</{lang}></body></pou>",
             self.body,
             lang = self.lang
         ));

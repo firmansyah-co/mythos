@@ -1,9 +1,9 @@
-//! No Ladder Diagram or Function Block Diagram document, however damaged, makes the graphical
-//! front-end panic or say nothing (ADR-013 §2.15, §2.16); `damaged_sources_never_panic.rs` does
-//! the same for Structured Text.
+//! No Ladder Diagram, Function Block Diagram or Sequential Function Chart document, however
+//! damaged, makes the graphical front-end panic or say nothing (ADR-013 §2.15, §2.16, §2.17);
+//! `damaged_sources_never_panic.rs` does the same for Structured Text.
 //!
 //! The hand-written TC6 projects of the emulator corpus (`tests/ladder/oscillator.xml`,
-//! `tests/fbd/blinker.xml`) are
+//! `tests/fbd/blinker.xml`, the graphical crate's `tests/sfc/bottling.xml`) are
 //! damaged the ways a file is, by a tool or by hand: characters and stretches deleted, pieces
 //! of XML and of the schema inserted, lines repeated, swapped and dropped, attribute values and
 //! ids changed, the text cut short. Each damaged document must compile or be refused with at
@@ -58,7 +58,20 @@ const PIECES: [&str; 29] = [
     "executionOrderId=\"7\"",
 ];
 
-fn damage(text: &str, rng: &mut Rng) -> String {
+/// What a chart's damage inserts besides PIECES: steps, transitions and links where they do not
+/// belong. A list of its own, so that the draws of the LD and FBD documents stay as they were.
+const SFC_PIECES: [&str; 8] = [
+    "<step localId=\"505\" name=\"Idle\" initialStep=\"true\"><position x=\"1\" y=\"1\"/></step>",
+    "<step localId=\"506\" name=\"Lone\"><position x=\"1\" y=\"1\"/><connectionPointIn><connection refLocalId=\"3\"/></connectionPointIn></step>",
+    "<transition localId=\"507\"><position x=\"1\" y=\"1\"/><connectionPointIn><connection refLocalId=\"8\"/></connectionPointIn><condition><inline name=\"\"><ST>TRUE</ST></inline></condition></transition>",
+    "<jumpStep localId=\"508\" targetName=\"Nowhere\"><position x=\"1\" y=\"1\"/></jumpStep>",
+    "qualifier=\"SD\"",
+    "duration=\"T#\"",
+    "initialStep=\"true\"",
+    "<reference name=\"Discard\"/>",
+];
+
+fn damage(text: &str, rng: &mut Rng, more: &[&str]) -> String {
     let mut s: Vec<char> = text.chars().collect();
     for _ in 0..1 + rng.below(4) {
         let at = rng.below(s.len() + 1).min(s.len());
@@ -68,7 +81,12 @@ fn damage(text: &str, rng: &mut Rng) -> String {
                 s.drain(at..at + n);
             }
             1 => {
-                let piece: Vec<char> = PIECES[rng.below(PIECES.len())].chars().collect();
+                let k = rng.below(PIECES.len() + more.len());
+                let piece: Vec<char> = PIECES
+                    .get(k)
+                    .unwrap_or_else(|| &more[k - PIECES.len()])
+                    .chars()
+                    .collect();
                 s.splice(at..at, piece);
             }
             2 | 3 => {
@@ -119,6 +137,7 @@ fn a_damaged_ladder_document_is_compiled_or_refused_with_places_never_a_panic() 
         include_str!("ladder/oscillator.xml"),
         Language::Ld,
         0x5EED_1AD0_0000_0001,
+        &[],
     );
 }
 
@@ -128,14 +147,25 @@ fn a_damaged_function_block_diagram_is_compiled_or_refused_with_places_never_a_p
         include_str!("fbd/blinker.xml"),
         Language::Fbd,
         0x5EED_FBD0_0000_0001,
+        &[],
     );
 }
 
-fn damaged(original: &str, language: Language, seed: u64) {
+#[test]
+fn a_damaged_sequential_function_chart_is_compiled_or_refused_with_places_never_a_panic() {
+    damaged(
+        include_str!("../../mythos-logic-graphic/tests/sfc/bottling.xml"),
+        Language::Sfc,
+        0x5EED_5FC0_0000_0001,
+        &SFC_PIECES,
+    );
+}
+
+fn damaged(original: &str, language: Language, seed: u64, more: &[&str]) {
     let mut rng = Rng(seed);
     let (mut refused, mut compiled) = (0, 0);
     for _ in 0..3000 {
-        let text = damage(original, &mut rng);
+        let text = damage(original, &mut rng, more);
         match compile_in(&text, language, &TargetProfile::pc()) {
             Ok(_) => compiled += 1,
             Err(diags) => {

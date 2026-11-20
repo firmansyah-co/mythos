@@ -75,15 +75,15 @@ export interface PublishedBinding {
 }
 
 /**
- * The languages a program is written in: Structured Text, or a Ladder Diagram or a Function
- * Block Diagram, each stored as a PLCopen TC6 XML document.
+ * The languages a program is written in: Structured Text, or a Ladder Diagram, a Function
+ * Block Diagram or a Sequential Function Chart, each stored as a PLCopen TC6 XML document.
  */
-export type Language = 'st' | 'ld' | 'fbd';
+export type Language = 'st' | 'ld' | 'fbd' | 'sfc';
 
 /** A program's settings, as the logic module stores them. */
 export interface ProgramEntry {
   name: string;
-  /** `st`, `ld` or `fbd`; set when the program is created. */
+  /** `st`, `ld`, `fbd` or `sfc`; set when the program is created. */
   language: string;
   interval_ms: number;
   runtime: string;
@@ -122,7 +122,11 @@ export interface DiagnosticElement {
   x?: number | null;
   y?: number | null;
   variable?: string | null;
-  text?: { field: string; col: number; end_col: number } | null;
+  /** A Sequential Function Chart's action or transition of the POU, by its name (ADR-013 §2.17). */
+  action?: string | null;
+  transition?: string | null;
+  /** `line`: the line of a text of several (an action's body), from 1. */
+  text?: { field: string; col: number; end_col: number; line?: number | null } | null;
 }
 
 export interface Variable {
@@ -181,6 +185,22 @@ export interface CheckResult {
   power?: PowerProbe[];
   /** A Function Block Diagram's: where the value of each output and each network's flag is kept. */
   values?: ValueProbe[];
+  /**
+   * A Sequential Function Chart's: where each step's flag and time, each transition's condition
+   * and each action's state is kept (ADR-013 §2.17). Not drawn yet: the chart's view is L3d-2.
+   */
+  chart?: ChartProbe[];
+}
+
+/** Where one state of a chart is kept: a step's (`step`: `X` or `T`), a transition's, an action's. */
+export interface ChartProbe {
+  local_id: number;
+  step?: 'X' | 'T';
+  transition?: boolean;
+  action?: 'Q';
+  variable: string;
+  negated: boolean;
+  ran?: string;
 }
 
 export interface BuildResult {

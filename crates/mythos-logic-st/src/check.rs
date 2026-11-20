@@ -1811,6 +1811,10 @@ impl Checker {
             }
             A::Binary(op, l, r) => self.binary(*op, l, r, want, span),
             A::Call(name, args) => self.call(name, args, span, want),
+            A::Intrinsic(i) => Some(Expr {
+                ty: i.ty(),
+                kind: ExprKind::Intrinsic(*i),
+            }),
         }
     }
 

@@ -68,6 +68,7 @@ fn twin_of(p: &mythos_logic_compiler::Probe) -> String {
         At::Output(o) if o.is_empty() || o == "OUT" => format!("w_{}", p.local_id),
         At::Output(o) => format!("w_{}_{o}", p.local_id),
         At::Input(i) => panic!("an FBD probe at an input ({i}) of {}", p.local_id),
+        other => panic!("an FBD probe of a chart ({other:?}) at {}", p.local_id),
     }
 }
 
