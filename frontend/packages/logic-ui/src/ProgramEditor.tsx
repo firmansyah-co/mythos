@@ -1,12 +1,12 @@
 // The editor of one control program: its Structured Text, or its Ladder Diagram with its live
 // state (LadderEditor for an engineer, LadderView read-only for everyone else), or its Function
-// Block Diagram with its live state (FbdView, read-only for everyone until the FBD editor), what the
-// compiler says of it, its task settings, its variables with their bindings to tags, and what
+// Block Diagram with its live state (FbdEditor for an engineer, FbdView read-only for everyone
+// else), what the compiler says of it, its task settings, its variables with their bindings to tags, and what
 // the controller's runtime is doing with it.
 //
 // The work area holds the program and its interface (the variables and their bindings) and
 // nothing else, as TIA's block editor does. The rest goes where the workbench keeps it for every
-// editor: the Ladder Diagram's instructions and the runtime's state and commands in the task
+// editor: a diagram's instructions and the runtime's state and commands in the task
 // cards, the program's properties (its task, its runtime, removing it) in the inspector, and what
 // the compiler says in the inspector's Diagnostics tab. The workbench draws only the active
 // editor, so these are set while this editor is drawn and taken away when it goes.
@@ -40,6 +40,7 @@ import {
   useController,
   useProject,
   useTelemetry,
+  type CheckResult,
   type Diagnostic,
   type ForcedValue,
   type ProgramEntry,
@@ -49,6 +50,8 @@ import {
 } from './bridge';
 import { draw } from './draw';
 import { readFbd, type Fbd } from './fbd';
+import { FbdEditor } from './FbdEditor';
+import { FBD_KIT } from './FbdInstructions';
 import { FbdView } from './FbdView';
 import { readLadder, type Ladder } from './ladder';
 import { LadderEditor } from './LadderEditor';
@@ -962,24 +965,66 @@ function SfcPanel({
 }
 
 /**
- * The Function Block Diagram of the program with its live state, read-only for everyone: its
- * editor is the next slice (ADR-013 L3c-2). Its TC6 document is saved over the API
- * (`save_logic_source`), and the view follows a source saved elsewhere.
+ * The type the compiler gives each output of the PROGRAM's boxes, by `<localId>:<FORMAL>`: the
+ * variable that keeps it (`values` of the check, ADR-013 §2.16) and that variable's type. An FBD
+ * editor shows these, never a type of its own (§2.16, what the FBD editor needs).
  */
-function FbdPanel({ doc, fbd, state }: { doc: ProgramDoc; fbd: Fbd; state: RunState }) {
+export function outputTypesOf(check: CheckResult | null): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!check?.ok) return out;
+  const types = new Map((check.variables ?? []).map((v) => [v.path.toLowerCase(), v.type]));
+  for (const probe of check.values ?? []) {
+    if (probe.output === undefined) continue;
+    const type = probe.on === true ? 'BOOL' : probe.variable !== undefined ? types.get(probe.variable.toLowerCase()) : undefined;
+    if (type !== undefined) out.set(`${probe.local_id}:${probe.output.toUpperCase()}`, type);
+  }
+  return out;
+}
+
+/**
+ * The Function Block Diagram of the program with its live state: the editor for an engineer,
+ * read-only for everyone else (L3c-2). Its TC6 document is saved through the source route, as an
+ * agent saves it over the API (`save_logic_source`), and the editor follows a source saved
+ * elsewhere.
+ */
+function FbdPanel({ doc, fbd, state, may }: { doc: ProgramDoc; fbd: Fbd; state: RunState; may: boolean }) {
+  const name = doc.entry.name;
+  const setSource = usePrograms((s) => s.setSource);
+  const save = usePrograms((s) => s.save);
+  const checkNow = usePrograms((s) => s.check);
+  const current = checkIsCurrent(doc);
+  // What the compiler says of an edit follows it by itself, after the editor's own check.
+  useEffect(() => {
+    if (!may || current || doc.source === null) return undefined;
+    const timer = setTimeout(() => void checkNow(name, true), LD_CHECK_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [may, current, doc.source, name, checkNow]);
   const watch = usePrograms((s) => s.watches[doc.entry.name]);
   const { live, why } = liveOf(doc, state, watch);
-  const check = checkIsCurrent(doc) ? doc.check : null;
+  const check = current ? doc.check : null;
   const diagnostics = check && !check.ok ? check.diagnostics : [];
   const program = check?.ok ? (check.program ?? null) : null;
+  const outputTypes = useMemo(() => outputTypesOf(check ?? null), [check]);
+  const view = fbd.ok ? <FbdView pous={fbd.pous} program={program} live={live} diagnostics={diagnostics} /> : null;
   return (
     <div className="logic-panel" data-testid="fbd-panel">
       <p className="muted" data-testid="fbd-live" data-live={live === null ? 'none' : live.values === null ? 'unknown' : 'live'}>
         {why}
       </p>
-      <p className="muted">Read-only: the Function Block Diagram editor is not built yet.</p>
-      {fbd.ok ? (
-        <FbdView pous={fbd.pous} program={program} live={live} diagnostics={diagnostics} />
+      {!may && <p className="muted">Read-only: only an engineer changes a program.</p>}
+      {may && fbd.ok && doc.source !== null ? (
+        <FbdEditor
+          text={doc.source}
+          onText={(text) => setSource(name, text)}
+          onSave={() => void save(name)}
+          live={live}
+          program={program}
+          diagnostics={diagnostics}
+          outputTypes={outputTypes}
+          fallback={view}
+        />
+      ) : fbd.ok ? (
+        view
       ) : (
         <div className="notice notice--bad" role="alert" data-testid="fbd-unreadable">
           <p>The diagram cannot be drawn: {fbd.error}.</p>
@@ -989,7 +1034,7 @@ function FbdPanel({ doc, fbd, state }: { doc: ProgramDoc; fbd: Fbd; state: RunSt
   );
 }
 
-/** How long after the last edit of a Ladder Diagram the editor checks it by itself. */
+/** How long after the last edit of a diagram the editor checks it by itself. */
 const LD_CHECK_AFTER_MS = 700;
 
 /**
@@ -1255,7 +1300,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
 
   // What goes into the workbench's panes, while the program is there to show.
   const ready = doc !== undefined && doc.source !== null;
-  const instructions = ready && isLadder && ladder?.ok === true && mayEngineer();
+  const instructions = ready && ((isLadder && ladder?.ok === true) || (isFbd && fbd?.ok === true)) && mayEngineer();
   const goToRef = useRef<(diagnostic: Diagnostic) => void>(() => undefined);
   const onRemovedRef = useRef(onRemoved);
   onRemovedRef.current = onRemoved;
@@ -1264,14 +1309,15 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
     const workbench = host();
     // Set in TIA's order: the instructions first, the online tools after.
     if (instructions) {
-      workbench.setTaskCard(PANES.instructions, { title: 'Instructions', mount: (card) => draw(card, <InstructionsCard />) });
+      const card = isFbd ? <InstructionsCard kit={FBD_KIT} /> : <InstructionsCard />;
+      workbench.setTaskCard(PANES.instructions, { title: 'Instructions', mount: (pane) => draw(pane, card) });
     }
     workbench.setTaskCard(PANES.runtime, { title: 'Runtime', mount: (card) => draw(card, <RuntimeCard name={name} />) });
     return () => {
       workbench.setTaskCard(PANES.instructions, null);
       workbench.setTaskCard(PANES.runtime, null);
     };
-  }, [ready, instructions, name]);
+  }, [ready, instructions, isFbd, name]);
   const properties = useMemo<Panel>(
     () => ({
       title: 'Program',
@@ -1466,7 +1512,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
           {isLadder && ladder !== null ? (
             <LadderPanel doc={doc} ladder={ladder} state={state} may={may} />
           ) : isFbd && fbd !== null ? (
-            <FbdPanel doc={doc} fbd={fbd} state={state} />
+            <FbdPanel doc={doc} fbd={fbd} state={state} may={may} />
           ) : isSfc ? (
             <SfcPanel doc={doc} diagnostics={diagnostics} editor={editor} />
           ) : (

@@ -661,14 +661,15 @@ try {
   }
 
   // 8f. A Function Block Diagram (ADR-013 L3c-1): added from the tree as FBD, its networks saved
-  // over the API as an agent saves them (the FBD editor is L3c-2), checked with a mistake drawn at
-  // its element, bound to the device's counter, loaded, and drawn live: a BOOL line on or off, a
-  // number written at its output, a line through a connector, all following the counter.
+  // over the API as an agent saves them, checked with a mistake drawn at its element, bound to
+  // the device's counter, loaded, and drawn live: a BOOL line on or off, a number written at its
+  // output, a line through a connector, all following the counter. Since L3c-2 an engineer sees
+  // it in the FBD editor, which draws each network with the view and its live values.
   {
   await evaluate(`__t.clickTestId('tree-add-program')`); await sleep(200);
   await evaluate(`__t.type('Program name', 'Blender'); __t.type('Program language', 'fbd'); __t.press('Program name', 'Enter'); true`); await sleep(1500);
-  check('an FBD program added from the tree opens in the read-only Function Block Diagram view, with no text area and no LD editor',
-    (await evaluate(`__t.has('[data-testid="fbd-view"]') && !__t.has('[data-testid="ld-editor"]')`))
+  check('an FBD program added from the tree opens in the Function Block Diagram editor, with no network, no text area and no LD editor',
+    (await evaluate(`__t.has('[data-testid="fbd-editor"]') && __t.has('[data-testid="fbd-no-networks"]') && !__t.has('[data-testid="ld-editor"]')`))
       && !(await evaluate(`__t.has('[aria-label="Structured Text source"]')`)),
     await evaluate(`__t.text('[data-testid="fbd-panel"]').join(' ')`));
   const fbdLanguage = await evaluate(`[...document.querySelectorAll('[data-testid="tree-program"]')].filter((n) => n.querySelector('.tree__label').textContent === 'Blender').map((n) => n.querySelector('[data-testid="tree-program-language"]').textContent)`);
@@ -726,8 +727,11 @@ try {
   check('and compile', (await evaluate(`__t.text('[data-testid="check-ok"]')[0]`)) === 'COMPILES');
   const fbdRows = await evaluate(`__t.text('[data-testid="variable-row"] td:first-child')`);
   check('its variables are listed, and none the front-end made for itself', JSON.stringify(fbdRows) === '["seconds","odd","even","tenfold"]', JSON.stringify(fbdRows));
-  const fbdNetworks = await evaluate(`[...document.querySelectorAll('[data-testid="fbd-network"]')].map((n) => n.textContent + ':' + n.getAttribute('data-ids'))`);
+  const fbdNetworks = await evaluate(`[...document.querySelectorAll('[data-testid="fbd-network-edit"]')].map((n) => n.getAttribute('data-network') + ':' + n.querySelector('[data-testid="fbd-network"]')?.getAttribute('data-ids'))`);
   check('its networks are numbered in the order they run, the connector joining its line', JSON.stringify(fbdNetworks) === '["1:10,11,12,13","2:20,21,24","3:30,31,32"]', JSON.stringify(fbdNetworks));
+  check('the network with the connector is kept as the agent wrote it, and says why',
+    JSON.stringify(await evaluate(`[...document.querySelectorAll('[data-testid="fbd-network-edit"]')].map((n) => n.getAttribute('data-kept') ?? '')`)) === '["","true",""]'
+      && (await evaluate(`__t.text('[data-testid="fbd-network-kept"]')[0]`)).includes('connector TEN'));
   await evaluate(`__t.type('Bind seconds', 'input'); true`); await sleep(200);
   await evaluate(`__t.type('Reads tag for seconds', 'external.BoilerHouse.Unit1.runtime_s'); true`);
   // The program's properties are in the inspector; a Check may have brought Diagnostics forward.
@@ -764,6 +768,131 @@ try {
   check('a stopped Function Block Diagram is drawn with no values', fbdStopped.live === 'none' && fbdStopped.tenfold === undefined, JSON.stringify(fbdStopped));
   await evaluate(`__t.clickTestId('runtime-unload')`); await sleep(2500);
   check('Unload takes it out of the controller’s runtimes', !(await (await api(base + '/api/v1/runtimes')).json()).runtimes.some((r) => r.id === 'Blender'));
+  await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
+  }
+
+  // 8g. Editing a Function Block Diagram (ADR-013 L3c-2): an engineer builds a seal-in from the
+  // keyboard (an AND of start and a negated stop, assigned to motor; an OR joined into its first
+  // input for the motor's own seal) and a timer network from the Instructions task card, checks,
+  // saves, loads and runs it, and watches the motor's assignment follow a start and a stop forced
+  // as a pushbutton would set them.
+  {
+  await evaluate(`__t.clickTestId('tree-add-program')`); await sleep(200);
+  await evaluate(`__t.type('Program name', 'Mix'); __t.type('Program language', 'fbd'); __t.press('Program name', 'Enter'); true`); await sleep(1500);
+  const mixUrl = `${base}/api/v1/projects/plant_a/logic/programs/Mix`;
+  const mixCreated = (await (await api(mixUrl)).json()).source;
+  check('an engineer gets the FBD editor, with no network yet', await evaluate(`__t.has('[data-testid="fbd-editor"]') && __t.has('[data-testid="fbd-no-networks"]')`));
+  const onScreen = (sel) => evaluate(`(() => { const r = __t.rect(${JSON.stringify(sel)});
+    return { ...r, inside: r.width > 0 && r.height > 0 && r.x >= 0 && r.y >= 0 && r.x + r.width <= innerWidth + 1 && r.y < innerHeight }; })()`);
+  const fbdPalette = await onScreen('[data-testid="fbd-palette"]');
+  const fbdNetworkList = await onScreen('[data-testid="fbd-networks"]');
+  const fbdFavourites = await onScreen('[data-testid="fbd-favourites"]');
+  check('the FBD instructions, its favourites and its network list are on screen, the instructions beside the networks',
+    fbdPalette.inside && fbdNetworkList.inside && fbdFavourites.inside && fbdPalette.width >= 180 && fbdNetworkList.width >= 300 && fbdPalette.x >= fbdNetworkList.x + fbdNetworkList.width - 1,
+    JSON.stringify({ fbdPalette, fbdNetworkList, fbdFavourites }));
+  await evaluate(`(() => {
+    const keyAt = (key, m = {}) => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey: !!m.shift, ctrlKey: !!m.ctrl, altKey: !!m.alt, bubbles: true, cancelable: true }));
+    window.__fbd = {
+      focus() { document.querySelector('[data-testid="fbd-editor"]').focus(); },
+      key: keyAt,
+      operand(text, declare) {
+        const el = document.activeElement;
+        if (!el || el.getAttribute('role') !== 'combobox') throw new Error('no operand field has the focus: ' + (el ? el.outerHTML.slice(0, 80) : 'nothing'));
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, text);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        keyAt('Enter', { ctrl: declare });
+      },
+      pin(network, formal) {
+        const t = document.querySelectorAll('[data-testid="fbd-network-edit"]')[network - 1].querySelector('[data-testid="fbd-pin-target"][data-formal="' + formal + '"]');
+        if (!t) throw new Error('no input ' + formal + ' in network ' + network);
+        t.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      },
+      element(kind, operand) {
+        return [...document.querySelectorAll('[data-testid="fbd-element"][data-kind="' + kind + '"]')].find((e) => (e.querySelector('title')?.textContent ?? '').endsWith(': ' + operand));
+      },
+      palette(id) { document.querySelector('[data-testid="fbd-palette-item"][data-item="' + id + '"]').click(); },
+    }; return true; })()`);
+  // Ctrl+R a network; Shift+F2 an AND, its IN1 field taking the focus: start, declared with
+  // Ctrl+Enter as proposed (a BOOL input).
+  await evaluate(`__fbd.focus(); __fbd.key('r', { ctrl: true }); true`); await sleep(300);
+  await evaluate(`__fbd.key('F2', { shift: true }); true`); await sleep(300);
+  const fbdOperand = await onScreen('[data-testid="fbd-pin-operand"]');
+  check('a new AND’s first input takes the focus, on screen',
+    (await evaluate(`document.activeElement?.getAttribute('data-testid')`)) === 'fbd-pin-operand' && fbdOperand.inside, JSON.stringify(fbdOperand));
+  await evaluate(`__fbd.operand('start', true); true`); await sleep(300);
+  // IN2: its point clicked, Enter to its field, stop; negated.
+  await evaluate(`__fbd.pin(1, 'IN2'); true`); await sleep(300);
+  await evaluate(`__fbd.focus(); __fbd.key('Enter'); true`); await sleep(300);
+  await evaluate(`__fbd.operand('stop', true); true`); await sleep(300);
+  await evaluate(`document.querySelector('[data-testid="fbd-pin"][data-formal="IN2"] [data-testid="fbd-pin-negated"]').click(); true`); await sleep(300);
+  // Shift+F7: the assignment of the AND's output, motor, declared a BOOL output.
+  await evaluate(`__fbd.focus(); __fbd.key('F7', { shift: true }); true`); await sleep(300);
+  await evaluate(`__fbd.operand('motor', true); true`); await sleep(300);
+  // The seal: IN1 selected, Shift+F3 puts an OR there, start into its IN1; motor into its IN2.
+  await evaluate(`__fbd.pin(1, 'IN1'); true`); await sleep(300);
+  await evaluate(`__fbd.focus(); __fbd.key('F3', { shift: true }); true`); await sleep(300);
+  await evaluate(`__fbd.operand('motor', false); true`); await sleep(300);
+  await evaluate(`document.querySelector('[aria-label="Title of network 1"]').focus(); __t.type('Title of network 1', 'Motor seal-in'); true`); await sleep(300);
+  await evaluate(`__fbd.focus(); true`); await sleep(300);
+  // The timer from the Instructions task card: its instance proposed and declared with Enter,
+  // IN motor, PT 2 s, Q assigned to lamp.
+  await evaluate(`__t.clickTestId('fbd-add-network'); true`); await sleep(300);
+  await evaluate(`__fbd.palette('box:TON'); true`); await sleep(300);
+  const fbdInstance = await evaluate(`[document.activeElement?.getAttribute('data-testid'), document.activeElement?.value]`);
+  check('a TON from the card asks for its instance with a name proposed', JSON.stringify(fbdInstance) === '["fbd-box-instance","ton1"]', JSON.stringify(fbdInstance));
+  await evaluate(`__fbd.key('Enter'); true`); await sleep(300);
+  for (const [formal, text] of [['IN', 'motor'], ['PT', 'T#2s']]) {
+    await evaluate(`(() => { const f = document.querySelector('[data-testid="fbd-pin"][data-formal="${formal}"] input[role="combobox"]'); f.focus(); __fbd.operand(${JSON.stringify(text)}, false); return true; })()`); await sleep(300);
+  }
+  await evaluate(`__fbd.focus(); __fbd.key('F7', { shift: true }); true`); await sleep(300);
+  await evaluate(`__fbd.operand('lamp', true); true`); await sleep(300);
+  const fbdDrawn = await evaluate(`[...document.querySelectorAll('[data-testid="fbd-network-edit"]')].map((n) =>
+    [...n.querySelectorAll('[data-testid="fbd-element"]')].map((e) => e.getAttribute('data-kind') === 'block' ? e.querySelector('text').textContent : e.querySelector('title').textContent.replace(/ [0-9]+/, '')).sort().join(', '))`);
+  check('the two networks are drawn as built', JSON.stringify(fbdDrawn) === JSON.stringify([
+    'AND, OR, inVariable: motor, inVariable: start, inVariable: stop, outVariable: motor', 'TON, inVariable: T#2s, inVariable: motor, outVariable: lamp']), JSON.stringify(fbdDrawn));
+  check('the program is unsaved until it is saved', await evaluate(`__t.has('[data-testid="program-unsaved"]')`));
+  await shot('e2e_6i_fbd_editor');
+  await evaluate(`__t.click('Check')`); await sleep(1500);
+  check('what the FBD editor built compiles', (await evaluate(`__t.text('[data-testid="check-ok"]')[0]`)) === 'COMPILES',
+    JSON.stringify(await evaluate(`__t.text('[data-testid="diagnostic"]')`)));
+  const mixRows = await evaluate(`__t.text('[data-testid="variable-row"] td:first-child')`);
+  check('its variables are the ones declared where they were typed', ['start', 'stop', 'motor', 'lamp', 'ton1.Q'].every((v) => mixRows.includes(v)), JSON.stringify(mixRows));
+  await evaluate(`__t.click('Save')`); await sleep(1500);
+  const savedMix = (await (await api(mixUrl)).json()).source;
+  const mixHeader = (text) => text.slice(0, text.indexOf('<types>')) + text.slice(text.indexOf('</types>'));
+  check('Save writes the TC6 document through the source route, its header as the module made it',
+    !(await evaluate(`__t.has('[data-testid="program-unsaved"]')`)) && mixHeader(savedMix) === mixHeader(mixCreated) && savedMix.includes('title="Motor seal-in"'),
+    savedMix.slice(0, 200));
+  await evaluate(`__t.click('Properties')`); await sleep(200);
+  await evaluate(`__t.type('Interval in milliseconds', '50'); true`);
+  await evaluate(`[...document.querySelectorAll('.settings__check')].find((l) => l.textContent.includes('Run when loaded')).querySelector('input').click(); true`);
+  await evaluate(`__t.clickTestId('program-load')`); await sleep(3000);
+  const mixBuilt = await evaluate(`__t.text('[data-testid="program-built"]')[0]`);
+  check('Load builds the edited diagram and loads it', /^Version [0-9a-f]{12} was built and loaded\./.test(mixBuilt ?? ''), mixBuilt);
+  const mixForce = async (variable, value) => (await api(`${base}/api/v1/runtimes/Mix/force`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ variable, value }) })).ok;
+  const mixLive = () => evaluate(`(() => {
+    const into = (operand) => { const e = window.__fbd.element('outVariable', operand); const id = e?.getAttribute('data-local-id');
+      return document.querySelector('[data-testid="fbd-line"][data-to="' + id + '"]')?.getAttribute('data-state'); };
+    return { live: document.querySelector('[data-testid="fbd-live"]')?.getAttribute('data-live'), motor: into('motor'), lamp: into('lamp') }; })()`);
+  await sleep(1000);
+  const mixIdle = await mixLive();
+  check('drawn live, the line into motor is off before start is pressed', mixIdle.live === 'live' && mixIdle.motor === 'off' && mixIdle.lamp === 'off', JSON.stringify(mixIdle));
+  check('start is pressed', await mixForce('start', true)); await sleep(1500);
+  check('the line into motor goes on', (await mixLive()).motor === 'on', JSON.stringify(await mixLive()));
+  check('start is let go', await mixForce('start', false)); await sleep(1500);
+  check('motor stays on through its own seal', (await mixLive()).motor === 'on', JSON.stringify(await mixLive()));
+  await sleep(1000);
+  const mixTimed = await mixLive();
+  check('and the lamp comes on two seconds after the motor', mixTimed.motor === 'on' && mixTimed.lamp === 'on', JSON.stringify(mixTimed));
+  await shot('e2e_6j_fbd_editor_live');
+  check('stop is pressed', await mixForce('stop', true)); await sleep(1500);
+  const mixStopped = await mixLive();
+  check('motor goes off, and the lamp with it', mixStopped.motor === 'off' && mixStopped.lamp === 'off', JSON.stringify(mixStopped));
+  await api(`${base}/api/v1/runtimes/Mix/release`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  await evaluate(`__t.clickTestId('runtime-stop')`); await sleep(2500);
+  await evaluate(`__t.clickTestId('runtime-unload')`); await sleep(2500);
+  check('Unload takes the edited FBD program out of the controller’s runtimes', !(await (await api(base + '/api/v1/runtimes')).json()).runtimes.some((r) => r.id === 'Mix'));
   await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
   }
 

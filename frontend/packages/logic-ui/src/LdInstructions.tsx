@@ -7,18 +7,21 @@
 // it. What is dragged from the card is kept here too, since a drop on a network is the editor's.
 
 import type { DragEvent } from 'react';
-import { create } from 'zustand';
+import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import { Star, X } from 'lucide-react';
 import { GROUPS, type BoxDef } from './ldcatalog';
 import { STANDARD_BOXES, type Spec } from './ldedit';
 
+/** What a Ladder Diagram instruction does: put an element, or open or close a branch, or name the network. */
+export type LdSpec = Spec | 'branch-open' | 'branch-close' | 'label';
+
 /** One instruction of the palette: what it puts, or the branch it opens or closes. */
-export interface Instruction {
+export interface Instruction<S = LdSpec> {
   id: string;
   /** Its IEC 61131-3 semigraphic form, or its name. */
   symbol: string;
   name: string;
-  spec: Spec | 'branch-open' | 'branch-close' | 'label';
+  spec: S;
   key?: string;
 }
 
@@ -58,6 +61,10 @@ export const boxInstruction = (def: BoxDef): Instruction => ({
   spec: { kind: 'box', type: def.name },
 });
 
+/* eslint-disable @typescript-eslint/no-explicit-any -- a kit's instructions are its language's; the card only shows and passes them */
+type AnyInstruction = Instruction<any>;
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
 /** Every instruction there is, with the document's own blocks. */
 export function allInstructions(own: readonly BoxDef[]): Instruction[] {
   return [...BIT_LOGIC, EMPTY_BOX, ...STANDARD_BOXES.map(boxInstruction), ...own.map(boxInstruction), ...CONTROL];
@@ -67,27 +74,27 @@ export function allInstructions(own: readonly BoxDef[]): Instruction[] {
 const DEFAULT_FAVOURITES = ['contact-no', 'contact-nc', 'coil', 'box', 'branch-open', 'branch-close'];
 const FAVOURITES_KEY = 'mythos.logic.ld.favourites';
 
-function readFavourites(): string[] {
+function readFavourites(key: string, defaults: string[]): string[] {
   try {
-    const raw = window.localStorage.getItem(FAVOURITES_KEY);
+    const raw = window.localStorage.getItem(key);
     const list = raw ? (JSON.parse(raw) as unknown) : null;
-    return Array.isArray(list) && list.every((x) => typeof x === 'string') ? (list as string[]) : DEFAULT_FAVOURITES;
+    return Array.isArray(list) && list.every((x) => typeof x === 'string') ? (list as string[]) : defaults;
   } catch {
-    return DEFAULT_FAVOURITES;
+    return defaults;
   }
 }
 
-function saveFavourites(list: string[]): void {
+function saveFavourites(key: string, list: string[]): void {
   try {
-    window.localStorage.setItem(FAVOURITES_KEY, JSON.stringify(list));
+    window.localStorage.setItem(key, JSON.stringify(list));
   } catch {
     // A viewer convenience: without storage the favourites last as long as the page.
   }
 }
 
-interface PaletteState {
+export interface PaletteState {
   /** What putting an instruction does in the open editor; `null` while none can take one. */
-  place: ((instruction: Instruction) => void) | null;
+  place: ((instruction: AnyInstruction) => void) | null;
   /** The function blocks and functions the open document declares itself. */
   own: BoxDef[];
   favourites: string[];
@@ -96,23 +103,61 @@ interface PaletteState {
   reread: () => void;
 }
 
-export const useLdPalette = create<PaletteState>((set, get) => ({
-  place: null,
-  own: [],
-  favourites: readFavourites(),
-  toggleFavourite: (id) => {
-    const now = get().favourites;
-    const next = now.includes(id) ? now.filter((x) => x !== id) : [...now, id];
-    saveFavourites(next);
-    set({ favourites: next });
-  },
-  reread: () => set({ favourites: readFavourites() }),
-}));
+export type PaletteStore = UseBoundStore<StoreApi<PaletteState>>;
+
+/** A palette's state: what the open editor does with an instruction, and the viewer's favourites, kept under `key`. */
+export function paletteStore(key: string, defaults: string[]): PaletteStore {
+  return create<PaletteState>((set, get) => ({
+    place: null,
+    own: [],
+    favourites: readFavourites(key, defaults),
+    toggleFavourite: (id) => {
+      const now = get().favourites;
+      const next = now.includes(id) ? now.filter((x) => x !== id) : [...now, id];
+      saveFavourites(key, next);
+      set({ favourites: next });
+    },
+    reread: () => set({ favourites: readFavourites(key, defaults) }),
+  }));
+}
+
+export const useLdPalette = paletteStore(FAVOURITES_KEY, DEFAULT_FAVOURITES);
+
+/**
+ * What a language's task card offers: its store, every instruction it has, its groups, and the
+ * prefix of its test ids (`ld-palette-item`, `fbd-palette-item`, …).
+ */
+export interface Kit {
+  store: PaletteStore;
+  prefix: string;
+  all: (own: readonly BoxDef[]) => AnyInstruction[];
+  groups: (own: readonly BoxDef[]) => Array<[string, AnyInstruction[]]>;
+  /** The groups open at first. */
+  open: string[];
+  idle: string;
+}
+
+export const LD_KIT: Kit = {
+  store: useLdPalette,
+  prefix: 'ld',
+  all: (own) => allInstructions(own),
+  groups: (own) => [
+    ['Bit logic', BIT_LOGIC],
+    ...GROUPS.map((g): [string, Instruction[]] => [
+      g,
+      [...(g === 'Timers' ? [EMPTY_BOX] : []), ...STANDARD_BOXES.filter((d) => d.group === g).map(boxInstruction)],
+    ]),
+    ...(own.length > 0 ? [['This document', own.map(boxInstruction)] as [string, Instruction[]]] : []),
+    ['Program control', CONTROL],
+  ],
+  open: ['Bit logic', 'Timers'],
+  idle: 'No Ladder Diagram can take an instruction now.',
+};
 
 /** The instruction being dragged, from the card or the favourites, until it is dropped. */
-export const dragged: { current: Instruction | null } = { current: null };
+export const dragged: { current: AnyInstruction | null } = { current: null };
 
-function onDragStart(instruction: Instruction) {
+function onDragStart(instruction: AnyInstruction) {
   return (e: DragEvent) => {
     dragged.current = instruction;
     try {
@@ -124,10 +169,11 @@ function onDragStart(instruction: Instruction) {
 }
 
 /** One instruction: a button that puts it, and the star that makes it a favourite or not. */
-export function InstructionButton({ x, where }: { x: Instruction; where: 'palette' | 'favourites' }) {
-  const place = useLdPalette((s) => s.place);
-  const favourite = useLdPalette((s) => s.favourites.includes(x.id));
-  const toggleFavourite = useLdPalette((s) => s.toggleFavourite);
+export function InstructionButton({ x, where, kit = LD_KIT }: { x: AnyInstruction; where: 'palette' | 'favourites'; kit?: Kit }) {
+  const place = kit.store((s) => s.place);
+  const favourite = kit.store((s) => s.favourites.includes(x.id));
+  const toggleFavourite = kit.store((s) => s.toggleFavourite);
+  const p = kit.prefix;
   return (
     <span className="ld-instruction">
       <button
@@ -137,7 +183,7 @@ export function InstructionButton({ x, where }: { x: Instruction; where: 'palett
         disabled={place === null}
         onDragStart={onDragStart(x)}
         onClick={() => place?.(x)}
-        data-testid={where === 'favourites' ? 'ld-favourite' : 'ld-palette-item'}
+        data-testid={where === 'favourites' ? `${p}-favourite` : `${p}-palette-item`}
         data-item={x.id}
         title={`${x.name}${x.key ? ` (${x.key})` : ''}`}
         aria-label={x.name}
@@ -151,7 +197,7 @@ export function InstructionButton({ x, where }: { x: Instruction; where: 'palett
         onClick={() => toggleFavourite(x.id)}
         aria-label={favourite ? `Remove ${x.name} from the favourites` : `Add ${x.name} to the favourites`}
         title={favourite ? 'Remove from the favourites' : 'Add to the favourites'}
-        data-testid={where === 'favourites' ? 'ld-favourite-remove' : 'ld-favourite-add'}
+        data-testid={where === 'favourites' ? `${p}-favourite-remove` : `${p}-favourite-add`}
       >
         {where === 'favourites' ? <X size={11} aria-hidden /> : <Star size={11} aria-hidden fill={favourite ? 'currentColor' : 'none'} />}
       </button>
@@ -160,47 +206,39 @@ export function InstructionButton({ x, where }: { x: Instruction; where: 'palett
 }
 
 /** The editor's favourites bar: the viewer's chosen instructions, in their order. */
-export function Favourites() {
-  const favourites = useLdPalette((s) => s.favourites);
-  const own = useLdPalette((s) => s.own);
-  const all = allInstructions(own);
+export function Favourites({ kit = LD_KIT }: { kit?: Kit }) {
+  const favourites = kit.store((s) => s.favourites);
+  const own = kit.store((s) => s.own);
+  const all = kit.all(own);
   return (
     <>
       {favourites
         .map((id) => all.find((x) => x.id === id))
-        .filter((x): x is Instruction => x !== undefined)
+        .filter((x): x is AnyInstruction => x !== undefined)
         .map((x) => (
-          <InstructionButton key={x.id} x={x} where="favourites" />
+          <InstructionButton key={x.id} x={x} where="favourites" kit={kit} />
         ))}
     </>
   );
 }
 
 /** The "Instructions" task card: every instruction, by group, put by click or by drag. */
-export function InstructionsCard() {
-  const own = useLdPalette((s) => s.own);
-  const place = useLdPalette((s) => s.place);
-  const groups: Array<[string, Instruction[]]> = [
-    ['Bit logic', BIT_LOGIC],
-    ...GROUPS.map((g): [string, Instruction[]] => [
-      g,
-      [...(g === 'Timers' ? [EMPTY_BOX] : []), ...STANDARD_BOXES.filter((d) => d.group === g).map(boxInstruction)],
-    ]),
-    ...(own.length > 0 ? [['This document', own.map(boxInstruction)] as [string, Instruction[]]] : []),
-    ['Program control', CONTROL],
-  ];
+export function InstructionsCard({ kit = LD_KIT }: { kit?: Kit }) {
+  const own = kit.store((s) => s.own);
+  const place = kit.store((s) => s.place);
+  const p = kit.prefix;
   return (
-    <div className="ld-palette" data-testid="ld-palette" aria-label="Instructions">
+    <div className="ld-palette" data-testid={`${p}-palette`} aria-label="Instructions">
       {place === null && (
-        <p className="muted" data-testid="ld-palette-idle">
-          No Ladder Diagram can take an instruction now.
+        <p className="muted" data-testid={`${p}-palette-idle`}>
+          {kit.idle}
         </p>
       )}
-      {groups.map(([title, items]) => (
-        <details key={title} open={title === 'Bit logic' || title === 'Timers'} className="ld-palette__group">
+      {kit.groups(own).map(([title, items]) => (
+        <details key={title} open={kit.open.includes(title)} className="ld-palette__group">
           <summary>{title}</summary>
           {items.map((x) => (
-            <InstructionButton key={x.id} x={x} where="palette" />
+            <InstructionButton key={x.id} x={x} where="palette" kit={kit} />
           ))}
         </details>
       ))}

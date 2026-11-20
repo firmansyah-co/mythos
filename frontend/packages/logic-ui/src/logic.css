@@ -410,9 +410,16 @@ button.logic-diagnostic:hover {
   overflow-x: auto;
 }
 
-/* Each network is numbered in its header: the viewer's own number of a single rung is not shown. */
-.ld-network__diagram [data-testid='ld-rung'] {
+/* Each network is numbered in its header: the viewer's own number of a single rung or network is not shown. */
+.ld-network__diagram [data-testid='ld-rung'],
+.ld-network__diagram [data-testid='fbd-network'] {
   display: none;
+}
+
+/* The input of an FBD box a new box goes into. */
+.ld-fields .ld-pin.is-selected {
+  outline: 1px solid var(--c-focus);
+  outline-offset: 1px;
 }
 
 .ld-overlay {

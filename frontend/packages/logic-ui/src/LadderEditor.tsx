@@ -177,7 +177,7 @@ function Overlay({
 // An operand field with completion
 // ---------------------------------------------------------------------------------------------
 
-function OperandField({
+export function OperandField({
   label,
   value,
   testId,
@@ -325,7 +325,7 @@ const SECTIONS: Array<[Section, string]> = [
 const TYPES = ['BOOL', 'INT', 'DINT', 'LINT', 'SINT', 'REAL', 'LREAL', 'TIME', 'STRING'];
 
 /** "x is not declared": declare it here, in a section, with a type. */
-function DeclareOffer({
+export function DeclareOffer({
   name,
   proposed,
   fixedType,
@@ -416,7 +416,7 @@ const VARIANTS: Record<string, Array<[string, string, Pick<El, 'negated' | 'edge
 };
 
 /** A name for a new instance of `type` that no variable has: its name in lower case and a number. */
-function instanceName(type: string, vars: readonly VarInfo[]): string {
+export function instanceName(type: string, vars: readonly VarInfo[]): string {
   const base = type.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/_+$/, '');
   for (let n = 1; ; n += 1) {
     const name = `${base}${n}`;
