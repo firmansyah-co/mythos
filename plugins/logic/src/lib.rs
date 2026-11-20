@@ -25,7 +25,7 @@
 
 use async_trait::async_trait;
 use mythos_logic_compiler::{
-    compile_sources, At, Diagnostic, Holds, Sources, Symbol, TargetProfile,
+    compile_sources, At, BodyOf, Diagnostic, Holds, Sources, Symbol, TargetProfile,
 };
 use mythos_module::protocol::{
     HttpCall, HttpReply, InputBinding, InputOf, ModuleKind, ModuleManifest, OutputBinding,
@@ -468,11 +468,17 @@ fn compile_entry(
 /// is not listed carries none (a value that is not a BOOL), and is shown without a state. In a
 /// Function Block Diagram it is every output's value, of whatever type; `ran`, where given,
 /// names the BOOL that is TRUE where the value was computed in the scan (ADR-013 §2.16).
-fn probes(compiled: &mythos_logic_compiler::Compiled) -> Vec<Value> {
+///
+/// A Sequential Function Chart's are in two lists, so that what reads the first (`chart`, its
+/// steps, transitions and actions) reads it as it was before LD and FBD bodies (ADR-013 §2.17):
+/// `bodies` gives the probes of its actions and conditions written in LD or FBD, each in LD's or
+/// FBD's shape with `body`, which body it is in.
+fn probes(compiled: &mythos_logic_compiler::Compiled, bodies: bool) -> Vec<Value> {
     compiled
         .probes
         .iter()
         .filter(|p| p.pou.eq_ignore_ascii_case(&compiled.name))
+        .filter(|p| p.body.is_some() == bodies)
         .map(|p| {
             let mut entry = match &p.at {
                 At::Output(output) => json!({"local_id": p.local_id, "output": output}),
@@ -494,6 +500,16 @@ fn probes(compiled: &mythos_logic_compiler::Compiled) -> Vec<Value> {
                     entry["negated"] = json!(false);
                     entry["ran"] = json!(ran);
                 }
+            }
+            if let Some(body) = &p.body {
+                let mut of = match &body.of {
+                    BodyOf::Action(name) => json!({"action": name}),
+                    BodyOf::Transition(name) => json!({"transition": name}),
+                    BodyOf::Inline(id) => json!({"inline": id}),
+                    BodyOf::Wired(id) => json!({"wired": id}),
+                };
+                of["language"] = json!(if body.ladder { "ld" } else { "fbd" });
+                entry["body"] = of;
             }
             entry
         })
@@ -543,9 +559,12 @@ fn check(entry: &ProgramEntry, source: &str) -> Value {
                 "binding_problems": problems,
             });
             match entry.language.as_str() {
-                "ld" => answer["power"] = Value::Array(probes(&compiled)),
-                "fbd" => answer["values"] = Value::Array(probes(&compiled)),
-                "sfc" => answer["chart"] = Value::Array(probes(&compiled)),
+                "ld" => answer["power"] = Value::Array(probes(&compiled, false)),
+                "fbd" => answer["values"] = Value::Array(probes(&compiled, false)),
+                "sfc" => {
+                    answer["chart"] = Value::Array(probes(&compiled, false));
+                    answer["bodies"] = Value::Array(probes(&compiled, true));
+                }
                 _ => {}
             }
             answer
@@ -723,7 +742,7 @@ pub fn manifest() -> ModuleManifest {
             route("GET", "/programs/:program", "viewer", "get_logic_program",
                 "A program's settings, bindings and source: Structured Text, or for a Ladder Diagram (language ld), a Function Block Diagram (fbd) or a Sequential Function Chart (sfc) the PLCopen TC6 XML v2.01 document.", None, &[]),
             route("PUT", "/programs/:program/source", "engineer", "save_logic_source",
-                "Replace a program's source, in its language: Structured Text, or for a Ladder Diagram (language ld), a Function Block Diagram (fbd) or a Sequential Function Chart (sfc) a PLCopen TC6 XML v2.01 document whose POUs include the PROGRAM (its body LD, FBD or SFC; one document may hold POUs of all three; a chart's actions and transitions in its POU's actions and transitions, their bodies in ST). Nothing is compiled or loaded: check_logic_program and build_logic_program do that.",
+                "Replace a program's source, in its language: Structured Text, or for a Ladder Diagram (language ld), a Function Block Diagram (fbd) or a Sequential Function Chart (sfc) a PLCopen TC6 XML v2.01 document whose POUs include the PROGRAM (its body LD, FBD or SFC; one document may hold POUs of all three; a chart's actions in ST, LD or FBD, in its POU's actions or in an action block; its transitions' conditions in ST, LD or FBD, written in the transition, in the POU's transitions, or as an LD or FBD network drawn in the chart connected to the transition; a condition in LD or FBD writes the transition's name, by a coil or an output variable). Nothing is compiled or loaded: check_logic_program and build_logic_program do that.",
                 Some(json!({
                     "type": "object",
                     "required": ["source"],
@@ -736,7 +755,7 @@ pub fn manifest() -> ModuleManifest {
                 "Remove a program and its source from a project. A runtime that already runs it is not touched.",
                 None, &[]),
             route("POST", "/programs/:program/check", "viewer", "check_logic_program",
-                "Compile a program, Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart, without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program; in a diagram the range is the element's tag in the document and 'element' names it: pou, local_id, x, y, or the interface's variable, or a chart's action or transition by name, and the characters of its text, with the line of the text when it has several), or its variables (hidden: made by the diagram front-end for itself), what its bindings get wrong and the version a build of it would have. A Ladder Diagram that compiles also gives 'power', to watch for power flow: for each output of an element that carries power ('output') and each input where links join ('input'), the hidden variable assigned when it is evaluated in the scan (or on: ON whenever its network runs); for each network ('network': its elements' local_ids), the variable that is TRUE when it ran in the last scan. A Function Block Diagram that compiles gives 'values' of the same shape: for every output of every element (a block's by its formal parameter, ENO among them; '' for a variable's), the hidden variable holding the value it gave when it was evaluated in the scan, of the output's own type (or on: ENO always TRUE), with 'ran' where the value is computed only where that BOOL is TRUE (a function under EN); for each network the variable that is TRUE when it ran. A Sequential Function Chart that compiles gives 'chart' of the same shape: for each step ('step': 'X') the variable that is TRUE while it is active and ('step': 'T') its elapsed time, a TIME; for each transition ('transition': true) the variable holding its condition, with 'ran', the variable that is TRUE when the transition was enabled and its condition evaluated in the last scan; for each action of an action block ('action': 'Q', by the action's local_id) the variable holding the state of the action it names. With 'source' it checks that text instead of the saved one.",
+                "Compile a program, Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart, without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program; in a diagram the range is the element's tag in the document and 'element' names it: pou, local_id, x, y, or the interface's variable, or a chart's action or transition by name, or ('inline') the local_id of the action or transition of the chart whose inline body in LD or FBD the element is in, and the characters of its text, with the line of the text when it has several), or its variables (hidden: made by the diagram front-end for itself), what its bindings get wrong and the version a build of it would have. A Ladder Diagram that compiles also gives 'power', to watch for power flow: for each output of an element that carries power ('output') and each input where links join ('input'), the hidden variable assigned when it is evaluated in the scan (or on: ON whenever its network runs); for each network ('network': its elements' local_ids), the variable that is TRUE when it ran in the last scan. A Function Block Diagram that compiles gives 'values' of the same shape: for every output of every element (a block's by its formal parameter, ENO among them; '' for a variable's), the hidden variable holding the value it gave when it was evaluated in the scan, of the output's own type (or on: ENO always TRUE), with 'ran' where the value is computed only where that BOOL is TRUE (a function under EN); for each network the variable that is TRUE when it ran. A Sequential Function Chart that compiles gives 'chart' of the same shape: for each step ('step': 'X') the variable that is TRUE while it is active and ('step': 'T') its elapsed time, a TIME; for each transition ('transition': true) the variable holding its condition, with 'ran', the variable that is TRUE when the transition was enabled and its condition evaluated in the last scan; for each action of an action block ('action': 'Q', by the action's local_id) the variable holding the state of the action it names. A chart also gives 'bodies': for every action and transition condition written in LD or FBD, the entries of its 'power' (LD) or 'values' (FBD), each with 'body', the body it is in: {'action': name} (an action of the POU), {'transition': name} (a transition of the POU), {'inline': local_id} (written in the action of an action block or in the transition of that local_id), or {'wired': local_id} (a network drawn in the chart that gives that transition its condition), with 'language' ld or fbd; a body's elements' local_ids are its own, and its networks' variables are FALSE where the body did not run in the scan (an action whose Q was FALSE, a transition not enabled). With 'source' it checks that text instead of the saved one.",
                 Some(json!({
                     "type": "object",
                     "properties": { "source": { "type": "string" } }
@@ -1387,6 +1406,76 @@ mod tests {
         assert_eq!(var("__SFC_2")["hidden"], true);
         assert_eq!(var("Pumping.T")["type"], "TIME");
         assert_eq!(var("Pumping.X")["private"], true);
+    }
+
+    #[test]
+    fn a_chart_with_bodies_in_ld_and_fbd_gives_their_values_apart_from_its_steps() {
+        // Pump in LD (its coil the valve), the condition out of Pumping in FBD written in the
+        // transition, the condition out of Filling a rung drawn in the chart (ADR-013 §2.17).
+        let source = chart("90")
+            .replace(
+                r#"<action name="Pump"><body><ST><xhtml:p>speed := 50;</xhtml:p></ST></body></action>"#,
+                r#"<action name="Pump"><body><LD>
+          <leftPowerRail localId="1"><position x="0" y="0"/><connectionPointOut/></leftPowerRail>
+          <contact localId="2"><position x="100" y="0"/><connectionPointIn><connection refLocalId="1"/></connectionPointIn><connectionPointOut/><variable>Pumping.X</variable></contact>
+          <coil localId="3"><position x="200" y="0"/><connectionPointIn><connection refLocalId="2"/></connectionPointIn><connectionPointOut/><variable>valve</variable></coil>
+        </LD></body></action>"#,
+            )
+            .replace(
+                r#"<condition><inline name=""><ST><xhtml:p>level &lt; 10</xhtml:p></ST></inline></condition>"#,
+                r#"<condition><inline name="Low"><FBD>
+          <inVariable localId="1"><position x="0" y="0"/><connectionPointOut/><expression>level &lt; 10</expression></inVariable>
+          <outVariable localId="2"><position x="100" y="0"/><connectionPointIn><connection refLocalId="1"/></connectionPointIn><expression>Low</expression></outVariable>
+        </FBD></inline></condition>"#,
+            )
+            .replace(
+                r#"<condition><inline name=""><ST><xhtml:p>level &gt;= 90</xhtml:p></ST></inline></condition>"#,
+                r#"<condition><connectionPointIn><connection refLocalId="21"/></connectionPointIn></condition>"#,
+            )
+            .replace(
+                r#"<step localId="1" name="Filling" initialStep="true"><position x="100" y="0"/></step>"#,
+                r#"<step localId="1" name="Filling" initialStep="true"><position x="100" y="0"/></step>
+        <leftPowerRail localId="20"><position x="-100" y="40"/><connectionPointOut/></leftPowerRail>
+        <contact localId="21"><position x="0" y="40"/><connectionPointIn><connection refLocalId="20"/></connectionPointIn><connectionPointOut/><variable>level &gt;= 90</variable></contact>"#,
+            )
+            .replace(
+                r#"<reference name="valve"/>"#,
+                r#"<reference name="Pump"/>"#,
+            );
+        let source = source.replacen(
+            r#"<reference name="Pump"/>"#,
+            r#"<inline><ST><xhtml:p>speed := 0;</xhtml:p></ST></inline>"#,
+            1,
+        );
+        let checked = check(&sfc_entry(), &source);
+        assert_eq!(checked["ok"], true, "{checked}");
+        // The chart's own list as before: steps, transitions and actions only.
+        let chart = checked["chart"].as_array().unwrap();
+        assert!(chart.iter().all(|p| p.get("body").is_none()), "{checked}");
+        let bodies = checked["bodies"].as_array().unwrap();
+        let has = |want: Value| assert!(bodies.contains(&want), "{want} in {bodies:#?}");
+        has(
+            json!({"local_id": 2, "output": "", "variable": "__SFC_PUMP__LD_2", "negated": false,
+                   "body": {"action": "Pump", "language": "ld"}}),
+        );
+        has(
+            json!({"local_id": 2, "network": [2, 3], "variable": "__SFC_PUMP__NET_2", "negated": false,
+                   "body": {"action": "Pump", "language": "ld"}}),
+        );
+        has(
+            json!({"local_id": 1, "output": "", "variable": "__SFC_4__FBD_1", "negated": false,
+                   "body": {"inline": 4, "language": "fbd"}}),
+        );
+        has(
+            json!({"local_id": 21, "output": "", "variable": "__SFC_2__LD_21", "negated": false,
+                   "body": {"wired": 2, "language": "ld"}}),
+        );
+        let vars = checked["variables"].as_array().unwrap();
+        let hidden = vars
+            .iter()
+            .find(|v| v["path"] == "__SFC_PUMP__LD_2")
+            .unwrap_or_else(|| panic!("{checked}"));
+        assert_eq!(hidden["hidden"], true);
     }
 
     #[test]

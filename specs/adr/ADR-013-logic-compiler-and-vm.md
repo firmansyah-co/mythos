@@ -1025,6 +1025,9 @@ Adrian, 2026-11-17: where an implementation and the standard differ, follow the 
 | An indicator variable | §6.7.4.4: deprecated | refused (`an_indicator_variable_is_refused_as_deprecated`) | not compared |
 | A step's time across a restart | not addressed | as the timers' (above): the scan clock starts again from zero, a step's time carries on from what it was, the restart not counted (`the_step_times_do_not_count_the_time_across_a_restart`) | not compared |
 | A chart taken over by an online change | not addressed | carried by the steps' names when the chart's steps and transitions are the same; otherwise started again from its initial step (§2.17) | not compared |
+| An action in LD or FBD | §6.7.4.1: an action can be a collection of rungs in LD or of networks in FBD; Table 56 features 2l, 2f; Table 57 feature 4, Table 58 features 4l, 4f | of the POU or in its action block, lowered by the LD or FBD front-end and run while its Q is TRUE, without final scan; a return refused, a write to a step's or an action's flag refused (§2.17) (`an_action_in_ld_runs_only_while_its_q_is_true_and_without_a_final_scan`, `an_action_in_fbd_written_in_its_action_block_runs_while_its_q_is_true`, `an_ld_action_that_returns_or_writes_a_steps_flag_is_refused`) | not compared |
+| A condition in LD or FBD | §6.7.3 b, c, d, g; Table 55 features 2a, 3a, 4a–6a, 10, 11: a network adjacent to the transition, reaching it via a connector, or a TRANSITION whose network assigns the transition's name; an error if any side effect occurs during its evaluation | the network's coil or output variable of the transition's name (the POU's transition, or the `name` of the inline body) gives the condition; a network drawn in the chart gives it where it reaches the transition, through a connector too. Evaluated only where the transition is enabled. A write to anything else, a function block's call, an edge, a jump, an element not leading to the result refused (§2.17) (`a_condition_in_ld_is_the_power_reaching_the_coil_of_the_transitions_name`, `a_rung_drawn_in_the_chart_gives_the_transition_it_reaches_its_condition`, `an_fbd_network_drawn_in_the_chart_reaches_its_transition_through_a_connector`, `a_condition_network_is_evaluated_only_where_its_transition_is_enabled`, `a_condition_network_that_writes_anything_but_its_transitions_name_is_refused`) | not compared |
+| An action that is a chart | §6.7.4.1, Table 56 feature 2s: SFC elements included in an action; what becomes of them when the action stops is not said | refused with the reason; a function block with an SFC body called from the action is taken (§2.17) (`an_action_in_il_or_sfc_is_refused_with_the_reason`) | not compared |
 
 Three places where the standard leaves a choice or we go beyond it:
 
@@ -1426,18 +1429,21 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
   there; in a POU of another language they are refused. `Language::Sfc` compiles a document as
   `Language::Ld` does. `layers.rs` is unchanged: no crate was added.
 - **The subset taken.** `step` (`name`, `initialStep`), `transition` (its condition `inline` in
-  ST, or a `reference` to a transition of the POU, `negated`; `priority`),
+  ST, LD or FBD, a `reference` to a transition of the POU, or a `connectionPointIn` from a
+  network drawn in the chart, L3d-1b, below; `negated`; `priority`),
   `selectionDivergence`, `selectionConvergence`, `simultaneousDivergence`,
   `simultaneousConvergence`, `jumpStep` (`targetName`), `actionBlock` (each `action` with its
   `qualifier`, `duration`, and a `reference` to an action of the POU or to a BOOL variable, or an
-  `inline` body in ST), `comment`; the POU's `actions` (a body in ST: statements) and
-  `transitions` (a body in ST: one Boolean expression). An ST text of several lines is read as
+  `inline` body in ST, LD or FBD), `comment`; the POU's `actions` (a body in ST: statements, or
+  LD or FBD networks) and `transitions` (a body in ST: one Boolean expression, or an LD or FBD
+  network writing the transition's name); the elements of LD and FBD in the chart's body, as
+  networks giving transitions their conditions (L3d-1b, below). An ST text of several lines is read as
   ST reads it, each of its lines a line of the syntax tree, and a diagnostic in it gives the line
   of the text (`text.line`, below). Refused by name with the element: an action or a condition
-  in LD, FBD, IL or SFC (*not yet*: their networks' hidden variables would need a name per action,
-  and their places a body per element); a condition drawn as a network connected to the
-  transition (Table 55 features 2a–6a); `macroStep` (a TC6 element that is not in ed. 3); every
-  element of LD or FBD in the chart's body; the qualifier `DL` (not in Table 59); SD, SL and P0
+  in IL (this compiler has no IL front-end, §2.1); an action that is a chart (SFC, Table 56
+  feature 2s, below) and a condition in SFC (a condition is one Boolean value, §6.7.3);
+  `macroStep` (a TC6 element that is not in ed. 3); any other element of the schema
+  (`vendorElement`, …); the qualifier `DL` (not in Table 59); SD, SL and P0
   (below); an indicator variable (§6.7.4.4: deprecated); a negated step or action block; RETURN
   in an action (it would end the whole chart's scan before its transitions).
 - **The chart as a net.** Each transition is resolved through the divergences, convergences and
@@ -1549,6 +1555,92 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
   POU, `element.action` or `element.transition` by its name; a text of several lines gives its
   line as `text.line` (from 1). Both are new fields of `mythos_logic_ir::Element` and
   `TextRange`, absent where they do not apply, so what LD and FBD give is unchanged.
+- **Actions and conditions in LD and FBD (L3d-1b).** Read in IEC 61131-3 ed. 3 §6.7.3 (Table
+  55) and §6.7.4.1–§6.7.4.3 (Tables 56–58) on 2026-11-20, and in the TC6 schema (§2.15): an
+  action's `body` and an action block's `inline` are a `body` (IL, ST, FBD, LD or SFC); a
+  transition's `condition` is a `reference`, an `inline` body with a required `name`, or a
+  `connectionPointIn`; and the `SFC` element of a body may hold LD's and FBD's elements. Taken:
+  - **An action in LD or FBD** (Table 56 features 2l, 2f; Table 57 feature 4 with Table 58
+    features 4l, 4f), of the POU or written in its action block: its networks lowered by the LD
+    or FBD front-end, unchanged (`ld::lower`, `fbd::lower`), into the chart's POU, and run as an
+    action of statements is, `IF Q THEN … END_IF`, under the action control without final scan
+    (above). A return is refused (it would end the whole chart's scan before its transitions); a
+    jump stays inside the body. A write to a step's flag or time or to an action's flag, by a
+    coil, an output variable or a block's output, is refused as in ST, at the element's text.
+    An edge in an action senses from the last scan the action ran: its memory is set only where
+    the body runs, as every statement of it is
+    (`an_edge_in_an_ld_action_senses_from_the_last_scan_the_action_ran`).
+  - **A condition in LD or FBD**, of the POU (Table 55 features 10, 11: TRANSITION … FROM … TO
+    …, a network whose coil or output variable is the transition's name) or written in the
+    transition (features 2a, 3a; TC6 `inline`, whose `name` is the name the network writes, as
+    §6.7.3 g has it: the assignment of a Boolean value to the variable denoted by the transition
+    name). The network writes its result to a hidden BOOL, `__SFC_<owner>__RESULT`, in place of
+    the name, and the transition takes it, negated when the transition is. §6.7.3 calls a side
+    effect during the evaluation of a condition an error, so refused, naming the element: a
+    write to anything but the transition's name (a coil, an output or in-out variable); a call
+    of a function block (it changes the instance); an edge (it keeps what it last sensed, and a
+    condition is evaluated only while its transition is enabled, so it would sense from then,
+    not from the last scan); a coil of the name that sets, resets or senses an edge; no coil or
+    output variable of the name, or two; a label, jump or return; an element that does not lead
+    to the result (a condition is one network giving one Boolean value). An inline name is a
+    name of the POU, its own as a step's or a transition's is (one that is a variable's is
+    refused), and an inline body in LD or FBD with no name is refused. A transition of the POU in
+    LD or FBD named by two transitions is refused: a transition name stands for one TRANSITION …
+    FROM … TO … construct (feature 9a), and its network's values are kept once.
+  - **A network drawn in the chart** (Table 55 features 2a–6a: adjacent to the transition, or
+    reaching it via a connector; TC6 lets a chart's body hold LD and FBD elements and a condition
+    be a `connectionPointIn`). Decided on reading both, which allow it: taken. Each transition
+    whose condition is connected takes the network that reaches it, element by element; a
+    connector and its continuations are one line first (§8.1.3, FBD's rule), so a network may
+    reach its transition through a continuation (features 4a–6a). A network with a power rail, a
+    contact or a coil is LD, any other FBD. Where it reaches the transition the chart adds a coil
+    (LD, so several links into it are the OR of §8.2.3) or an output variable (FBD) of the
+    transition's `localId`, which takes the result; the network is then checked and lowered as a
+    condition's (above). Refused, naming the element: one that leads to no transition's
+    condition, or to two (a network gives one transition its condition; a power rail belongs to
+    each network that reaches it, §8.1.4); a connection from a step (Table 54 feature 3b: a
+    step's flag is read by its name, `S.X`, feature 3a).
+  - **Where each is evaluated.** An action's body where its Q is TRUE; a condition's network
+    where its transition is enabled, inside `IF __SFC_<id>_EN`, so, as an ST condition, it is
+    not evaluated where it is not consulted
+    (`a_condition_network_is_evaluated_only_where_its_transition_is_enabled`: 100 / 0 faults
+    only where the transition is enabled).
+  - **Values kept for monitoring.** Each body keeps what LD and FBD keep (§2.15, §2.16), in a
+    namespace of its own, since its `localId`s are its own and every body shares the chart's
+    POU: `__SFC_<owner>__` in place of the two leading underscores, the owner the action's or the
+    transition's name in upper case, or the `localId` of the action of the block or of the
+    transition whose inline body or drawn network it is (`__LD_5` of the action Fill is
+    `__SFC_FILL__LD_5`; `__NET_5`, `__EDGE_5`, `__FBD_5_OUT`, `__JUMP` likewise). No name has
+    two underscores together (§6.1.2), so a namespace ends where they are and no two meet. Each
+    is private, retained and carried by online change by its path as any hidden variable
+    (§2.15): a build that keeps an action's name and an element's `localId` keeps its memory
+    (`an_online_change_carries_an_ld_actions_edge_memory_by_its_path`). **A network of a body
+    that did not run reads as not run**: every flag of a body's networks is set FALSE each scan
+    before the `IF` that may run it, so a network of an action whose Q was FALSE, or of a
+    condition whose transition was not enabled, never shows as executed, and its kept values are
+    an earlier scan's, which the flag says
+    (`a_network_of_an_action_that_did_not_run_reads_as_not_run`). The condition itself keeps the
+    rule above: `__SFC_<id>`, with `ran` `__SFC_<id>_EN`.
+  - **Probes.** `Probe::body` (new; `None` for an element of a POU's own body, so every LD and
+    FBD probe is as it was) says which body an element is in: `BodyOf::Action(name)`,
+    `Transition(name)`, `Inline(localId)`, `Wired(localId)` (a network drawn in the chart for
+    that transition), with whether it is LD (power) or FBD (values). The logic module's `check`
+    gives them as `bodies`, a list beside `chart`, each entry in LD's or FBD's shape with
+    `body`: `{"action": name}`, `{"transition": name}`, `{"inline": id}` or `{"wired": id}`,
+    and `"language": "ld"` or `"fbd"`. `chart` keeps its shape and content, so what reads it
+    reads it as before. The element the chart adds where a drawn network reaches its transition
+    has no probe: the transition's condition is its own. A diagnostic in an inline body names
+    the action of the block or the transition by `Element::inline` (new, absent elsewhere), its
+    `local_id` the element of that body; one in an action or a transition of the POU names it by
+    `action` or `transition`, as in ST.
+  - **Not taken, and why.** An action that is a chart (Table 56 feature 2s): the standard does
+    not say what becomes of the inner chart's steps when the action's Q goes FALSE; with the
+    action control without final scan they would stay where they were and the chart go on from
+    there at the next activation, which no text of §6.7 describes. A function block with an SFC
+    body called from the action does the same explicitly, and is taken (`doors.xml`). IL: no IL
+    front-end (§2.1). A connection from a step's flag (Table 54 feature 3b). A connector in an LD
+    body of the POU or of an action stays refused (§2.15); only a network drawn in the chart
+    joins its connectors, as FBD does.
 - **Cost, measured** (bytes; private is the number of private symbols: the chart's steps and
   actions, its hidden variables and the members of its action control's blocks; the twins are
   the hand-written ST of `sfc_equals_st.rs`, with the same behaviour and no monitoring):
@@ -1573,7 +1665,10 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
   views do. The editor must keep every `localId` (online change carries `__SFC_<localId>` by its
   path), keep a step's name when the step is moved (its state is carried by its name), and say
   that a change of the chart's steps or transitions starts the chart again at the next online
-  change. It writes actions and conditions in ST until LD and FBD bodies are read.
+  change. Since L3d-1b actions and conditions may be LD or FBD: the view draws each body with
+  the LD or FBD view and the entries of `bodies` for it (a network not run as not executed), and
+  the editor keeps each body's `localId`s (online change carries `__SFC_<owner>__…` by them) and
+  an inline condition's `name`.
 
 ## 3. Order of work
 
@@ -1652,8 +1747,11 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   unreachable charts refused), each step's flag and time, each transition's condition and each
   action's state kept in every build; the logic module stores, checks, builds and loads them
   (`language: "sfc"`, `chart` in `check`); the workbench says it does not draw them yet. SD, SL
-  and P0 wait for the owner (§2.17). **L3d-2**: the SFC view, live; **L3d-3**: its editor; LD
-  and FBD bodies of actions and conditions.
+  and P0 wait for the owner (§2.17). **L3d-1b** (done, §2.17): actions and transition
+  conditions in LD and FBD, of the POU, written in the action block or the transition, or (a
+  condition) as a network drawn in the chart, each lowered by the LD or FBD front-end in a
+  namespace of its own, its values kept for the view (`bodies` in `check`), a condition's with no
+  side effect. **L3d-2**: the SFC view, live; **L3d-3**: its editor.
 - L4. **The standard library in ST** (done, §2.14): the standard function blocks written in
   Structured Text, with intrinsics for what ST cannot say (the scan clock, bytecode format 4);
   their state retained like any variable's. Next: OSCAT, once its license is checked.

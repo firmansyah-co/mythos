@@ -1,7 +1,7 @@
 //! The Sequential Function Chart corpus (`tests/sfc/`), which the emulators run
 //! (`scripts/logic-vm-on-emulators.sh`): each document lowers, and every step, transition and
 //! action of an action block in it is published with the variable keeping its state (ADR-013
-//! §2.17), each at its own `localId`.
+//! §2.17), each at its own `localId`; the values of its bodies in LD and FBD in their own names.
 
 use mythos_logic_graphic::{lower_with_probes, At, Holds, Source};
 use std::collections::BTreeSet;
@@ -35,6 +35,16 @@ fn every_document_of_the_corpus_lowers_and_publishes_every_step_transition_and_a
             None,
         )
         .unwrap_or_else(|d| panic!("{}: {d:#?}", path.display()));
+        // An action's or a condition's body in LD or FBD keeps its values in its own namespace.
+        for p in probes.iter().filter(|p| p.body.is_some()) {
+            match &p.holds {
+                Holds::Variable { path: kept, .. } | Holds::Guarded { path: kept, .. } => {
+                    assert!(kept.starts_with("__SFC_"), "{}: {p:?}", path.display())
+                }
+                Holds::On => {}
+            }
+        }
+        let probes: Vec<_> = probes.into_iter().filter(|p| p.body.is_none()).collect();
         let at = |want: fn(&At) -> bool| -> BTreeSet<u64> {
             probes
                 .iter()
@@ -60,5 +70,5 @@ fn every_document_of_the_corpus_lowers_and_publishes_every_step_transition_and_a
         }
         seen += 1;
     }
-    assert!(seen >= 2, "the corpus has {seen} documents");
+    assert!(seen >= 3, "the corpus has {seen} documents");
 }

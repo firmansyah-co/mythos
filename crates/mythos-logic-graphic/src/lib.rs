@@ -93,6 +93,9 @@ pub(crate) enum Owner {
     Action(String),
     /// `transitions/transition`, by its name.
     Transition(String),
+    /// The inline body of an element of the chart, by its `localId`: an action of an action
+    /// block, or a transition's condition.
+    Inline(u64),
 }
 
 /// Every place of the documents being lowered, each a line of the syntax tree.
@@ -188,6 +191,36 @@ pub struct Probe {
     pub local_id: u64,
     pub at: At,
     pub holds: Holds,
+    /// The body of a Sequential Function Chart's action or condition the element is in, when
+    /// it is one written in LD or FBD (ADR-013 §2.17); `None` for an element of the POU's own
+    /// body (its `localId` is the body's).
+    pub body: Option<Body>,
+}
+
+/// A body in LD or FBD of a Sequential Function Chart's action or transition condition: its
+/// elements' `localId`s are its own, so a [`Probe`] of one says which body it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Body {
+    pub of: BodyOf,
+    /// Whether the body is a Ladder Diagram (its probes are power, §2.15) or a Function Block
+    /// Diagram (values, §2.16).
+    pub ladder: bool,
+}
+
+/// Whose a [`Body`] is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BodyOf {
+    /// An action of the POU (`actions/action`), by its name.
+    Action(String),
+    /// A transition of the POU (`transitions/transition`), by its name.
+    Transition(String),
+    /// The inline body (`inline`) of an action of an action block or of a transition, by that
+    /// element's `localId`.
+    Inline(u64),
+    /// A network drawn in the chart's body itself that gives the condition of the transition of
+    /// this `localId` (Table 55 features 2a–6a, TC6 `condition/connectionPointIn`); its
+    /// elements' `localId`s are the chart's.
+    Wired(u64),
 }
 
 /// The point of an element a [`Probe`] is about.
@@ -285,7 +318,7 @@ pub fn lower_with_probes(
             }
             Some((graph::Lang::Sfc, _)) => {
                 charts = true;
-                sfc::pou(pou, &mut places, &mut diags, &mut probes)
+                sfc::pou(pou, &known, &mut places, &mut diags, &mut probes)
             }
             _ => ld::pou(pou, &known, &mut places, &mut diags, &mut probes),
         };
@@ -345,10 +378,11 @@ fn map(
         },
         line: place.text_line,
     });
-    let (action, transition) = match &place.owner {
-        Some(Owner::Action(a)) => (Some(a.clone()), None),
-        Some(Owner::Transition(t)) => (None, Some(t.clone())),
-        None => (None, None),
+    let (action, transition, inline) = match &place.owner {
+        Some(Owner::Action(a)) => (Some(a.clone()), None, None),
+        Some(Owner::Transition(t)) => (None, Some(t.clone()), None),
+        Some(Owner::Inline(id)) => (None, None, Some(*id)),
+        None => (None, None, None),
     };
     Diagnostic {
         line: place.tag.line,
@@ -365,6 +399,7 @@ fn map(
             variable: place.variable.clone(),
             action,
             transition,
+            inline,
             text,
         })),
     }

@@ -73,6 +73,8 @@ pub struct Pou {
 pub enum Act<'a> {
     Name(&'a str),
     St(&'a str),
+    /// A body in LD or FBD: the body of this POU (built only for its body).
+    Body(&'a Pou),
 }
 
 /// A `body` holding Structured Text.
@@ -133,6 +135,45 @@ impl Pou {
             pos(x, y),
             conns(from),
             st_body(cond).trim_start_matches("<body>").trim_end_matches("</body>")
+        );
+        self.raw(&e)
+    }
+    /// A transition whose condition is a network in LD or FBD written in it (`inline`, the
+    /// body of `inner`), which writes the condition to `name`.
+    pub fn trans_body(
+        self,
+        id: u64,
+        x: i32,
+        y: i32,
+        name: &str,
+        inner: &Pou,
+        from: &[&str],
+    ) -> Pou {
+        let e = format!(
+            "<transition localId=\"{id}\">{}{}<connectionPointOut/><condition><inline name=\"{name}\">{}</inline></condition></transition>",
+            pos(x, y),
+            conns(from),
+            inner.body_xml()
+        );
+        self.raw(&e)
+    }
+    /// A transition whose condition is connected from a network drawn in the chart (`cond`,
+    /// as `conns` names connections), negated when `negated`.
+    pub fn trans_wired(
+        self,
+        id: u64,
+        x: i32,
+        y: i32,
+        cond: &[&str],
+        negated: bool,
+        from: &[&str],
+    ) -> Pou {
+        let neg = if negated { " negated=\"true\"" } else { "" };
+        let e = format!(
+            "<transition localId=\"{id}\">{}{}<connectionPointOut/><condition{neg}>{}</condition></transition>",
+            pos(x, y),
+            conns(from),
+            conns(cond)
         );
         self.raw(&e)
     }
@@ -213,6 +254,7 @@ impl Pou {
                         .replace("<body>", "<inline>")
                         .replace("</body>", "</inline>"),
                 ),
+                Act::Body(inner) => e.push_str(&format!("<inline>{}</inline>", inner.body_xml())),
             }
             e.push_str("</action>");
         }
@@ -224,6 +266,26 @@ impl Pou {
         self.actions
             .push_str(&format!("<action name=\"{name}\">{}</action>", st_body(st)));
         self
+    }
+    /// An action of the POU in LD or FBD: the body of `inner`.
+    pub fn action_body(mut self, name: &str, inner: &Pou) -> Pou {
+        self.actions.push_str(&format!(
+            "<action name=\"{name}\"><body>{}</body></action>",
+            inner.body_xml()
+        ));
+        self
+    }
+    /// A transition of the POU in LD or FBD: the body of `inner`, which writes `name`.
+    pub fn transition_body(mut self, name: &str, inner: &Pou) -> Pou {
+        self.transitions.push_str(&format!(
+            "<transition name=\"{name}\"><body>{}</body></transition>",
+            inner.body_xml()
+        ));
+        self
+    }
+    /// The body alone, as its language's element: `<LD>…</LD>` or `<FBD>…</FBD>`.
+    pub fn body_xml(&self) -> String {
+        format!("<{lang}>{}</{lang}>", self.body, lang = self.lang)
     }
     /// A transition of the POU, its condition in ST.
     pub fn transition(mut self, name: &str, st: &str) -> Pou {

@@ -10,7 +10,7 @@
 
 use crate::read::{flag, name, GPou};
 use crate::xml::Node;
-use crate::{expression, At, Holds, Place, Places};
+use crate::{expression, At, Holds, Owner, Place, Places};
 use mythos_logic_ir::{Diagnostic, Retention, Section, Span};
 use mythos_logic_st::ast::{self, BinOp, Expr, ExprKind, Stmt, TypeSpec, TypeSpecKind, VarDecl};
 use std::collections::BTreeMap;
@@ -171,18 +171,54 @@ impl Elem {
 }
 
 /// The elements of the body `body` of `p`, in language `lang`; what cannot be read is said.
+/// `owner` is the action or transition of a Sequential Function Chart the body is, when it is
+/// one (ADR-013 §2.17): every place of it says so.
 pub(crate) fn read_body(
     body: &Node,
     lang: Lang,
     p: &GPou,
+    owner: Option<&Owner>,
     places: &mut Places,
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<Elem> {
-    let mut out = Vec::new();
-    for node in &body.children {
-        if matches!(node.name.as_str(), "addData" | "documentation") {
-            continue;
-        }
+    body.children
+        .iter()
+        .filter(|node| !matches!(node.name.as_str(), "addData" | "documentation"))
+        .filter_map(|node| read_elem(node, lang, p, owner, places, diags))
+        .collect()
+}
+
+/// The names of the elements of a Ladder Diagram or a Function Block Diagram (TC6 `ldObjects`,
+/// `fbdObjects`, and of `commonObjects` those a network has): what a chart's body may hold
+/// besides its own, a network giving a transition's condition (Table 55 features 2a–6a).
+pub(crate) const NETWORK_ELEMENTS: &[&str] = &[
+    "leftPowerRail",
+    "rightPowerRail",
+    "contact",
+    "coil",
+    "block",
+    "inVariable",
+    "outVariable",
+    "inOutVariable",
+    "label",
+    "jump",
+    "return",
+    "connector",
+    "continuation",
+];
+
+/// One element of a graphical body, in language `lang` (`Lang::Sfc`: a network drawn in a
+/// chart's body, of either language, which the chart sorts out); `None` when it could not be
+/// read, and the diagnostics say why.
+pub(crate) fn read_elem(
+    node: &Node,
+    lang: Lang,
+    p: &GPou,
+    owner: Option<&Owner>,
+    places: &mut Places,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<Elem> {
+    {
         let id_text = node.attr("localId");
         let id = id_text.and_then(|t| t.trim().parse::<u64>().ok());
         let pos = node.child("position").and_then(|n| {
@@ -197,7 +233,7 @@ pub(crate) fn read_body(
             local_id: id,
             position: pos,
             variable: None,
-            owner: None,
+            owner: owner.cloned(),
             field: None,
             len: 0,
             text_line: None,
@@ -211,11 +247,11 @@ pub(crate) fn read_body(
                     None => format!("{}: it has no localId", node.name),
                 },
             ));
-            continue;
+            return None;
         };
         let Some(pos) = pos else {
             diags.push(places.diag(line, format!("{} {id} has no position (x, y)", node.name)));
-            continue;
+            return None;
         };
         let before = diags.len();
         let single_input = |places: &mut Places, diags: &mut Vec<Diagnostic>| match node
@@ -291,7 +327,7 @@ pub(crate) fn read_body(
                     node.name
                 ),
             ));
-            continue;
+            return None;
         }
         let (kind, inputs) = match node.name.as_str() {
             "leftPowerRail" => (Kind::LeftRail, Vec::new()),
@@ -319,10 +355,14 @@ pub(crate) fn read_body(
                 }
                 let var = text(places, diags, "variable");
                 let inputs = single_input(places, diags);
-                match var {
-                    Some(var) => (Kind::Contact { var, negated, edge }, inputs),
-                    None => continue,
-                }
+                (
+                    Kind::Contact {
+                        var: var?,
+                        negated,
+                        edge,
+                    },
+                    inputs,
+                )
             }
             "coil" => {
                 let negated = flag(node, "negated", places, line, diags);
@@ -339,26 +379,21 @@ pub(crate) fn read_body(
                 let var =
                     text(places, diags, "variable").and_then(|e| place_of(e, "variable", diags));
                 let inputs = single_input(places, diags);
-                match var {
-                    Some(var) => (
-                        Kind::Coil {
-                            var,
-                            negated,
-                            storage,
-                            edge,
-                        },
-                        inputs,
-                    ),
-                    None => continue,
-                }
+                (
+                    Kind::Coil {
+                        var: var?,
+                        negated,
+                        storage,
+                        edge,
+                    },
+                    inputs,
+                )
             }
             "inVariable" => {
                 let negated = flag(node, "negated", places, line, diags);
                 no_modifier(node, "edge", "storage", id, places, line, diags);
-                match text(places, diags, "expression") {
-                    Some(expr) => (Kind::InVar { expr, negated }, Vec::new()),
-                    None => continue,
-                }
+                let expr = text(places, diags, "expression")?;
+                (Kind::InVar { expr, negated }, Vec::new())
             }
             "outVariable" => {
                 let negated = flag(node, "negated", places, line, diags);
@@ -366,10 +401,13 @@ pub(crate) fn read_body(
                 let target = text(places, diags, "expression")
                     .and_then(|e| place_of(e, "expression", diags));
                 let inputs = single_input(places, diags);
-                match target {
-                    Some(target) => (Kind::OutVar { target, negated }, inputs),
-                    None => continue,
-                }
+                (
+                    Kind::OutVar {
+                        target: target?,
+                        negated,
+                    },
+                    inputs,
+                )
             }
             "inOutVariable" => {
                 let negated_in = flag(node, "negatedIn", places, line, diags);
@@ -379,26 +417,20 @@ pub(crate) fn read_body(
                 let target = text(places, diags, "expression")
                     .and_then(|e| place_of(e, "expression", diags));
                 let inputs = single_input(places, diags);
-                match target {
-                    Some(target) => (
-                        Kind::InOutVar {
-                            target,
-                            negated_in,
-                            negated_out,
-                        },
-                        inputs,
-                    ),
-                    None => continue,
-                }
+                (
+                    Kind::InOutVar {
+                        target: target?,
+                        negated_in,
+                        negated_out,
+                    },
+                    inputs,
+                )
             }
-            "block" => match block(node, id, line, places, diags) {
-                Some(b) => b,
-                None => continue,
-            },
+            "block" => block(node, id, line, places, diags)?,
             "label" | "jump" => {
                 let label = node.attr("label").unwrap_or("");
                 if !label_name(places, line, label, diags) {
-                    continue;
+                    return None;
                 }
                 if node.name == "label" {
                     (Kind::Label(label.to_ascii_uppercase()), Vec::new())
@@ -413,10 +445,10 @@ pub(crate) fn read_body(
             "comment" => (Kind::Comment, Vec::new()),
             // A connector and its continuations are one line (§8.1.3): read in FBD, where the
             // FBD front-end joins them before anything else.
-            "connector" | "continuation" if lang == Lang::Fbd => {
+            "connector" | "continuation" if lang != Lang::Ld => {
                 let label = node.attr("name").unwrap_or("");
                 if !name(places, line, "name", label, diags) {
-                    continue;
+                    return None;
                 }
                 let label = label.to_ascii_uppercase();
                 if node.name == "connector" {
@@ -433,20 +465,17 @@ pub(crate) fn read_body(
                         lang.name()
                     ),
                 ));
-                continue;
+                return None;
             }
         };
-        if diags.len() == before {
-            out.push(Elem {
-                id,
-                pos,
-                line,
-                kind,
-                inputs,
-            });
-        }
+        (diags.len() == before).then_some(Elem {
+            id,
+            pos,
+            line,
+            kind,
+            inputs,
+        })
     }
-    out
 }
 
 pub(crate) fn no_modifier(
@@ -783,9 +812,26 @@ pub(crate) fn check_graph(
 /// The hidden variables a body's lowering declares for itself (ADR-013 §2.15): each a
 /// variable of the POU whose name begins with two underscores, which §6.1.2 forbids in every
 /// name a program declares, marked hidden, so private.
+///
+/// A body that is an action or a transition's condition of a Sequential Function Chart shares
+/// its POU with the chart and with every other such body, whose `localId`s are their own: its
+/// hidden variables are named in its own namespace, `prefix` (`__SFC_<owner>__`) in place of
+/// the two underscores they begin with (ADR-013 §2.17), so `__LD_5` of the action `Fill` is
+/// `__SFC_FILL__LD_5`. No name of a program has two underscores together (§6.1.2), so the
+/// owner's name ends where they are and no two namespaces meet.
 #[derive(Debug, Default)]
 pub(crate) struct Hidden {
     pub vars: Vec<VarDecl>,
+    pub prefix: String,
+}
+
+/// A body lowered: its statements, the hidden variables they use, what holds each of its
+/// points for monitoring, and the flag of each of its networks.
+pub(crate) struct Lowered {
+    pub stmts: Vec<Stmt>,
+    pub vars: Vec<VarDecl>,
+    pub probes: Vec<crate::Probe>,
+    pub flags: Vec<ast::Place>,
 }
 
 /// The variable that says where a body with a jump or a return goes on: 0 on, -1 return, k to
@@ -795,6 +841,10 @@ pub(crate) const JUMP: &str = "__JUMP";
 impl Hidden {
     /// A hidden variable of the POU, declared once; the place it is.
     pub fn var(&mut self, name: String, ty: TypeSpec, span: Span) -> ast::Place {
+        let name = match name.strip_prefix("__") {
+            Some(rest) if !self.prefix.is_empty() => format!("{}{rest}", self.prefix),
+            _ => name,
+        };
         if !self.vars.iter().any(|v| v.name == name) {
             self.vars.push(VarDecl {
                 name: name.clone(),
@@ -917,7 +967,11 @@ fn in_network(e: &Elem) -> bool {
 /// rule c), through `__JUMP`. **Flags**: each network sets `__NET_<localId>` of its first
 /// element TRUE as it starts; in a body with a jump or a return every flag is set FALSE first
 /// in the scan, so a network that did not run reads FALSE.
-pub(crate) fn body<N: Networks>(n: &mut N) -> Vec<Stmt> {
+///
+/// It gives the flag of every network too: a body that does not run in every scan (an action of
+/// a chart, a transition's condition) sets them FALSE itself before it may run, so a network of
+/// a body that did not run never reads as run (ADR-013 §2.17).
+pub(crate) fn body<N: Networks>(n: &mut N) -> (Vec<Stmt>, Vec<ast::Place>) {
     let elems = n.elems();
     let index = n.index();
     // Networks: connected elements, the rails excluded (§8.1.4).
@@ -1096,7 +1150,7 @@ pub(crate) fn body<N: Networks>(n: &mut N) -> Vec<Stmt> {
         }
     }
     if !transfers {
-        return out;
+        return (out, flags);
     }
     let span = n.span(0);
     let jump = n.hidden().jump(span);
@@ -1109,13 +1163,13 @@ pub(crate) fn body<N: Networks>(n: &mut N) -> Vec<Stmt> {
     )];
     all.extend(
         flags
-            .into_iter()
-            .map(|f| Stmt::Assign(f, bool_expr(false, span))),
+            .iter()
+            .map(|f| Stmt::Assign(f.clone(), bool_expr(false, span))),
     );
     if backward {
         all.push(Stmt::Repeat(out, jump_is(&jump, 0, span)));
     } else {
         all.extend(out);
     }
-    all
+    (all, flags)
 }

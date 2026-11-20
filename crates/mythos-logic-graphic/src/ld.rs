@@ -62,10 +62,10 @@
 
 use crate::graph::{
     self, bool_expr, bool_ty, check_graph, read_body, set_jump, Conn, Edge, Elem, Hidden, Kind,
-    Lang, Storage,
+    Lang, Lowered, Storage,
 };
 use crate::read::{GPou, Known};
-use crate::{At, Holds, Places, Probe};
+use crate::{At, Body, Holds, Places, Probe};
 use mythos_logic_ir::{Diagnostic, Span};
 use mythos_logic_st::ast::{
     self, Arg, BinOp, CallArg, Expr, ExprKind, PouKind, Stmt, TypeSpec, TypeSpecKind,
@@ -208,22 +208,45 @@ pub(crate) fn pou(
     };
     let before = diags.len();
     places.keywords_as_names = p.keywords_as_names.clone();
-    let elems = read_body(body, Lang::Ld, p, places, diags);
+    let elems = read_body(body, Lang::Ld, p, None, places, diags);
     if diags.len() == before && check_graph(&elems, Lang::Ld, places, diags) {
-        let mut l = Lowering::new(&elems, &tree, known, places);
-        let stmts = graph::body(&mut l);
-        let found = l.probes(&tree.name);
-        let (hidden, said) = (l.hidden.vars, l.diags);
-        diags.extend(said);
-        if diags.len() == before {
-            probes.extend(found);
-            tree.body = stmts;
-            tree.vars.extend(hidden);
+        if let Some(l) = lower(&elems, &tree, known, places, diags, "", None) {
+            probes.extend(l.probes);
+            tree.body = l.stmts;
+            tree.vars.extend(l.vars);
             return tree;
         }
     }
     tree.partial_body = true;
     tree
+}
+
+/// The elements of an LD body, read and checked, lowered in the POU `pou`: its hidden
+/// variables named in the namespace `prefix` (none for a POU's own body; an action's or a
+/// transition's of a chart, ADR-013 §2.17), its probes said to be of `body`. `None` when it
+/// could not be, and the diagnostics say why.
+pub(crate) fn lower(
+    elems: &[Elem],
+    pou: &ast::Pou,
+    known: &Known,
+    places: &mut Places,
+    diags: &mut Vec<Diagnostic>,
+    prefix: &str,
+    body: Option<Body>,
+) -> Option<Lowered> {
+    let mut l = Lowering::new(elems, pou, known, places);
+    l.hidden.prefix = prefix.to_string();
+    let (stmts, flags) = graph::body(&mut l);
+    let probes = l.probes(&pou.name, body);
+    let (vars, said) = (l.hidden.vars, l.diags);
+    let ok = said.is_empty();
+    diags.extend(said);
+    ok.then_some(Lowered {
+        stmts,
+        vars,
+        probes,
+        flags,
+    })
 }
 
 /// The state of lowering one body.
@@ -1339,7 +1362,7 @@ impl<'a> Lowering<'a> {
 
     /// What holds the power of every output, junction and network of the body: each a
     /// hidden variable assigned when it is evaluated, or ON (ADR-013 §2.15).
-    fn probes(&self, pou: &str) -> Vec<Probe> {
+    fn probes(&self, pou: &str, body: Option<Body>) -> Vec<Probe> {
         self.published
             .iter()
             .map(|((local_id, at), holds)| Probe {
@@ -1347,6 +1370,7 @@ impl<'a> Lowering<'a> {
                 local_id: *local_id,
                 at: at.clone(),
                 holds: holds.clone(),
+                body: body.clone(),
             })
             .collect()
     }

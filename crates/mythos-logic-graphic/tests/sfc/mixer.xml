@@ -1,0 +1,299 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A mixing tank as a Sequential Function Chart whose actions and conditions are written in LD
+     and FBD (ADR-013 §2.17), moved by its steps' times alone, so that it runs with no input: on
+     the emulated microcontrollers of scripts/logic-vm-on-emulators.sh as on a PC.
+     Idle: an FBD action in its action block sets ready once Idle has lasted 40 ms; a rung drawn
+     in the chart (contact ready) clears the transition to Fill. Fill: Open (an action of the POU
+     in LD, its coil the valve) and P1 Count (in FBD, batches + 1); its transition's condition is
+     an FBD network written in it (Fill.T >= 30 ms). Stir: L 50 ms the BOOL variable motor, and an
+     LD action in its block of two rungs (reset the valve; while motor, stirred + 1); an FBD
+     network drawn in the chart reaches its transition through a connector (Stir.T >= 70 ms),
+     and a jump step goes back to Idle. -->
+<project xmlns="http://www.plcopen.org/xml/tc6_0201" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <fileHeader companyName="" productName="MythOS tests" productVersion="1" creationDateTime="2026-11-20T00:00:00Z"/>
+  <contentHeader name="Mixer">
+    <coordinateInfo>
+      <fbd><scaling x="1" y="1"/></fbd>
+      <ld><scaling x="1" y="1"/></ld>
+      <sfc><scaling x="1" y="1"/></sfc>
+    </coordinateInfo>
+  </contentHeader>
+  <types>
+    <dataTypes/>
+    <pous>
+      <pou name="Mixer" pouType="program">
+        <interface>
+          <localVars>
+            <variable name="ready"><type><BOOL/></type></variable>
+            <variable name="valve"><type><BOOL/></type></variable>
+            <variable name="motor"><type><BOOL/></type></variable>
+            <variable name="batches"><type><INT/></type></variable>
+            <variable name="stirred"><type><INT/></type></variable>
+          </localVars>
+        </interface>
+        <actions>
+          <action name="Open">
+            <body>
+              <LD>
+                <leftPowerRail localId="1">
+                  <position x="0" y="20"/>
+                  <connectionPointOut formalParameter=""/>
+                </leftPowerRail>
+                <coil localId="2">
+                  <position x="200" y="20"/>
+                  <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+                  <connectionPointOut/>
+                  <variable>valve</variable>
+                </coil>
+                <rightPowerRail localId="3">
+                  <position x="400" y="20"/>
+                  <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+                </rightPowerRail>
+              </LD>
+            </body>
+          </action>
+          <action name="Count">
+            <body>
+              <FBD>
+                <inVariable localId="1">
+                  <position x="0" y="0"/>
+                  <connectionPointOut/>
+                  <expression>batches</expression>
+                </inVariable>
+                <inVariable localId="2">
+                  <position x="0" y="40"/>
+                  <connectionPointOut/>
+                  <expression>1</expression>
+                </inVariable>
+                <block localId="3" typeName="ADD">
+                  <position x="100" y="0"/>
+                  <inputVariables>
+                    <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="1"/></connectionPointIn></variable>
+                    <variable formalParameter="IN2"><connectionPointIn><connection refLocalId="2"/></connectionPointIn></variable>
+                  </inputVariables>
+                  <inOutVariables/>
+                  <outputVariables><variable formalParameter="OUT"><connectionPointOut/></variable></outputVariables>
+                </block>
+                <outVariable localId="4">
+                  <position x="200" y="0"/>
+                  <connectionPointIn><connection refLocalId="3"/></connectionPointIn>
+                  <expression>batches</expression>
+                </outVariable>
+              </FBD>
+            </body>
+          </action>
+        </actions>
+        <body>
+          <SFC>
+            <step localId="1" name="Idle" initialStep="true">
+              <position x="100" y="0"/>
+              <connectionPointOut formalParameter=""/>
+              <connectionPointOutAction formalParameter=""/>
+            </step>
+            <actionBlock localId="10">
+              <position x="300" y="0"/>
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              <action localId="11" qualifier="N">
+                <relPosition x="0" y="0"/>
+                <inline>
+                  <FBD>
+                    <inVariable localId="1">
+                      <position x="0" y="0"/>
+                      <connectionPointOut/>
+                      <expression>Idle.T</expression>
+                    </inVariable>
+                    <inVariable localId="2">
+                      <position x="0" y="40"/>
+                      <connectionPointOut/>
+                      <expression>T#40ms</expression>
+                    </inVariable>
+                    <block localId="3" typeName="GE">
+                      <position x="100" y="0"/>
+                      <inputVariables>
+                        <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="1"/></connectionPointIn></variable>
+                        <variable formalParameter="IN2"><connectionPointIn><connection refLocalId="2"/></connectionPointIn></variable>
+                      </inputVariables>
+                      <inOutVariables/>
+                      <outputVariables><variable formalParameter="OUT"><connectionPointOut/></variable></outputVariables>
+                    </block>
+                    <outVariable localId="4">
+                      <position x="200" y="0"/>
+                      <connectionPointIn><connection refLocalId="3"/></connectionPointIn>
+                      <expression>ready</expression>
+                    </outVariable>
+                  </FBD>
+                </inline>
+              </action>
+            </actionBlock>
+            <leftPowerRail localId="20">
+              <position x="-200" y="40"/>
+              <connectionPointOut formalParameter=""/>
+            </leftPowerRail>
+            <contact localId="21">
+              <position x="-100" y="40"/>
+              <connectionPointIn><connection refLocalId="20"/></connectionPointIn>
+              <connectionPointOut/>
+              <variable>ready</variable>
+            </contact>
+            <transition localId="2">
+              <position x="100" y="40"/>
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              <connectionPointOut/>
+              <condition><connectionPointIn><connection refLocalId="21"/></connectionPointIn></condition>
+            </transition>
+            <step localId="3" name="Fill">
+              <position x="100" y="80"/>
+              <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+              <connectionPointOut formalParameter=""/>
+              <connectionPointOutAction formalParameter=""/>
+            </step>
+            <actionBlock localId="12">
+              <position x="300" y="80"/>
+              <connectionPointIn><connection refLocalId="3"/></connectionPointIn>
+              <action localId="13" qualifier="N">
+                <relPosition x="0" y="0"/>
+                <reference name="Open"/>
+              </action>
+              <action localId="14" qualifier="P1">
+                <relPosition x="0" y="20"/>
+                <reference name="Count"/>
+              </action>
+            </actionBlock>
+            <transition localId="4">
+              <position x="100" y="120"/>
+              <connectionPointIn><connection refLocalId="3"/></connectionPointIn>
+              <connectionPointOut/>
+              <condition>
+                <inline name="Filled">
+                  <FBD>
+                    <inVariable localId="1">
+                      <position x="0" y="0"/>
+                      <connectionPointOut/>
+                      <expression>Fill.T</expression>
+                    </inVariable>
+                    <inVariable localId="2">
+                      <position x="0" y="40"/>
+                      <connectionPointOut/>
+                      <expression>T#30ms</expression>
+                    </inVariable>
+                    <block localId="3" typeName="GE">
+                      <position x="100" y="0"/>
+                      <inputVariables>
+                        <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="1"/></connectionPointIn></variable>
+                        <variable formalParameter="IN2"><connectionPointIn><connection refLocalId="2"/></connectionPointIn></variable>
+                      </inputVariables>
+                      <inOutVariables/>
+                      <outputVariables><variable formalParameter="OUT"><connectionPointOut/></variable></outputVariables>
+                    </block>
+                    <outVariable localId="4">
+                      <position x="200" y="0"/>
+                      <connectionPointIn><connection refLocalId="3"/></connectionPointIn>
+                      <expression>Filled</expression>
+                    </outVariable>
+                  </FBD>
+                </inline>
+              </condition>
+            </transition>
+            <step localId="6" name="Stir">
+              <position x="100" y="160"/>
+              <connectionPointIn><connection refLocalId="4"/></connectionPointIn>
+              <connectionPointOut formalParameter=""/>
+              <connectionPointOutAction formalParameter=""/>
+            </step>
+            <actionBlock localId="15">
+              <position x="300" y="160"/>
+              <connectionPointIn><connection refLocalId="6"/></connectionPointIn>
+              <action localId="16" qualifier="L" duration="T#50ms">
+                <relPosition x="0" y="0"/>
+                <reference name="motor"/>
+              </action>
+              <action localId="17" qualifier="N">
+                <relPosition x="0" y="20"/>
+                <inline>
+                  <LD>
+                    <leftPowerRail localId="1">
+                      <position x="0" y="20"/>
+                      <connectionPointOut formalParameter=""/>
+                    </leftPowerRail>
+                    <coil localId="2" storage="reset">
+                      <position x="200" y="20"/>
+                      <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+                      <connectionPointOut/>
+                      <variable>valve</variable>
+                    </coil>
+                    <contact localId="3">
+                      <position x="100" y="60"/>
+                      <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+                      <connectionPointOut/>
+                      <variable>motor</variable>
+                    </contact>
+                    <block localId="4" typeName="ADD">
+                      <position x="200" y="60"/>
+                      <inputVariables>
+                        <variable formalParameter="EN"><connectionPointIn><connection refLocalId="3"/></connectionPointIn></variable>
+                        <variable formalParameter="IN1"><connectionPointIn><expression>stirred</expression></connectionPointIn></variable>
+                        <variable formalParameter="IN2"><connectionPointIn><expression>1</expression></connectionPointIn></variable>
+                      </inputVariables>
+                      <inOutVariables/>
+                      <outputVariables>
+                        <variable formalParameter="ENO"><connectionPointOut/></variable>
+                        <variable formalParameter="OUT"><connectionPointOut/></variable>
+                      </outputVariables>
+                    </block>
+                    <outVariable localId="5">
+                      <position x="300" y="60"/>
+                      <connectionPointIn><connection refLocalId="4" formalParameter="OUT"/></connectionPointIn>
+                      <expression>stirred</expression>
+                    </outVariable>
+                    <rightPowerRail localId="6">
+                      <position x="400" y="20"/>
+                      <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+                    </rightPowerRail>
+                  </LD>
+                </inline>
+              </action>
+            </actionBlock>
+            <inVariable localId="30">
+              <position x="-400" y="200"/>
+              <connectionPointOut/>
+              <expression>Stir.T</expression>
+            </inVariable>
+            <inVariable localId="31">
+              <position x="-400" y="240"/>
+              <connectionPointOut/>
+              <expression>T#70ms</expression>
+            </inVariable>
+            <block localId="32" typeName="GE">
+              <position x="-300" y="200"/>
+              <inputVariables>
+                <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="30"/></connectionPointIn></variable>
+                <variable formalParameter="IN2"><connectionPointIn><connection refLocalId="31"/></connectionPointIn></variable>
+              </inputVariables>
+              <inOutVariables/>
+              <outputVariables><variable formalParameter="OUT"><connectionPointOut/></variable></outputVariables>
+            </block>
+            <connector localId="33" name="DONE">
+              <position x="-200" y="200"/>
+              <connectionPointIn><connection refLocalId="32"/></connectionPointIn>
+            </connector>
+            <continuation localId="34" name="DONE">
+              <position x="0" y="200"/>
+              <connectionPointOut/>
+            </continuation>
+            <transition localId="7">
+              <position x="100" y="200"/>
+              <connectionPointIn><connection refLocalId="6"/></connectionPointIn>
+              <connectionPointOut/>
+              <condition><connectionPointIn><connection refLocalId="34"/></connectionPointIn></condition>
+            </transition>
+            <jumpStep localId="9" targetName="Idle">
+              <position x="100" y="240"/>
+              <connectionPointIn><connection refLocalId="7"/></connectionPointIn>
+            </jumpStep>
+          </SFC>
+        </body>
+      </pou>
+    </pous>
+  </types>
+  <instances><configurations/></instances>
+</project>

@@ -148,6 +148,12 @@ pub struct Element {
     /// is one the POU declares (TC6 `transitions/transition`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<String>,
+    /// The element of a Sequential Function Chart whose inline body the message is about, by
+    /// its `localId`: an action of an action block or a transition, whose action or condition
+    /// is written in the chart itself in LD or FBD (TC6 `inline`); `local_id` is then the
+    /// element of that body. Absent elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline: Option<u64>,
     /// The text of the element or declaration the message is about, and which characters of
     /// it. Absent when it is about the element as a whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]

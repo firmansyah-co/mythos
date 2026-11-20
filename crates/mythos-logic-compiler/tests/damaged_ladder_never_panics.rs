@@ -3,7 +3,8 @@
 //! `damaged_sources_never_panic.rs` does the same for Structured Text.
 //!
 //! The hand-written TC6 projects of the emulator corpus (`tests/ladder/oscillator.xml`,
-//! `tests/fbd/blinker.xml`, the graphical crate's `tests/sfc/bottling.xml`) are
+//! `tests/fbd/blinker.xml`, the graphical crate's `tests/sfc/bottling.xml` and
+//! `tests/sfc/mixer.xml`, a chart with actions and conditions in LD and FBD) are
 //! damaged the ways a file is, by a tool or by hand: characters and stretches deleted, pieces
 //! of XML and of the schema inserted, lines repeated, swapped and dropped, attribute values and
 //! ids changed, the text cut short. Each damaged document must compile or be refused with at
@@ -69,6 +70,19 @@ const SFC_PIECES: [&str; 8] = [
     "duration=\"T#\"",
     "initialStep=\"true\"",
     "<reference name=\"Discard\"/>",
+];
+
+/// What the damage of a chart with LD and FBD bodies inserts besides PIECES and SFC_PIECES:
+/// networks where a chart's condition or action does not take them.
+const SFC_BODY_PIECES: [&str; 8] = [
+    "<coil localId=\"509\"><position x=\"1\" y=\"1\"/><connectionPointIn><connection refLocalId=\"21\"/></connectionPointIn><variable>valve</variable></coil>",
+    "<contact localId=\"510\" edge=\"rising\"><position x=\"1\" y=\"1\"/><connectionPointIn><connection refLocalId=\"20\"/></connectionPointIn><variable>ready</variable></contact>",
+    "<condition><connectionPointIn><connection refLocalId=\"1\"/></connectionPointIn></condition>",
+    "<condition><connectionPointIn><connection refLocalId=\"34\"/></connectionPointIn></condition>",
+    "<return localId=\"511\"><position x=\"1\" y=\"1\"/><connectionPointIn><connection refLocalId=\"1\"/></connectionPointIn></return>",
+    "<inline name=\"\"><LD></LD></inline>",
+    "<inline name=\"ready\"><SFC></SFC></inline>",
+    "<continuation localId=\"512\" name=\"DONE\"><position x=\"1\" y=\"1\"/></continuation>",
 ];
 
 fn damage(text: &str, rng: &mut Rng, more: &[&str]) -> String {
@@ -158,6 +172,17 @@ fn a_damaged_sequential_function_chart_is_compiled_or_refused_with_places_never_
         Language::Sfc,
         0x5EED_5FC0_0000_0001,
         &SFC_PIECES,
+    );
+}
+
+#[test]
+fn a_damaged_chart_with_ld_and_fbd_bodies_is_compiled_or_refused_with_places_never_a_panic() {
+    let more: Vec<&str> = SFC_PIECES.iter().chain(&SFC_BODY_PIECES).copied().collect();
+    damaged(
+        include_str!("../../mythos-logic-graphic/tests/sfc/mixer.xml"),
+        Language::Sfc,
+        0x5EED_5FC0_0000_0002,
+        &more,
     );
 }
 
