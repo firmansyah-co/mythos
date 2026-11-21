@@ -515,3 +515,50 @@ button.logic-diagnostic:hover {
 .ld-suggestions li.is-picked {
   background: var(--c-select);
 }
+
+/* The Sequential Function Chart editor (L3d-3): the chart drawn by the view, the selection's
+   fields under it. Layout only: its visual design is the owner's to lead. */
+.sfc-editor__chart {
+  padding: 4px 0;
+}
+
+.sfc-fields {
+  border-top: 1px solid var(--c-rule);
+}
+
+.sfc-fields__branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sfc-text {
+  min-width: 240px;
+  max-width: 100%;
+  resize: vertical;
+  font-size: var(--fs-sm);
+}
+
+/* The action table, as S7-GRAPH's: qualifier, duration, action. */
+.sfc-actions {
+  flex-basis: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.sfc-actions th {
+  text-align: left;
+  font-weight: normal;
+  color: var(--c-text-muted);
+  padding: 2px 6px;
+}
+
+.sfc-actions td {
+  padding: 2px 6px;
+  vertical-align: top;
+  border-top: 1px solid var(--c-rule);
+}
+
+.sfc-actions tr.is-selected td {
+  background: var(--c-select);
+}

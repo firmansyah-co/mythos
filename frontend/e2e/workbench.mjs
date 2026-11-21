@@ -897,8 +897,8 @@ try {
   }
 
   // 8h. A Sequential Function Chart (ADR-013 L3d-2): added from the tree as SFC, it opens on its
-  // chart, the module's template (one initial step) drawn, read-only and saying the chart editor
-  // is not built. A chart written over the API as an agent writes it (its conditions in CDATA, as a
+  // chart, the module's template (one initial step) drawn, in the chart editor for an engineer
+  // (L3d-3; 8i edits one). A chart written over the API as an agent writes it (its conditions in CDATA, as a
   // browser reads them) is checked with a mistake drawn at its transition, corrected, loaded and
   // run: a step becomes active and its time grows; the condition after the active step is
   // evaluated FALSE until it holds, the one after the step that is not active is not evaluated;
@@ -906,9 +906,9 @@ try {
   {
   await evaluate(`__t.clickTestId('tree-add-program')`); await sleep(200);
   await evaluate(`__t.type('Program name', 'Sequence'); __t.type('Program language', 'sfc'); __t.press('Program name', 'Enter'); true`); await sleep(1500);
-  check('an SFC program added from the tree opens on its chart: the template’s one initial step drawn, read-only, no other editor',
-    (await evaluate(`__t.has('[data-testid="sfc-view"]') && __t.has('[data-testid="sfc-element"][data-kind="step"][data-initial="true"][data-name="Start"]')
-      && __t.has('[data-testid="sfc-read-only"]') && !__t.has('[data-testid="ld-editor"]') && !__t.has('[data-testid="fbd-editor"]')`)),
+  check('an SFC program added from the tree opens on its chart: the template’s one initial step drawn, in the chart editor, no other editor',
+    (await evaluate(`__t.has('[data-testid="sfc-editor"]') && __t.has('[data-testid="sfc-element"][data-kind="step"][data-initial="true"][data-name="Start"]')
+      && !__t.has('[data-testid="sfc-read-only"]') && !__t.has('[data-testid="ld-editor"]') && !__t.has('[data-testid="fbd-editor"]')`)),
     await evaluate(`__t.text('[data-testid="sfc-panel"]').join(' ')`));
   const sfcLanguage = await evaluate(`[...document.querySelectorAll('[data-testid="tree-program"]')].filter((n) => n.querySelector('.tree__label').textContent === 'Sequence').map((n) => n.querySelector('[data-testid="tree-program-language"]').textContent)`);
   check('the tree says it is SFC', JSON.stringify(sfcLanguage) === '["SFC"]', JSON.stringify(sfcLanguage));
@@ -1011,6 +1011,90 @@ try {
     JSON.stringify(sfcStopped));
   await evaluate(`__t.clickTestId('runtime-unload')`); await sleep(2500);
   check('Unload takes the chart out of the controller’s runtimes', !(await (await api(base + '/api/v1/runtimes')).json()).runtimes.some((r) => r.id === 'Sequence'));
+  await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
+  }
+
+  // 8i. The Sequential Function Chart editor (ADR-013 L3d-3): a chart built in the editor, as an
+  // engineer builds one in S7-GRAPH's sequence editor. From the template (Start): Shift+F2 a
+  // transition and a step, named Run; Shift+F7 an N action of Run, busy, declared where it is
+  // named (Ctrl+Enter); Start's transition written; Shift+F9 a transition and a jump back to Start
+  // after Run; at that transition Shift+F3 an alternative branch, written Run.T >= T#1s, and in it
+  // Shift+F2 a step Pause and its transition; the left branch stays FALSE, so the right one is the
+  // one taken. Loaded and run: Start, Run and Pause become active in turn (the branch taken), busy
+  // on while Run is. Every screenshot measures that no control is past its pane.
+  {
+  await evaluate(`__t.clickTestId('tree-add-program')`); await sleep(200);
+  await evaluate(`__t.type('Program name', 'Steps'); __t.type('Program language', 'sfc'); __t.press('Program name', 'Enter'); true`); await sleep(1500);
+  check('an engineer gets the chart editor on a new SFC program', await evaluate(`__t.has('[data-testid="sfc-editor"]')`));
+  await evaluate(`window.__s = {
+    ed() { return document.querySelector('[data-testid="sfc-editor"]'); },
+    key(key, mods = {}) { const ed = this.ed(); ed.focus(); ed.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey: !!mods.shift, ctrlKey: !!mods.ctrl, bubbles: true, cancelable: true })); return true; },
+    pick(sel) { const el = document.querySelector(sel); if (!el) throw new Error('no element: ' + sel); el.dispatchEvent(new MouseEvent('click', { bubbles: true })); return true; },
+    step(name) { return this.pick('[data-testid="sfc-element"][data-kind="step"][data-name="' + name + '"]'); },
+    fill(value) { const el = document.activeElement; if (!el || !['INPUT', 'TEXTAREA'].includes(el.tagName)) throw new Error('no field has the focus: ' + (el && el.tagName));
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value); el.dispatchEvent(new Event('input', { bubbles: true })); return el.getAttribute('data-testid'); },
+    enter(ctrl = false) { document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: ctrl, bubbles: true, cancelable: true })); return true; },
+    conditions() { return [...document.querySelectorAll('[data-testid="sfc-element"][data-kind="transition"] [data-testid="sfc-condition"]')].map((e) => e.textContent); },
+  }; true`);
+  const write = async (value, ctrl = false) => { await sleep(300); const field = await evaluate(`__s.fill(${JSON.stringify(value)})`); await sleep(150); await evaluate(`__s.enter(${ctrl})`); await sleep(300); return field; };
+  await evaluate(`__s.step('Start')`); await sleep(200);
+  await evaluate(`__s.key('F2', { shift: true })`);
+  check('Shift+F2 puts a transition and a step, the step’s name taking the focus', (await write('Run')) === 'sfc-step-name');
+  await evaluate(`__s.key('F7', { shift: true })`);
+  check('Shift+F7 puts an N action of the step, its name taking the focus', (await write('busy', true)) === 'sfc-action-name');
+  await evaluate(`__s.pick('[data-testid="sfc-element"][data-kind="transition"]')`); await sleep(200);
+  await evaluate(`__s.key('Enter')`);
+  check('Enter at a transition goes to its condition', (await write('Start.T >= T#1s')) === 'sfc-condition');
+  await evaluate(`__s.step('Run')`); await sleep(200);
+  await evaluate(`__s.key('F9', { shift: true })`); await sleep(400);
+  // The jump's transition: the second, FALSE until written; an alternative branch beside it.
+  await evaluate(`__s.pick('[data-testid="sfc-element"][data-kind="jumpStep"]')`); await sleep(200);
+  await evaluate(`__s.key('ArrowUp')`); await sleep(200);
+  await evaluate(`__s.key('F3', { shift: true })`);
+  check('Shift+F3 opens an alternative branch, its transition’s condition taking the focus', (await write('Run.T >= T#1s')) === 'sfc-condition');
+  await evaluate(`__s.key('F2', { shift: true })`);
+  check('Shift+F2 in the branch puts a step and a transition there', (await write('Pause')) === 'sfc-step-name');
+  await evaluate(`__s.key('ArrowDown')`); await sleep(200);
+  await evaluate(`__s.key('Enter')`);
+  await write('Pause.T >= T#1s');
+  const built = await evaluate(`({ kinds: [...document.querySelectorAll('[data-testid="sfc-element"]')].map((e) => e.getAttribute('data-kind')).sort().join(), conditions: __s.conditions(),
+    steps: [...document.querySelectorAll('[data-testid="sfc-element"][data-kind="step"]')].map((e) => e.getAttribute('data-name') + (e.getAttribute('data-initial') ? '*' : '')).join(),
+    problems: document.querySelectorAll('[data-testid="sfc-problem"]').length, unsaved: __t.has('[data-testid="program-unsaved"]') })`);
+  check('the chart built: three steps, a selection of two branches meeting before the jump, four conditions as written, nothing marked wrong, unsaved',
+    built.steps === 'Start*,Run,Pause' && built.kinds === 'actionBlock,jumpStep,selectionConvergence,selectionDivergence,step,step,step,transition,transition,transition,transition'
+      && JSON.stringify([...built.conditions].sort()) === JSON.stringify(['FALSE', 'Pause.T >= T#1s', 'Run.T >= T#1s', 'Start.T >= T#1s']) && built.problems === 0 && built.unsaved,
+    JSON.stringify(built));
+  await sleep(1500);
+  const stepsSummary = () => evaluate(`(() => { const b = document.querySelector('[data-testid="check-summary"]'); return b ? b.getAttribute('data-state') + ':' + b.textContent.trim() : null; })()`);
+  check('the editor’s quiet check after the last edit: it compiles', (await stepsSummary()) === 'good:COMPILES', await stepsSummary());
+  await evaluate(`__s.step('Run')`); await sleep(300);
+  await shot('e2e_6l_sfc_editor');
+  await evaluate(`__t.click('Properties')`); await sleep(200);
+  await evaluate(`__t.type('Interval in milliseconds', '50'); true`);
+  await evaluate(`[...document.querySelectorAll('.settings__check')].find((l) => l.textContent.includes('Run when loaded')).querySelector('input').click(); true`);
+  await evaluate(`__t.clickTestId('program-load')`); await sleep(3000);
+  check('Load saves the chart, builds it and loads it into a runtime',
+    /^Version [0-9a-f]{12} was built and loaded\./.test((await evaluate(`__t.text('[data-testid="program-built"]')[0]`)) ?? '') && !(await evaluate(`__t.has('[data-testid="program-unsaved"]')`)),
+    await evaluate(`__t.text('[data-testid="program-built"]')[0]`));
+  const saved = await (await api(`${base}/api/v1/projects/plant_a/logic/programs/Steps`)).json().catch(() => null);
+  check('what was saved is the editor’s TC6 document, read back over the API', typeof saved?.source === 'string' && saved.source.includes('<selectionDivergence') && saved.source.includes('urn:mythos:logic:ld-editor'),
+    JSON.stringify(saved).slice(0, 200));
+  const stepsLive = () => evaluate(`(() => { const st = (n) => document.querySelector('[data-testid="sfc-element"][data-kind="step"][data-name="' + n + '"]')?.getAttribute('data-state');
+    const busy = [...document.querySelectorAll('[data-testid="sfc-action"]')].map((r) => r.querySelector('[data-testid="sfc-action-value"]')?.textContent ?? null)[0] ?? null;
+    return { live: document.querySelector('[data-testid="sfc-live"]')?.getAttribute('data-live'), start: st('Start'), run: st('Run'), pause: st('Pause'), busy }; })()`);
+  await sleep(1000);
+  const seen = [];
+  for (let i = 0; i < 16; i++) { seen.push(await stepsLive()); await sleep(500); }
+  const which = (s) => ['start', 'run', 'pause'].filter((k) => s[k] === 'active').join('+');
+  check('the chart built in the editor runs live: one step active at a time', seen.every((s) => s.live === 'live' && which(s).split('+').length === 1 && which(s) !== ''), JSON.stringify(seen.map(which)));
+  check('Start, Run and Pause each become active: the right branch of the selection is the one taken', ['start', 'run', 'pause'].every((k) => seen.some((s) => s[k] === 'active')), JSON.stringify(seen.map(which)));
+  check('busy is on while Run is active, off while Pause is', seen.filter((s) => s.pause === 'active').every((s) => s.busy === 'FALSE') && seen.some((s) => s.run === 'active' && s.busy === 'TRUE'),
+    JSON.stringify(seen.map((s) => `${which(s)} ${s.busy}`)));
+  await shot('e2e_6m_sfc_editor_live');
+  await evaluate(`__t.clickTestId('runtime-stop')`); await sleep(2500);
+  await evaluate(`__t.clickTestId('runtime-unload')`); await sleep(2500);
+  check('Unload takes the edited chart out of the controller’s runtimes', !(await (await api(base + '/api/v1/runtimes')).json()).runtimes.some((r) => r.id === 'Steps'));
   await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
   }
 
