@@ -744,7 +744,7 @@ fn a_function_of_an_fbd_action_that_did_not_run_is_not_shown_as_computed() {
     // in review: `ran` stayed TRUE once the action stopped).
     let body = Pou::program("_")
         .fbd()
-        .invar(30, 0, 0, "go")
+        .invar(30, 0, 0, "en")
         .invar(31, 0, 40, "a")
         .invar(32, 0, 80, "b")
         .block(
@@ -761,13 +761,11 @@ fn a_function_of_an_fbd_action_that_did_not_run_is_not_shown_as_computed() {
             &["ENO", "OUT"],
         )
         .outvar(34, 200, 0, "lamp", &["33.OUT"]);
-    let mut r = run(&[chart().action_body("Light", &body).actions_of(
-        5,
-        300,
-        80,
-        "3",
-        &[(6, "N", None, Act::Name("Light"))],
-    )]);
+    // EN is `en`, TRUE throughout: the AND ran in the action's last run, and its ENO with it.
+    let mut r = run(&[chart()
+        .vars(&[("en", "BOOL")])
+        .action_body("Light", &body)
+        .actions_of(5, 300, 80, "3", &[(6, "N", None, Act::Name("Light"))])]);
     let of = BodyOf::Action("Light".into());
     let (value, ran) = match &probe(&r, &of, 33, At::Output("OUT".into())).holds {
         Holds::Guarded { path, ran } => (path.clone(), ran.clone()),
@@ -775,7 +773,7 @@ fn a_function_of_an_fbd_action_that_did_not_run_is_not_shown_as_computed() {
     };
     assert_eq!(ran, "__SFC_LIGHT__FBD_33_ENO");
     let flag = network_flag(&r, &of, 30);
-    for v in ["go", "a", "b"] {
+    for v in ["en", "go", "a", "b"] {
         r.set(v, Value::Bool(true));
     }
     r.scan_at(0);
