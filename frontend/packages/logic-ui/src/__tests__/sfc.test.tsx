@@ -55,6 +55,8 @@ const corpus = (name: string) =>
 const BOTTLING = corpus('bottling.xml');
 /** A chart in a function block, called twice by an FBD program of the same document. */
 const DOORS = corpus('doors.xml');
+/** A mixing tank whose actions and conditions are written in LD and FBD (L3d-1b; see its header). */
+const MIXER = corpus('mixer.xml');
 
 const VERSION = 'aaaaaaaaaaaa';
 
@@ -336,6 +338,46 @@ describe('drawing a Sequential Function Chart', () => {
 
   it('follows a chart saved elsewhere, as an LD or FBD diagram, and not a Structured Text being typed', () => {
     expect(['st', 'ld', 'fbd', 'sfc'].filter(followsSavedSource)).toEqual(['ld', 'fbd', 'sfc']);
+  });
+
+  it('names the language of an action or a condition in LD or FBD, lists a network drawn in the chart, and marks a diagnostic in a body at what holds it', async () => {
+    const { container } = await opened(
+      bottling({
+        programs: [{ entry: entryOf('Mixer', { language: 'sfc' }), source: MIXER }],
+        check: () => ({
+          ok: false,
+          diagnostics: [
+            // In the FBD body of the action of block 10 (localId 11): its element 3, not step Fill (3).
+            { line: 110, col: 1, end_line: 110, end_col: 9, message: 'in the inline body', element: { pou: 'Mixer', inline: 11, local_id: 3 } },
+            // In the LD action Open of the POU: its coil 2, not transition 2.
+            { line: 44, col: 1, end_line: 44, end_col: 9, message: 'in the action Open', element: { pou: 'Mixer', action: 'Open', local_id: 2 } },
+            // The contact of the rung drawn in the chart for transition 2.
+            { line: 132, col: 1, end_line: 132, end_col: 9, message: 'in the drawn rung', element: { pou: 'Mixer', local_id: 21, x: -100, y: 40 } },
+          ],
+        }),
+      }),
+      'Mixer'
+    );
+    expect(element(container, 2).querySelector('[data-testid="sfc-condition"]')?.textContent).toBe('(network in the chart, from 21)');
+    expect(element(container, 4).querySelector('[data-testid="sfc-condition"]')?.textContent).toBe('(in FBD)');
+    expect(element(container, 7).querySelector('[data-testid="sfc-condition"]')?.textContent).toBe('(network in the chart, from 34)');
+    const what = (id: number) => container.querySelector(`[data-testid="sfc-action"][data-local-id="${id}"] [data-testid="sfc-action-text"]`)?.textContent;
+    expect([what(11), what(13), what(17)]).toEqual(['(in FBD)', 'Open', '(in LD)']);
+    expect(container.querySelector('[data-testid="sfc-pou-action"][data-name="Open"]')?.textContent).toContain('Its body is in LD and is not shown here.');
+    expect(byTestId(container, 'sfc-not-drawn')?.textContent).toBe(
+      'Not drawn: ' +
+        ['leftPowerRail 20', 'contact 21', 'inVariable 30', 'inVariable 31', 'block 32', 'connector 33', 'continuation 34']
+          .map((e) => `${e} (of a network of LD or FBD drawn in the chart)`)
+          .join('; ') +
+        '.'
+    );
+    const marks = [...container.querySelectorAll('[data-testid="sfc-diagnostic"]')].map((m) => `${m.getAttribute('data-local-id')}:${m.textContent}`);
+    expect(marks).toEqual(['11:in the inline body', '13:in the action Open', '2:in the drawn rung']);
+    expect(texts(container, 'diagnostic')).toEqual([
+      'Mixer element 11, its body element 3in the inline body',
+      'Mixer action Open element 2in the action Open',
+      'Mixer element 21in the drawn rung',
+    ]);
   });
 
   it('lists the second of two elements with one localId as not drawn, and draws the first', () => {

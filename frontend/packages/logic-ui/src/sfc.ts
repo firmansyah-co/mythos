@@ -21,6 +21,23 @@ export type SfcKind =
   | 'actionBlock'
   | 'comment';
 
+/** The elements of LD and FBD a network drawn in a chart is made of (TC6). */
+const LD_FBD = new Set([
+  'leftPowerRail',
+  'rightPowerRail',
+  'contact',
+  'coil',
+  'block',
+  'inVariable',
+  'outVariable',
+  'inOutVariable',
+  'connector',
+  'continuation',
+  'label',
+  'jump',
+  'return',
+]);
+
 const KINDS: readonly SfcKind[] = [
   'step',
   'transition',
@@ -56,6 +73,8 @@ export interface SfcAction {
 /** A transition's condition: inline, or a transition of the POU by its name. */
 export type SfcCondition =
   | { kind: 'inline'; text: SfcText; negated: boolean }
+  /** A network of LD or FBD drawn in the chart that reaches the transition (ADR-013 §2.17, L3d-1b). */
+  | { kind: 'wired'; from: number[]; negated: boolean }
   | { kind: 'reference'; name: string; negated: boolean };
 
 export interface SfcElement {
@@ -155,8 +174,16 @@ function element(node: Element, kind: SfcKind): SfcElement | string {
         const negated = flag(condition, 'negated');
         const reference = child(condition, 'reference');
         const inline = child(condition, 'inline');
+        const wired = child(condition, 'connectionPointIn');
         if (reference) e.condition = { kind: 'reference', name: reference.getAttribute('name') ?? '', negated };
         else if (inline) e.condition = { kind: 'inline', text: textOf(inline), negated };
+        else if (wired) {
+          const from = children(wired, 'connection').flatMap((c) => {
+            const id = number(c.getAttribute('refLocalId'));
+            return id === null ? [] : [id];
+          });
+          e.condition = { kind: 'wired', from, negated };
+        }
       }
       break;
     }
@@ -214,7 +241,10 @@ export function readSfc(text: string): Sfc {
       if (node.localName === 'addData' || node.localName === 'documentation') continue;
       const kind = KINDS.find((k) => k === node.localName);
       if (!kind) {
-        found.notDrawn.push(`${node.localName} ${node.getAttribute('localId') ?? ''}`.trim());
+        const what = `${node.localName} ${node.getAttribute('localId') ?? ''}`.trim();
+        // An element of LD or FBD in the chart's body is one of a condition's network drawn in the
+        // chart (L3d-1b): the view does not draw those networks yet, and says which they are.
+        found.notDrawn.push(LD_FBD.has(node.localName) ? `${what} (of a network of LD or FBD drawn in the chart)` : what);
         continue;
       }
       const e = element(node, kind);
@@ -236,7 +266,9 @@ export function conditionText(condition: SfcCondition | null): string {
   const text =
     condition.kind === 'reference'
       ? condition.name
-      : (condition.text.st ?? `(in ${condition.text.language ?? 'no language'})`);
+      : condition.kind === 'wired'
+        ? `(network in the chart, from ${condition.from.join(', ')})`
+        : (condition.text.st ?? `(in ${condition.text.language ?? 'no language'})`);
   return condition.negated ? `NOT (${text})` : text;
 }
 

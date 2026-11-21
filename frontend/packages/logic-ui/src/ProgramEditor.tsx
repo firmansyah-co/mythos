@@ -799,12 +799,15 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
 export function placeOf(diagnostic: Diagnostic): string {
   const element = diagnostic.element;
   if (!element) return `${diagnostic.line}:${diagnostic.col}`;
+  // A chart's action or transition, of the POU by its name or written in the chart (its element),
+  // and in a body of LD or FBD that body's own element; the line of a text of several.
+  const line = element.text?.line ? ` line ${element.text.line}` : '';
+  const inBody = element.local_id !== null && element.local_id !== undefined ? ` element ${element.local_id}` : '';
+  if (element.inline !== null && element.inline !== undefined) return `${element.pou} element ${element.inline}, its body${inBody}${line}`;
+  if (element.action) return `${element.pou} action ${element.action}${inBody}${line}`;
+  if (element.transition) return `${element.pou} transition ${element.transition}${inBody}${line}`;
   if (element.local_id !== null && element.local_id !== undefined) return `${element.pou} element ${element.local_id}`;
   if (element.variable) return `${element.pou} variable ${element.variable}`;
-  // A chart's action or transition of the POU, by its name, and the line of its text.
-  const line = element.text?.line ? ` line ${element.text.line}` : '';
-  if (element.action) return `${element.pou} action ${element.action}${line}`;
-  if (element.transition) return `${element.pou} transition ${element.transition}${line}`;
   return element.pou === '' ? `${diagnostic.line}:${diagnostic.col}` : element.pou;
 }
 

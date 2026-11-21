@@ -875,7 +875,14 @@ Portal, CODESYS, Beremiz, OpenPLC, 4diac or STruC++ read or copied. Drawn as SVG
   it leaves to the element it reaches, a block's from the side of its step it is on. A step is
   drawn with its name and no number: TC6 gives a step a name and no number, and its `localId` is
   the document's, not the step's. An element the front-end does not read (a `macroStep`, an
-  element of LD or FBD), or the second of two elements with one `localId`, is listed as not drawn. Each POU of the document is drawn: a chart of a
+  element of LD or FBD), or the second of two elements with one `localId`, is listed as not drawn.
+  **An action or a condition written in LD or FBD** (L3d-1b, §2.17) is named with its language
+  and not drawn yet: `(in LD)` in its row or at its transition, `Its body is in FBD …` under the
+  POU's action or transition, a condition given by a network drawn in the chart as `(network in
+  the chart, from <localId>)`, and each element of that network listed as not drawn (`contact 21
+  (of a network of LD or FBD drawn in the chart)`); their values (`bodies` of the check) are not
+  read. Drawing each body with the LD or FBD view and its `bodies` (§2.17, what the view needs) is
+  the next step of the view, not built here. Each POU of the document is drawn: a chart of a
   function block without live state (each instance has its own), a body of another language
   named and not drawn; under each chart, the POU's own actions and transitions with their text.
 - **Where.** At the document's positions, two and a half times their units (`SCALE`), and sizes
@@ -887,11 +894,15 @@ Portal, CODESYS, Beremiz, OpenPLC, 4diac or STruC++ read or copied. Drawn as SVG
   a document written with connection points elsewhere jog to meet each element's axis; a block
   placed close to the steps (the corpus's Fill) may overlap them, as its document places it.
 - **Diagnostics.** One with an `element` is a mark around it, an action of a block by the
-  action's own `localId` around its row; one naming an action or a transition of the POU
+  action's own `localId` around its row; one in a body of LD or FBD, whose `local_id` is the
+  body's own element and never the chart's of that id, around what holds the body (the row or
+  the transition named by `element.inline`; the POU's action or transition by name, below), and
+  one about an element of a network drawn in the chart at the transition it reaches directly; one naming an action or a transition of the POU
   (`element.action`, `element.transition`) is marked at every row or transition that names it and
   written under that action's or transition's text with the line of the text; each is listed as
   `<pou> element <localId>`, or `<pou> action <name> line <n>` and `<pou> transition <name> line
-  <n>`.
+  <n>`, and in a body `<pou> element <inline>, its body element <localId>` or `<pou> action <name>
+  element <localId>`.
 
 Live state, under the same conditions as LD's and FBD's (the check of the text shown is current,
 its version is the runtime's, in RUN, and the watch answer is of that version in RUN; otherwise
@@ -1770,7 +1781,8 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
   path), keep a step's name when the step is moved (its state is carried by its name), and say
   that a change of the chart's steps or transitions starts the chart again at the next online
   change. Since L3d-1b actions and conditions may be LD or FBD: the view draws each body with
-  the LD or FBD view and the entries of `bodies` for it (a network not run as not executed), and
+  the LD or FBD view and the entries of `bodies` for it (a network not run as not executed;
+  L3d-2 names each body's language and does not draw it yet, §2.8), and
   the editor keeps each body's `localId`s (online change carries `__SFC_<owner>__…` by them) and
   an inline condition's `name`. **The SFC editor must never give a `localId` an element has had
   to another element** (as the LD and FBD editors do not, §2.15, §2.16): an inline body's values
@@ -2359,8 +2371,11 @@ Evidence of the spike (2026-11-17):
   review too: the folded text opens after a follow to a document it cannot draw, the second of two
   elements with one `localId` is listed as not drawn (it was dropped silently), and a priority is
   drawn only after a selection divergence, where the compiler reads it. No route was added, so no
-  MCP tool. Tests: `sfc.test.tsx` (22, drawing the corpus
+  MCP tool. Rebased on L3d-1b: an action or a condition in LD or FBD named with its language, a
+  network drawn in the chart listed, a diagnostic in a body marked at what holds it. Tests:
+  `sfc.test.tsx` (23, drawing the corpus
   `crates/mythos-logic-graphic/tests/sfc/` itself: every element kind, a chart in a function block,
+  the mixer's bodies in LD and FBD,
   each diagnostic at its element, the live states, UNKNOWN, FORCED, not live with the reason for
   STOP, another version, no runtime and a watch answer of another version; the corpus is given to
   the test DOM with its CDATA written as escaped text, the same text to an XML reader, since
@@ -2392,4 +2407,9 @@ Evidence of the spike (2026-11-17):
   after a follow turned `opens its text when the document followed can no longer be drawn` red; a
   duplicate `localId` kept turned `lists the second of two elements with one localId as not
   drawn, and draws the first` red; a priority drawn anywhere turned `draws a transition's priority
-  only among the transitions of a selection divergence, where it counts` red.
+  only among the transitions of a selection divergence, where it counts` red. On L3d-1b (the copy
+  passed 35 before and after): a diagnostic in an inline body marked by its `local_id` (the
+  `inline` not read), and one in the POU's action Open marked at the chart's element of its
+  `local_id`, each turned `names the language of an action or a condition in LD or FBD, lists a
+  network drawn in the chart, and marks a diagnostic in a body at what holds it` red (the marks
+  went to step Fill and transition 2, which share those ids).

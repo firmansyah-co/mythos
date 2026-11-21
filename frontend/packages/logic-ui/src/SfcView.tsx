@@ -498,21 +498,37 @@ function marksOf(pou: SfcPou, placed: Map<number, Placed>, d: Diagnostic): Array
   for (const p of placed.values()) {
     p.e.actions.forEach((a, i) => rows.push({ id: a.localId, a, box: { x: p.box.x, y: p.box.y + i * ROW_H, w: p.box.w, h: ROW_H } }));
   }
-  if (at.local_id !== null && at.local_id !== undefined) {
-    const id = at.local_id;
+  // The chart's element that holds what the message is about, by its localId: an element of the
+  // chart, or the association of a block.
+  const holder = (id: number) => {
     const found = placed.get(id);
-    if (found) return [{ id, box: found.box }];
+    if (found) return { id, box: found.box };
     const row = rows.find((r) => r.id === id);
-    if (row) return [{ id, box: row.box }];
-    // Where the module says the element is, when this text has no element of that id.
-    return [{ id, box: { x: (at.x ?? 0) * SCALE, y: (at.y ?? 0) * SCALE, w: 30, h: 20 } }];
+    return row ? { id, box: row.box } : null;
+  };
+  // In a body of LD or FBD (L3d-1b), `local_id` is the body's own element, never the chart's of
+  // that id: the mark goes on what holds the body. Written in the block or the transition:
+  if (at.inline !== null && at.inline !== undefined) {
+    const found = holder(at.inline);
+    return found ? [found] : [];
   }
+  // An action or a transition of the POU: at every row or transition that names it.
   const same = (a: string | null | undefined, b: string | null | undefined) => (a ?? '').toLowerCase() === (b ?? '').toLowerCase() && a !== '';
   if (at.action) return rows.filter((r) => same(r.a.reference, at.action)).map((r) => ({ id: r.id, box: r.box }));
   if (at.transition) {
     return [...placed.values()]
       .filter((p) => p.e.condition?.kind === 'reference' && same(p.e.condition.name, at.transition))
       .map((p) => ({ id: p.e.localId, box: p.box }));
+  }
+  if (at.local_id !== null && at.local_id !== undefined) {
+    const id = at.local_id;
+    const found = holder(id);
+    if (found) return [found];
+    // An element of a network drawn in the chart: at the transition it reaches directly.
+    const reached = [...placed.values()].filter((p) => p.e.condition?.kind === 'wired' && p.e.condition.from.includes(id));
+    if (reached.length > 0) return reached.map((p) => ({ id: p.e.localId, box: p.box }));
+    // Where the module says the element is, when this text has no element of that id.
+    return [{ id, box: { x: (at.x ?? 0) * SCALE, y: (at.y ?? 0) * SCALE, w: 30, h: 20 } }];
   }
   return [];
 }
@@ -541,13 +557,14 @@ export function SfcPouView({ pou, live, diagnostics }: { pou: SfcPou; live: SfcL
       );
     }
   }
-  const boxes = [...placed.values()].map((p) => p.box);
+  const marks = diagnostics.flatMap((d) => marksOf(pou, placed, d).map((m) => ({ ...m, message: d.message })));
+  // A mark where the module says an element is lies within the drawing too.
+  const boxes = [...[...placed.values()].map((p) => p.box), ...marks.map((m) => m.box)];
   // Room on the right of a transition for its condition's live state, under it.
   const left = Math.min(0, ...boxes.map((b) => b.x)) - 30;
   const right = Math.max(200, ...boxes.map((b) => b.x + b.w)) + 40;
   const top = Math.min(0, ...boxes.map((b) => b.y)) - 20;
   const bottom = Math.max(40, ...boxes.map((b) => b.y + b.h)) + 40;
-  const marks = diagnostics.flatMap((d) => marksOf(pou, placed, d).map((m) => ({ ...m, message: d.message })));
   return (
     <svg
       data-testid="sfc-diagram"
