@@ -298,7 +298,11 @@ describe('reading and writing back', () => {
     const text = TEMPLATE('Main').replace('<pous>', `<pous>\n      ${kept}`).replace('<project xmlns="http://www.plcopen.org/xml/tc6_0201">', '<project xmlns="http://www.plcopen.org/xml/tc6_0201" xmlns:xhtml="http://www.w3.org/1999/xhtml">');
     const r = new Run(text);
     expect(r.pou(0).why).toBe('the sequence from step 1 runs into selectionConvergence 5 outside any divergence');
-    expect(insertPair(r.model, r.ids, 0, el(1), []).ok).toBe(false);
+    // Every edit of the chart kept is refused with why, a new sequence in it among them.
+    const why = 'This chart is kept as the document has it (the sequence from step 1 runs into selectionConvergence 5 outside any divergence): nothing is put into it.';
+    for (const tried of [insertPair(r.model, r.ids, 0, el(1), []), addChart(r.model, r.ids, 0, []), addAction(r.model, r.ids, 0, el(1)), remove(r.model, 0, el(1))]) {
+      expect(tried.ok ? 'taken' : tried.error).toBe(why);
+    }
     r.step((m, ids) => insertPair(m, ids, 1, { kind: 'chart', pou: 1, chart: 0 }, []));
     expect(r.text).toContain(kept);
     expect(r.chart(1)).toBe('Start* -FALSE- Step1');

@@ -370,6 +370,12 @@ export function SfcEditor({
             Kept as the document has it: {pou.why}. The editor writes this chart back as it is and puts nothing into it.
           </p>
           {drawnPou && <SfcPouView pou={drawnPou} live={isProgram ? live : null} diagnostics={mine} />}
+          {drawnPou && drawnPou.notDrawn.length > 0 && (
+            <p className="form__error" data-testid="sfc-not-drawn">
+              Not drawn: {drawnPou.notDrawn.join('; ')}.
+            </p>
+          )}
+          {drawnPou && <NamedBodies pou={drawnPou} diagnostics={mine} />}
         </>
       ) : (
         <>
