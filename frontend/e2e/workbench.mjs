@@ -896,6 +896,124 @@ try {
   await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
   }
 
+  // 8h. A Sequential Function Chart (ADR-013 L3d-2): added from the tree as SFC, it opens on its
+  // chart, the module's template (one initial step) drawn, read-only and saying the chart editor
+  // is not built. A chart written over the API as an agent writes it (its conditions in CDATA, as a
+  // browser reads them) is checked with a mistake drawn at its transition, corrected, loaded and
+  // run: a step becomes active and its time grows; the condition after the active step is
+  // evaluated FALSE until it holds, the one after the step that is not active is not evaluated;
+  // the next step takes over and its action is on. Stopped, nothing is drawn live.
+  {
+  await evaluate(`__t.clickTestId('tree-add-program')`); await sleep(200);
+  await evaluate(`__t.type('Program name', 'Sequence'); __t.type('Program language', 'sfc'); __t.press('Program name', 'Enter'); true`); await sleep(1500);
+  check('an SFC program added from the tree opens on its chart: the template’s one initial step drawn, read-only, no other editor',
+    (await evaluate(`__t.has('[data-testid="sfc-view"]') && __t.has('[data-testid="sfc-element"][data-kind="step"][data-initial="true"][data-name="Start"]')
+      && __t.has('[data-testid="sfc-read-only"]') && !__t.has('[data-testid="ld-editor"]') && !__t.has('[data-testid="fbd-editor"]')`)),
+    await evaluate(`__t.text('[data-testid="sfc-panel"]').join(' ')`));
+  const sfcLanguage = await evaluate(`[...document.querySelectorAll('[data-testid="tree-program"]')].filter((n) => n.querySelector('.tree__label').textContent === 'Sequence').map((n) => n.querySelector('[data-testid="tree-program-language"]').textContent)`);
+  check('the tree says it is SFC', JSON.stringify(sfcLanguage) === '["SFC"]', JSON.stringify(sfcLanguage));
+  const st = (text) => `<inline name=""><ST><xhtml:p><![CDATA[${text}]]></xhtml:p></ST></inline>`;
+  const from = (id) => `<connectionPointIn><connection refLocalId="${id}"/></connectionPointIn>`;
+  const sequence = (waitName) => `<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <types><dataTypes/><pous>
+    <pou name="Sequence" pouType="program">
+      <interface><localVars><variable name="busy"><type><BOOL/></type></variable></localVars></interface>
+      <body><SFC>
+        <step localId="1" name="Wait" initialStep="true"><position x="100" y="0"/><connectionPointOut formalParameter=""/></step>
+        <transition localId="2"><position x="100" y="40"/>${from(1)}<connectionPointOut/><condition>${st(`${waitName}.T >= T#2s`)}</condition></transition>
+        <step localId="3" name="Work"><position x="100" y="80"/>${from(2)}<connectionPointOut formalParameter=""/><connectionPointOutAction formalParameter=""/></step>
+        <actionBlock localId="4"><position x="200" y="80"/>${from(3)}<action localId="5" qualifier="N"><relPosition x="0" y="0"/><reference name="busy"/></action></actionBlock>
+        <transition localId="6"><position x="100" y="120"/>${from(3)}<connectionPointOut/><condition>${st('Work.T >= T#2s')}</condition></transition>
+        <jumpStep localId="7" targetName="Wait"><position x="100" y="160"/>${from(6)}</jumpStep>
+      </SFC></body>
+    </pou>
+  </pous></types>
+  <instances><configurations/></instances>
+</project>
+`;
+  const saveSequence = async (waitName) => (await api(`${base}/api/v1/projects/plant_a/logic/programs/Sequence/source`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: sequence(waitName) }) })).ok;
+  check('an agent saves a chart into it over the API', await saveSequence('Wiat'));
+  await sleep(1500);
+  const sfcKinds = await evaluate(`[...document.querySelectorAll('[data-testid="sfc-element"]')].map((e) => e.getAttribute('data-kind') + ':' + e.getAttribute('data-local-id')).join()`);
+  check('the open chart follows what was saved elsewhere: its steps, transitions with their conditions, action block and jump',
+    sfcKinds === 'step:1,transition:2,step:3,actionBlock:4,transition:6,jumpStep:7'
+      && (await evaluate(`__t.text('[data-testid="sfc-element"][data-local-id="6"] [data-testid="sfc-condition"]')[0]`)) === 'Work.T >= T#2s',
+    sfcKinds);
+  // Nobody presses Check: a text followed from elsewhere is checked by itself (quietly), so the
+  // chart and the toolbar say what the compiler says of the text on screen.
+  await sleep(1500);
+  const sfcSummary = () => evaluate(`(() => { const b = document.querySelector('[data-testid="check-summary"]'); return b ? b.getAttribute('data-state') + ':' + b.textContent.trim() : null; })()`);
+  check('the followed chart is checked by itself: the toolbar says it does not compile', (await sfcSummary()) === 'bad:1 ERROR', await sfcSummary());
+  check('the mistake is drawn around its transition in the chart', (await evaluate(`[...document.querySelectorAll('[data-testid="sfc-diagnostic"]')].map((d) => d.getAttribute('data-local-id')).join()`)) === '2');
+  check('and the view says why nothing is live: the text does not compile',
+    (await evaluate(`__t.text('[data-testid="sfc-live"]')[0]`)).includes('this text does not compile'), await evaluate(`__t.text('[data-testid="sfc-live"]')[0]`));
+  await evaluate(`__t.clickTestId('check-summary')`); await sleep(400);
+  const sfcDiagnostics = await evaluate(`__t.text('[data-testid="diagnostic"]')`);
+  check('a mistake in a condition is told at its transition', sfcDiagnostics.length === 1 && sfcDiagnostics[0].startsWith('Sequence element 2') && sfcDiagnostics[0].includes('Wiat'), JSON.stringify(sfcDiagnostics));
+  check('the corrected chart is saved', await saveSequence('Wait'));
+  await sleep(2500);
+  check('and, followed and checked by itself, compiles', (await sfcSummary()) === 'good:COMPILES', await sfcSummary());
+  await evaluate(`__t.click('Properties')`); await sleep(200);
+  await evaluate(`__t.type('Interval in milliseconds', '50'); true`);
+  await evaluate(`[...document.querySelectorAll('.settings__check')].find((l) => l.textContent.includes('Run when loaded')).querySelector('input').click(); true`);
+  await evaluate(`__t.clickTestId('program-load')`); await sleep(3000);
+  const sfcBuilt = await evaluate(`__t.text('[data-testid="program-built"]')[0]`);
+  check('Load builds the chart and loads it into a runtime', /^Version [0-9a-f]{12} was built and loaded\./.test(sfcBuilt ?? ''), sfcBuilt);
+  const sfcRuntime = (await (await api(base + '/api/v1/runtimes')).json()).runtimes.find((r) => r.id === 'Sequence');
+  check('the controller runs it in the VM runtime module', sfcRuntime?.mode === 'run' && sfcRuntime.scans > 0, JSON.stringify(sfcRuntime));
+  const sfcLive = () => evaluate(`(() => {
+    const e = (id) => document.querySelector('[data-testid="sfc-element"][data-local-id="' + id + '"]');
+    const ms = (id) => { const t = e(id)?.querySelector('[data-testid="sfc-step-time"]')?.textContent; const m = /^T (\\d+(\\.\\d+)?) ms$/.exec(t ?? ''); return m ? Number(m[1]) : (t ?? null); };
+    return { live: document.querySelector('[data-testid="sfc-live"]')?.getAttribute('data-live'),
+      wait: e(1)?.getAttribute('data-state'), waitT: ms(1), work: e(3)?.getAttribute('data-state'), workT: ms(3),
+      t2: e(2)?.getAttribute('data-state'), t6: e(6)?.getAttribute('data-state'),
+      busy: document.querySelector('[data-testid="sfc-action"][data-local-id="5"] [data-testid="sfc-action-value"]')?.textContent ?? null }; })()`);
+  await sleep(1000);
+  const sfcSeen = [];
+  // Longer apart than the editor reads the values (every 500 ms), over two turns of the chart.
+  for (let i = 0; i < 14; i++) { sfcSeen.push(await sfcLive()); await sleep(600); }
+  check('the chart is drawn live while its version runs', sfcSeen.every((s) => s.live === 'live'), JSON.stringify(sfcSeen));
+  check('one step is active at a time, the other drawn not active, and the active one with its time',
+    sfcSeen.every((s) => (s.wait === 'active') !== (s.work === 'active') && [s.wait, s.work].includes('inactive')
+      && typeof (s.wait === 'active' ? s.waitT : s.workT) === 'number' && (s.wait === 'active' ? s.workT : s.waitT) === null),
+    JSON.stringify(sfcSeen));
+  check('both steps become active in turn', sfcSeen.some((s) => s.wait === 'active') && sfcSeen.some((s) => s.work === 'active'), JSON.stringify(sfcSeen.map((s) => s.wait === 'active' ? 'Wait' : 'Work')));
+  // Each run of samples with one step active: its time never goes back, and over three samples
+  // (more than two reads of the values) it has grown.
+  const activeTime = (s) => (s.wait === 'active' ? s.waitT : s.workT);
+  const runs = [];
+  for (const s of sfcSeen) { const last = runs.at(-1); if (last && last[0].wait === s.wait) last.push(s); else runs.push([s]); }
+  check('a step’s time grows while it stays active',
+    runs.some((r) => r.length >= 3)
+      && runs.every((r) => r.every((s, i) => i === 0 || activeTime(s) >= activeTime(r[i - 1])) && (r.length < 3 || activeTime(r.at(-1)) > activeTime(r[0]))),
+    JSON.stringify(runs.map((r) => `${r[0].wait === 'active' ? 'Wait' : 'Work'} ${r.map(activeTime).join(',')}`)));
+  // The condition after the active step was evaluated, FALSE until it held (then the next step is
+  // active); the one after the step that is not active was not evaluated. In the one scan that
+  // activated a step (its time 0 ms) the transition after it was not tested yet (§2.17).
+  const evaluated = (s) => s.wait === 'active'
+    ? (s.t2 === 'false' && s.t6 === 'not-evaluated') || (s.waitT === 0 && s.t2 === 'not-evaluated' && s.t6 === 'true')
+    : (s.t6 === 'false' && s.t2 === 'not-evaluated') || (s.workT === 0 && s.t6 === 'not-evaluated' && s.t2 === 'true');
+  check('a condition is drawn TRUE or FALSE only where it was evaluated in the last scan, not evaluated elsewhere',
+    sfcSeen.every(evaluated), JSON.stringify(sfcSeen.map((s) => `${s.wait === 'active' ? 'Wait' : 'Work'} ${s.t2}/${s.t6}`)));
+  check('the action of the active step is on, and off while the other step is',
+    sfcSeen.filter((s) => s.work === 'active' && s.workT >= 200).every((s) => s.busy === 'TRUE')
+      && sfcSeen.filter((s) => s.wait === 'active' && s.waitT >= 200).every((s) => s.busy === 'FALSE')
+      && sfcSeen.some((s) => s.busy === 'TRUE') && sfcSeen.some((s) => s.busy === 'FALSE'),
+    JSON.stringify(sfcSeen.map((s) => `${s.wait === 'active' ? 'Wait' : 'Work'} ${s.busy}`)));
+  await shot('e2e_6k_sfc');
+  await evaluate(`__t.clickTestId('runtime-stop')`); await sleep(2500);
+  const sfcStopped = await sfcLive();
+  check('a stopped chart is drawn with no live state, and says why',
+    sfcStopped.live === 'none' && sfcStopped.wait === 'none' && sfcStopped.work === 'none' && sfcStopped.busy === null
+      && (await evaluate(`__t.text('[data-testid="sfc-live"]')[0]`)).includes('STOP'),
+    JSON.stringify(sfcStopped));
+  await evaluate(`__t.clickTestId('runtime-unload')`); await sleep(2500);
+  check('Unload takes the chart out of the controller’s runtimes', !(await (await api(base + '/api/v1/runtimes')).json()).runtimes.some((r) => r.id === 'Sequence'));
+  await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
+  }
+
   // 9. Go offline: values disappear, on the screen as everywhere else.
   await evaluate(`__t.click('Go offline')`); await sleep(500);
   const offline = await evaluate(`__t.text('[data-testid="tag-value"]')`);
