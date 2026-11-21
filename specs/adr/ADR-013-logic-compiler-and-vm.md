@@ -2545,3 +2545,57 @@ Evidence of the spike (2026-11-17):
   `local_id`, each turned `names the language of an action or a condition in LD or FBD, lists a
   network drawn in the chart, and marks a diagnostic in a body at what holds it` red (the marks
   went to step Fill and transition 2, which share those ids).
+- **L3d-3** (the Sequential Function Chart editor, 2026-11-22). Added, in
+  `frontend/packages/logic-ui`: `sfcmodel.ts` (a chart read as sequences, `wellFormed`, the grid
+  layout, the writer splicing the POU's body, the record of localIds), `sfcedit.ts` (the structure
+  operations, the fields, the editor's own check), `SfcInstructions.ts` (the Instructions task card's
+  kit and the favourites) and `SfcEditor.tsx` (§2.8); the program editor gives an engineer the
+  editor (the quiet check 700 ms after the last edit, the Instructions task card), a viewer and an
+  operator the view; the view's `NamedBodies` is exported for the editor. No route was added, so no
+  MCP tool. Tests: `sfcmodel.test.ts` (23: every document of the corpus, LD's, FBD's and SFC's,
+  written back byte for byte when nothing changed; the corpus charts read as their sequences; a
+  chart kept as found, why, every edit of it refused and its bytes kept while another POU is edited;
+  a chart laid out anew keeping every element, link, condition, action and comment, and the view
+  drawing the same elements; an inline body in LD or FBD byte for byte and a network drawn in the
+  chart moved with its transition; each structure operation and its refusals; localIds never given
+  out twice after an undo, a deletion or in a new session, nor one an action of a block has; a
+  seeded walk of 300 random edits, every written chart well formed and every id kept; the editor's
+  own check; the three documents the compiler runs), `sfc-editor.test.tsx` (9: a sequence built
+  from the keyboard and saved; branches, a jump and an action from the task card, by click and by
+  drag, and the favourites; the action table in place; undo and redo; the editor's word and the
+  compiler's at the element; the online-change notice; a chart kept as found; the live state in
+  the editor; a viewer's and an operator's view), `sfc_from_the_editor.rs` (4: the sequence built
+  from the template run on the VM through its simultaneous branch and back, its alternative branch
+  on stop with the left branch tested first; `bottling.xml` and `mixer.xml` after the editor laid
+  them out and added an action, every value equal to the corpus chart's over 600 scans but the
+  action added, which follows its step); `sfc.test.tsx` runs as an engineer, in the editor, but for
+  the two tests of what only the view draws (every POU of a document at once), which run as a
+  viewer. `scripts/e2e.sh` 8h opens the new program in the editor, and 8i builds a chart in it
+  from the keyboard (a step and its action declared where it is named, conditions, a jump, an
+  alternative branch with a step of its own), which compiles by the quiet check, is loaded (saved
+  first) and runs: Start, Run and Pause active in turn, the right branch taken, busy on with Run;
+  253 checks, all passed (every screenshot with no control past an edge, the editor's two among
+  them). Mutation-checked in a copy of the tree (`git archive` of the branch, its own `pnpm
+  install --frozen-lockfile` and `pnpm lint`; each injection asserted as landed; each file restored
+  with `git show` and compared with the commit; the copy passed 32 before and after): the record of
+  used ids ignored on open turned `never gives an id out twice, after an undo or a deletion, nor one
+  an inline body has` red; only the chart's own children counted, not the ids nested in a block or
+  a body, turned `gives out no id an action of a block or an inline body has, though no element of
+  the chart has it` red; the guard refusing every edit of a chart kept as found removed turned
+  `keeps a chart it cannot draw as found, says why, and writes it back byte for byte while another
+  chart of the document is edited` red (the writer's own check of a kept chart, mutated alone,
+  turned nothing red: it is unreachable behind that guard, which the test was strengthened to prove
+  for a new sequence, `addChart`, after it first survived); a comment moved instead of written as
+  found turned `writes a chart it laid out with every element, link, condition and action the
+  document had, and the view draws the same elements` and `edits another tool’s chart
+  (bottling.xml)` red; an unchanged inline body written anew turned `keeps an inline body in LD or
+  FBD byte for byte and moves a network drawn in the chart with its transition` and `edits a chart
+  with bodies in LD and FBD … (mixer.xml)` red; the last check of every edit (`wellFormed` in
+  `done`) removed turned `refuses what an edit would leave not well formed, where no rule of the
+  edit itself says so` red (it first survived: every operation's own rules refused what it would
+  break, and the test was added for the one case found where only the last check does, a
+  transition deleted after a simultaneous convergence); a pair put as transition then step after a
+  transition turned `puts a step and a transition after a step, and a step and a transition after a
+  transition`, `deletes a step with the transition before it, …` and `builds the sequence the
+  compiler tests run` red; a step deleted with whatever is beside it turned `deletes a step with the
+  transition before it, …` and `never gives an id out twice, …` red.
