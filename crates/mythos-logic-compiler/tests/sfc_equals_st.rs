@@ -18,7 +18,10 @@
 //! skip (5) and a loop (6) through a jump step; the qualifiers N, S, R, L, D, P, P1, DS;
 //! actions that are BOOL variables, named actions and actions written in the action block, one
 //! action in two steps; named transitions and a negated one; steps' times read in conditions;
-//! and a chart in a function block, two instances of it called from an ST program.
+//! and a chart in a function block, two instances of it called from an ST program. And a chart
+//! whose actions and conditions are written in LD and FBD (Table 55 features 2a, 3a, 6a, 10, 11;
+//! Table 56 features 2l, 2f; Table 57 feature 4 with Table 58 feature 4f), each body run where
+//! its action's Q is TRUE or its transition is enabled, and only there.
 
 mod support;
 #[path = "../../mythos-logic-graphic/tests/support/tc6.rs"]
@@ -27,7 +30,7 @@ mod tc6;
 use mythos_logic_compiler::{compile, compile_sources, At, Holds, Sources, TargetProfile};
 use mythos_logic_vm::Value;
 use support::Run;
-use tc6::{project, Act, Pou};
+use tc6::{project, Act, Coil, Contact, In, Pou};
 
 const SEQUENCES: u64 = 200;
 const SCANS: usize = 100;
@@ -61,7 +64,13 @@ fn pairs_of(
     actions: &[(u64, &str)],
 ) -> Pairs {
     let mut out = Vec::new();
-    for p in f.c.probes.iter().filter(|p| p.pou == pou) {
+    // An action's or a condition's body in LD or FBD keeps values a view draws; the program's
+    // variables it writes are compared as every variable is.
+    for p in
+        f.c.probes
+            .iter()
+            .filter(|p| p.pou == pou && p.body.is_none())
+    {
         let path = match &p.holds {
             Holds::Variable { path, .. } => format!("{prefix}{path}"),
             Holds::Guarded { path, ran } => {
@@ -626,5 +635,215 @@ END_PROGRAM
         &["u", "v"],
         pairs,
         2,
+    );
+}
+
+#[test]
+fn a_chart_with_actions_and_conditions_in_ld_and_fbd_equals_its_st_twin() {
+    // Idle -(a rung drawn in the chart: start AND NOT stop)-> Fill; Fill chooses, leftmost
+    // first: Full (FBD in the transition: level >= 3) to Heat, or Abort (a transition of the
+    // POU in LD: stop) to Done; Heat -(an FBD network drawn in the chart, through a connector:
+    // Heat.T >= T#30ms)-> Done; Done -(a transition of the POU in FBD: b)-> back to Idle by a
+    // jump. Actions: Fill N Count (LD: a rising contact on tick enables ADD into level); Heat N
+    // an FBD body in the action block (heats + 1, lamp := a AND b); Done S Siren (LD: the coil
+    // alarm takes c), Idle R Siren.
+    let count = Pou::program("_")
+        .left(90, 20)
+        .contact(91, 100, 20, Contact::Rising, "tick", &["90"])
+        .block(
+            92,
+            200,
+            20,
+            "ADD",
+            None,
+            &[
+                ("EN", In::From(&["91"])),
+                ("IN1", In::Expr("level")),
+                ("IN2", In::Expr("1")),
+            ],
+            &["ENO", "OUT"],
+        )
+        .outvar(93, 300, 20, "level", &["92.OUT"]);
+    let heat = Pou::program("_")
+        .fbd()
+        .invar(100, 0, 0, "heats")
+        .invar(101, 0, 40, "1")
+        .block(
+            102,
+            100,
+            0,
+            "ADD",
+            None,
+            &[("IN1", In::From(&["100"])), ("IN2", In::From(&["101"]))],
+            &["OUT"],
+        )
+        .outvar(103, 200, 0, "heats", &["102"])
+        .invar(104, 0, 100, "a")
+        .invar(105, 0, 140, "b")
+        .block(
+            106,
+            100,
+            100,
+            "AND",
+            None,
+            &[("IN1", In::From(&["104"])), ("IN2", In::From(&["105"]))],
+            &["OUT"],
+        )
+        .outvar(107, 200, 100, "lamp", &["106"]);
+    let alarm = Pou::program("_")
+        .left(110, 20)
+        .contact(111, 100, 20, Contact::No, "c", &["110"])
+        .coil(112, 200, 20, Coil::Plain, "alarm", &["111"])
+        .right(113, 20, &["112"]);
+    let full = Pou::program("_")
+        .fbd()
+        .invar(50, 0, 0, "level")
+        .invar(51, 0, 40, "3")
+        .block(
+            52,
+            100,
+            0,
+            "GE",
+            None,
+            &[("IN1", In::From(&["50"])), ("IN2", In::From(&["51"]))],
+            &["OUT"],
+        )
+        .outvar(53, 200, 0, "Full", &["52"]);
+    let abort = Pou::program("_")
+        .left(60, 20)
+        .contact(61, 100, 20, Contact::No, "stop", &["60"])
+        .coil(62, 200, 20, Coil::Plain, "Abort", &["61"])
+        .right(63, 20, &["62"]);
+    let back = Pou::program("_")
+        .fbd()
+        .invar(80, 0, 0, "b")
+        .outvar(81, 100, 0, "Back", &["80"]);
+    let chart = Pou::program("Main")
+        .sfc()
+        .vars(&[
+            ("start", "BOOL"),
+            ("stop", "BOOL"),
+            ("a", "BOOL"),
+            ("b", "BOOL"),
+            ("c", "BOOL"),
+            ("tick", "BOOL"),
+            ("level", "INT"),
+            ("heats", "INT"),
+            ("lamp", "BOOL"),
+            ("alarm", "BOOL"),
+        ])
+        .action_body("Count", &count)
+        .action_body("Siren", &alarm)
+        .transition_body("Abort", &abort)
+        .transition_body("Back", &back)
+        .step(1, 100, 0, "Idle", true, &[])
+        // The rung of the transition out of Idle, drawn in the chart.
+        .left(40, 30)
+        .contact(41, -200, 30, Contact::No, "start", &["40"])
+        .contact(42, -100, 30, Contact::Nc, "stop", &["41"])
+        .trans_wired(2, 100, 30, &["42"], false, &["1"])
+        .step(3, 100, 60, "Fill", false, &["2"])
+        .sel_div(4, 100, 90, &["3"])
+        .trans_body(5, 0, 110, "Full", &full, &["4"])
+        .trans_ref(6, 200, 110, "Abort", &["4"])
+        .step(8, 0, 140, "Heat", false, &["5"])
+        // The network of the transition out of Heat, drawn in the chart, through a connector.
+        .invar(70, -400, 170, "Heat.T")
+        .invar(71, -400, 200, "T#30ms")
+        .block(
+            72,
+            -300,
+            170,
+            "GE",
+            None,
+            &[("IN1", In::From(&["70"])), ("IN2", In::From(&["71"]))],
+            &["OUT"],
+        )
+        .connector(73, -200, 170, "HOT", &["72"])
+        .continuation(74, -50, 170, "HOT")
+        .trans_wired(9, 0, 170, &["74"], false, &["8"])
+        .sel_conv(12, 100, 200, &["9", "6"])
+        .step(13, 100, 230, "Done", false, &["12"])
+        .trans_ref(14, 100, 260, "Back", &["13"])
+        .jump_step(15, 100, 290, "Idle", &["14"])
+        .actions_of(30, 300, 0, "1", &[(31, "R", None, Act::Name("Siren"))])
+        .actions_of(20, 300, 60, "3", &[(21, "N", None, Act::Name("Count"))])
+        .actions_of(24, 300, 140, "8", &[(25, "N", None, Act::Body(&heat))])
+        .actions_of(27, 300, 230, "13", &[(28, "S", None, Act::Name("Siren"))]);
+    const TWIN: &str = "
+PROGRAM Main
+VAR
+    start, stop, a, b, c, tick : BOOL;
+    level, heats : INT;
+    lamp, alarm : BOOL;
+    x_Idle : BOOL := TRUE;
+    x_Fill, x_Heat, x_Done : BOOL;
+    t_Idle, t_Fill, t_Heat, t_Done : TON;
+    alarm_S_FF : RS;
+    q_alarm, q_count, q_heat : BOOL;
+    tick_m, rose : BOOL;
+    e_2, c_2, e_5, c_5, e_6, c_6, e_9, c_9, e_14, c_14 : BOOL;
+    f2, f5, f6, f9, f14 : BOOL;
+END_VAR
+    t_Idle(IN := x_Idle, PT := T#1h);
+    t_Fill(IN := x_Fill, PT := T#1h);
+    t_Heat(IN := x_Heat, PT := T#1h);
+    t_Done(IN := x_Done, PT := T#1h);
+    (* The actions, in the order of their first step: Siren (Idle), Count (Fill), Heat's. *)
+    alarm_S_FF(S := x_Done, R1 := x_Idle);
+    q_alarm := NOT x_Idle AND alarm_S_FF.Q1;
+    IF q_alarm THEN alarm := c; END_IF;
+    q_count := x_Fill;
+    IF q_count THEN
+        rose := tick AND NOT tick_m; tick_m := tick;
+        IF rose THEN level := level + 1; END_IF;
+    END_IF;
+    q_heat := x_Heat;
+    IF q_heat THEN heats := heats + 1; lamp := a AND b; END_IF;
+    (* Transitions, each evaluated where it is enabled. *)
+    e_2 := x_Idle; IF e_2 THEN c_2 := start AND NOT stop; END_IF;
+    e_5 := x_Fill; IF e_5 THEN c_5 := level >= 3; END_IF;
+    e_6 := x_Fill; IF e_6 THEN c_6 := stop; END_IF;
+    e_9 := x_Heat; IF e_9 THEN c_9 := t_Heat.ET >= T#30ms; END_IF;
+    e_14 := x_Done; IF e_14 THEN c_14 := b; END_IF;
+    f2 := e_2 AND c_2;
+    f5 := e_5 AND c_5;
+    f6 := e_6 AND c_6 AND NOT c_5;
+    f9 := e_9 AND c_9;
+    f14 := e_14 AND c_14;
+    IF f2 THEN x_Idle := FALSE; END_IF;
+    IF f5 OR f6 THEN x_Fill := FALSE; END_IF;
+    IF f9 THEN x_Heat := FALSE; END_IF;
+    IF f14 THEN x_Done := FALSE; END_IF;
+    IF f14 THEN x_Idle := TRUE; END_IF;
+    IF f2 THEN x_Fill := TRUE; END_IF;
+    IF f5 THEN x_Heat := TRUE; END_IF;
+    IF f9 OR f6 THEN x_Done := TRUE; END_IF;
+    t_Idle(IN := x_Idle, PT := T#1h);
+    t_Fill(IN := x_Fill, PT := T#1h);
+    t_Heat(IN := x_Heat, PT := T#1h);
+    t_Done(IN := x_Done, PT := T#1h);
+END_PROGRAM
+";
+    let sfc = sfc_run(vec![chart], None);
+    let pairs = pairs_of(
+        &sfc(),
+        "Main",
+        "",
+        &[(1, "Idle"), (3, "Fill"), (8, "Heat"), (13, "Done")],
+        &[
+            (21, "q_count"),
+            (25, "q_heat"),
+            (28, "q_alarm"),
+            (31, "q_alarm"),
+        ],
+    );
+    compare(
+        "actions and conditions in LD and FBD",
+        sfc,
+        st_run(TWIN),
+        &["start", "stop", "a", "b", "c", "tick"],
+        pairs,
+        3,
     );
 }

@@ -2,17 +2,30 @@
 //! ed. 3 §6.7; ADR-013 §2.17).
 //!
 //! **What is read.** A POU whose body is `SFC` (a program or a function block, §6.7.1), with:
-//! `step` (`name`, `initialStep`), `transition` (its condition `inline` in ST, or a
-//! `reference` to a transition of the POU's `transitions`, `negated`; `priority`),
-//! `selectionDivergence`, `selectionConvergence`, `simultaneousDivergence`,
-//! `simultaneousConvergence`, `jumpStep` (`targetName`), `actionBlock` (each `action` with its
-//! `qualifier`, `duration`, and a `reference` to an action of the POU's `actions` or to a BOOL
-//! variable, or an `inline` body in ST) and `comment`. The POU's `actions` (`action` with a body
-//! in ST: statements) and `transitions` (`transition` with a body in ST: one Boolean
-//! expression). Everything else is refused by its name, with the element: an action or a
-//! transition in LD, FBD, IL or SFC, a condition drawn as a network (`connectionPointIn`), a
-//! `macroStep` (not in ed. 3), the qualifiers SD, SL and P0 (below) and DL (not in Table 59), an
-//! action block's indicator variable (deprecated, §6.7.4.4), a negated step or action block.
+//! `step` (`name`, `initialStep`), `transition` (its condition `inline` in ST, LD or FBD, a
+//! `reference` to a transition of the POU's `transitions`, or a `connectionPointIn` from a
+//! network of LD or FBD drawn in the chart; `negated`; `priority`), `selectionDivergence`,
+//! `selectionConvergence`, `simultaneousDivergence`, `simultaneousConvergence`, `jumpStep`
+//! (`targetName`), `actionBlock` (each `action` with its `qualifier`, `duration`, and a
+//! `reference` to an action of the POU's `actions` or to a BOOL variable, or an `inline` body in
+//! ST, LD or FBD), the elements of LD and FBD as networks giving transitions their conditions
+//! (Table 55 features 2a–6a), and `comment`. The POU's `actions` (`action` with a body in ST:
+//! statements; or in LD or FBD: networks, Table 56 features 2l, 2f) and `transitions`
+//! (`transition` with a body in ST: one Boolean expression; or in LD or FBD: a network whose coil
+//! or output variable of the transition's name takes the condition, Table 55 features 10, 11).
+//! Everything else is refused by its name, with the element: an action or a condition in IL, an
+//! action that is a chart (Table 56 feature 2s: what becomes of its steps when the action stops
+//! is not said), a `macroStep` (not in ed. 3), the qualifiers SD, SL and P0 (below) and DL (not
+//! in Table 59), an action block's indicator variable (deprecated, §6.7.4.4), a negated step or
+//! action block.
+//!
+//! **Bodies in LD and FBD** (ADR-013 §2.17, L3d-1b) are lowered by the LD and FBD front-ends
+//! (`ld::lower`, `fbd::lower`) into the chart's POU, each in a namespace of its own
+//! (`__SFC_<owner>__`, since its `localId`s are its own), an action's under `IF Q`, a
+//! condition's under its transition's enable flag; the flags of a body's networks are set FALSE
+//! before it may run, so a network of a body that did not run never reads as run. A condition's
+//! network has no side effect (§6.7.3): it writes nothing but the transition's name, calls no
+//! function block, senses no edge, is one network.
 //!
 //! **The chart as a net.** Each transition is resolved to the steps before it and the steps
 //! after it, through the divergences and convergences (Table 61) and jumps: a transition
@@ -65,10 +78,13 @@
 //! of a running one (online change) starts the chart again from its initial step, so steps
 //! carried by name never make a situation the new chart cannot be in.
 
-use crate::graph::{bool_expr, bool_ty, Hidden, Lang};
-use crate::read::{flag, name, GPou};
+use crate::graph::{
+    self, bool_expr, bool_ty, check_graph, read_body, read_elem, Elem as GElem, Hidden,
+    Kind as GKind, Lang, Lowered, Pin, Storage, NETWORK_ELEMENTS,
+};
+use crate::read::{flag, name, GPou, Known};
 use crate::xml::Node;
-use crate::{At, Holds, Owner, Place, Places, Probe};
+use crate::{fbd, ld, At, Body, BodyOf, Holds, Owner, Place, Places, Probe};
 use mythos_logic_ir::{Diagnostic, Intrinsic, Retention, Section, Span};
 use mythos_logic_st::ast::{
     self, Arg, BinOp, Expr, ExprKind, Init, Selector, Stmt, TypeDecl, TypeDeclKind, TypeSpec,
@@ -159,8 +175,82 @@ impl Qual {
 enum Target {
     /// An action of the POU or a BOOL variable, by name as written.
     Name(String),
-    /// Statements written in the action block (Table 57 feature 4).
-    Inline(Vec<Stmt>),
+    /// A body written in the action block (Table 57 feature 4, Table 58 features 4s, 4l, 4f).
+    Inline(ActBody),
+}
+
+/// What an action does: statements of Structured Text (Table 56 feature 3s), or networks of
+/// a Ladder Diagram or a Function Block Diagram (features 2l, 2f).
+#[derive(Debug, Clone)]
+enum ActBody {
+    St(Vec<Stmt>),
+    Graphic(Graphic),
+}
+
+/// A body in LD or FBD of an action or of a transition's condition, read and checked as a
+/// graph (`graph::read_body`, `graph::check_graph`), lowered with the chart (ADR-013 §2.17).
+#[derive(Debug, Clone)]
+struct Graphic {
+    lang: Lang,
+    elems: Vec<GElem>,
+    of: BodyOf,
+}
+
+impl Graphic {
+    /// The namespace of its hidden variables: `__SFC_<owner>__`, the owner the action's or the
+    /// transition's name in upper case, or the `localId` of the element whose body it is.
+    fn prefix(&self) -> String {
+        match &self.of {
+            BodyOf::Action(n) | BodyOf::Transition(n) => {
+                format!("__SFC_{}__", n.to_ascii_uppercase())
+            }
+            BodyOf::Inline(id) | BodyOf::Wired(id) => format!("__SFC_{id}__"),
+        }
+    }
+    /// The hidden BOOL a condition's network writes its result to, in the place of the
+    /// transition's name (§6.7.3 g).
+    fn result(&self) -> String {
+        format!("{}RESULT", self.prefix())
+    }
+    fn body(&self) -> Body {
+        Body {
+            of: self.of.clone(),
+            ladder: self.lang == Lang::Ld,
+        }
+    }
+    /// Lowered in the chart's POU, by its language's front-end.
+    fn lower(
+        &self,
+        pou: &ast::Pou,
+        known: &Known,
+        places: &mut Places,
+        diags: &mut Vec<Diagnostic>,
+    ) -> Option<Lowered> {
+        let prefix = self.prefix();
+        match self.lang {
+            Lang::Ld => ld::lower(
+                &self.elems,
+                pou,
+                known,
+                places,
+                diags,
+                &prefix,
+                Some(self.body()),
+            ),
+            _ => {
+                let mut elems = self.elems.clone();
+                fbd::lower(
+                    &mut elems,
+                    pou,
+                    known,
+                    places,
+                    diags,
+                    &prefix,
+                    Some(self.body()),
+                )
+            }
+        }
+    }
 }
 
 /// One action of an action block: an association of an action with a step (§6.7.4.3).
@@ -189,6 +279,12 @@ enum Kind {
 enum Cond {
     Expr(Expr, bool),
     Named(String, bool),
+    /// A network in LD or FBD written in the transition (TC6 `condition/inline`), with the
+    /// name it writes the condition to.
+    Graphic(Graphic, String, bool),
+    /// A network drawn in the chart's body, connected to the transition (TC6
+    /// `condition/connectionPointIn`; Table 55 features 2a–6a).
+    Wired(Pin, bool),
 }
 
 impl Kind {
@@ -226,19 +322,26 @@ struct El {
 /// An action of the POU (`actions/action`), its body read.
 struct NamedAction {
     name: String,
-    body: Vec<Stmt>,
+    body: ActBody,
 }
 
-/// A transition of the POU (`transitions/transition`), its condition read.
+/// A transition of the POU (`transitions/transition`), its condition read: an expression of
+/// ST, or a network of LD or FBD that writes it to the transition's name.
 struct NamedTransition {
     name: String,
-    cond: Expr,
+    cond: CondBody,
+}
+
+enum CondBody {
+    St(Expr),
+    Graphic(Graphic),
 }
 
 /// A Sequential Function Chart POU with its statements, and the hidden variables they use; or,
 /// when it cannot be lowered, marked as not read whole, so the checker says nothing about it.
 pub(crate) fn pou(
     p: &GPou,
+    known: &Known,
     places: &mut Places,
     diags: &mut Vec<Diagnostic>,
     probes: &mut Vec<Probe>,
@@ -263,15 +366,27 @@ pub(crate) fn pou(
     });
     let actions = named_actions(p, places, diags);
     let transitions = named_transitions(p, places, diags);
-    let elems = elements(body, p, places, diags);
+    let (elems, networks) = elements(body, p, places, diags);
     if diags.len() == before {
-        if let Some(chart) = Chart::of(&elems, &tree, &actions, &transitions, at, places, diags) {
+        if let Some(chart) = Chart::of(
+            &elems,
+            networks,
+            &tree,
+            &actions,
+            &transitions,
+            at,
+            places,
+            diags,
+        ) {
             if diags.len() == before && chart.explore(places, diags) {
-                let (stmts, vars, found) = chart.lower(&tree.name, &actions);
-                tree.body = stmts;
-                tree.vars.extend(vars);
-                probes.extend(found);
-                return tree;
+                if let Some((stmts, vars, found)) =
+                    chart.lower(&tree, &actions, known, places, diags)
+                {
+                    tree.body = stmts;
+                    tree.vars.extend(vars);
+                    probes.extend(found);
+                    return tree;
+                }
             }
         }
     }
@@ -279,16 +394,336 @@ pub(crate) fn pou(
     tree
 }
 
-/// The Structured Text of a `body`, or the language it is in when that is another.
-fn st_of(body: &Node) -> Result<String, String> {
+/// What a `body` is written in.
+enum Written<'a> {
+    St(String),
+    /// LD or FBD: the element of that name, holding the network.
+    Graphic(Lang, &'a Node),
+    /// Another language by its TC6 name (IL, SFC); empty when the body holds none.
+    Other(String),
+}
+
+fn written(body: &Node) -> Written<'_> {
     let lang = body
         .children
         .iter()
         .find(|c| matches!(c.name.as_str(), "IL" | "ST" | "FBD" | "LD" | "SFC"));
     match lang {
-        Some(l) if l.name == "ST" => Ok(text_of(l)),
-        Some(l) => Err(l.name.clone()),
-        None => Err(String::new()),
+        Some(l) if l.name == "ST" => Written::St(text_of(l)),
+        Some(l) if l.name == "LD" => Written::Graphic(Lang::Ld, l),
+        Some(l) if l.name == "FBD" => Written::Graphic(Lang::Fbd, l),
+        Some(l) => Written::Other(l.name.clone()),
+        None => Written::Other(String::new()),
+    }
+}
+
+/// Why an action in `lang` (IL, SFC) is not taken; `what` names it.
+fn action_refused(what: &str, lang: &str) -> String {
+    match lang {
+        "SFC" => format!(
+            "{what} is a chart (SFC); an action that is a chart (IEC 61131-3 ed. 3 Table 56 feature 2s) is not taken: the standard does not say what becomes of its steps when the action's Q goes FALSE, and with the action control without final scan (§6.7.4.6, ADR-013 §2.17) they would stay where they were and the chart go on from there at the action's next activation; write the chart as a function block with an SFC body and call it from the action"
+        ),
+        "IL" => format!(
+            "{what} is in IL; this compiler has no Instruction List front-end: write the action in ST, LD or FBD"
+        ),
+        other => format!("{what} is in {other}; an action is written in ST, LD or FBD"),
+    }
+}
+
+/// Why a condition in `lang` (IL, SFC) is not taken; `what` names the transition.
+fn condition_refused(what: &str, lang: &str) -> String {
+    match lang {
+        "IL" => format!(
+            "{what}: a condition in IL is not read; this compiler has no Instruction List front-end: write it in ST, LD or FBD"
+        ),
+        other => format!(
+            "{what}: a condition in {other} is not one; a condition is one Boolean value (IEC 61131-3 ed. 3 §6.7.3), written in ST, LD or FBD"
+        ),
+    }
+}
+
+/// An action's body in LD or FBD, `node` the element of that language: its elements read and
+/// checked as a graph. A return is refused: it would end the scan of the whole chart.
+fn graphic_action(
+    node: &Node,
+    lang: Lang,
+    of: BodyOf,
+    p: &GPou,
+    places: &mut Places,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<Graphic> {
+    let before = diags.len();
+    let owner = owner_of(&of);
+    let elems = read_body(node, lang, p, Some(&owner), places, diags);
+    if diags.len() != before || !check_graph(&elems, lang, places, diags) {
+        return None;
+    }
+    for e in &elems {
+        if matches!(e.kind, GKind::Return) {
+            diags.push(places.diag(
+                e.line,
+                format!(
+                    "return {}: a return in an action would end the scan of the whole chart before its transitions; an action has no return of its own (jump to a label at its end instead)",
+                    e.id
+                ),
+            ));
+        }
+    }
+    (diags.len() == before).then_some(Graphic { lang, elems, of })
+}
+
+/// A condition's body in LD or FBD (Table 55 features 10, 11; TC6 `inline` or a transition of
+/// the POU): its elements read and checked, and its network checked to give one Boolean value,
+/// written to `name`, the transition's, with no other effect (§6.7.3).
+fn graphic_condition(
+    node: &Node,
+    lang: Lang,
+    of: BodyOf,
+    name: &str,
+    p: &GPou,
+    places: &mut Places,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<Graphic> {
+    let before = diags.len();
+    let owner = owner_of(&of);
+    let elems = read_body(node, lang, p, Some(&owner), places, diags);
+    if diags.len() != before || !check_graph(&elems, lang, places, diags) {
+        return None;
+    }
+    let mut g = Graphic { lang, elems, of };
+    let result = g.result();
+    condition_network(
+        &mut g.elems,
+        lang,
+        Sink::Named(name),
+        &result,
+        places,
+        diags,
+    )
+    .then_some(g)
+}
+
+/// The place an element of a body of `of` names as its owner in a diagnostic.
+fn owner_of(of: &BodyOf) -> Owner {
+    match of {
+        BodyOf::Action(n) => Owner::Action(n.clone()),
+        BodyOf::Transition(n) => Owner::Transition(n.clone()),
+        BodyOf::Inline(id) | BodyOf::Wired(id) => Owner::Inline(*id),
+    }
+}
+
+/// What gives a condition's network its result.
+enum Sink<'a> {
+    /// The coil (LD) or output variable (FBD) that writes the transition's name.
+    Named(&'a str),
+    /// The element of this `localId`, which the chart added where the network reaches the
+    /// transition.
+    Element(u64),
+}
+
+/// Check that the network `elems` gives one Boolean value and does nothing else (§6.7.3: a
+/// side effect is an error; Table 55 features 2a–6a, 10, 11), and make what gives it write
+/// the hidden variable `result`. `false` when it does not, and the diagnostics say why.
+///
+/// Refused: a write to anything but the transition's name (a coil, an output or in-out
+/// variable); a call of a function block (it changes the instance); an edge (it keeps what it
+/// last sensed, between evaluations that happen only while the transition is enabled); a
+/// label, a jump or a return (a condition is one network); an element that does not lead to
+/// the result. A coil that gives the result neither sets, resets nor senses an edge: the
+/// condition is a value of this scan.
+fn condition_network(
+    elems: &mut [GElem],
+    lang: Lang,
+    sink: Sink,
+    result: &str,
+    places: &Places,
+    diags: &mut Vec<Diagnostic>,
+) -> bool {
+    let before = diags.len();
+    let mut sinks: Vec<usize> = Vec::new();
+    let named = |p: &ast::Place, n: &str| p.path.is_empty() && p.name.eq_ignore_ascii_case(n);
+    let side = "a condition's network writes nothing but its transition's name (IEC 61131-3 ed. 3 §6.7.3: a side effect is an error)";
+    for (k, e) in elems.iter().enumerate() {
+        let is_sink = match (&sink, &e.kind) {
+            (Sink::Element(id), _) => e.id == *id,
+            (Sink::Named(n), GKind::Coil { var, .. }) => named(var, n),
+            (Sink::Named(n), GKind::OutVar { target, .. }) => named(target, n),
+            _ => false,
+        };
+        if is_sink {
+            if let GKind::Coil { storage, edge, .. } = &e.kind {
+                if *storage != Storage::None || *edge != graph::Edge::None {
+                    diags.push(places.diag(
+                        e.line,
+                        format!(
+                            "coil {} sets, resets or senses an edge; the coil of the transition's name takes the condition, a value of this scan (IEC 61131-3 ed. 3 §6.7.3, Table 55 feature 10)",
+                            e.id
+                        ),
+                    ));
+                }
+            }
+            sinks.push(k);
+            continue;
+        }
+        let refusal = match &e.kind {
+            GKind::Coil { var, .. } => Some(format!("coil {} writes {}; {side}", e.id, var.text())),
+            GKind::OutVar { target, .. } | GKind::InOutVar { target, .. } => Some(format!(
+                "{} {} writes {}; {side}",
+                e.what(),
+                e.id,
+                target.text()
+            )),
+            GKind::Block {
+                instance: Some(inst),
+                type_name,
+                ..
+            } => Some(format!(
+                "block {} calls the function block {} ({type_name}); a call changes the instance, and {side}: call it in an action and read its output",
+                e.id,
+                inst.text()
+            )),
+            GKind::Contact { edge, .. } if *edge != graph::Edge::None => Some(format!(
+                "contact {} senses an edge; it keeps what it last sensed, and a condition is evaluated only while its transition is enabled, so it would sense an edge since then and not since the last scan: {side} (sense the edge in an action, with R_TRIG or F_TRIG)",
+                e.id
+            )),
+            GKind::Label(_) | GKind::Jump(_) | GKind::Return => Some(format!(
+                "{} {}: a condition is one network giving one Boolean value (IEC 61131-3 ed. 3 §6.7.3); it has no labels, jumps or returns",
+                e.what(),
+                e.id
+            )),
+            _ => None,
+        };
+        if let Some(r) = refusal {
+            diags.push(places.diag(e.line, r));
+        }
+    }
+    let gives = match lang {
+        Lang::Ld => "a coil",
+        _ => "an output variable",
+    };
+    match (&sink, sinks.as_slice()) {
+        (_, [_]) => {}
+        (Sink::Named(n), []) => {
+            let at = elems.first().map(|e| e.line);
+            let message = format!(
+                "the condition's network writes no {n}: {gives} of the transition's name, {n}, takes the condition (IEC 61131-3 ed. 3 §6.7.3 g, Table 55 features 10, 11)"
+            );
+            match at {
+                Some(line) => diags.push(places.diag(line, message)),
+                None => diags.push(Diagnostic::whole(message)),
+            }
+        }
+        (Sink::Named(n), [_, second, ..]) => diags.push(places.diag(
+            elems[*second].line,
+            format!(
+                "{} {} writes {n} too; one coil or output variable of the transition's name takes the condition (IEC 61131-3 ed. 3 §6.7.3)",
+                elems[*second].what(),
+                elems[*second].id
+            ),
+        )),
+        (Sink::Element(_), _) => unreachable!("the chart adds the element once"),
+    }
+    if diags.len() != before {
+        return false;
+    }
+    // No connection goes round (a feedback path, §8.1.5.2, which FBD takes): a value carried
+    // from one evaluation to the next is state, as an edge's memory is, and a condition is
+    // evaluated only while its transition is enabled. Found without recursion: 0 not seen, 1 on
+    // the way, 2 done.
+    let ids: BTreeMap<u64, usize> = elems.iter().enumerate().map(|(k, e)| (e.id, k)).collect();
+    let ups = |k: usize| -> Vec<usize> {
+        elems[k]
+            .inputs
+            .iter()
+            .flat_map(|p| p.conns.iter().filter_map(|c| ids.get(&c.from).copied()))
+            .collect()
+    };
+    let mut state = vec![0u8; elems.len()];
+    'roots: for root in 0..elems.len() {
+        if state[root] != 0 {
+            continue;
+        }
+        state[root] = 1;
+        let mut trail = vec![(root, ups(root), 0usize)];
+        while let Some(top) = trail.last_mut() {
+            let Some(&next) = top.1.get(top.2) else {
+                state[top.0] = 2;
+                trail.pop();
+                continue;
+            };
+            top.2 += 1;
+            match state[next] {
+                0 => {
+                    state[next] = 1;
+                    trail.push((next, ups(next), 0));
+                }
+                1 => {
+                    let e = &elems[next];
+                    diags.push(places.diag(
+                        e.line,
+                        format!(
+                            "{} {} reads back its own output (a feedback path, IEC 61131-3 ed. 3 §8.1.5.2): it keeps a value from one evaluation to the next, and a condition is evaluated only while its transition is enabled, so it would carry a value of an earlier enabling: {side} (keep the state in an action)",
+                            e.what(),
+                            e.id
+                        ),
+                    ));
+                    break 'roots;
+                }
+                _ => {}
+            }
+        }
+    }
+    if diags.len() != before {
+        return false;
+    }
+    // Every element of the network leads to the result: what reaches it, element by element.
+    let sink = sinks[0];
+    let index: BTreeMap<u64, usize> = elems.iter().enumerate().map(|(k, e)| (e.id, k)).collect();
+    let mut reached = vec![false; elems.len()];
+    let mut todo = vec![sink];
+    while let Some(k) = todo.pop() {
+        if std::mem::replace(&mut reached[k], true) {
+            continue;
+        }
+        for p in &elems[k].inputs {
+            todo.extend(p.conns.iter().filter_map(|c| index.get(&c.from).copied()));
+        }
+    }
+    for (k, e) in elems.iter().enumerate() {
+        let apart = matches!(e.kind, GKind::LeftRail | GKind::RightRail | GKind::Comment);
+        if !reached[k] && !apart {
+            diags.push(places.diag(
+                e.line,
+                format!(
+                    "{} {} does not lead to the condition; a condition is one network giving one Boolean value (IEC 61131-3 ed. 3 §6.7.3)",
+                    e.what(),
+                    e.id
+                ),
+            ));
+        }
+    }
+    if diags.len() != before {
+        return false;
+    }
+    let span = places.span(elems[sink].line);
+    let place = ast::Place {
+        name: result.to_string(),
+        span,
+        path: Vec::new(),
+    };
+    match &mut elems[sink].kind {
+        GKind::Coil { var, .. } => *var = place,
+        GKind::OutVar { target, .. } => *target = place,
+        _ => unreachable!("a sink writes"),
+    }
+    true
+}
+
+fn lang_name(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ld => "LD",
+        Lang::Fbd => "FBD",
+        Lang::Sfc => "SFC",
     }
 }
 
@@ -367,19 +802,30 @@ fn named_actions(p: &GPou, places: &mut Places, diags: &mut Vec<Diagnostic>) -> 
             diags.push(places.diag(at, format!("action {action} has no body")));
             continue;
         };
-        match st_of(body) {
-            Ok(text) => {
+        match written(body) {
+            Written::St(text) => {
                 if let Some(body) = statements(places, at, &text, diags) {
-                    out.push(NamedAction { name: action, body });
+                    out.push(NamedAction {
+                        name: action,
+                        body: ActBody::St(body),
+                    });
                 }
             }
-            Err(lang) if lang.is_empty() => {
+            Written::Graphic(lang, node) => {
+                let of = BodyOf::Action(action.clone());
+                if let Some(g) = graphic_action(node, lang, of, p, places, diags) {
+                    out.push(NamedAction {
+                        name: action,
+                        body: ActBody::Graphic(g),
+                    });
+                }
+            }
+            Written::Other(lang) if lang.is_empty() => {
                 diags.push(places.diag(at, format!("action {action} has an empty body")))
             }
-            Err(lang) => diags.push(places.diag(
-                at,
-                format!("action {action} is in {lang}; an action in a Sequential Function Chart is read in ST only, yet"),
-            )),
+            Written::Other(lang) => {
+                diags.push(places.diag(at, action_refused(&format!("action {action}"), &lang)))
+            }
         }
     }
     out
@@ -412,19 +858,29 @@ fn named_transitions(
             diags.push(places.diag(at, format!("transition {tname} has no body")));
             continue;
         };
-        match st_of(body) {
-            Ok(text) => {
+        match written(body) {
+            Written::St(text) => {
                 if let Some(cond) = condition(places, at, "body", &text, diags) {
-                    out.push(NamedTransition { name: tname, cond });
+                    out.push(NamedTransition {
+                        name: tname,
+                        cond: CondBody::St(cond),
+                    });
                 }
             }
-            Err(lang) if lang.is_empty() => {
+            Written::Graphic(lang, node) => {
+                let of = BodyOf::Transition(tname.clone());
+                if let Some(g) = graphic_condition(node, lang, of, &tname, p, places, diags) {
+                    out.push(NamedTransition {
+                        name: tname,
+                        cond: CondBody::Graphic(g),
+                    });
+                }
+            }
+            Written::Other(lang) if lang.is_empty() => {
                 diags.push(places.diag(at, format!("transition {tname} has an empty body")))
             }
-            Err(lang) => diags.push(places.diag(
-                at,
-                format!("transition {tname} is in {lang}; a transition's condition is read in ST only, yet: one Boolean expression"),
-            )),
+            Written::Other(lang) => diags
+                .push(places.diag(at, condition_refused(&format!("transition {tname}"), &lang))),
         }
     }
     out
@@ -454,11 +910,22 @@ fn ins_of(cp: Option<&Node>, places: &Places, line: u32, diags: &mut Vec<Diagnos
     out
 }
 
-/// The elements of a chart's body; what cannot be read is said.
-fn elements(body: &Node, p: &GPou, places: &mut Places, diags: &mut Vec<Diagnostic>) -> Vec<El> {
+/// The elements of a chart's body, and those of the networks of LD or FBD drawn in it (which
+/// give transitions their conditions, Table 55 features 2a–6a); what cannot be read is said.
+fn elements(
+    body: &Node,
+    p: &GPou,
+    places: &mut Places,
+    diags: &mut Vec<Diagnostic>,
+) -> (Vec<El>, Vec<GElem>) {
     let mut out = Vec::new();
+    let mut networks = Vec::new();
     for node in &body.children {
         if matches!(node.name.as_str(), "addData" | "documentation" | "comment") {
+            continue;
+        }
+        if NETWORK_ELEMENTS.contains(&node.name.as_str()) {
+            networks.extend(read_elem(node, Lang::Sfc, p, None, places, diags));
             continue;
         }
         let id_text = node.attr("localId");
@@ -550,7 +1017,7 @@ fn elements(body: &Node, p: &GPou, places: &mut Places, diags: &mut Vec<Diagnost
                         }
                     },
                 };
-                let Some(cond) = transition_condition(node, id, line, places, diags) else {
+                let Some(cond) = transition_condition(node, id, line, p, places, diags) else {
                     continue;
                 };
                 (Kind::Transition { cond, priority }, one_in(places, diags))
@@ -580,7 +1047,7 @@ fn elements(body: &Node, p: &GPou, places: &mut Places, diags: &mut Vec<Diagnost
                 diags.push(places.diag(
                     line,
                     format!(
-                        "{other} {id}: this element is not read in a Sequential Function Chart yet (a transition's condition is written in ST, inline or as a transition of the POU)"
+                        "{other} {id}: this element is not read in a Sequential Function Chart"
                     ),
                 ));
                 continue;
@@ -596,13 +1063,14 @@ fn elements(body: &Node, p: &GPou, places: &mut Places, diags: &mut Vec<Diagnost
             });
         }
     }
-    out
+    (out, networks)
 }
 
 fn transition_condition(
     node: &Node,
     id: u64,
     line: u32,
+    p: &GPou,
     places: &mut Places,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<Cond> {
@@ -622,29 +1090,53 @@ fn transition_condition(
         return Some(Cond::Named(n.to_string(), negated));
     }
     if let Some(inline) = c.child("inline") {
-        return match st_of(inline) {
-            Ok(text) => {
+        return match written(inline) {
+            Written::St(text) => {
                 condition(places, line, "condition", &text, diags).map(|e| Cond::Expr(e, negated))
             }
-            Err(lang) if lang.is_empty() => {
+            Written::Graphic(lang, body) => {
+                // The network writes the condition to the inline body's name, as one of the
+                // POU's transitions writes it to the transition's (§6.7.3 g; TC6 gives the
+                // inline body a name for it).
+                let tname = inline.attr("name").unwrap_or("").trim();
+                if tname.is_empty() {
+                    diags.push(places.diag(
+                        line,
+                        format!("transition {id}: its condition in {} has no name; the network writes the condition to the name its inline element gives (IEC 61131-3 ed. 3 §6.7.3 g)", lang_name(lang)),
+                    ));
+                    return None;
+                }
+                if !name(places, line, "name", tname, diags) {
+                    return None;
+                }
+                graphic_condition(body, lang, BodyOf::Inline(id), tname, p, places, diags)
+                    .map(|g| Cond::Graphic(g, tname.to_string(), negated))
+            }
+            Written::Other(lang) if lang.is_empty() => {
                 diags.push(places.diag(line, format!("transition {id} has an empty condition")));
                 None
             }
-            Err(lang) => {
-                diags.push(places.diag(
-                    line,
-                    format!("transition {id}: a condition in {lang} is not read yet; write it in ST, one Boolean expression"),
-                ));
+            Written::Other(lang) => {
+                diags
+                    .push(places.diag(line, condition_refused(&format!("transition {id}"), &lang)));
                 None
             }
         };
     }
-    if c.child("connectionPointIn").is_some() {
-        diags.push(places.diag(
-            line,
-            format!("transition {id}: a condition drawn as a network connected to the transition is not read yet; write it in ST, inline or as a transition of the POU"),
-        ));
-        return None;
+    if let Some(cp) = c.child("connectionPointIn") {
+        let pin = graph::pin(cp, None, false, line, places, diags);
+        if pin.expr.is_some() {
+            diags.push(places.diag(
+                line,
+                format!("transition {id}: its condition is an expression at a connection; write it inline in ST"),
+            ));
+            return None;
+        }
+        if pin.conns.is_empty() {
+            diags.push(places.diag(line, format!("transition {id} has an empty condition")));
+            return None;
+        }
+        return Some(Cond::Wired(pin, negated));
     }
     diags.push(places.diag(line, format!("transition {id} has an empty condition")));
     None
@@ -756,20 +1248,23 @@ fn associations(
                 }
                 Target::Name(n.to_string())
             }
-            (None, Some(body)) => match st_of(body) {
-                Ok(text) => match statements(places, line, &text, diags) {
-                    Some(stmts) => Target::Inline(stmts),
+            (None, Some(body)) => match written(body) {
+                Written::St(text) => match statements(places, line, &text, diags) {
+                    Some(stmts) => Target::Inline(ActBody::St(stmts)),
                     None => continue,
                 },
-                Err(lang) if lang.is_empty() => {
+                Written::Graphic(lang, node) => {
+                    match graphic_action(node, lang, BodyOf::Inline(id), p, places, diags) {
+                        Some(g) => Target::Inline(ActBody::Graphic(g)),
+                        None => continue,
+                    }
+                }
+                Written::Other(lang) if lang.is_empty() => {
                     diags.push(places.diag(line, format!("action {id} has an empty body")));
                     continue;
                 }
-                Err(lang) => {
-                    diags.push(places.diag(
-                        line,
-                        format!("action {id} is in {lang}; an action in a Sequential Function Chart is read in ST only, yet"),
-                    ));
+                Written::Other(lang) => {
+                    diags.push(places.diag(line, action_refused(&format!("action {id}"), &lang)));
                     continue;
                 }
             },
@@ -805,8 +1300,8 @@ enum ActKind {
     Var(String),
     /// An action of the POU, by index into the named actions, and its name.
     Named(usize, String),
-    /// Statements in an action block, by the association's `localId`.
-    Inline(u64, Vec<Stmt>),
+    /// A body in an action block, by the association's `localId`.
+    Inline(u64, ActBody),
 }
 
 #[derive(Debug, Clone)]
@@ -829,19 +1324,31 @@ struct Chart {
     trans: Vec<Trans>,
     actions: Vec<Action>,
     span: Span,
+    /// The names an action's body may not write (Table 54 footnote a; §6.7.4.1; §6.7.4.6 rule
+    /// a), each with why.
+    owned: Vec<(String, String)>,
 }
 
 struct Trans {
     el: usize,
     pre: Vec<usize>,
     post: Vec<usize>,
-    cond: Expr,
+    cond: TCond,
     before: Vec<usize>,
 }
 
+/// A transition's condition, resolved: an expression (negated already when the transition
+/// is), or a network of LD or FBD writing its result, and whether the transition negates it.
+enum TCond {
+    St(Expr),
+    Graphic(Graphic, bool),
+}
+
 impl Chart {
+    #[allow(clippy::too_many_arguments)]
     fn of(
         elems: &[El],
+        networks: Vec<GElem>,
         pou: &ast::Pou,
         actions: &[NamedAction],
         transitions: &[NamedTransition],
@@ -851,13 +1358,25 @@ impl Chart {
     ) -> Option<Chart> {
         let before = diags.len();
         let span = places.span(at);
-        // Ids: each element and each action of a block has its own.
+        // Ids: each element, each action of a block and each element of a network drawn in
+        // the chart has its own.
         let mut index: BTreeMap<u64, usize> = BTreeMap::new();
         let mut ids: BTreeMap<u64, u32> = BTreeMap::new();
-        for (k, e) in elems.iter().enumerate() {
-            let mut own = vec![(e.id, e.line)];
-            if let Kind::Block { assocs } = &e.kind {
-                own.extend(assocs.iter().map(|a| (a.id, a.line)));
+        let drawn = networks.iter().map(|e| vec![(e.id, e.line)]);
+        for (k, own) in elems
+            .iter()
+            .map(|e| {
+                let mut own = vec![(e.id, e.line)];
+                if let Kind::Block { assocs } = &e.kind {
+                    own.extend(assocs.iter().map(|a| (a.id, a.line)));
+                }
+                own
+            })
+            .chain(drawn)
+            .enumerate()
+        {
+            if let Some(e) = elems.get(k) {
+                index.insert(e.id, k);
             }
             for (id, line) in own {
                 if ids.insert(id, line).is_some() {
@@ -867,7 +1386,6 @@ impl Chart {
                     ));
                 }
             }
-            index.insert(e.id, k);
         }
         if diags.len() != before {
             return None;
@@ -925,6 +1443,22 @@ impl Chart {
                 at,
                 diags,
             );
+        }
+        // A condition in LD or FBD written in its transition names what its network writes
+        // (§6.7.3 g): a transition's name, its own too.
+        for e in elems {
+            if let Kind::Transition {
+                cond: Cond::Graphic(_, n, _),
+                ..
+            } = &e.kind
+            {
+                claim(
+                    n.to_ascii_uppercase(),
+                    format!("the condition of transition {}, {n},", e.id),
+                    e.line,
+                    diags,
+                );
+            }
         }
         if diags.len() != before_names {
             return None;
@@ -1113,20 +1647,43 @@ impl Chart {
             out.into_iter().collect()
         };
         let mut trans: Vec<Trans> = Vec::new();
+        // A transition of the POU in LD or FBD, by the transition that names it: one only (a
+        // transition name is a TRANSITION … FROM … TO … construct, Table 55 feature 9a).
+        let mut named_by: BTreeMap<String, u64> = BTreeMap::new();
+        let mut wired: Vec<(usize, Pin, bool)> = Vec::new();
         for &k in &trans_els {
             let pre = resolve(index[&elems[k].ins[0]], true);
+            let id = elems[k].id;
             let cond = match &elems[k].kind {
                 Kind::Transition { cond, .. } => match cond {
-                    Cond::Expr(e, negated) => negate(e.clone(), *negated),
+                    Cond::Expr(e, negated) => TCond::St(negate(e.clone(), *negated)),
+                    Cond::Graphic(g, _, negated) => TCond::Graphic(g.clone(), *negated),
+                    Cond::Wired(pin, negated) => {
+                        wired.push((trans.len(), pin.clone(), *negated));
+                        TCond::St(bool_expr(false, span))
+                    }
                     Cond::Named(n, negated) => {
                         match transitions.iter().find(|t| t.name.eq_ignore_ascii_case(n)) {
-                            Some(t) => negate(t.cond.clone(), *negated),
+                            Some(t) => match &t.cond {
+                                CondBody::St(e) => TCond::St(negate(e.clone(), *negated)),
+                                CondBody::Graphic(g) => {
+                                    if let Some(first) =
+                                        named_by.insert(t.name.to_ascii_uppercase(), id)
+                                    {
+                                        diags.push(places.diag(
+                                            elems[k].line,
+                                            format!("transitions {first} and {id} both name the transition {}, whose condition is a network of {}; a transition's name names one transition (IEC 61131-3 ed. 3 Table 55 features 9a–11: TRANSITION … FROM … TO …), and its network's values are kept once", t.name, lang_name(g.lang)),
+                                        ));
+                                    }
+                                    TCond::Graphic(g.clone(), *negated)
+                                }
+                            },
                             None => {
                                 diags.push(places.diag(
                                     elems[k].line,
-                                    format!("transition {} names the transition {n}, which the POU's transitions do not have", elems[k].id),
+                                    format!("transition {id} names the transition {n}, which the POU's transitions do not have"),
                                 ));
-                                bool_expr(false, span)
+                                TCond::St(bool_expr(false, span))
                             }
                         }
                     }
@@ -1140,6 +1697,14 @@ impl Chart {
                 cond,
                 before: Vec::new(),
             });
+        }
+        // The networks drawn in the chart, each giving the condition of the transition it
+        // reaches.
+        let found = drawn_networks(networks, &wired, &trans, elems, pou, places, diags);
+        for ((t, _, negated), g) in wired.iter().zip(found) {
+            if let Some(g) = g {
+                trans[*t].cond = TCond::Graphic(g, *negated);
+            }
         }
         for (k, e) in elems.iter().enumerate() {
             let step = match &e.kind {
@@ -1286,8 +1851,8 @@ impl Chart {
             };
             for a in assocs {
                 let (key, kind) = match &a.target {
-                    Target::Inline(stmts) => {
-                        (format!("#{}", a.id), ActKind::Inline(a.id, stmts.clone()))
+                    Target::Inline(body) => {
+                        (format!("#{}", a.id), ActKind::Inline(a.id, body.clone()))
                     }
                     Target::Name(n) => {
                         if let Some(k) = actions.iter().position(|x| x.name.eq_ignore_ascii_case(n))
@@ -1352,21 +1917,26 @@ impl Chart {
                 ActKind::Inline(..) => {}
             }
         }
+        // Those in ST here; those in LD or FBD once lowered, as statements.
         for a in &acts {
             let body = match &a.kind {
                 ActKind::Named(k, _) => &actions[*k].body,
                 ActKind::Inline(_, b) => b,
                 ActKind::Var(_) => continue,
             };
-            writes(body, &owned, diags);
+            if let ActBody::St(body) = body {
+                writes(body, &owned, diags);
+            }
         }
         for a in actions {
             // An action no step uses is not run; what it writes is still checked.
-            if !acts
-                .iter()
-                .any(|x| matches!(&x.kind, ActKind::Named(_, n) if *n == a.name))
-            {
-                writes(&a.body, &owned, diags);
+            if let ActBody::St(body) = &a.body {
+                if !acts
+                    .iter()
+                    .any(|x| matches!(&x.kind, ActKind::Named(_, n) if *n == a.name))
+                {
+                    writes(body, &owned, diags);
+                }
             }
         }
         if diags.len() != before {
@@ -1378,6 +1948,7 @@ impl Chart {
             trans,
             actions: acts,
             span,
+            owned,
         })
     }
 
@@ -1526,9 +2097,44 @@ impl Chart {
         }
     }
 
-    /// The statements of a scan, the variables they keep, and the probes for monitoring.
-    fn lower(&self, pou: &str, named: &[NamedAction]) -> (Vec<Stmt>, Vec<VarDecl>, Vec<Probe>) {
+    /// The statements of a scan, the variables they keep, and the probes for monitoring; each
+    /// action and condition in LD or FBD lowered by its language's front-end in its own
+    /// namespace (ADR-013 §2.17). `None` when one could not be, and the diagnostics say why.
+    fn lower(
+        &self,
+        tree: &ast::Pou,
+        named: &[NamedAction],
+        known: &Known,
+        places: &mut Places,
+        diags: &mut Vec<Diagnostic>,
+    ) -> Option<(Vec<Stmt>, Vec<VarDecl>, Vec<Probe>)> {
+        let pou = tree.name.as_str();
         let span = self.span;
+        let before = diags.len();
+        // The flags of a body's networks are set FALSE before it may run, so a network of a
+        // body that did not run in the scan does not read as run.
+        // So are the BOOLs that say where a function of an FBD body ran (its kept ENO, the
+        // `ran` of a guarded probe): a value of a body that did not run is never shown as
+        // computed in this scan. Within a run each is assigned before it is read, so setting
+        // it FALSE first changes nothing the body does.
+        let clear = |l: &Lowered| -> Vec<Stmt> {
+            let mut rans: Vec<&str> = l
+                .probes
+                .iter()
+                .filter_map(|p| match &p.holds {
+                    Holds::Guarded { ran, .. } => Some(ran.as_str()),
+                    _ => None,
+                })
+                .collect();
+            rans.sort_unstable();
+            rans.dedup();
+            l.flags
+                .iter()
+                .cloned()
+                .chain(rans.into_iter().map(|r| place(r, span)))
+                .map(|f| Stmt::Assign(f, bool_expr(false, span)))
+                .collect()
+        };
         let mut hidden = Hidden::default();
         let mut vars: Vec<VarDecl> = Vec::new();
         let mut probes: Vec<Probe> = Vec::new();
@@ -1562,6 +2168,7 @@ impl Chart {
                     path: format!("{name}.X"),
                     negated: false,
                 },
+                body: None,
             });
             probes.push(Probe {
                 pou: pou.into(),
@@ -1571,6 +2178,7 @@ impl Chart {
                     path: format!("{name}.T"),
                     negated: false,
                 },
+                body: None,
             });
         }
         // The shape of the chart, for an online change.
@@ -1627,6 +2235,7 @@ impl Chart {
                         path: q.text(),
                         negated: false,
                     },
+                    body: None,
                 });
             }
             let input = |qual: Qual| -> Option<Expr> {
@@ -1748,14 +2357,40 @@ impl Chart {
                 qx = and(not(r, span), qx, span);
             }
             control.push(Stmt::Assign(q.clone(), qx));
-            match &a.kind {
-                ActKind::Var(_) => {}
-                ActKind::Named(k, _) => control.push(Stmt::If(
-                    vec![(var(q.clone()), named[*k].body.clone())],
-                    None,
-                )),
-                ActKind::Inline(_, body) => {
-                    control.push(Stmt::If(vec![(var(q.clone()), body.clone())], None))
+            // The action's body runs while Q is TRUE (§6.7.4.6 rule a, without final scan).
+            let body = match &a.kind {
+                ActKind::Var(_) => None,
+                ActKind::Named(k, _) => Some(&named[*k].body),
+                ActKind::Inline(_, body) => Some(body),
+            };
+            match body {
+                None => {}
+                Some(ActBody::St(stmts)) => {
+                    control.push(Stmt::If(vec![(var(q.clone()), stmts.clone())], None))
+                }
+                Some(ActBody::Graphic(g)) => {
+                    if let Some(l) = g.lower(tree, known, places, diags) {
+                        writes(&l.stmts, &self.owned, diags);
+                        control.extend(clear(&l));
+                        control.push(Stmt::If(vec![(var(q.clone()), l.stmts)], None));
+                        vars.extend(l.vars);
+                        probes.extend(l.probes);
+                    }
+                }
+            }
+        }
+        // An action in LD or FBD no step uses is not run; it is lowered, so what it writes is
+        // checked as an action's in ST is.
+        for a in named {
+            if let ActBody::Graphic(g) = &a.body {
+                let used = self
+                    .actions
+                    .iter()
+                    .any(|x| matches!(&x.kind, ActKind::Named(_, n) if *n == a.name));
+                if !used {
+                    if let Some(l) = g.lower(tree, known, places, diags) {
+                        writes(&l.stmts, &self.owned, diags);
+                    }
                 }
             }
         }
@@ -1857,13 +2492,26 @@ impl Chart {
                 .map(|s| var(member(&self.steps[*s].0, "X", span)))
                 .collect();
             out.push(Stmt::Assign(en.clone(), and_all(pre, span)));
-            out.push(Stmt::If(
-                vec![(
-                    var(en.clone()),
-                    vec![Stmt::Assign(c.clone(), tr.cond.clone())],
-                )],
-                None,
-            ));
+            match &tr.cond {
+                TCond::St(cond) => out.push(Stmt::If(
+                    vec![(var(en.clone()), vec![Stmt::Assign(c.clone(), cond.clone())])],
+                    None,
+                )),
+                // The network runs where the transition is enabled, and only there; it writes
+                // its result, which the transition takes (negated when it is).
+                TCond::Graphic(g, negated) => {
+                    let lowered = g.lower(tree, known, places, diags);
+                    if let Some(l) = lowered.filter(|l| computed_each_time(g, l, places, diags)) {
+                        let result = hidden.var(g.result(), bool_ty(span), span);
+                        out.extend(clear(&l));
+                        let mut body = l.stmts;
+                        body.push(Stmt::Assign(c.clone(), negate(var(result), *negated)));
+                        out.push(Stmt::If(vec![(var(en.clone()), body)], None));
+                        vars.extend(l.vars);
+                        probes.extend(drawn_probes(l.probes, &g.of));
+                    }
+                }
+            }
             probes.push(Probe {
                 pou: pou.into(),
                 local_id: id,
@@ -1872,6 +2520,7 @@ impl Chart {
                     path: c.text(),
                     ran: en.text(),
                 },
+                body: None,
             });
             cond_vars.push((c, en));
         }
@@ -1917,7 +2566,7 @@ impl Chart {
             }
         }
         vars.extend(hidden.vars);
-        (out, vars, probes)
+        (diags.len() == before).then_some((out, vars, probes))
     }
 
     /// A hash of the chart's steps and transitions by name (FNV-1a, 31 bits), as a DINT.
@@ -1957,6 +2606,241 @@ impl Chart {
     }
 }
 
+/// The networks of LD or FBD drawn in a chart's body (Table 55 features 2a–6a; TC6 lets a
+/// chart's body hold LD and FBD elements, and a transition's `condition` be a
+/// `connectionPointIn`): for each transition in `wired` (its index in `trans`, the connections
+/// that reach its condition, whether negated), the network that reaches it, checked as a
+/// condition's (`condition_network`), or `None` where it is refused.
+///
+/// A connector and its continuations are one line (§8.1.3, the FBD front-end's rule), so a
+/// network may reach a transition through a continuation (features 4a–6a). Each element of a
+/// network leads to the condition of one transition: one that leads to none, or to two, is
+/// refused. A network with a power rail, a contact or a coil is a Ladder Diagram (§8.2), any
+/// other a Function Block Diagram (§8.3). Where it reaches the transition the chart adds a
+/// coil (LD) or an output variable (FBD) of the transition's `localId`, which takes the
+/// condition.
+fn drawn_networks(
+    mut networks: Vec<GElem>,
+    wired: &[(usize, Pin, bool)],
+    trans: &[Trans],
+    elems: &[El],
+    pou: &ast::Pou,
+    places: &Places,
+    diags: &mut Vec<Diagnostic>,
+) -> Vec<Option<Graphic>> {
+    let none = || wired.iter().map(|_| None).collect();
+    if networks.is_empty() && wired.is_empty() {
+        return Vec::new();
+    }
+    let before = diags.len();
+    // Every connection of a network reaches an element of the chart's networks; one to a step
+    // is told where the network is walked, below.
+    let own: BTreeSet<u64> = networks.iter().map(|e| e.id).collect();
+    for e in &networks {
+        for p in &e.inputs {
+            for c in &p.conns {
+                if !own.contains(&c.from) && !elems.iter().any(|x| x.id == c.from) {
+                    diags.push(places.diag(
+                        p.line,
+                        format!(
+                            "{} {} is connected to localId {}, which no element of the body has",
+                            e.what(),
+                            e.id,
+                            c.from
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    if diags.len() != before {
+        return none();
+    }
+    // Lines joined: a connection from a continuation is one from what reaches its connector.
+    let continued = fbd::join_lines(&mut networks, pou, places, diags);
+    if diags.len() != before {
+        return none();
+    }
+    let lines: BTreeMap<u64, graph::Conn> = continued
+        .iter()
+        .map(|(k, c)| (networks[*k].id, c.clone()))
+        .collect();
+    networks.retain(|e| !matches!(e.kind, GKind::Connector(_) | GKind::Continuation(_)));
+    let index: BTreeMap<u64, usize> = networks
+        .iter()
+        .enumerate()
+        .map(|(k, e)| (e.id, k))
+        .collect();
+    // Each transition's network: what reaches its condition, element by element.
+    let mut owner: Vec<Option<u64>> = vec![None; networks.len()];
+    let mut members: Vec<Vec<usize>> = Vec::new();
+    for (t, pin, _) in wired {
+        let tid = elems[trans[*t].el].id;
+        let mut set = Vec::new();
+        let mut todo: Vec<u64> = Vec::new();
+        for c in &pin.conns {
+            let c = lines.get(&c.from).unwrap_or(c);
+            match index.get(&c.from) {
+                Some(_) => todo.push(c.from),
+                None => diags.push(places.diag(
+                    pin.line,
+                    format!(
+                        "the condition of transition {tid} is connected to localId {}, which no element of a network in the chart has",
+                        c.from
+                    ),
+                )),
+            }
+        }
+        let mut seen = BTreeSet::new();
+        while let Some(id) = todo.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(&k) = index.get(&id) else {
+                continue;
+            };
+            let e = &networks[k];
+            // A power rail belongs to no network (§8.1.4): each network that reaches it has
+            // its own.
+            if !matches!(e.kind, GKind::LeftRail) {
+                match owner[k] {
+                    Some(other) if other != tid => diags.push(places.diag(
+                        e.line,
+                        format!(
+                            "{} {} leads to the conditions of transitions {other} and {tid}; a network gives one transition its condition (IEC 61131-3 ed. 3 §6.7.3)",
+                            e.what(),
+                            e.id
+                        ),
+                    )),
+                    _ => owner[k] = Some(tid),
+                }
+            }
+            set.push(k);
+            for p in &e.inputs {
+                for c in &p.conns {
+                    let from = lines.get(&c.from).unwrap_or(c).from;
+                    if index.contains_key(&from) {
+                        todo.push(from);
+                    } else if let Some(x) = elems.iter().find(|x| x.id == from) {
+                        diags.push(places.diag(
+                            p.line,
+                            format!(
+                                "{} {} is connected to {} {from}; a network reads a step's flag by its name, S.X (IEC 61131-3 ed. 3 Table 54 feature 3a): a connection from the step (feature 3b) is not read",
+                                e.what(),
+                                e.id,
+                                x.kind.what()
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        members.push(set);
+    }
+    // A left power rail is in every network that starts at it; one that nothing starts at is
+    // drawn for nothing, and is told as any element that leads nowhere.
+    let started: BTreeSet<u64> = networks
+        .iter()
+        .flat_map(|e| e.inputs.iter().flat_map(|p| p.conns.iter().map(|c| c.from)))
+        .collect();
+    for (k, e) in networks.iter().enumerate() {
+        let unused = match e.kind {
+            GKind::LeftRail => !started.contains(&e.id),
+            // What reaches a right rail is the end of a rung (§8.2.3): it gives no condition.
+            GKind::RightRail => true,
+            _ => owner[k].is_none(),
+        };
+        if unused {
+            diags.push(places.diag(
+                e.line,
+                format!(
+                    "{} {} is drawn in the chart and leads to no transition's condition; a network in a chart gives a transition its condition (IEC 61131-3 ed. 3 §6.7.3, Table 55 features 2a–6a)",
+                    e.what(),
+                    e.id
+                ),
+            ));
+        }
+    }
+    if diags.len() != before {
+        return none();
+    }
+    let mut out = Vec::new();
+    for ((t, pin, _), set) in wired.iter().zip(members) {
+        let tr = &elems[trans[*t].el];
+        let mut own: Vec<GElem> = set.iter().map(|k| networks[*k].clone()).collect();
+        // Connections from continuations are made from what the line starts at.
+        for e in &mut own {
+            for p in &mut e.inputs {
+                for c in &mut p.conns {
+                    if let Some(line) = lines.get(&c.from) {
+                        *c = line.clone();
+                    }
+                }
+            }
+        }
+        let ladder = own.iter().any(|e| {
+            matches!(
+                e.kind,
+                GKind::LeftRail | GKind::RightRail | GKind::Contact { .. } | GKind::Coil { .. }
+            )
+        });
+        let lang = if ladder { Lang::Ld } else { Lang::Fbd };
+        let mut input = pin.clone();
+        for c in &mut input.conns {
+            if let Some(line) = lines.get(&c.from) {
+                *c = line.clone();
+            }
+        }
+        let span = places.span(tr.line);
+        let target = ast::Place {
+            name: String::new(),
+            span,
+            path: Vec::new(),
+        };
+        own.push(GElem {
+            id: tr.id,
+            pos: tr.pos,
+            line: tr.line,
+            kind: match lang {
+                Lang::Ld => GKind::Coil {
+                    var: target,
+                    negated: false,
+                    storage: Storage::None,
+                    edge: graph::Edge::None,
+                },
+                _ => GKind::OutVar {
+                    target,
+                    negated: false,
+                },
+            },
+            inputs: vec![input],
+        });
+        let at = diags.len();
+        let mut g = Graphic {
+            lang,
+            elems: own,
+            of: BodyOf::Wired(tr.id),
+        };
+        let result = g.result();
+        if check_graph(&g.elems, lang, places, diags)
+            && condition_network(
+                &mut g.elems,
+                lang,
+                Sink::Element(tr.id),
+                &result,
+                places,
+                diags,
+            )
+            && diags.len() == at
+        {
+            out.push(Some(g));
+        } else {
+            out.push(None);
+        }
+    }
+    out
+}
+
 impl Kind {
     fn kind_wants_transition(&self) -> bool {
         matches!(
@@ -1967,6 +2851,66 @@ impl Kind {
     fn kind_wants_step(&self) -> bool {
         matches!(self, Kind::Transition { .. } | Kind::SelDiv | Kind::SimConv)
     }
+}
+
+/// Whether a condition's network assigns its result in every evaluation: at the top of its
+/// statements, not only under a function's EN. Refused where not (said at the element that
+/// takes the result): where the EN is FALSE the function does not run and the value is not
+/// computed (IEC 61131-3 ed. 3 §6.6.1.5 rule 4; ADR-013 §2.16), and a condition is the result of
+/// evaluating one Boolean expression each time its transition is enabled (§6.7.3). Taking an
+/// earlier evaluation's value would clear the transition on a value of another scan, and
+/// FALSE in its place would clear a negated transition on a value nobody computed. A coil's
+/// power is defined where a function did not run (OFF, §2.15), so a coil always assigns it.
+fn computed_each_time(
+    g: &Graphic,
+    l: &Lowered,
+    places: &Places,
+    diags: &mut Vec<Diagnostic>,
+) -> bool {
+    let result = g.result();
+    let assigned = l
+        .stmts
+        .iter()
+        .any(|s| matches!(s, Stmt::Assign(p, _) if p.path.is_empty() && p.name == result));
+    if assigned {
+        return true;
+    }
+    let sink = g.elems.iter().find(|e| match &e.kind {
+        GKind::Coil { var, .. } => var.name == result,
+        GKind::OutVar { target, .. } => target.name == result,
+        _ => false,
+    });
+    let message = |what: &str| {
+        format!(
+            "{what} takes a value computed only where a function's EN is TRUE; where it is FALSE the function does not run (IEC 61131-3 ed. 3 §6.6.1.5) and the condition would not be computed, while a condition is the result of evaluating one Boolean expression each time its transition is enabled (§6.7.3): give the function no EN, or in LD end the rung at a coil of the transition's name (its power is OFF where the function did not run)"
+        )
+    };
+    match sink {
+        Some(e) => diags.push(places.diag(e.line, message(&format!("{} {}", e.what(), e.id)))),
+        None => diags.push(Diagnostic::whole(message("the condition"))),
+    }
+    false
+}
+
+/// The probes of a condition's network: of one drawn in the chart, without the element the
+/// chart added where it reaches the transition (whose condition is the transition's own probe).
+fn drawn_probes(probes: Vec<Probe>, of: &BodyOf) -> Vec<Probe> {
+    let BodyOf::Wired(tid) = of else {
+        return probes;
+    };
+    probes
+        .into_iter()
+        .filter_map(|mut p| {
+            if let At::Network(members) = &mut p.at {
+                members.retain(|m| m != tid);
+                if p.local_id == *tid {
+                    p.local_id = *members.first()?;
+                }
+                return Some(p);
+            }
+            (p.local_id != *tid).then_some(p)
+        })
+        .collect()
 }
 
 /// Refuse a write to what the chart owns, and RETURN, in the statements of an action.

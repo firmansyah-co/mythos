@@ -6,7 +6,7 @@ mod support;
 
 use mythos_logic_graphic::{lower, Source, MAX_SITUATIONS};
 use mythos_logic_ir::Diagnostic;
-use support::tc6::{project, Act, Pou};
+use support::tc6::{project, Act, Coil, Contact, In, Pou};
 
 fn lowered(pous: &[Pou]) -> Result<(), Vec<Diagnostic>> {
     let xml = project(pous);
@@ -411,7 +411,7 @@ fn an_indicator_variable_is_refused_as_deprecated() {
 }
 
 #[test]
-fn what_a_chart_does_not_read_yet_is_refused_by_name() {
+fn what_a_chart_does_not_read_is_refused_by_name() {
     let macro_step =
         base().raw("<macroStep localId=\"9\" name=\"M\"><position x=\"0\" y=\"300\"/></macroStep>");
     let (id, msg, _) = one(refused(&[macro_step]));
@@ -420,30 +420,56 @@ fn what_a_chart_does_not_read_yet_is_refused_by_name() {
         msg.starts_with("macroStep 9: a macro step is not an element of IEC 61131-3 ed. 3"),
         "{msg}"
     );
-
-    let block = base().raw("<inVariable localId=\"9\"><position x=\"0\" y=\"300\"/><connectionPointOut/><expression>go</expression></inVariable>");
-    let (_, msg, _) = one(refused(&[block]));
-    assert!(
-        msg.starts_with(
-            "inVariable 9: this element is not read in a Sequential Function Chart yet"
-        ),
-        "{msg}"
+    let vendor =
+        base().raw("<vendorElement localId=\"9\"><position x=\"0\" y=\"300\"/></vendorElement>");
+    let (id, msg, _) = one(refused(&[vendor]));
+    assert_eq!(id, Some(9));
+    assert_eq!(
+        msg,
+        "vendorElement 9: this element is not read in a Sequential Function Chart"
     );
+}
 
-    let network = base().raw("<transition localId=\"9\"><position x=\"0\" y=\"300\"/><connectionPointIn><connection refLocalId=\"3\"/></connectionPointIn><condition><connectionPointIn><connection refLocalId=\"1\"/></connectionPointIn></condition></transition>");
-    let (_, msg, _) = one(refused(&[network]));
-    assert!(
-        msg.contains("a condition drawn as a network connected to the transition is not read yet"),
-        "{msg}"
-    );
-
-    let ld_action =
-        base()
-            .raw("")
-            .actions_of(5, 200, 80, "3", &[(6, "N", None, Act::Name("Blink"))]);
-    let xml = project(&[ld_action]).replace(
+/// `base()` with the action `Blink` of `body` (TC6 XML of a `body`'s content) on Run.
+fn with_action_body(body: &str) -> Vec<Diagnostic> {
+    let p = base().actions_of(5, 200, 80, "3", &[(6, "N", None, Act::Name("Blink"))]);
+    let xml = project(&[p]).replace(
         "<body><SFC>",
-        "<actions><action name=\"Blink\"><body><LD></LD></body></action></actions><body><SFC>",
+        &format!(
+            "<actions><action name=\"Blink\"><body>{body}</body></action></actions><body><SFC>"
+        ),
+    );
+    lower(
+        &[Source {
+            name: "m.xml",
+            text: &xml,
+        }],
+        None,
+    )
+    .unwrap_err()
+}
+
+#[test]
+fn an_action_in_il_or_sfc_is_refused_with_the_reason() {
+    let d = with_action_body("<IL><xhtml:p>LD go</xhtml:p></IL>");
+    assert!(
+        d.iter().any(|d| d.message == "action Blink is in IL; this compiler has no Instruction List front-end: write the action in ST, LD or FBD"
+            && d.element.as_ref().unwrap().action.as_deref() == Some("Blink")),
+        "{d:#?}"
+    );
+    // Table 56 feature 2s: the standard does not say what becomes of the chart's steps when
+    // the action stops.
+    let d = with_action_body("<SFC></SFC>");
+    assert!(
+        d.iter().any(|d| d.message.starts_with("action Blink is a chart (SFC); an action that is a chart (IEC 61131-3 ed. 3 Table 56 feature 2s) is not taken: the standard does not say what becomes of its steps when the action's Q goes FALSE")
+            && d.message.ends_with("write the chart as a function block with an SFC body and call it from the action")),
+        "{d:#?}"
+    );
+    // In an action block, the same, named by the action's localId.
+    let p = base().raw("");
+    let xml = project(&[p]).replace(
+        "</SFC>",
+        "<actionBlock localId=\"5\"><position x=\"200\" y=\"80\"/><connectionPointIn><connection refLocalId=\"3\"/></connectionPointIn><action localId=\"6\" qualifier=\"N\"><relPosition x=\"0\" y=\"0\"/><inline><IL><xhtml:p>LD go</xhtml:p></IL></inline></action></actionBlock></SFC>",
     );
     let d = lower(
         &[Source {
@@ -453,9 +479,323 @@ fn what_a_chart_does_not_read_yet_is_refused_by_name() {
         None,
     )
     .unwrap_err();
+    let (id, msg, _) = one(d);
+    assert_eq!(id, Some(6));
+    assert!(msg.starts_with("action 6 is in IL"), "{msg}");
+}
+
+#[test]
+fn a_condition_in_il_or_sfc_is_refused() {
+    let p = base().transition("Ready", "go");
+    let xml = project(&[p
+        .raw("<transition localId=\"9\"><position x=\"300\" y=\"40\"/><connectionPointIn><connection refLocalId=\"1\"/></connectionPointIn><condition><reference name=\"Ready\"/></condition></transition>")])
+    .replace("<ST><xhtml:p xmlns:xhtml=\"http://www.w3.org/1999/xhtml\">go</xhtml:p></ST>", "<IL><xhtml:p>LD go</xhtml:p></IL>");
+    let d = lower(
+        &[Source {
+            name: "m.xml",
+            text: &xml,
+        }],
+        None,
+    )
+    .unwrap_err();
     assert!(
-        d.iter().any(|d| d.message == "action Blink is in LD; an action in a Sequential Function Chart is read in ST only, yet"
-            && d.element.as_ref().unwrap().action.as_deref() == Some("Blink")),
+        d.iter().any(|d| d.message == "transition Ready: a condition in IL is not read; this compiler has no Instruction List front-end: write it in ST, LD or FBD"),
+        "{d:#?}"
+    );
+}
+
+/// A rung for a condition: left 30, contact `a` 31, the coil `T` 32, and `more` after.
+fn rung(more: impl FnOnce(Pou) -> Pou) -> Pou {
+    more(
+        Pou::program("_")
+            .left(30, 20)
+            .contact(31, 100, 20, Contact::No, "go", &["30"])
+            .coil(32, 300, 20, Coil::Plain, "T", &["31"]),
+    )
+}
+
+/// `base()` whose transition out of Idle is the condition `cond`, inline, of the name `T`.
+fn condition(cond: &Pou) -> Pou {
+    Pou::program("Main")
+        .sfc()
+        .vars(&[
+            ("go", "BOOL"),
+            ("stop", "BOOL"),
+            ("lamp", "BOOL"),
+            ("n", "INT"),
+            ("trig", "R_TRIG"),
+        ])
+        .step(1, 100, 0, "Idle", true, &["4"])
+        .trans_body(2, 100, 40, "T", cond, &["1"])
+        .step(3, 100, 80, "Run", false, &["2"])
+        .trans(4, 100, 120, "stop", &["3"])
+}
+
+#[test]
+fn the_condition_rung_lowers() {
+    lowers(&[condition(&rung(|p| p))]);
+}
+
+#[test]
+fn a_condition_network_that_writes_anything_but_its_transitions_name_is_refused() {
+    // §6.7.3: it shall be an error if any side effect occurs during the evaluation of a
+    // transition condition.
+    let p = condition(&rung(|p| p.coil(33, 300, 60, Coil::Plain, "lamp", &["31"])));
+    let (id, msg, d) = one(refused(&[p]));
+    assert_eq!(id, Some(33));
+    assert_eq!(
+        msg,
+        "coil 33 writes lamp; a condition's network writes nothing but its transition's name (IEC 61131-3 ed. 3 §6.7.3: a side effect is an error)"
+    );
+    assert_eq!(
+        d.element.unwrap().inline,
+        Some(2),
+        "the transition whose body it is in"
+    );
+}
+
+#[test]
+fn a_condition_network_that_calls_a_function_block_or_senses_an_edge_is_refused() {
+    let p = condition(&rung(|p| {
+        p.block(
+            33,
+            200,
+            60,
+            "R_TRIG",
+            Some("trig"),
+            &[("CLK", In::From(&["30"]))],
+            &["Q"],
+        )
+        .contact(34, 250, 60, Contact::No, "go", &["33.Q"])
+        .coil(35, 300, 60, Coil::Plain, "T", &["34"])
+    }));
+    let d = refused(&[p]);
+    assert!(
+        d.iter().any(|d| d.message.starts_with(
+            "block 33 calls the function block trig (R_TRIG); a call changes the instance"
+        )),
+        "{d:#?}"
+    );
+    let p = condition(
+        &Pou::program("_")
+            .left(30, 20)
+            .contact(31, 100, 20, Contact::Rising, "go", &["30"])
+            .coil(32, 300, 20, Coil::Plain, "T", &["31"]),
+    );
+    let (id, msg, _) = one(refused(&[p]));
+    assert_eq!(id, Some(31));
+    assert!(
+        msg.starts_with("contact 31 senses an edge; it keeps what it last sensed"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn a_condition_network_with_no_coil_or_two_coils_of_its_name_is_refused() {
+    let none = condition(
+        &Pou::program("_")
+            .left(30, 20)
+            .contact(31, 100, 20, Contact::No, "go", &["30"])
+            .right(32, 20, &["31"]),
+    );
+    let d = refused(&[none]);
+    assert!(
+        d.iter().any(|d| d.message == "the condition's network writes no T: a coil of the transition's name, T, takes the condition (IEC 61131-3 ed. 3 §6.7.3 g, Table 55 features 10, 11)"),
+        "{d:#?}"
+    );
+    let two = condition(&rung(|p| p.coil(33, 300, 60, Coil::Plain, "T", &["30"])));
+    let (id, msg, _) = one(refused(&[two]));
+    assert_eq!(id, Some(33));
+    assert!(msg.starts_with("a coil 33 writes T too"), "{msg}");
+    let set = condition(
+        &Pou::program("_")
+            .left(30, 20)
+            .contact(31, 100, 20, Contact::No, "go", &["30"])
+            .coil(32, 300, 20, Coil::Set, "T", &["31"]),
+    );
+    let (id, msg, _) = one(refused(&[set]));
+    assert_eq!(id, Some(32));
+    assert!(
+        msg.starts_with("coil 32 sets, resets or senses an edge"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn a_condition_network_with_a_jump_or_an_element_apart_is_refused() {
+    let jump = condition(&rung(|p| {
+        p.jump(33, 200, 60, "L", &["31"]).label(34, 100, "L")
+    }));
+    let d = refused(&[jump]);
+    assert!(
+        d.iter().any(|d| d.message == "a jump 33: a condition is one network giving one Boolean value (IEC 61131-3 ed. 3 §6.7.3); it has no labels, jumps or returns"),
+        "{d:#?}"
+    );
+    let apart = condition(&rung(|p| {
+        p.contact(33, 100, 60, Contact::No, "stop", &["30"])
+            .right(34, 60, &["33"])
+    }));
+    let (id, msg, _) = one(refused(&[apart]));
+    assert_eq!(id, Some(33));
+    assert_eq!(
+        msg,
+        "a contact 33 does not lead to the condition; a condition is one network giving one Boolean value (IEC 61131-3 ed. 3 §6.7.3)"
+    );
+}
+
+#[test]
+fn an_inline_condition_in_ld_without_a_name_or_with_a_variables_name_is_refused() {
+    let p = condition(&rung(|p| p));
+    let xml = project(&[p]).replace("<inline name=\"T\">", "<inline name=\"\">");
+    let d = lower(
+        &[Source {
+            name: "m.xml",
+            text: &xml,
+        }],
+        None,
+    )
+    .unwrap_err();
+    let (id, msg, _) = one(d);
+    assert_eq!(id, Some(2));
+    assert!(
+        msg.starts_with("transition 2: its condition in LD has no name"),
+        "{msg}"
+    );
+    let p = condition(
+        &Pou::program("_")
+            .left(30, 20)
+            .contact(31, 100, 20, Contact::No, "go", &["30"])
+            .coil(32, 300, 20, Coil::Plain, "lamp", &["31"]),
+    );
+    let xml = project(&[p]).replace("<inline name=\"T\">", "<inline name=\"lamp\">");
+    let d = lower(
+        &[Source {
+            name: "m.xml",
+            text: &xml,
+        }],
+        None,
+    )
+    .unwrap_err();
+    let (id, msg, _) = one(d);
+    assert_eq!(id, Some(2));
+    assert_eq!(
+        msg,
+        "the condition of transition 2, lamp, has the name of the variable lamp; each step, action and transition of a POU has a name of its own, apart from its variables"
+    );
+}
+
+#[test]
+fn a_transition_of_the_pou_in_ld_named_by_two_transitions_is_refused() {
+    // Table 55 feature 9a: a transition name refers to TRANSITION … FROM … TO …, one transition.
+    let cond = rung(|p| p);
+    let p = Pou::program("Main")
+        .sfc()
+        .vars(&[("go", "BOOL")])
+        .transition_body("T", &cond)
+        .step(1, 100, 0, "A", true, &["4"])
+        .trans_ref(2, 100, 40, "T", &["1"])
+        .step(3, 100, 80, "B", false, &["2"])
+        .trans_ref(4, 100, 120, "T", &["3"]);
+    let (id, msg, _) = one(refused(&[p]));
+    assert_eq!(id, Some(4));
+    assert!(
+        msg.starts_with(
+            "transitions 2 and 4 both name the transition T, whose condition is a network of LD"
+        ),
+        "{msg}"
+    );
+}
+
+#[test]
+fn an_ld_action_that_returns_or_writes_a_steps_flag_is_refused() {
+    let ret = Pou::program("_")
+        .left(10, 20)
+        .contact(11, 100, 20, Contact::No, "go", &["10"])
+        .ret(12, 200, 20, &["11"]);
+    let p = base().action_body("Blink", &ret).actions_of(
+        5,
+        200,
+        80,
+        "3",
+        &[(6, "N", None, Act::Name("Blink"))],
+    );
+    let (id, msg, d) = one(refused(&[p]));
+    assert_eq!(id, Some(12));
+    assert!(
+        msg.starts_with("return 12: a return in an action would end the scan of the whole chart"),
+        "{msg}"
+    );
+    assert_eq!(d.element.unwrap().action.as_deref(), Some("Blink"));
+    // Table 54 footnote a: the chart alone writes a step's flag.
+    let coil = Pou::program("_")
+        .left(10, 20)
+        .contact(11, 100, 20, Contact::No, "go", &["10"])
+        .coil(12, 200, 20, Coil::Plain, "Idle.X", &["11"]);
+    let p = base().actions_of(5, 200, 80, "3", &[(6, "N", None, Act::Body(&coil))]);
+    let (id, msg, d) = one(refused(&[p]));
+    assert_eq!(id, Some(12));
+    assert_eq!(
+        msg,
+        "Idle is step Idle: only the chart writes its flag and time (IEC 61131-3 ed. 3 §6.7.2, Table 54 footnote a)"
+    );
+    let e = d.element.unwrap();
+    assert_eq!(e.inline, Some(6));
+    assert_eq!(e.text.unwrap().field, "variable");
+}
+
+#[test]
+fn a_network_drawn_in_the_chart_that_leads_to_no_transition_or_to_two_is_refused() {
+    let stray = base()
+        .left(40, 300)
+        .contact(41, 0, 300, Contact::No, "go", &["40"]);
+    let (id, msg, _) = one(refused(&[stray]));
+    assert_eq!(id, Some(41));
+    assert!(
+        msg.starts_with(
+            "a contact 41 is drawn in the chart and leads to no transition's condition"
+        ),
+        "{msg}"
+    );
+    let rail = base().left(40, 300);
+    let (id, msg, _) = one(refused(&[rail]));
+    assert_eq!(id, Some(40));
+    assert!(
+        msg.starts_with(
+            "the left power rail 40 is drawn in the chart and leads to no transition's condition"
+        ),
+        "{msg}"
+    );
+    let two = Pou::program("Main")
+        .sfc()
+        .vars(&[("go", "BOOL")])
+        .left(40, 0)
+        .contact(41, 0, 40, Contact::No, "go", &["40"])
+        .step(1, 100, 0, "A", true, &["4"])
+        .trans_wired(2, 100, 40, &["41"], false, &["1"])
+        .step(3, 100, 80, "B", false, &["2"])
+        .trans_wired(4, 100, 120, &["41"], true, &["3"]);
+    let (id, msg, _) = one(refused(&[two]));
+    assert_eq!(id, Some(41));
+    assert!(
+        msg.starts_with("a contact 41 leads to the conditions of transitions 2 and 4"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn a_network_drawn_in_the_chart_connected_to_a_step_is_refused() {
+    // Table 54 feature 3b, a connection from the step's flag: not read; S.X is (feature 3a).
+    let p = Pou::program("Main")
+        .sfc()
+        .vars(&[("go", "BOOL")])
+        .step(1, 100, 0, "A", true, &["4"])
+        .contact(41, 0, 40, Contact::No, "go", &["1"])
+        .trans_wired(2, 100, 40, &["41"], false, &["1"])
+        .step(3, 100, 80, "B", false, &["2"])
+        .trans(4, 100, 120, "go", &["3"]);
+    let d = refused(&[p]);
+    assert!(
+        d.iter().any(|d| d.message == "a contact 41 is connected to step 1; a network reads a step's flag by its name, S.X (IEC 61131-3 ed. 3 Table 54 feature 3a): a connection from the step (feature 3b) is not read"),
         "{d:#?}"
     );
 }
@@ -683,5 +1023,133 @@ fn a_chart_of_exactly_the_most_situations_checked_is_taken() {
             "the chart can be in more than {MAX_SITUATIONS} situations"
         ))),
         "{d:#?}"
+    );
+}
+
+/// An FBD condition `T` of the AND of `a` and `b` under the EN `en` (review of PR #163).
+fn and_under_en() -> Pou {
+    Pou::program("_")
+        .fbd()
+        .invar(30, 0, 0, "en")
+        .invar(31, 0, 40, "go")
+        .invar(32, 0, 80, "stop")
+        .block(
+            33,
+            100,
+            0,
+            "AND",
+            None,
+            &[
+                ("EN", In::From(&["30"])),
+                ("IN1", In::From(&["31"])),
+                ("IN2", In::From(&["32"])),
+            ],
+            &["ENO", "OUT"],
+        )
+        .outvar(34, 200, 0, "T", &["33.OUT"])
+}
+
+#[test]
+fn a_condition_whose_result_is_computed_only_under_an_en_is_refused() {
+    // §6.7.3: a condition is the result of evaluating one Boolean expression each time; where
+    // EN is FALSE the function does not run (§6.6.1.5) and nothing is computed. Found in review:
+    // the transition cleared on the value of an earlier enabling, and a negated one on the
+    // initial FALSE of a result never computed.
+    let with_en = || condition(&and_under_en()).vars(&[("en", "BOOL")]);
+    let why = "takes a value computed only where a function's EN is TRUE";
+    let (id, msg, d) = one(refused(&[with_en()]));
+    assert_eq!(id, Some(34), "at the output variable that takes it");
+    assert!(
+        msg.starts_with(&format!("an output variable 34 {why}")),
+        "{msg}"
+    );
+    assert_eq!(d.element.unwrap().inline, Some(2));
+    // Negated: refused the same, before any value is taken.
+    let xml = project(&[with_en()]).replace("<condition>", "<condition negated=\"true\">");
+    let (id, msg, _) = one(lower(
+        &[Source {
+            name: "m.xml",
+            text: &xml,
+        }],
+        None,
+    )
+    .unwrap_err());
+    assert_eq!(id, Some(34));
+    assert!(msg.contains(why), "{msg}");
+    // LD, an output variable from the function's OUT.
+    let ld = Pou::program("_")
+        .left(30, 20)
+        .contact(31, 100, 20, Contact::No, "en", &["30"])
+        .block(
+            32,
+            200,
+            20,
+            "AND",
+            None,
+            &[
+                ("EN", In::From(&["31"])),
+                ("IN1", In::Expr("go")),
+                ("IN2", In::Expr("stop")),
+            ],
+            &["ENO", "OUT"],
+        )
+        .outvar(33, 300, 20, "T", &["32.OUT"]);
+    let (id, msg, _) = one(refused(&[condition(&ld).vars(&[("en", "BOOL")])]));
+    assert_eq!(id, Some(33));
+    assert!(msg.contains(why), "{msg}");
+    // A network drawn in the chart: said at the transition, where the chart adds what takes it.
+    let drawn = Pou::program("Main")
+        .sfc()
+        .vars(&[("en", "BOOL"), ("go", "BOOL"), ("stop", "BOOL")])
+        .step(1, 100, 0, "Idle", true, &["4"])
+        .invar(30, -400, 40, "en")
+        .invar(31, -400, 80, "go")
+        .invar(32, -400, 120, "stop")
+        .block(
+            33,
+            -300,
+            40,
+            "AND",
+            None,
+            &[
+                ("EN", In::From(&["30"])),
+                ("IN1", In::From(&["31"])),
+                ("IN2", In::From(&["32"])),
+            ],
+            &["ENO", "OUT"],
+        )
+        .trans_wired(2, 100, 40, &["33.OUT"], false, &["1"])
+        .step(3, 100, 80, "Run", false, &["2"])
+        .trans(4, 100, 120, "stop", &["3"]);
+    let (id, msg, _) = one(refused(&[drawn]));
+    assert_eq!(id, Some(2));
+    assert!(msg.contains(why), "{msg}");
+}
+
+#[test]
+fn a_condition_network_with_a_feedback_path_is_refused() {
+    // §8.1.5.2 lets FBD draw a line back; in a condition it carries a value from one evaluation
+    // to the next, state as an edge's memory is, between evaluations made only while the
+    // transition is enabled (found in review: XOR of its own output toggled per evaluation).
+    let back = Pou::program("_")
+        .fbd()
+        .invar(30, 0, 0, "go")
+        .block(
+            31,
+            120,
+            0,
+            "XOR",
+            None,
+            &[("IN1", In::From(&["30"])), ("IN2", In::From(&["31"]))],
+            &["OUT"],
+        )
+        .outvar(32, 240, 0, "T", &["31"]);
+    let (id, msg, _) = one(refused(&[condition(&back)]));
+    assert_eq!(id, Some(31));
+    assert!(
+        msg.starts_with(
+            "a block 31 reads back its own output (a feedback path, IEC 61131-3 ed. 3 §8.1.5.2)"
+        ),
+        "{msg}"
     );
 }

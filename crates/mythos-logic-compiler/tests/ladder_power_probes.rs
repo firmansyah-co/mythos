@@ -28,6 +28,7 @@ fn out(local_id: u64, output: &str, holds: Holds) -> Probe {
         local_id,
         at: At::Output(output.into()),
         holds,
+        body: None,
     }
 }
 
@@ -37,6 +38,7 @@ fn junction(local_id: u64, input: &str, holds: Holds) -> Probe {
         local_id,
         at: At::Input(input.into()),
         holds,
+        body: None,
     }
 }
 
@@ -46,6 +48,7 @@ fn network(members: &[u64]) -> Probe {
         local_id: members[0],
         at: At::Network(members.to_vec()),
         holds: var(&format!("__NET_{}", members[0])),
+        body: None,
     }
 }
 

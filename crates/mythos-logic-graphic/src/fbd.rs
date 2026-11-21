@@ -56,9 +56,10 @@
 
 use crate::graph::{
     self, bool_expr, bool_ty, check_graph, read_body, set_jump, Conn, Elem, Hidden, Kind, Lang,
+    Lowered,
 };
 use crate::read::{GPou, Known};
-use crate::{At, Holds, Places, Probe};
+use crate::{At, Body, Holds, Places, Probe};
 use mythos_logic_ir::{Diagnostic, Span};
 use mythos_logic_st::ast::{
     self, Arg, BinOp, CallArg, Expr, ExprKind, Stmt, TypeSpec, TypeSpecKind,
@@ -80,43 +81,72 @@ pub(crate) fn pou(
     };
     let before = diags.len();
     places.keywords_as_names = p.keywords_as_names.clone();
-    let mut elems = read_body(body, Lang::Fbd, p, places, diags);
+    let mut elems = read_body(body, Lang::Fbd, p, None, places, diags);
     if diags.len() == before && check_graph(&elems, Lang::Fbd, places, diags) {
-        let continued = join_lines(&mut elems, &tree, places, diags);
-        if diags.len() == before {
-            one_line_each(&elems, places, diags);
-        }
-        if diags.len() == before {
-            let back = feedback(&elems, known, places, diags);
-            if diags.len() == before {
-                let mut l = Lowering::new(&elems, &tree, known, places, back);
-                let stmts = graph::body(&mut l);
-                l.continuations(&continued);
-                let found = l.probes(&tree.name);
-                let (hidden, said) = (l.hidden.vars, l.diags);
-                diags.extend(said);
-                if diags.len() == before {
-                    probes.extend(found);
-                    tree.body = stmts;
-                    tree.vars.extend(hidden);
-                    return tree;
-                }
-            }
+        if let Some(l) = lower(&mut elems, &tree, known, places, diags, "", None) {
+            probes.extend(l.probes);
+            tree.body = l.stmts;
+            tree.vars.extend(l.vars);
+            return tree;
         }
     }
     tree.partial_body = true;
     tree
 }
 
+/// The elements of an FBD body, read and checked, lowered in the POU `pou`: its lines joined,
+/// its feedback paths found, its hidden variables named in the namespace `prefix` (none for a
+/// POU's own body; an action's or a transition's of a chart, ADR-013 §2.17), its probes said to
+/// be of `body`. `None` when it could not be, and the diagnostics say why.
+pub(crate) fn lower(
+    elems: &mut [Elem],
+    pou: &ast::Pou,
+    known: &Known,
+    places: &mut Places,
+    diags: &mut Vec<Diagnostic>,
+    prefix: &str,
+    body: Option<Body>,
+) -> Option<Lowered> {
+    let before = diags.len();
+    let continued = join_lines(elems, pou, places, diags);
+    if diags.len() == before {
+        one_line_each(elems, places, diags);
+    }
+    if diags.len() != before {
+        return None;
+    }
+    let back = feedback(elems, known, places, diags);
+    if diags.len() != before {
+        return None;
+    }
+    let mut l = Lowering::new(elems, pou, known, places, back);
+    l.hidden.prefix = prefix.to_string();
+    let (stmts, flags) = graph::body(&mut l);
+    l.continuations(&continued);
+    let probes = l.probes(&pou.name, body);
+    let (vars, said) = (l.hidden.vars, l.diags);
+    let ok = said.is_empty();
+    diags.extend(said);
+    ok.then_some(Lowered {
+        stmts,
+        vars,
+        probes,
+        flags,
+    })
+}
+
 /// Join each connector's line to its continuations (§8.1.3): every connection from a
 /// continuation becomes one from what reaches its connector. The continuations, each with the
 /// connection it now stands for.
-fn join_lines(
+pub(crate) fn join_lines(
     elems: &mut [Elem],
     pou: &ast::Pou,
     places: &Places,
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<(usize, Conn)> {
+    // What was said before (of another POU, or of the chart this network is drawn in) is not
+    // this body's: only its own diagnostics stop it.
+    let before = diags.len();
     let mut connectors: BTreeMap<String, usize> = BTreeMap::new();
     // The names of connectors refused: their continuations follow from that, and are not told.
     let mut refused: Vec<String> = Vec::new();
@@ -200,7 +230,12 @@ fn join_lines(
         let mut at = first;
         let mut seen = vec![first];
         while let Some(c) = elems[at].inputs[0].conns.first() {
-            let from = by_id[&c.from];
+            // A line from no element of these (a step of the chart a network is drawn in) is
+            // told where the line is followed.
+            let Some(&from) = by_id.get(&c.from) else {
+                continued.push((k, c.clone()));
+                break;
+            };
             let Kind::Continuation(next) = &elems[from].kind else {
                 continued.push((k, c.clone()));
                 break;
@@ -233,7 +268,7 @@ fn join_lines(
             }
         }
     }
-    if !diags.is_empty() {
+    if diags.len() != before {
         return continued;
     }
     let to: BTreeMap<u64, Conn> = continued
@@ -355,6 +390,7 @@ fn feedback(
     places: &Places,
     diags: &mut Vec<Diagnostic>,
 ) -> Feedback {
+    let before = diags.len();
     let index: BTreeMap<u64, usize> = elems.iter().enumerate().map(|(k, e)| (e.id, k)).collect();
     let mut lines = Vec::new();
     for (k, e) in elems.iter().enumerate() {
@@ -411,7 +447,7 @@ fn feedback(
         found.back.insert((t, *pin));
         found.types.insert((s, out.clone()), ty);
     }
-    if !diags.is_empty() {
+    if diags.len() != before {
         return found;
     }
     // Without the feedback paths, nothing goes round: a loop that remains has no line drawn
@@ -1077,7 +1113,7 @@ impl<'a> Lowering<'a> {
 
     /// What holds every output and network of the body: each a hidden variable assigned when
     /// it is evaluated, or ON (ADR-013 §2.16).
-    fn probes(&self, pou: &str) -> Vec<Probe> {
+    fn probes(&self, pou: &str, body: Option<Body>) -> Vec<Probe> {
         self.published
             .iter()
             .map(|((local_id, at), holds)| Probe {
@@ -1085,6 +1121,7 @@ impl<'a> Lowering<'a> {
                 local_id: *local_id,
                 at: at.clone(),
                 holds: holds.clone(),
+                body: body.clone(),
             })
             .collect()
     }

@@ -17,7 +17,7 @@
 pub mod profile;
 
 pub use mythos_logic_backend_vm::{ArrayInfo, MemberLayout, Symbol, TypeLayout};
-pub use mythos_logic_graphic::{At, Holds, Probe};
+pub use mythos_logic_graphic::{At, Body, BodyOf, Holds, Probe};
 use mythos_logic_ir::Ty;
 pub use mythos_logic_ir::{Diagnostic, Element, Span, TextRange};
 pub use profile::TargetProfile;
