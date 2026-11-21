@@ -630,3 +630,54 @@ fn an_online_change_carries_an_ld_actions_edge_memory_by_its_path() {
         "the edge's memory was carried: a is still TRUE, no edge"
     );
 }
+
+#[test]
+fn the_mixer_chart_the_emulators_run_does_what_its_bodies_say() {
+    // `tests/sfc/mixer.xml` over the scans `scripts/logic-vm-on-emulators.sh` runs: 60, 20 ms
+    // apart, from the clock's zero. Idle lasts until its FBD action sets ready (40 ms); Fill
+    // until its FBD condition sees 30 ms; Stir until the FBD network drawn in the chart sees
+    // 70 ms: a cycle of 8 scans, Fill entered at scans 2, 10, …, 58.
+    let doc = include_str!("../../mythos-logic-graphic/tests/sfc/mixer.xml");
+    let mut r = Run::of(compile_in(doc, Language::Sfc, &TargetProfile::rp2040()));
+    eprintln!(
+        "{} bytes of code, {} of memory, {} private symbols",
+        r.c.code_size,
+        r.c.memory_size,
+        r.c.symbols.iter().filter(|s| s.private).count()
+    );
+    let steps = ["Idle", "Fill", "Stir"];
+    let mut trace = Vec::new();
+    for k in 0..60 {
+        r.scan_at(k * 20);
+        let active: Vec<&str> = steps
+            .iter()
+            .copied()
+            .filter(|s| r.bool(&format!("{s}.X")))
+            .collect();
+        assert_eq!(active.len(), 1, "scan {k}: one step at a time, {active:?}");
+        // Once Stir has run its actions (from the scan after it was entered), the LD action in
+        // its block has reset the valve that Open set.
+        if active[0] == "Stir" && trace.last() == Some(&"Stir") {
+            assert!(!r.bool("valve"), "scan {k}");
+        }
+        if active[0] == "Fill" && trace.last() == Some(&"Fill") {
+            assert!(r.bool("valve"), "scan {k}");
+        }
+        trace.push(active[0]);
+    }
+    let entered = |name: &str| {
+        (1..trace.len())
+            .filter(|k| trace[*k] == name && trace[*k - 1] != name)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        entered("Fill"),
+        [2, 10, 18, 26, 34, 42, 50, 58],
+        "{trace:?}"
+    );
+    assert_eq!(entered("Stir"), [4, 12, 20, 28, 36, 44, 52], "{trace:?}");
+    // P1 Count once per Fill; motor (L 50 ms) on for three scans of each Stir, stirred + 1 each.
+    assert_eq!(r.int("batches"), 8);
+    assert_eq!(r.int("stirred"), 21);
+    assert!(r.bool("valve"), "Fill entered at 58 opened it at 59");
+}
