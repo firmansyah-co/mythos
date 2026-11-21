@@ -19,7 +19,7 @@
 // had is given to another (ADR-013 §2.17: an inline body's values are carried by
 // `__SFC_<localId>__…`).
 
-import { converges, itemsOf, QUALIFIERS, stepsOf, TIMED, wellFormed, type Assoc, type Chart, type DocModel, type Item, type PouModel, type Step, type Trans } from './sfcmodel';
+import { converges, itemsOf, namesIn, memberReads, QUALIFIERS, refsTo, renameIn, stepsOf, TIMED, wellFormed, type Assoc, type Chart, type DocModel, type Item, type PouModel, type Step, type Trans } from './sfcmodel';
 import type { Declared, Ids, VarInfo } from './ldmodel';
 
 /** What is selected: a chart (nothing in it), or an element by its localId (a row of a step's actions by the action's). */
@@ -92,9 +92,51 @@ export function stepOfBlock(pou: PouModel, id: number): Step | null {
 const allNames = (pou: PouModel, vars: readonly VarInfo[]) =>
   new Set([...pou.charts.flatMap((c) => stepsOf(c.items)).map((s) => s.name.toLowerCase()), ...pou.actions, ...pou.transitions, ...vars.map((v) => v.name)].map((n) => n.toLowerCase()));
 
-/** A step name nothing of the POU has: `Step1`, `Step2`, … as S7-GRAPH numbers them. */
-function stepName(pou: PouModel, vars: readonly VarInfo[], taken: Set<string> = new Set()): string {
+/** The texts of the POU the editor never writes that still stand in it (`PouModel.kept`). */
+export function keptTextsOf(pou: PouModel): PouModel['kept'] {
+  return pou.kept.filter((k) => {
+    if (k.owner === null) return true;
+    const item = locate(pou, k.owner)?.item;
+    if (item?.t === 'trans') return item.trans.kind === 'kept' || item.trans.kind === 'wired';
+    return stepOfBlock(pou, k.owner)?.actions.some((a) => a.id === k.owner && a.kind === 'kept') ?? false;
+  });
+}
+
+/** The ST texts the editor holds and writes: each condition in ST and each action's statements, with what holds it. */
+export function heldTexts(pou: PouModel): Array<{ id: number; text: string; set: (text: string) => void }> {
+  const out: Array<{ id: number; text: string; set: (text: string) => void }> = [];
+  for (const item of pou.charts.flatMap((c) => itemsOf(c.items))) {
+    if (item.t === 'trans' && item.trans.kind === 'st') {
+      const t = item.trans;
+      out.push({ id: t.id, text: t.text, set: (text) => ((t.text = text), (t.condDirty = true)) });
+    }
+    if (item.t === 'step') {
+      for (const a of item.step.actions) {
+        if (a.kind === 'st') out.push({ id: a.id, text: a.text, set: (text) => ((a.text = text), (a.bodyDirty = true)) });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Every name a new step must not take: those of the POU's steps, actions, transitions and
+ * variables, the target of every jump, and every name any text of the POU reads. A name a jump or a
+ * text still uses after its step was deleted or renamed is never given to a new step, which would
+ * silently take the jump or the reference over.
+ */
+function usedNames(pou: PouModel, vars: readonly VarInfo[]): Set<string> {
   const names = allNames(pou, vars);
+  for (const item of pou.charts.flatMap((c) => itemsOf(c.items))) if (item.t === 'jump') names.add(item.target.toLowerCase());
+  for (const t of [...heldTexts(pou).map((h) => h.text), ...keptTextsOf(pou).map((k) => k.text)]) {
+    for (const n of namesIn(t)) names.add(n.toLowerCase());
+  }
+  return names;
+}
+
+/** A step name nothing of the POU has or reads: `Step1`, `Step2`, … as S7-GRAPH numbers them. */
+function stepName(pou: PouModel, vars: readonly VarInfo[], taken: Set<string> = new Set()): string {
+  const names = usedNames(pou, vars);
   for (let n = 1; ; n += 1) {
     const name = `Step${n}`;
     if (!names.has(name.toLowerCase()) && !taken.has(name.toLowerCase())) {
@@ -122,12 +164,21 @@ function initialOf(chart: Chart): string {
   return (steps.find((s) => s.initial) ?? steps[0])?.name ?? '';
 }
 
-/** Close an edit: refused unless every chart of the POU is still well formed. */
+/** How many charts of a POU have no initial step. */
+const withoutInitial = (pou: PouModel) => pou.charts.filter((c) => !stepsOf(c.items).some((st) => st.initial)).length;
+
+/**
+ * Close an edit: refused unless every chart of the POU is still well formed, and no chart that had
+ * an initial step is left without one (§6.7.2: each chart has exactly one).
+ */
 function done(m: DocModel, pi: number, sel: Sel | null): Edited {
   const pou = m.pous[pi] as PouModel;
   for (const c of pou.charts) {
     const why = wellFormed(c.items, 'top');
     if (why) return { ok: false, error: `That would leave the chart not well formed: ${why}.` };
+  }
+  if (withoutInitial(pou) > withoutInitial(ctxBefore.get(m) ?? pou)) {
+    return { ok: false, error: 'That would leave a chart without its initial step: make another step of it initial first.' };
   }
   pou.touched = true;
   return { ok: true, model: m, sel };
@@ -139,11 +190,16 @@ interface Ctx {
   pou: PouModel;
 }
 
+/** The POU as each edit found it, by the model the edit makes, for `done` to compare with. */
+const ctxBefore = new WeakMap<DocModel, PouModel>();
+
 function begin(model: DocModel, pi: number): Ctx | string {
   const m = clone(model);
   const pou = m.pous[pi];
   if (!pou || !pou.sfc) return 'There is no chart to edit here.';
   if (pou.why !== null) return `This chart is kept as the document has it (${pou.why}): nothing is put into it.`;
+  const before = model.pous[pi];
+  if (before) ctxBefore.set(m, before);
   return { m, pi, pou };
 }
 
@@ -439,11 +495,13 @@ export function remove(model: DocModel, pi: number, sel: Sel | null): Edited {
   if (prev?.t === plain && !initialBefore) from = index - 1;
   else if (next?.t === plain) from = index;
   else return { ok: false, error: `Delete the branches next to this ${item.t === 'step' ? 'step' : 'transition'} first.` };
-  // A pair at the head of a chart takes its initial step with it: the step after becomes initial.
+  // A pair that takes the initial step with it: the chart's head becomes initial.
   const removed = seq.splice(from, 2);
   const wasInitial = removed.some((r) => r.t === 'step' && r.step.initial);
-  if (wasInitial) {
-    const head = seq[0];
+  // The initial step goes to the head of its chart, never into a branch.
+  const chartItems = (ctx.pou.charts[loc.chart] as Chart).items;
+  if (wasInitial && !stepsOf(chartItems).some((st) => st.initial)) {
+    const head = chartItems[0];
     if (head?.t === 'step') head.step.initial = true;
   }
   if (seq.length === 0 && loc.ownerLoc) {
@@ -498,8 +556,10 @@ function transAt(ctx: Ctx, id: number): Trans | string {
 }
 
 /**
- * A step's name. A jump to the step follows it. Its state is carried across an online change by
- * its name (ADR-013 §2.17), so a renamed step starts from its initial value.
+ * A step's name. A jump to the step follows it, and so does every `S.X` and `S.T` of a condition or
+ * an action's statements the editor writes; a text it does not write that reads the step refuses
+ * the rename. Its state is carried across an online change by its name (ADR-013 §2.17), so a
+ * renamed step starts from its initial value.
  */
 export function renameStep(model: DocModel, pi: number, id: number, name: string, vars: readonly VarInfo[]): Edited {
   const ctx = begin(model, pi);
@@ -512,6 +572,17 @@ export function renameStep(model: DocModel, pi: number, id: number, name: string
   const others = allNames(ctx.pou, vars);
   others.delete(step.name.toLowerCase());
   if (others.has(text.toLowerCase())) return { ok: false, error: `${text} is already the name of a step, an action, a transition or a variable of ${ctx.pou.name}.` };
+  // Every text that reads the step by its name (`S.X`, `S.T`) reads it by the new one: those the
+  // editor writes are rewritten, token by token; while one it does not write reads it, the rename
+  // is refused, since the reference would be left naming no step, or a step named so later.
+  const blocked = keptTextsOf(ctx.pou).filter((k) => refsTo(k.text, step.name).length > 0);
+  if (blocked.length > 0) {
+    return {
+      ok: false,
+      error: `${step.name} is read in ${blocked.map((k) => k.where).join('; ')}, which this editor does not rewrite: change ${blocked.length === 1 ? 'it' : 'them'} first, or keep the name.`,
+    };
+  }
+  for (const h of heldTexts(ctx.pou)) if (refsTo(h.text, step.name).length > 0) h.set(renameIn(h.text, step.name, text));
   const old = step.name.toLowerCase();
   step.name = text;
   for (const c of ctx.pou.charts) {
@@ -532,6 +603,9 @@ export function setInitial(model: DocModel, pi: number, id: number): Edited {
   if (typeof ctx === 'string') return { ok: false, error: ctx };
   const loc = locate(ctx.pou, id);
   if (loc?.item.t !== 'step') return { ok: false, error: 'Select a step.' };
+  // A step in a branch is reached through the divergence before it: an initial step there would be
+  // active with the steps of the other branches not, and its delete would leave the chart none.
+  if (loc.where !== 'top') return { ok: false, error: 'A step in a branch cannot be the initial step: choose a step of the sequence itself.' };
   for (const s of stepsOf((ctx.pou.charts[loc.chart] as Chart).items)) s.initial = s.id === id;
   return done(ctx.m, pi, { kind: 'el', pou: pi, id });
 }
@@ -689,6 +763,14 @@ export function check(pou: PouModel, vars: readonly VarInfo[]): Problems {
     }
   }
   const names = lower(steps.map((s) => s.name));
+  // A step's flag or time read by a name no step has (left by a rename or a deletion): the compiler
+  // would refuse it, or, once a step takes the name, read another step.
+  for (const h of heldTexts(pou)) {
+    for (const r of memberReads(h.text)) {
+      const n = r.name.toLowerCase();
+      if (!names.has(n) && !varOf(r.name) && !actions.has(n)) say(h.id, `${r.name}.${r.member} names no step of ${pou.name}.`);
+    }
+  }
   for (const c of pou.charts) {
     for (const item of itemsOf(c.items)) {
       if (item.t === 'trans') {

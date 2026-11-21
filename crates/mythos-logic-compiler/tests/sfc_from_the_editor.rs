@@ -214,3 +214,48 @@ fn a_chart_with_bodies_in_ld_and_fbd_runs_the_same_after_the_editor_laid_it_out(
     let r = editor("editor_mixer_edited.xml");
     assert_eq!(r.int("Fill.T"), 0);
 }
+
+#[test]
+fn a_step_renamed_in_the_editor_is_timed_by_its_condition_under_its_new_name() {
+    // Found in review: a rename that left `Step1.T` in the condition, and a new step that then took
+    // the name Step1, compiled with the condition timing the new step, so Fill never left. The
+    // editor now writes the condition as `Fill.T >= T#50ms`.
+    let mut r = editor("editor_renamed.xml");
+    let active = |r: &Run| {
+        ["Start", "Fill", "Step1"]
+            .into_iter()
+            .filter(|n| r.bool(&format!("{n}.X")))
+            .collect::<Vec<_>>()
+    };
+    r.scan_at(0);
+    r.set("go", Value::Bool(true));
+    r.scan_at(10);
+    r.set("go", Value::Bool(false));
+    assert_eq!(active(&r), ["Fill"]);
+    for t in [20, 30, 40, 50] {
+        r.scan_at(t);
+        assert_eq!(active(&r), ["Fill"], "{t} ms");
+    }
+    r.scan_at(60);
+    assert_eq!(active(&r), ["Step1"], "Fill.T >= T#50ms, Fill's own time");
+}
+
+#[test]
+fn a_selection_the_editor_laid_out_in_its_priority_order_takes_the_branch_its_priorities_chose() {
+    // Found in review: `priorities.xml` tests its right branch first (priority 1, to C); the editor
+    // writes it without priorities, that branch on the left, so position gives the same order.
+    let first = |r: &mut Run| {
+        r.scan_at(0);
+        r.set("go", Value::Bool(true));
+        r.scan_at(10);
+        r.scan_at(20);
+        (r.bool("B.X"), r.bool("C.X"))
+    };
+    let mut before = sfc(&format!(
+        "{}/tests/sfc/priorities.xml",
+        env!("CARGO_MANIFEST_DIR")
+    ));
+    let mut after = editor("editor_priorities_edited.xml");
+    assert_eq!(first(&mut before), (false, true));
+    assert_eq!(first(&mut after), (false, true));
+}

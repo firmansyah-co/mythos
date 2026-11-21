@@ -38,7 +38,7 @@ import {
   type Edited,
   type Sel,
 } from '../sfcedit';
-import { open, wellFormed, write, type DocModel, type Item, type PouModel, type Source } from '../sfcmodel';
+import { itemsOf, open, wellFormed, write, type DocModel, type Item, type PouModel, type Source } from '../sfcmodel';
 
 const GRAPHIC = resolve(__dirname, '../../../../../crates/mythos-logic-graphic/tests/sfc');
 const COMPILER = resolve(__dirname, '../../../../../crates/mythos-logic-compiler/tests');
@@ -348,8 +348,6 @@ describe('reading and writing back', () => {
     expect(drawn(r.text)).toEqual(drawn(before));
     // The comment is written as found, where it was.
     expect(r.text).toContain('<comment localId="90" height="20" width="200">\n              <position x="500" y="0"/>\n              <content><xhtml:p>Every element of the chart</xhtml:p></content>\n            </comment>');
-    // The selection's priority is its order: left to right, the order the compiler tests them.
-    expect(r.text).not.toContain('priority=');
   });
 
   it('keeps an inline body in LD or FBD byte for byte and moves a network drawn in the chart with its transition', () => {
@@ -579,6 +577,136 @@ describe('the structure keeps steps and transitions alternating, every branch cl
   });
 });
 
+describe('what the review of L3d-3 found', () => {
+  const reviewTemplate = TEMPLATE('Main').replace('<interface/>', '<interface><localVars><variable name="go"><type><BOOL/></type></variable></localVars></interface>');
+  const goVars = [{ name: 'go', type: 'BOOL', section: 'localVars' }];
+
+  it('renames every S.X and S.T a condition or statements it writes reads, token by token, and the old name reads no step after', () => {
+    const r = new Run(TEMPLATE('Main'));
+    r.step((m, ids) => insertPair(m, ids, 0, el(1), []));
+    const s1 = r.id;
+    r.step((m, ids) => addJump(m, ids, 0, el(s1)));
+    r.step((m, ids) => addAction(m, ids, 0, el(s1)));
+    r.step((m) => setAction(m, 0, r.row, { kind: 'st', text: "(* Step1.T *) t := Step1.T; s := 'Step1.X'; x := other.Step1;" }));
+    const items = () => r.pou().charts[0]?.items ?? [];
+    const last = items()[3];
+    if (last?.t !== 'trans') throw new Error('no transition after Step1');
+    r.step((m) => setCondition(m, 0, last.trans.id, 'st', 'Step1.T >= T#5s AND NOT Step1 . X'));
+    r.step((m) => renameStep(m, 0, s1, 'Fill', []));
+    expect(r.chart()).toBe("Start* -FALSE- Fill[N (* Step1.T *) t := Fill.T; s := 'Step1.X'; x := other.Step1;] -Fill.T >= T#5s AND NOT Fill . X- ->Start");
+    // A name read nowhere any more may be given out again; the editor's own check sees no reference left dangling.
+    expect(check(r.pou(), [{ name: 't', type: 'TIME', section: 'localVars' }, { name: 's', type: 'STRING', section: 'localVars' }, { name: 'x', type: 'BOOL', section: 'localVars' }, { name: 'other', type: 'X', section: 'localVars' }]).elements.size).toBe(0);
+  });
+
+  it('refuses to rename a step a text it does not write reads, and says where (bottling.xml)', () => {
+    const r = new Run(corpus('bottling.xml'));
+    const refused = renameStep(r.model, 0, 16, 'Filling', []);
+    expect(refused.ok ? 'taken' : refused.error).toBe('Fill is read in the transition Filled of Bottling, which this editor does not rewrite: change it first, or keep the name.');
+    // Reject is read only by conditions the editor writes: renamed there too.
+    r.step((m) => renameStep(m, 0, 10, 'Rejecting', []));
+    expect(r.text).toContain('Rejecting.T &gt;= T#60ms');
+    expect(r.text).not.toMatch(/\bReject\.T/);
+  });
+
+  it('says where a step’s flag or time is read by a name no step has', () => {
+    const r = new Run(reviewTemplate);
+    r.step((m, ids) => insertPair(m, ids, 0, el(1), goVars));
+    const t = r.pou().charts[0]?.items[1];
+    if (t?.t !== 'trans') throw new Error('no transition');
+    r.step((m) => setCondition(m, 0, t.trans.id, 'st', 'Ghost.T >= T#1s OR go.X'));
+    expect(check(r.pou(), goVars).elements.get(t.trans.id)).toEqual(['Ghost.T names no step of Main.']);
+  });
+
+  it('never gives a new step the name a jump still goes to after its step was deleted', () => {
+    const r = new Run(reviewTemplate);
+    r.step((m, ids) => insertPair(m, ids, 0, el(1), goVars));
+    const s1 = r.id;
+    r.step((m, ids) => insertPair(m, ids, 0, el(s1), goVars));
+    const s2 = r.id;
+    r.step((m, ids) => addJump(m, ids, 0, el(s2)));
+    const jump = r.id;
+    r.step((m) => setJumpTarget(m, 0, jump, 'Step1'));
+    const t = r.pou().charts[0]?.items[1];
+    if (t?.t !== 'trans') throw new Error('no transition');
+    r.step((m) => remove(m, 0, el(s1)), [s1, t.trans.id]);
+    r.step((m, ids) => insertPair(m, ids, 0, el(s2), goVars));
+    expect(r.chart()).toBe('Start* -FALSE- Step2 -FALSE- Step3 -FALSE- ->Step1');
+    expect(check(r.pou(), goVars).elements.get(jump)).toEqual(['Main has no step Step1 to jump to.']);
+  });
+
+  it('writes a selection ordered by its priorities left to right in that order, without them (priorities.xml)', () => {
+    const r = new Run(readFileSync(resolve(FIXTURES, 'priorities.xml'), 'utf8'));
+    expect(r.chart()).toBe('A* sel{ -go- C | -go- B }');
+    r.step((m) => renameStep(m, 0, 1, 'A2', []));
+    r.step((m) => renameStep(m, 0, 1, 'A', []));
+    expect(r.chart()).toBe('A* sel{ -go- C | -go- B }');
+    expect(r.text).not.toContain('priority=');
+    // C's branch, priority 1, is now left of B's: the order the compiler tests them by position.
+    const x = (id: number) => Number(new RegExp(`<transition localId="${id}"><position x="(-?\\d+)"`).exec(r.text)?.[1]);
+    expect(x(5)).toBeLessThan(x(3));
+    fixture('editor_priorities_edited.xml', r.text);
+  });
+
+  it('keeps a selection the compiler refuses for its priorities as found, and says why', () => {
+    const doc = (p3: string, p5: string) =>
+      readFileSync(resolve(FIXTURES, 'priorities.xml'), 'utf8').replace('<transition localId="3" priority="2">', `<transition localId="3"${p3}>`).replace('<transition localId="5" priority="1">', `<transition localId="5"${p5}>`);
+    const why = (text: string) => {
+      const opened = open(text);
+      if (!opened.ok) throw new Error(opened.error);
+      return opened.model.pous[0]?.why;
+    };
+    expect(why(doc(' priority="1"', ' priority="1"'))).toBe('two transitions of selection divergence 2 have one priority, which the compiler refuses (Table 61 feature 2b)');
+    expect(why(doc('', ' priority="1"'))).toBe('some transitions of selection divergence 2 give a priority and some do not, which the compiler refuses (Table 61 feature 2b)');
+    expect(why(doc(' priority="first"', ' priority="1"'))).toBe('the priority of transition 3 is not a whole number, which the compiler refuses');
+    const equal = new Run(doc(' priority="1"', ' priority="1"'));
+    const tried = renameStep(equal.model, 0, 1, 'A2', []);
+    expect(tried.ok).toBe(false);
+  });
+
+  it('never makes a step in a branch the initial step, nor leaves a chart without one', () => {
+    const r = new Run(reviewTemplate);
+    r.step((m, ids) => insertPair(m, ids, 0, el(1), goVars));
+    const s1 = r.id;
+    r.step((m, ids) => insertPair(m, ids, 0, el(s1), goVars));
+    r.step((m, ids) => simBranch(m, ids, 0, el(s1), goVars));
+    const inBranch = setInitial(r.model, 0, s1);
+    expect(inBranch.ok ? 'taken' : inBranch.error).toBe('A step in a branch cannot be the initial step: choose a step of the sequence itself.');
+    // An initial step that is not the head of its chart, deleted: the head becomes initial.
+    const s = new Run(reviewTemplate);
+    s.step((m, ids) => insertPair(m, ids, 0, el(1), goVars));
+    const a = s.id;
+    s.step((m) => setInitial(m, 0, a));
+    expect(s.chart()).toBe('Start -FALSE- Step1*');
+    s.step((m) => remove(m, 0, el(a)), [a, (s.pou().charts[0]?.items[1] as Extract<Item, { t: 'trans' }>).trans.id]);
+    expect(s.chart()).toBe('Start*');
+    // Another tool's chart whose only initial step is in a branch (the compiler refuses it): deleting
+    // that branch would leave the chart none, and is refused.
+    const found = JSON.parse(JSON.stringify(r.model)) as DocModel;
+    for (const st of (found.pous[0]?.charts ?? []).flatMap((c) => itemsOf(c.items)).flatMap((i) => (i.t === 'step' ? [i.step] : []))) st.initial = st.id === s1;
+    const branchGone = removeBranch(found, 0, el(s1));
+    expect(branchGone.ok ? 'taken' : branchGone.error).toBe('That would leave a chart without its initial step: make another step of it initial first.');
+  });
+});
+
+/**
+ * The rename the review found compiled with another meaning, built as the compiler's test runs it
+ * (`editor_renamed.xml`): Start -go- Step1 -Step1.T >= T#50ms- ->Start; Step1 renamed Fill (its
+ * condition follows, Fill.T); a step and a transition put after Fill's transition, the new step
+ * taking the name Step1, read nowhere any more.
+ */
+function renamed(): Run {
+  const r = new Run(TEMPLATE('Renamed').replace('<interface/>', '<interface><inputVars><variable name="go"><type><BOOL/></type></variable></inputVars></interface>'));
+  r.step((m, ids) => insertPair(m, ids, 0, el(1), []));
+  const s1 = r.id;
+  r.step((m, ids) => addJump(m, ids, 0, el(s1)));
+  const ts = () => (r.pou().charts[0]?.items ?? []).flatMap((i) => (i.t === 'trans' ? [i.trans.id] : []));
+  r.step((m) => setCondition(m, 0, ts()[0] as number, 'st', 'go'));
+  r.step((m) => setCondition(m, 0, ts()[1] as number, 'st', 'Step1.T >= T#50ms'));
+  r.step((m) => renameStep(m, 0, s1, 'Fill', []));
+  r.step((m, ids) => insertPair(m, ids, 0, el(ts()[1] as number), []));
+  return r;
+}
+
 describe('localIds', () => {
   it('never gives an id out twice, after an undo or a deletion, nor one an inline body has', () => {
     const r = new Run(corpus('mixer.xml'));
@@ -615,17 +743,62 @@ describe('localIds', () => {
   });
 
   it('keeps every id through a long run of random edits, each written chart well formed', () => {
-    // A seeded walk: whatever an edit leaves is well formed (Run.step checks it), or the edit is refused.
+    // A seeded walk of 300 edits at random places. After every edit taken, on the model: every
+    // chart is well formed, and every id the edit added is one no element of the run has had.
+    // Every 20th edit taken, and at the end, on the text: what is written holds exactly the model's
+    // elements, by localId and kind, its headers are the document's own, it opens again with every
+    // chart well formed, and the view reads it. (Writing and reading the whole document after
+    // every edit made the walk quadratic in the chart's size: 9–80 s, the view's DOM parser most
+    // of it.)
     let seed = 20261122;
     const rand = (n: number) => {
       seed = (seed * 1103515245 + 12345) % 2147483648;
       return seed % n;
     };
-    const r = new Run(TEMPLATE('Main'));
+    const text0 = TEMPLATE('Main');
+    const opened = open(text0);
+    if (!opened.ok) throw new Error(opened.error);
+    const ids: Ids = { next: opened.source.firstFree, used: new Set() };
+    let model = opened.model;
+    const ever = new Set([...everyId(text0)].map(idOfKey));
+    /** The model's elements by localId, with the TC6 element each is written as. */
+    const modelIds = (m: DocModel): Map<number, string> => {
+      const out = new Map<number, string>();
+      const put = (id: number, kind: string) => {
+        if (out.has(id)) throw new Error(`two elements of the model have the localId ${id}`);
+        out.set(id, kind);
+      };
+      for (const item of (m.pous[0]?.charts ?? []).flatMap((c) => itemsOf(c.items))) {
+        if (item.t === 'step') {
+          put(item.step.id, 'step');
+          if (item.step.block !== null && item.step.actions.length > 0) put(item.step.block, 'actionBlock');
+          for (const a of item.step.actions) put(a.id, 'action');
+        } else if (item.t === 'trans') put(item.trans.id, 'transition');
+        else if (item.t === 'jump') put(item.id, 'jumpStep');
+        else {
+          const kind = item.t === 'sel' ? 'selection' : 'simultaneous';
+          put(item.div, `${kind}Divergence`);
+          if (item.conv !== null) put(item.conv, `${kind}Convergence`);
+        }
+      }
+      return out;
+    };
+    const fullCheck = () => {
+      const text = write(opened.source, model, ids);
+      const written = new Map([...chartIds(text)].map(([k, kind]) => [idOfKey(k), kind]));
+      expect(written).toEqual(modelIds(model));
+      expect(header(text)).toBe(header(text0));
+      const again = open(text);
+      if (!again.ok) throw new Error(again.error);
+      expect(again.model.pous[0]?.why).toBeNull();
+      for (const c of again.model.pous[0]?.charts ?? []) expect(wellFormed(c.items, 'top')).toBeNull();
+      expect(readSfc(text).ok).toBe(true);
+    };
     let taken = 0;
     for (let i = 0; i < 300; i += 1) {
-      const ids = [...chartIds(r.text).entries()].filter(([, k]) => k !== 'actionBlock' && k !== 'action' && k !== 'selectionConvergence' && k !== 'simultaneousConvergence').map(([k]) => idOfKey(k));
-      const at: Sel = rand(8) === 0 ? chart0 : el(ids[rand(ids.length)] as number);
+      const before = modelIds(model);
+      const targets = [...before].filter(([, k]) => !['actionBlock', 'action', 'selectionConvergence', 'simultaneousConvergence'].includes(k)).map(([id]) => id);
+      const at: Sel = rand(8) === 0 ? chart0 : el(targets[rand(targets.length)] as number);
       const ops: Array<(m: DocModel, x: Ids) => Edited> = [
         (m, x) => insertPair(m, x, 0, at, []),
         (m, x) => insertPair(m, x, 0, at, []),
@@ -638,14 +811,22 @@ describe('localIds', () => {
         (m) => moveBranch(m, 0, at, rand(2) === 0 ? -1 : 1),
       ];
       const op = ops[rand(ops.length)] as (m: DocModel, x: Ids) => Edited;
-      const tried = op(r.model, r.ids);
+      const tried = op(model, ids);
       if (!tried.ok) continue;
-      // What it deleted: the ids of the chart before that are not in the model after.
-      const after = JSON.stringify(tried.model);
-      const gone = [...chartIds(r.text).keys()].map(idOfKey).filter((id) => !new RegExp(`"(id|div|conv|block)":${id}[,}]`).test(after));
-      r.step(() => tried, gone);
+      model = tried.model;
       taken += 1;
+      const after = modelIds(model);
+      for (const [id, kind] of after) {
+        if (before.has(id)) expect(kind, `element ${id} keeps its kind`).toBe(before.get(id));
+        else {
+          expect(ever.has(id), `the new localId ${id} was never used before in this run`).toBe(false);
+          ever.add(id);
+        }
+      }
+      for (const c of model.pous[0]?.charts ?? []) expect(wellFormed(c.items, 'top')).toBeNull();
+      if (taken % 20 === 0) fullCheck();
     }
+    fullCheck();
     expect(taken).toBeGreaterThan(80);
   }, 60_000);
 });
@@ -770,6 +951,12 @@ describe('documents the compiler runs', () => {
     r.step((m) => setAction(m, 0, r.row, { text: 'filling' }));
     declareAll(r, [['filling', 'BOOL', 'localVars']]);
     fixture('editor_mixer_edited.xml', r.text);
+  });
+
+  it('renames a step its condition reads, and the next new step takes the free name (editor_renamed.xml)', () => {
+    const r = renamed();
+    expect(r.chart()).toBe('Start* -go- Fill -Fill.T >= T#50ms- Step1 -FALSE- ->Start');
+    fixture('editor_renamed.xml', r.text);
   });
 
   it('adds a sequence of its own beside the first', () => {

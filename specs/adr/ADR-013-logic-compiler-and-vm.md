@@ -976,10 +976,20 @@ the owner's to lead: the editor uses the workbench's classes and tokens (LD's `.
   branch; a divergence keeps its first branch that meets its convergence. A branch can be moved left
   or right: in a selection that is the order its transitions are tested. A new transition's
   condition is `FALSE`, so nothing moves on through a transition nobody has written (a safety HMI);
-  a new step is `Step<n>`, as S7-GRAPH numbers them.
-- **Fields**, under the chart for the selection: a step's name (a jump to it follows it; a name
-  another step, an action, a transition or a variable of the POU has is refused) and whether it is
-  the initial step (one per chart, §6.7.2: making one initial moves the mark); its **action
+  a new step is `Step<n>`, as S7-GRAPH numbers them, never a name a step, action, transition or
+  variable of the POU has, a jump goes to, or any text of the POU reads (found in review: a name
+  freed by a deletion or a rename was given to the next new step, and a dangling jump or `Old.T`
+  silently went to it). An edit that would leave a chart without its initial step is refused; a
+  pair deleted with the initial step makes the chart's head initial.
+- **Fields**, under the chart for the selection: a step's name (a name another step, an action, a
+  transition or a variable of the POU has is refused) and whether it is the initial step (one per
+  chart, §6.7.2: making one initial moves the mark; a step in a branch cannot be made initial).
+  **A rename follows every reference** (found in review: a rename left `Old.T` in conditions, which
+  the compiler accepted once a new step took the old name): a jump to the step, and every `S.X` and
+  `S.T` of a condition or an action's statements the editor writes, rewritten token by token (an
+  ST tokenizer that steps over comments, strings and typed literals, and does not take `x.Old` for
+  the step); while a text the editor does not write reads the step (an action or a transition of
+  the POU, a body in LD or FBD, a network drawn in the chart), the rename is refused, saying where; its **action
   table**, as S7-GRAPH's, a row per association: the qualifier (N, R, S, L, D, P, P1, DS; SD, SL and
   P0 are not offered, refused until the owner decides, §2.17; a found one is shown as refused), the
   duration where the qualifier takes one (T#1s proposed), and what it runs: an action of the POU or
@@ -991,7 +1001,8 @@ the owner's to lead: the editor uses the workbench's classes and tokens (LD's `.
   the editor's own word at once (a step's name, a condition with nothing written or naming a
   transition the POU does not have, a jump to a step that does not exist, an action naming nothing,
   neither an action nor a variable, or a variable that is not a BOOL, a qualifier that takes a
-  duration without one or one that takes none with one) and then the compiler's (the quiet check
+  duration without one or one that takes none with one, a step's `.X` or `.T` read by a name no step
+  has) and then the compiler's (the quiet check
   700 ms after the last edit, as LD's), each drawn at its element, an action's at its row.
 - **Bodies in LD and FBD** (§2.17, L3d-1b) are kept as found and named with their language: an
   action's or a condition's inline body is written back byte for byte, never by the editor; it can
@@ -1001,7 +1012,10 @@ the owner's to lead: the editor uses the workbench's classes and tokens (LD's `.
 - **Kept as found.** A chart another tool wrote that is not such a sequence (a link back that is
   not a jump, a step followed by two elements without a divergence, a branch that meets another
   convergence or none, a step with two action blocks, an element the editor does not know such as a
-  `macroStep`, two elements with one `localId`) is written back byte for byte, its elements not
+  `macroStep`, two elements with one `localId`, a selection whose priorities the compiler refuses:
+  two alike, some given and some not, one not a whole number; found in review, where such a chart
+  was written without them in an order of the editor's choosing, a refused document becoming an
+  accepted one) is written back byte for byte, its elements not
   touched, says why, and nothing is put into it. A chart's comments are written as found, where
   they are.
 - **Layout**, on a grid of 10 in the document's units (the view draws them two and a half times
@@ -2050,7 +2064,7 @@ Each step leaves `dev` working.
 | 2.14 Standard library in ST (L4) | `crates/mythos-logic-st/src/library/`: SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD and their INT, DINT and LINT variants, TP, TON, TOF and their TIME variants (22 POUs in 4 files, an index); the intrinsic `__NOW()`; names of the library refused to a program's POUs and types; the library's names resolved among its own; no diagnostic pointing into it. Proven by `standard_library.rs` (14) and `standard_blocks_run_as_the_native_ones.rs` (4: every native block against the library's, 400 sequences of 150 scans each, 540,000 scans in all) |
 | 2.15 Ladder Diagram (L3a) | `crates/mythos-logic-ld` (`crates/mythos-logic-graphic` since L3c-1, §2.16): PLCopen TC6 XML v2.01 read with `quick-xml` (MIT); the subset of §2.15; the graph checked and lowered to the ST front-end's syntax tree; edges, values used twice and jumps in hidden private variables (`Var::hidden`, `IR_VERSION` 6); diagnostics naming the element (`element`) and the source (`source`); `compile_sources` and `Language::Ld` in the compiler; `layers.rs` gives LD its layer (the IR and the ST front-end) and feeds the guard an LD crate reaching the VM and an ST crate reaching LD. Proven by `ladder_runs_on_the_vm.rs` (26: every element, its table's behaviour scan by scan, EN and ENO, a function of ST and the standard functions as blocks, LD function blocks and functions, jumps both ways, a return, RETAIN and the edge memory of a RETAIN instance, 300 contacts in series and in parallel, the emulator's program), `refusals.rs` (28: every refusal of §2.15 with its message and its element, the JSON of a place, the sources named), `ladder_equals_st.rs` (4 LD programs and their ST twins, 200 random sequences of 100 scans each, every shared variable equal after every scan: 51 variables, 1,020,000 values compared) and `damaged_ladder_never_panics.rs` (3,000 damaged documents, each compiled or refused with a place). Mutation-checked in a copy of the tree (`git archive`, its own target directory; the clean copy passed before and after the restores): parallel branches made AND turned `series_is_and_and_parallel_is_or`, `a_long_series_and_a_wide_parallel_compile_and_run`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program` and `contacts_and_coils_equal_their_st_twin` red; a negated contact's negation dropped turned `a_normally_closed_contact_passes_power_when_its_variable_is_off`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program`, `the_oscillator_the_emulators_run_does_what_its_rungs_say` and `contacts_and_coils_equal_their_st_twin` red; an edge contact never writing its memory turned `a_rising_contact_is_on_for_one_scan_after_its_variable_goes_on`, `a_rising_contact_senses_its_variable_while_its_input_is_off`, `a_falling_contact_is_on_for_one_scan_after_its_variable_goes_off` and `contacts_and_coils_equal_their_st_twin` red; a dangling connection let through turned `a_dangling_connection_is_refused_naming_its_element_and_the_missing_id` and `a_damaged_ladder_document_is_compiled_or_refused_with_places_never_a_panic` red. Since L3b-1 the logic module stores, checks and builds LD programs (2.6). Since L3b-2a every element's output, every junction and every network's flag is kept in a hidden private variable in every build (`Compiled::probes`, §2.15, power for monitoring), proven by `ladder_power_probes.rs` (9) and `a_long_series_of_functions_compiles_and_runs`. Not built: editing LD in the workbench (L3b-2b) |
 | 2.16 Function Block Diagram (L3c-1) | `crates/mythos-logic-graphic`: `fbd.rs`, with `graph.rs` shared with LD; the subset and the semantics of §2.16 and §2.13; every output's value kept in a hidden private variable typed by its value (`ast::TypeSpecKind::OfValue` in the ST front-end), every network's flag; `Holds::Guarded` for a function's result; `Language::Fbd`; `Sources::tc6`. Proven by `fbd_runs_on_the_vm.rs` (13), `fbd_refusals.rs` (15), `fbd_equals_st.rs` (5 FBD programs and their ST twins, 200 random sequences of 100 scans each: every shared variable and every kept value, by the element and output it is about, equal to its twin's after every scan, 3,560,000 values), `damaged_ladder_never_panics.rs` (3,000 damaged FBD documents besides the LD ones), the logic module's own tests (3) and `logic_module.rs` through the real module processes; the emulators (2.9). The workbench: `fbd.test.tsx` (11; 12 since L3d-2, a viewer's diagram following a source saved elsewhere). The editor (L3c-2, §2.8): `fbdmodel.test.ts` (11), `fbd-editor.test.tsx` (10), `fbd_from_the_editor.rs` (4). Not built: a CFC mode (§3) |
-| 2.17 Sequential Function Chart (L3d-1) | `crates/mythos-logic-graphic`: `sfc.rs`; the subset and the semantics of §2.17 and §2.13 (§6.7: steps, transitions, Table 61's divergences and convergences, jumps, action blocks, the action control without final scan, unsafe and unreachable charts refused); every step's flag and time, every transition's condition and enable flag and every action's state kept in private variables (`At::Step`, `At::StepTime`, `At::Transition`, `At::Action`); the scan clock as `ast::ExprKind::Intrinsic`; `Element::action`, `Element::transition`, `TextRange::line`; `Language::Sfc`. Since L3d-1b actions and conditions in LD and FBD (of the POU, in the action block or the transition, or a network drawn in the chart), lowered by `ld::lower` and `fbd::lower` in a namespace of their own, `Probe::body`, `Element::inline`, `bodies` in `check`. Proven by `sfc_runs_on_the_vm.rs` (29: a rule of §6.7 each, the action qualifiers scan by scan, a chart in a function block, a restart, an online change of the same chart and of another, the two charts of the emulators), `sfc_refusals.rs` (38 since L3d-1b: every refusal with its message and its element, a place in a text of several lines as JSON), `sfc_corpus.rs` (1), `sfc_equals_st.rs` (4 charts and their ST twins, the fourth with actions and conditions in LD and FBD, 200 random sequences of 100 scans each: every variable, step flag, step time while active, action flag, transition condition where evaluated and enable flag equal after every scan, 2,270,452 values), `sfc_graphic_bodies.rs` (14: a rule of L3d-1b each, scan by scan, and the mixer of the emulators), `damaged_ladder_never_panics.rs` (3,000 damaged charts: 2,718 refused, 282 compiled; 3,000 damaged mixers with LD and FBD bodies: 2,686 refused, 314 compiled), the logic module's own tests (4), `logic_module.rs` through the real module processes and over MCP; the emulators (2.9). The workbench: `sfc.test.tsx` (3 in L3d-1; 23 since the view, L3d-2, §2.8). The editor (L3d-3, §2.8): `sfcmodel.test.ts` (21), `sfc-editor.test.tsx` (9), `sfc_from_the_editor.rs` (4). Not built: drawing the LD and FBD bodies of actions and conditions with their views (the view names their language); an action that is a chart, IL, a connection from a step's flag (§2.17); the qualifiers SD, SL, P0 (the owner's decision, §2.17) |
+| 2.17 Sequential Function Chart (L3d-1) | `crates/mythos-logic-graphic`: `sfc.rs`; the subset and the semantics of §2.17 and §2.13 (§6.7: steps, transitions, Table 61's divergences and convergences, jumps, action blocks, the action control without final scan, unsafe and unreachable charts refused); every step's flag and time, every transition's condition and enable flag and every action's state kept in private variables (`At::Step`, `At::StepTime`, `At::Transition`, `At::Action`); the scan clock as `ast::ExprKind::Intrinsic`; `Element::action`, `Element::transition`, `TextRange::line`; `Language::Sfc`. Since L3d-1b actions and conditions in LD and FBD (of the POU, in the action block or the transition, or a network drawn in the chart), lowered by `ld::lower` and `fbd::lower` in a namespace of their own, `Probe::body`, `Element::inline`, `bodies` in `check`. Proven by `sfc_runs_on_the_vm.rs` (29: a rule of §6.7 each, the action qualifiers scan by scan, a chart in a function block, a restart, an online change of the same chart and of another, the two charts of the emulators), `sfc_refusals.rs` (38 since L3d-1b: every refusal with its message and its element, a place in a text of several lines as JSON), `sfc_corpus.rs` (1), `sfc_equals_st.rs` (4 charts and their ST twins, the fourth with actions and conditions in LD and FBD, 200 random sequences of 100 scans each: every variable, step flag, step time while active, action flag, transition condition where evaluated and enable flag equal after every scan, 2,270,452 values), `sfc_graphic_bodies.rs` (14: a rule of L3d-1b each, scan by scan, and the mixer of the emulators), `damaged_ladder_never_panics.rs` (3,000 damaged charts: 2,718 refused, 282 compiled; 3,000 damaged mixers with LD and FBD bodies: 2,686 refused, 314 compiled), the logic module's own tests (4), `logic_module.rs` through the real module processes and over MCP; the emulators (2.9). The workbench: `sfc.test.tsx` (3 in L3d-1; 23 since the view, L3d-2, §2.8). The editor (L3d-3, §2.8): `sfcmodel.test.ts` (31), `sfc-editor.test.tsx` (9), `sfc_from_the_editor.rs` (6). Not built: drawing the LD and FBD bodies of actions and conditions with their views (the view names their language); an action that is a chart, IL, a connection from a step's flag (§2.17); the qualifiers SD, SL, P0 (the owner's decision, §2.17) |
 
 Evidence of the spike (2026-11-17):
 
@@ -2552,23 +2566,24 @@ Evidence of the spike (2026-11-17):
   kit and the favourites) and `SfcEditor.tsx` (§2.8); the program editor gives an engineer the
   editor (the quiet check 700 ms after the last edit, the Instructions task card), a viewer and an
   operator the view; the view's `NamedBodies` is exported for the editor. No route was added, so no
-  MCP tool. Tests: `sfcmodel.test.ts` (23: every document of the corpus, LD's, FBD's and SFC's,
+  MCP tool. Tests: `sfcmodel.test.ts` (31: every document of the corpus, LD's, FBD's and SFC's,
   written back byte for byte when nothing changed; the corpus charts read as their sequences; a
   chart kept as found, why, every edit of it refused and its bytes kept while another POU is edited;
   a chart laid out anew keeping every element, link, condition, action and comment, and the view
   drawing the same elements; an inline body in LD or FBD byte for byte and a network drawn in the
   chart moved with its transition; each structure operation and its refusals; localIds never given
   out twice after an undo, a deletion or in a new session, nor one an action of a block has; a
-  seeded walk of 300 random edits, every written chart well formed and every id kept; the editor's
-  own check; the three documents the compiler runs), `sfc-editor.test.tsx` (9: a sequence built
+  seeded walk of 300 random edits, every chart well formed and every new id new after each edit,
+  the whole document written and read again every 20th and at the end; the editor's own check; the
+  review's seven, below; the five documents the compiler runs), `sfc-editor.test.tsx` (9: a sequence built
   from the keyboard and saved; branches, a jump and an action from the task card, by click and by
   drag, and the favourites; the action table in place; undo and redo; the editor's word and the
   compiler's at the element; the online-change notice; a chart kept as found; the live state in
-  the editor; a viewer's and an operator's view), `sfc_from_the_editor.rs` (4: the sequence built
+  the editor; a viewer's and an operator's view), `sfc_from_the_editor.rs` (6: the sequence built
   from the template run on the VM through its simultaneous branch and back, its alternative branch
   on stop with the left branch tested first; `bottling.xml` and `mixer.xml` after the editor laid
   them out and added an action, every value equal to the corpus chart's over 600 scans but the
-  action added, which follows its step); `sfc.test.tsx` runs as an engineer, in the editor, but for
+  action added, which follows its step; and the review's two, below); `sfc.test.tsx` runs as an engineer, in the editor, but for
   the two tests of what only the view draws (every POU of a document at once), which run as a
   viewer. `scripts/e2e.sh` 8h opens the new program in the editor, and 8i builds a chart in it
   from the keyboard (a step and its action declared where it is named, conditions, a jump, an
@@ -2599,3 +2614,25 @@ Evidence of the spike (2026-11-17):
   transition`, `deletes a step with the transition before it, …` and `builds the sequence the
   compiler tests run` red; a step deleted with whatever is beside it turned `deletes a step with the
   transition before it, …` and `never gives an id out twice, …` red.
+  **Found in review** (of `f72ede5`), each now a named test, red on that commit and green after: a
+  rename left `Old.X`/`Old.T` in conditions and statements, and the next new step took the old name,
+  so a condition timed another step and compiled (`editor_renamed.xml`: written by `f72ede5` as
+  `Step1.T >= T#50ms`, Fill never left; `a_step_renamed_in_the_editor_is_timed_by_its_condition_under_its_new_name`
+  red, `renames every S.X and S.T a condition or statements it writes reads, token by token, …`,
+  `refuses to rename a step a text it does not write reads, and says where (bottling.xml)`, `says
+  where a step’s flag or time is read by a name no step has` red); a jump whose step was deleted went
+  to the next new step of that name (`never gives a new step the name a jump still goes to after its
+  step was deleted` red); a selection the compiler refuses for its priorities was written without
+  them in an order of the editor's choosing, refused becoming accepted (`keeps a selection the
+  compiler refuses for its priorities as found, and says why` red); a step in a branch could be made
+  initial and its deletion leave a chart none (`never makes a step in a branch the initial step, nor
+  leaves a chart without one` red). The test that a laid-out chart drops its priorities was blind
+  (no corpus file had one): `priorities.xml`, whose priorities are the opposite of its branches'
+  order, is written in priority order left to right (`writes a selection ordered by its priorities
+  left to right in that order, without them`, and
+  `a_selection_the_editor_laid_out_in_its_priority_order_takes_the_branch_its_priorities_chose`:
+  both C), green on `f72ede5` as on the fix. The walk of 300 random edits went over its 60 s in CI
+  (79.9 s, the runners sharing the host with the Rust job): it wrote the whole document and read it
+  three ways after every edit, quadratic in the chart's size; it now checks the model after every
+  edit and the text every 20th and at the end, and takes 0.8–1.8 s of CPU (before: 3.7–13.2 s),
+  measured alternately on one host.

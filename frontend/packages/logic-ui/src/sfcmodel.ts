@@ -125,6 +125,13 @@ export interface PouModel {
   /** The names of the POU's own actions and transitions (`actions`, `transitions`). */
   actions: string[];
   transitions: string[];
+  /**
+   * The texts of the POU the editor does not write (its own actions' and transitions' bodies, a body
+   * in LD or FBD, a network drawn in the chart), each with what holds it (`owner`: the transition or
+   * the action of a block, `null` for the POU's own), so a rename can refuse while one of them reads
+   * the step.
+   */
+  kept: Array<{ owner: number | null; where: string; text: string }>;
   /** Variables declared in the editor, written into the interface. */
   declared: Declared[];
   /** Changed in the editor: its chart is laid out and written anew. */
@@ -338,6 +345,7 @@ function readPou(sp: SourcePou): PouModel {
     why: null,
     actions: namesOf(sp.node, 'actions'),
     transitions: namesOf(sp.node, 'transitions'),
+    kept: [],
     declared: [],
     touched: false,
   };
@@ -345,8 +353,148 @@ function readPou(sp: SourcePou): PouModel {
   const read = chartsOf(sp);
   if (typeof read === 'string') model.why = read;
   else model.charts = read;
+  model.kept = keptTexts(sp);
   return model;
 }
+
+/** The text of every element of a body that holds ST or an operand (ST, IL, `expression`, `variable`), one per line. */
+function textsIn(node: XNode): string {
+  const out: string[] = [];
+  const visit = (n: XNode) => {
+    if (n.name === 'ST' || n.name === 'IL' || n.name === 'expression' || n.name === 'variable') {
+      if (n.children.every((c) => c.name.startsWith('#') || c.name === 'p' || c.children.length === 0)) {
+        out.push(textOf(n));
+        return;
+      }
+    }
+    n.children.forEach(visit);
+  };
+  visit(node);
+  return out.join('\n');
+}
+
+/** The texts of a POU the editor never writes (see `PouModel.kept`). */
+function keptTexts(sp: SourcePou): PouModel['kept'] {
+  const out: PouModel['kept'] = [];
+  for (const list of ['actions', 'transitions'] as const) {
+    const holder = child(sp.node, list);
+    for (const n of holder ? childrenNamed(holder, list === 'actions' ? 'action' : 'transition') : []) {
+      out.push({ owner: null, where: `the ${list === 'actions' ? 'action' : 'transition'} ${attr(n, 'name') ?? ''} of ${sp.name}`, text: textsIn(n) });
+    }
+  }
+  for (const [id, n] of sp.byId) {
+    if (n.name === 'transition') {
+      const inline = child(child(n, 'condition') ?? n, 'inline');
+      if (inline && languageOf(inline) !== 'ST') out.push({ owner: id, where: `the condition of transition ${id} (in ${languageOf(inline) ?? 'another language'})`, text: textsIn(inline) });
+    } else if (n.name === 'actionBlock') {
+      for (const a of childrenNamed(n, 'action')) {
+        const inline = child(a, 'inline');
+        const aid = intOf(attr(a, 'localId'));
+        if (inline && aid !== null && languageOf(inline) !== 'ST') out.push({ owner: aid, where: `the body of action ${aid} (in ${languageOf(inline) ?? 'another language'})`, text: textsIn(inline) });
+      }
+    } else if (NETWORK_KINDS.has(n.name)) {
+      out.push({ owner: sp.follows.get(id) ?? null, where: `the network drawn in the chart (${n.name} ${id})`, text: textsIn(n) });
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// ST text, token by token
+// ---------------------------------------------------------------------------------------------
+
+export interface StToken {
+  kind: 'id' | 'dot' | 'other';
+  text: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * The tokens of an ST text that a step's name can be: identifiers (not a typed literal's prefix, as
+ * `T#5s`), and the dots between them; comments, strings and numbers are stepped over, so a name in
+ * them is never taken for a reference (IEC 61131-3 ed. 3 §6.1).
+ */
+export function stTokens(text: string): StToken[] {
+  const out: StToken[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i] as string;
+    if (text.startsWith('(*', i)) {
+      const e = text.indexOf('*)', i + 2);
+      i = e < 0 ? text.length : e + 2;
+    } else if (text.startsWith('/*', i)) {
+      const e = text.indexOf('*/', i + 2);
+      i = e < 0 ? text.length : e + 2;
+    } else if (text.startsWith('//', i)) {
+      const e = text.indexOf('\n', i);
+      i = e < 0 ? text.length : e;
+    } else if (c === "'" || c === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== c) j += text[j] === '$' ? 2 : 1;
+      i = j + 1;
+    } else if (/[0-9]/.test(c)) {
+      let j = i + 1;
+      while (j < text.length && /[0-9A-Za-z_#.]/.test(text[j] as string) && !(text[j] === '.' && !/[0-9]/.test(text[j + 1] ?? ''))) j += 1;
+      i = j;
+    } else if (/[A-Za-z_]/.test(c)) {
+      let j = i + 1;
+      while (j < text.length && /[A-Za-z0-9_]/.test(text[j] as string)) j += 1;
+      if (text[j] === '#') {
+        // A typed literal: T#5s, TIME#1h, INT#16#FF, BOOL#1.
+        j += 1;
+        while (j < text.length && /[0-9A-Za-z_#.:+-]/.test(text[j] as string)) j += 1;
+        out.push({ kind: 'other', text: text.slice(i, j), start: i, end: j });
+      } else out.push({ kind: 'id', text: text.slice(i, j), start: i, end: j });
+      i = j;
+    } else if (c === '.') {
+      out.push({ kind: 'dot', text: '.', start: i, end: i + 1 });
+      i += 1;
+    } else {
+      if (!/\s/.test(c)) out.push({ kind: 'other', text: c, start: i, end: i + 1 });
+      i += 1;
+    }
+  }
+  return out;
+}
+
+/** Where an ST text names `name` by itself (not as a member, `x.name`), as ranges. */
+export function refsTo(text: string, name: string): Array<[number, number]> {
+  const lower = name.toLowerCase();
+  const tokens = stTokens(text);
+  return tokens.flatMap((t, k) => (t.kind === 'id' && t.text.toLowerCase() === lower && tokens[k - 1]?.kind !== 'dot' ? [[t.start, t.end] as [number, number]] : []));
+}
+
+/** `text` with every reference to `from` (see `refsTo`) written as `to`. */
+export function renameIn(text: string, from: string, to: string): string {
+  let out = '';
+  let at = 0;
+  for (const [a, b] of refsTo(text, from)) {
+    out += text.slice(at, a) + to;
+    at = b;
+  }
+  return out + text.slice(at);
+}
+
+/** Every `N.X` and `N.T` of an ST text: what a step's flag or time is read by. */
+export function memberReads(text: string): Array<{ name: string; member: string }> {
+  const tokens = stTokens(text);
+  const out: Array<{ name: string; member: string }> = [];
+  tokens.forEach((t, k) => {
+    const dot = tokens[k + 1];
+    const m = tokens[k + 2];
+    if (t.kind === 'id' && tokens[k - 1]?.kind !== 'dot' && dot?.kind === 'dot' && m?.kind === 'id' && /^[XT]$/i.test(m.text)) {
+      out.push({ name: t.text, member: m.text.toUpperCase() });
+    }
+  });
+  return out;
+}
+
+/** Every identifier an ST text names by itself. */
+export const namesIn = (text: string): string[] => {
+  const tokens = stTokens(text);
+  return tokens.filter((t, k) => t.kind === 'id' && tokens[k - 1]?.kind !== 'dot').map((t) => t.text);
+};
 
 /** The chart's sequences, or why it is kept as found. */
 function chartsOf(sp: SourcePou): Chart[] | string {
@@ -381,10 +529,25 @@ function chartsOf(sp: SourcePou): Chart[] | string {
   const seen = new Set<number>();
   const kindOf = (id: number) => chart.get(id)?.name ?? '';
   const nexts = (id: number) => next.get(id) ?? [];
-  /** What the compiler tests first comes first: by `priority` where every branch gives one, else left to right (Table 61). */
-  const ordered = (ids: number[]) => {
+  /**
+   * What the compiler tests first comes first: by `priority` where every branch gives one, else left
+   * to right (Table 61). A selection whose priorities the compiler refuses (some given and some not,
+   * two alike, one not a whole number) is kept as found: written without them in an order of the
+   * editor's choosing, a refused document would become an accepted one with a meaning nobody wrote.
+   */
+  const ordered = (div: number, ids: number[]) => {
+    const given = ids.filter((id) => attr(chart.get(id) as XNode, 'priority') !== null);
     const prio = (id: number) => intOf(attr(chart.get(id) as XNode, 'priority'));
-    const all = ids.every((id) => prio(id) !== null);
+    if (given.length > 0 && given.length < ids.length) {
+      fail(`some transitions of selection divergence ${div} give a priority and some do not, which the compiler refuses (Table 61 feature 2b)`);
+    }
+    const bad = given.find((id) => prio(id) === null);
+    if (bad !== undefined) fail(`the priority of transition ${bad} is not a whole number, which the compiler refuses`);
+    const values = given.map((id) => prio(id) as number);
+    if (new Set(values).size < values.length) {
+      fail(`two transitions of selection divergence ${div} have one priority, which the compiler refuses (Table 61 feature 2b)`);
+    }
+    const all = given.length === ids.length;
     return [...ids].sort((a, b) => {
       if (all) return (prio(a) as number) - (prio(b) as number) || a - b;
       const pa = posOf(chart.get(a) as XNode);
@@ -441,7 +604,7 @@ function chartsOf(sp: SourcePou): Chart[] | string {
         case 'simultaneousDivergence': {
           const sel = kind === 'selectionDivergence';
           if (after.length < 2) fail(`${kind} ${at} has ${after.length} branch${after.length === 1 ? '' : 'es'}`);
-          const branches = (sel ? ordered(after) : [...after].sort((a, b) => posOf(chart.get(a) as XNode).x - posOf(chart.get(b) as XNode).x || a - b)).map(readSeq);
+          const branches = (sel ? ordered(at, after) : [...after].sort((a, b) => posOf(chart.get(a) as XNode).x - posOf(chart.get(b) as XNode).x || a - b)).map(readSeq);
           const meeting = [...new Set(branches.filter((b) => b.conv !== null).map((b) => b.conv as number))];
           if (meeting.length > 1) fail(`the branches of ${kind} ${at} meet in ${meeting.length} convergences`);
           const conv = meeting[0] ?? null;
