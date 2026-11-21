@@ -626,6 +626,56 @@ fn condition_network(
     if diags.len() != before {
         return false;
     }
+    // No connection goes round (a feedback path, §8.1.5.2, which FBD takes): a value carried
+    // from one evaluation to the next is state, as an edge's memory is, and a condition is
+    // evaluated only while its transition is enabled. Found without recursion: 0 not seen, 1 on
+    // the way, 2 done.
+    let ids: BTreeMap<u64, usize> = elems.iter().enumerate().map(|(k, e)| (e.id, k)).collect();
+    let ups = |k: usize| -> Vec<usize> {
+        elems[k]
+            .inputs
+            .iter()
+            .flat_map(|p| p.conns.iter().filter_map(|c| ids.get(&c.from).copied()))
+            .collect()
+    };
+    let mut state = vec![0u8; elems.len()];
+    'roots: for root in 0..elems.len() {
+        if state[root] != 0 {
+            continue;
+        }
+        state[root] = 1;
+        let mut trail = vec![(root, ups(root), 0usize)];
+        while let Some(top) = trail.last_mut() {
+            let Some(&next) = top.1.get(top.2) else {
+                state[top.0] = 2;
+                trail.pop();
+                continue;
+            };
+            top.2 += 1;
+            match state[next] {
+                0 => {
+                    state[next] = 1;
+                    trail.push((next, ups(next), 0));
+                }
+                1 => {
+                    let e = &elems[next];
+                    diags.push(places.diag(
+                        e.line,
+                        format!(
+                            "{} {} reads back its own output (a feedback path, IEC 61131-3 ed. 3 §8.1.5.2): it keeps a value from one evaluation to the next, and a condition is evaluated only while its transition is enabled, so it would carry a value of an earlier enabling: {side} (keep the state in an action)",
+                            e.what(),
+                            e.id
+                        ),
+                    ));
+                    break 'roots;
+                }
+                _ => {}
+            }
+        }
+    }
+    if diags.len() != before {
+        return false;
+    }
     // Every element of the network leads to the result: what reaches it, element by element.
     let sink = sinks[0];
     let index: BTreeMap<u64, usize> = elems.iter().enumerate().map(|(k, e)| (e.id, k)).collect();
@@ -2063,10 +2113,26 @@ impl Chart {
         let before = diags.len();
         // The flags of a body's networks are set FALSE before it may run, so a network of a
         // body that did not run in the scan does not read as run.
+        // So are the BOOLs that say where a function of an FBD body ran (its kept ENO, the
+        // `ran` of a guarded probe): a value of a body that did not run is never shown as
+        // computed in this scan. Within a run each is assigned before it is read, so setting
+        // it FALSE first changes nothing the body does.
         let clear = |l: &Lowered| -> Vec<Stmt> {
+            let mut rans: Vec<&str> = l
+                .probes
+                .iter()
+                .filter_map(|p| match &p.holds {
+                    Holds::Guarded { ran, .. } => Some(ran.as_str()),
+                    _ => None,
+                })
+                .collect();
+            rans.sort_unstable();
+            rans.dedup();
             l.flags
                 .iter()
-                .map(|f| Stmt::Assign(f.clone(), bool_expr(false, span)))
+                .cloned()
+                .chain(rans.into_iter().map(|r| place(r, span)))
+                .map(|f| Stmt::Assign(f, bool_expr(false, span)))
                 .collect()
         };
         let mut hidden = Hidden::default();
@@ -2434,7 +2500,8 @@ impl Chart {
                 // The network runs where the transition is enabled, and only there; it writes
                 // its result, which the transition takes (negated when it is).
                 TCond::Graphic(g, negated) => {
-                    if let Some(l) = g.lower(tree, known, places, diags) {
+                    let lowered = g.lower(tree, known, places, diags);
+                    if let Some(l) = lowered.filter(|l| computed_each_time(g, l, places, diags)) {
                         let result = hidden.var(g.result(), bool_ty(span), span);
                         out.extend(clear(&l));
                         let mut body = l.stmts;
@@ -2784,6 +2851,45 @@ impl Kind {
     fn kind_wants_step(&self) -> bool {
         matches!(self, Kind::Transition { .. } | Kind::SelDiv | Kind::SimConv)
     }
+}
+
+/// Whether a condition's network assigns its result in every evaluation: at the top of its
+/// statements, not only under a function's EN. Refused where not (said at the element that
+/// takes the result): where the EN is FALSE the function does not run and the value is not
+/// computed (IEC 61131-3 ed. 3 §6.6.1.5 rule 4; ADR-013 §2.16), and a condition is the result of
+/// evaluating one Boolean expression each time its transition is enabled (§6.7.3). Taking an
+/// earlier evaluation's value would clear the transition on a value of another scan, and
+/// FALSE in its place would clear a negated transition on a value nobody computed. A coil's
+/// power is defined where a function did not run (OFF, §2.15), so a coil always assigns it.
+fn computed_each_time(
+    g: &Graphic,
+    l: &Lowered,
+    places: &Places,
+    diags: &mut Vec<Diagnostic>,
+) -> bool {
+    let result = g.result();
+    let assigned = l
+        .stmts
+        .iter()
+        .any(|s| matches!(s, Stmt::Assign(p, _) if p.path.is_empty() && p.name == result));
+    if assigned {
+        return true;
+    }
+    let sink = g.elems.iter().find(|e| match &e.kind {
+        GKind::Coil { var, .. } => var.name == result,
+        GKind::OutVar { target, .. } => target.name == result,
+        _ => false,
+    });
+    let message = |what: &str| {
+        format!(
+            "{what} takes a value computed only where a function's EN is TRUE; where it is FALSE the function does not run (IEC 61131-3 ed. 3 §6.6.1.5) and the condition would not be computed, while a condition is the result of evaluating one Boolean expression each time its transition is enabled (§6.7.3): give the function no EN, or in LD end the rung at a coil of the transition's name (its power is OFF where the function did not run)"
+        )
+    };
+    match sink {
+        Some(e) => diags.push(places.diag(e.line, message(&format!("{} {}", e.what(), e.id)))),
+        None => diags.push(Diagnostic::whole(message("the condition"))),
+    }
+    false
 }
 
 /// The probes of a condition's network: of one drawn in the chart, without the element the

@@ -1025,3 +1025,131 @@ fn a_chart_of_exactly_the_most_situations_checked_is_taken() {
         "{d:#?}"
     );
 }
+
+/// An FBD condition `T` of the AND of `a` and `b` under the EN `en` (review of PR #163).
+fn and_under_en() -> Pou {
+    Pou::program("_")
+        .fbd()
+        .invar(30, 0, 0, "en")
+        .invar(31, 0, 40, "go")
+        .invar(32, 0, 80, "stop")
+        .block(
+            33,
+            100,
+            0,
+            "AND",
+            None,
+            &[
+                ("EN", In::From(&["30"])),
+                ("IN1", In::From(&["31"])),
+                ("IN2", In::From(&["32"])),
+            ],
+            &["ENO", "OUT"],
+        )
+        .outvar(34, 200, 0, "T", &["33.OUT"])
+}
+
+#[test]
+fn a_condition_whose_result_is_computed_only_under_an_en_is_refused() {
+    // §6.7.3: a condition is the result of evaluating one Boolean expression each time; where
+    // EN is FALSE the function does not run (§6.6.1.5) and nothing is computed. Found in review:
+    // the transition cleared on the value of an earlier enabling, and a negated one on the
+    // initial FALSE of a result never computed.
+    let with_en = || condition(&and_under_en()).vars(&[("en", "BOOL")]);
+    let why = "takes a value computed only where a function's EN is TRUE";
+    let (id, msg, d) = one(refused(&[with_en()]));
+    assert_eq!(id, Some(34), "at the output variable that takes it");
+    assert!(
+        msg.starts_with(&format!("an output variable 34 {why}")),
+        "{msg}"
+    );
+    assert_eq!(d.element.unwrap().inline, Some(2));
+    // Negated: refused the same, before any value is taken.
+    let xml = project(&[with_en()]).replace("<condition>", "<condition negated=\"true\">");
+    let (id, msg, _) = one(lower(
+        &[Source {
+            name: "m.xml",
+            text: &xml,
+        }],
+        None,
+    )
+    .unwrap_err());
+    assert_eq!(id, Some(34));
+    assert!(msg.contains(why), "{msg}");
+    // LD, an output variable from the function's OUT.
+    let ld = Pou::program("_")
+        .left(30, 20)
+        .contact(31, 100, 20, Contact::No, "en", &["30"])
+        .block(
+            32,
+            200,
+            20,
+            "AND",
+            None,
+            &[
+                ("EN", In::From(&["31"])),
+                ("IN1", In::Expr("go")),
+                ("IN2", In::Expr("stop")),
+            ],
+            &["ENO", "OUT"],
+        )
+        .outvar(33, 300, 20, "T", &["32.OUT"]);
+    let (id, msg, _) = one(refused(&[condition(&ld).vars(&[("en", "BOOL")])]));
+    assert_eq!(id, Some(33));
+    assert!(msg.contains(why), "{msg}");
+    // A network drawn in the chart: said at the transition, where the chart adds what takes it.
+    let drawn = Pou::program("Main")
+        .sfc()
+        .vars(&[("en", "BOOL"), ("go", "BOOL"), ("stop", "BOOL")])
+        .step(1, 100, 0, "Idle", true, &["4"])
+        .invar(30, -400, 40, "en")
+        .invar(31, -400, 80, "go")
+        .invar(32, -400, 120, "stop")
+        .block(
+            33,
+            -300,
+            40,
+            "AND",
+            None,
+            &[
+                ("EN", In::From(&["30"])),
+                ("IN1", In::From(&["31"])),
+                ("IN2", In::From(&["32"])),
+            ],
+            &["ENO", "OUT"],
+        )
+        .trans_wired(2, 100, 40, &["33.OUT"], false, &["1"])
+        .step(3, 100, 80, "Run", false, &["2"])
+        .trans(4, 100, 120, "stop", &["3"]);
+    let (id, msg, _) = one(refused(&[drawn]));
+    assert_eq!(id, Some(2));
+    assert!(msg.contains(why), "{msg}");
+}
+
+#[test]
+fn a_condition_network_with_a_feedback_path_is_refused() {
+    // §8.1.5.2 lets FBD draw a line back; in a condition it carries a value from one evaluation
+    // to the next, state as an edge's memory is, between evaluations made only while the
+    // transition is enabled (found in review: XOR of its own output toggled per evaluation).
+    let back = Pou::program("_")
+        .fbd()
+        .invar(30, 0, 0, "go")
+        .block(
+            31,
+            120,
+            0,
+            "XOR",
+            None,
+            &[("IN1", In::From(&["30"])), ("IN2", In::From(&["31"]))],
+            &["OUT"],
+        )
+        .outvar(32, 240, 0, "T", &["31"]);
+    let (id, msg, _) = one(refused(&[condition(&back)]));
+    assert_eq!(id, Some(31));
+    assert!(
+        msg.starts_with(
+            "a block 31 reads back its own output (a feedback path, IEC 61131-3 ed. 3 §8.1.5.2)"
+        ),
+        "{msg}"
+    );
+}

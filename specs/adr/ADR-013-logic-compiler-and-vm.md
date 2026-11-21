@@ -1569,7 +1569,9 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
     coil, an output variable or a block's output, is refused as in ST, at the element's text.
     An edge in an action senses from the last scan the action ran: its memory is set only where
     the body runs, as every statement of it is
-    (`an_edge_in_an_ld_action_senses_from_the_last_scan_the_action_ran`).
+    (`an_edge_in_an_ld_action_senses_from_the_last_scan_the_action_ran`, and
+    `an_edge_in_an_ld_action_sees_a_rise_made_while_its_action_did_not_run`, which a memory set
+    every scan fails).
   - **A condition in LD or FBD**, of the POU (Table 55 features 10, 11: TRANSITION … FROM … TO
     …, a network whose coil or output variable is the transition's name) or written in the
     transition (features 2a, 3a; TC6 `inline`, whose `name` is the name the network writes, as
@@ -1582,7 +1584,22 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
     condition is evaluated only while its transition is enabled, so it would sense from then,
     not from the last scan); a coil of the name that sets, resets or senses an edge; no coil or
     output variable of the name, or two; a label, jump or return; an element that does not lead
-    to the result (a condition is one network giving one Boolean value). An inline name is a
+    to the result (a condition is one network giving one Boolean value); a feedback path (FBD's
+    line drawn back, §8.1.5.2), which carries a value from one evaluation to the next exactly as
+    an edge's memory does (found in review). **A result computed only under a function's EN is
+    refused** (found in review: an output variable fed from a function under EN kept the value
+    of an earlier enabling, so the transition cleared on it; negated, it cleared at the first
+    scan on the initial FALSE of a result never computed). *Decided, and why not a reset:*
+    §6.7.3 makes the condition the result of evaluating one Boolean expression, and where EN is
+    FALSE the function does not run (§6.6.1.5 rule 4; §2.16: not computed). Setting the result
+    FALSE first would make a negated transition clear on a value nobody computed, and a
+    condition that was not computed must never clear a transition; so the network must assign
+    its result in every evaluation, checked on its lowered statements (the assignment at their
+    top, not only inside an `IF`), and refused at the element that takes it otherwise. A coil
+    always assigns it: its power where a function did not run is OFF by §2.15's rule, a value
+    of this scan, so an LD rung ending at a coil of the name is taken
+    (`an_ld_condition_ending_at_a_coil_takes_no_power_where_its_function_did_not_run`), and a
+    negated transition then takes that OFF as any negated contact would. An inline name is a
     name of the POU, its own as a step's or a transition's is (one that is a variable's is
     refused), and an inline body in LD or FBD with no name is refused. A transition of the POU in
     LD or FBD named by two transitions is refused: a transition name stands for one TRANSITION …
@@ -1619,7 +1636,10 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
     before the `IF` that may run it, so a network of an action whose Q was FALSE, or of a
     condition whose transition was not enabled, never shows as executed, and its kept values are
     an earlier scan's, which the flag says
-    (`a_network_of_an_action_that_did_not_run_reads_as_not_run`). The condition itself keeps the
+    (`a_network_of_an_action_that_did_not_run_reads_as_not_run`). So is every `ran` of the
+    body (an FBD function's kept ENO, §2.16), which within a run is assigned before it is read:
+    a function of a body that did not run is never shown as computed in that scan (found in
+    review; `a_function_of_an_fbd_action_that_did_not_run_is_not_shown_as_computed`). The condition itself keeps the
     rule above: `__SFC_<id>`, with `ran` `__SFC_<id>_EN`.
   - **Probes.** `Probe::body` (new; `None` for an element of a POU's own body, so every LD and
     FBD probe is as it was) says which body an element is in: `BodyOf::Action(name)`,
@@ -1675,7 +1695,11 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
   change. Since L3d-1b actions and conditions may be LD or FBD: the view draws each body with
   the LD or FBD view and the entries of `bodies` for it (a network not run as not executed), and
   the editor keeps each body's `localId`s (online change carries `__SFC_<owner>__…` by them) and
-  an inline condition's `name`.
+  an inline condition's `name`. **The SFC editor must never give a `localId` an element has had
+  to another element** (as the LD and FBD editors do not, §2.15, §2.16): an inline body's values
+  are carried by `__SFC_<localId>__…`, the `localId` of the action of its block or of its
+  transition, so an id reused for another action or transition would carry one body's values,
+  an edge's memory among them, into an unrelated one at the next online change.
 
 ## 3. Order of work
 

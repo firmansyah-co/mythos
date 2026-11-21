@@ -681,3 +681,200 @@ fn the_mixer_chart_the_emulators_run_does_what_its_bodies_say() {
     assert_eq!(r.int("stirred"), 21);
     assert!(r.bool("valve"), "Fill entered at 58 opened it at 59");
 }
+
+#[test]
+fn an_ld_condition_ending_at_a_coil_takes_no_power_where_its_function_did_not_run() {
+    // A coil's power is defined where a function under EN did not run: OFF (ADR-013 §2.15), so
+    // the condition is computed in every evaluation and never an earlier one's (review of PR
+    // #163: an output variable in its place was refused, §2.17).
+    let cond = Pou::program("_")
+        .left(30, 20)
+        .contact(31, 100, 20, Contact::No, "en", &["30"])
+        .block(
+            32,
+            200,
+            20,
+            "AND",
+            None,
+            &[
+                ("EN", In::From(&["31"])),
+                ("IN1", In::Expr("a")),
+                ("IN2", In::Expr("b")),
+            ],
+            &["ENO", "OUT"],
+        )
+        .coil(33, 300, 20, Coil::Plain, "T", &["32.OUT"]);
+    let p = Pou::program("Main")
+        .sfc()
+        .vars(&[
+            ("en", "BOOL"),
+            ("a", "BOOL"),
+            ("b", "BOOL"),
+            ("stop", "BOOL"),
+        ])
+        .step(1, 100, 0, "Idle", true, &["4"])
+        .trans_body(2, 100, 40, "T", &cond, &["1"])
+        .step(3, 100, 80, "Work", false, &["2"])
+        .trans(4, 100, 120, "stop", &["3"]);
+    let mut r = run(&[p]);
+    for v in ["en", "a", "b"] {
+        r.set(v, Value::Bool(true));
+    }
+    r.scan_at(0);
+    assert!(r.bool("Work.X"), "en, a AND b: cleared");
+    r.set("stop", Value::Bool(true));
+    r.scan_at(10);
+    assert!(r.bool("Idle.X"));
+    r.set("stop", Value::Bool(false));
+    // a AND b would be TRUE, but EN is FALSE: the AND does not run, its power is OFF.
+    r.set("en", Value::Bool(false));
+    for k in 0..3 {
+        r.scan_at(20 + 10 * k);
+        assert!(r.bool("Idle.X") && r.bool("__SFC_2_EN") && !r.bool("__SFC_2"));
+    }
+    r.set("en", Value::Bool(true));
+    r.scan_at(60);
+    assert!(r.bool("Work.X"));
+}
+
+#[test]
+fn a_function_of_an_fbd_action_that_did_not_run_is_not_shown_as_computed() {
+    // ADR-013 §2.16: a guarded value's `ran` says where it was computed in this scan. In a body
+    // that did not run (its action's Q FALSE) it reads FALSE, as the network's flag does (found
+    // in review: `ran` stayed TRUE once the action stopped).
+    let body = Pou::program("_")
+        .fbd()
+        .invar(30, 0, 0, "go")
+        .invar(31, 0, 40, "a")
+        .invar(32, 0, 80, "b")
+        .block(
+            33,
+            100,
+            0,
+            "AND",
+            None,
+            &[
+                ("EN", In::From(&["30"])),
+                ("IN1", In::From(&["31"])),
+                ("IN2", In::From(&["32"])),
+            ],
+            &["ENO", "OUT"],
+        )
+        .outvar(34, 200, 0, "lamp", &["33.OUT"]);
+    let mut r = run(&[chart().action_body("Light", &body).actions_of(
+        5,
+        300,
+        80,
+        "3",
+        &[(6, "N", None, Act::Name("Light"))],
+    )]);
+    let of = BodyOf::Action("Light".into());
+    let (value, ran) = match &probe(&r, &of, 33, At::Output("OUT".into())).holds {
+        Holds::Guarded { path, ran } => (path.clone(), ran.clone()),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(ran, "__SFC_LIGHT__FBD_33_ENO");
+    let flag = network_flag(&r, &of, 30);
+    for v in ["go", "a", "b"] {
+        r.set(v, Value::Bool(true));
+    }
+    r.scan_at(0);
+    r.scan_at(10);
+    assert!(r.bool(&flag) && r.bool(&ran) && r.bool(&value), "Work: ran");
+    r.set("go", Value::Bool(false));
+    r.set("stop", Value::Bool(true));
+    r.scan_at(20);
+    r.scan_at(30);
+    assert!(r.bool("Idle.X"));
+    assert!(!r.bool(&flag), "the network did not run");
+    assert!(!r.bool(&ran), "so the AND was not computed in this scan");
+    assert!(
+        r.bool(&value),
+        "its kept value is an earlier scan's, which ran says"
+    );
+}
+
+#[test]
+fn an_edge_in_an_ld_action_sees_a_rise_made_while_its_action_did_not_run() {
+    // The memory of an edge in an action is set only where the action runs: a falls while the
+    // action runs and rises while it does not, so at the next run the contact senses the rise.
+    // A memory set every scan would have followed a while the action was idle, and seen none.
+    let rung = Pou::program("_")
+        .left(10, 20)
+        .contact(11, 100, 20, Contact::Rising, "a", &["10"])
+        .block(
+            12,
+            200,
+            20,
+            "ADD",
+            None,
+            &[
+                ("EN", In::From(&["11"])),
+                ("IN1", In::Expr("n")),
+                ("IN2", In::Expr("1")),
+            ],
+            &["ENO", "OUT"],
+        )
+        .outvar(13, 300, 20, "n", &["12.OUT"]);
+    let mut r = run(&[chart().action_body("Count", &rung).actions_of(
+        5,
+        300,
+        80,
+        "3",
+        &[(6, "N", None, Act::Name("Count"))],
+    )]);
+    r.set("go", Value::Bool(true));
+    r.scan_at(0);
+    r.scan_at(10);
+    assert_eq!(r.int("n"), 0, "Work runs Count with a FALSE");
+    r.set("go", Value::Bool(false));
+    r.set("stop", Value::Bool(true));
+    r.scan_at(20);
+    assert!(r.bool("Idle.X"));
+    // a rises while Count does not run.
+    r.set("a", Value::Bool(true));
+    r.scan_at(30);
+    r.scan_at(40);
+    assert_eq!(r.int("n"), 0, "Idle: Count does not run");
+    r.set("stop", Value::Bool(false));
+    r.set("go", Value::Bool(true));
+    r.scan_at(50);
+    r.scan_at(60);
+    assert_eq!(
+        r.int("n"),
+        1,
+        "the contact last sensed a FALSE, in Work: it senses the rise at its next run"
+    );
+}
+
+#[test]
+fn the_probes_of_networks_drawn_in_the_chart_name_variables_the_program_has() {
+    // Review of PR #163: transitions drawn above their networks (the element the chart adds is
+    // first by position), two networks from one left rail, one transition negated.
+    let p = Pou::program("Main")
+        .sfc()
+        .vars(&[("a", "BOOL"), ("b", "BOOL")])
+        .step(1, 100, 0, "Idle", true, &["4"])
+        .trans_wired(2, 100, 40, &["41"], false, &["1"])
+        .step(3, 100, 80, "Work", false, &["2"])
+        .trans_wired(4, 100, 120, &["42"], true, &["3"])
+        .left(40, 400)
+        .contact(41, 300, 400, Contact::No, "a", &["40"])
+        .contact(42, 300, 440, Contact::No, "b", &["40"]);
+    let r = run(&[p]);
+    let bodies: Vec<&Probe> = r.c.probes.iter().filter(|p| p.body.is_some()).collect();
+    assert!(bodies.len() >= 4, "{bodies:#?}");
+    for p in bodies {
+        assert!(
+            p.local_id != 2 && p.local_id != 4,
+            "no probe of the added element: {p:?}"
+        );
+        if let At::Network(members) = &p.at {
+            assert!(!members.contains(&2) && !members.contains(&4), "{p:?}");
+        }
+        if !matches!(p.holds, Holds::On) {
+            let kept = path(p);
+            assert!(r.c.symbol(&kept).is_some(), "no symbol {kept}");
+        }
+    }
+}
