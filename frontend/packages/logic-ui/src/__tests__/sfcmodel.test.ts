@@ -578,6 +578,21 @@ describe('localIds', () => {
     expect(fresh.id).toBeGreaterThan(r.id + 1);
   });
 
+  it('gives out no id an action of a block or an inline body has, though no element of the chart has it', () => {
+    // The highest localId of this chart is an action's, inside its block; an inline body's elements
+    // number from 1 in their own body. A new element takes an id past both.
+    const text = TEMPLATE('Main').replace(
+      /<SFC>[\s\S]*<\/SFC>/,
+      `<SFC>
+            <step localId="1" name="Start" initialStep="true"><position x="0" y="0"/><connectionPointOutAction formalParameter=""/></step>
+            <actionBlock localId="2"><position x="100" y="0"/><connectionPointIn><connection refLocalId="1"/></connectionPointIn><action localId="40" qualifier="N"><reference name="lamp"/></action></actionBlock>
+          </SFC>`
+    );
+    const r = new Run(text);
+    r.step((m, ids) => insertPair(m, ids, 0, el(1), []));
+    expect(r.id).toBeGreaterThan(40);
+  });
+
   it('keeps every id through a long run of random edits, each written chart well formed', () => {
     // A seeded walk: whatever an edit leaves is well formed (Run.step checks it), or the edit is refused.
     let seed = 20261122;
