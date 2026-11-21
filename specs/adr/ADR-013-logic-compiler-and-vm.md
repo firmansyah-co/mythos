@@ -305,7 +305,13 @@ runtime whatever it executes:
   string writes); one whose stored length is past its own has an error in place of a value. The protocol call is `Call::Watch`; the VM module reads them under the lock
   its scan thread holds for a whole scan, so every value of an answer is of one scan. The core
   asks at the runtime's exchange while somebody watches (a watch nobody renews for five
-  seconds stops), and an answer carries the program's state and its age. Reading changes
+  seconds stops), and an answer carries the program's state and its age: `age_ms`, how long
+  ago the runtime was read, and `fresh_ms`, how old an answer may be and still be given at once
+  (1000 ms; an older one is waited for, up to 2.5 s). The state carries `scan_age_us`, how long
+  before the read the program last completed a scan (`RuntimeState::scan_age_us`: absent before
+  its first scan and from a module that does not say; optional on the wire, so a module built
+  before it still loads). A program that has stopped scanning still answers, in RUN until its
+  watchdog fires, with its last values and a scan age that grows (§2.8). Reading changes
   nothing in the program. A variable the program does not have, a whole array, a structure or
   an instance has an error in place of a value; a REAL that is not a finite number is said,
   not sent as null. A runtime module without `watch` answers that it gives no values.
@@ -479,8 +485,11 @@ Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (A
   or that how its variables started is not known. When the controller says nothing of it, the
   editor says that, and claims nothing. **Load cold**, asked first, loads with `?start=cold`.
 - It reads `GET /api/v1/runtimes` once a second while an editor is open. Before the first
-  answer the runtime is UNKNOWN; after a read fails, what was read before is marked LAST KNOWN
-  and Run is disabled. Stop is never taken away, by a stale state or by a request still
+  answer the runtime is UNKNOWN; after a read fails, or while one has gone unanswered for 3 s
+  since the last answer (Settings → Runtimes' rule, `RUNTIMES_STALE_AFTER_MS`; found in review
+  of the stale-watch slice: a request left hanging left RUN and the last scan figures unmarked),
+  what was read before is marked LAST KNOWN and Run is disabled. An answer to a read asked before
+  a newer one that was already applied is dropped. Stop is never taken away, by a stale state or by a request still
   unanswered: it is the safe direction. Run asks first, as on Settings → Runtimes. Scan times are NOT MEASURED until a scan has run. A new output
   binding has no safe value, and none is written for it, until one is given.
 - While a runtime runs the program, the variables table shows each variable's value in it,
@@ -488,7 +497,8 @@ Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (A
   quoted, with `$` combinations for `$`, `'` and what is not printable. A STRING has no "Bind…"
   and says why. A variable the running version does not
   have says so; a value read from a program that is not in RUN is marked as what it stopped
-  with; when the values cannot be read the cell says UNKNOWN and shows none read before.
+  with; when the values cannot be read the cell says UNKNOWN and shows none read before, and so
+  it does for values that are not current (§2.8), with why in its title.
 - **Forcing from the editor** (C5c): while a runtime is known to run the program, an engineer
   has "Force…" beside each BOOL and number of the table; it asks for the value (TRUE/FALSE or
   1/0 for a BOOL, a whole number for an integer), which is the confirmation, and refuses what
@@ -578,6 +588,48 @@ checked it, and a viewer's diagram stayed not live after an agent's save. Then:
   not a BOOL) is UNKNOWN, never ON or OFF, and a rung whose flag cannot be read is UNKNOWN as a
   whole; when the runtimes can no longer be read every state is UNKNOWN; a forced variable is
   marked FORCED under its element (`variable-forced`), as in the table.
+
+**Only current values are drawn live** (found in review of L3d-2; `currencyOf` in
+`programs.ts`). A runtime that says RUN but has stopped scanning (its scan thread hung or
+fallen behind, before its watchdog's ten intervals have passed) still answers a watch, with its
+last values; and an answer the editor holds while its asking gets no newer one ages in the
+browser. Neither is drawn as current. The values of a watch answer are current while both of
+these hold, each bound worked out from what the controller says and none a constant of the
+editor's own:
+
+- *the read is recent*: its age (`age_ms`, and the time since the request was **sent**) is
+  within the route's `fresh_ms` (the oldest answer it gives at once) and one interval of the
+  editor's asking (500 ms): 1.5 s today. An answer older than that should have been replaced and
+  was not. Measured from the send, not the arrival, so the time an answer spent in transit counts
+  as age (it is, and the send time never makes values younger than they are); and on a
+  monotonic clock (`performance.now()`, `monotonicNow`), so setting the wall clock back neither
+  keeps values current nor puts the re-check off;
+- *in RUN, the program was scanning when it was read*: its last scan had completed
+  (`state.scan_age_us`) within two of its intervals (`interval_ms` of `GET /api/v1/runtimes`)
+  and its longest scan (`state.max_scan_us`), the interval taken only from a runtime of the
+  version that answered: a list read before a load still names the old version's interval, and
+  until it names the answer's the values are not current. The VM's scan thread catches up on a scan that
+  starts less than an interval late and counts one that starts later as an overrun, so a
+  program scanning without overrun completes a scan at least that often (scan *k* starts within
+  an interval of its due time and ends within its longest scan of starting; scan *k+1* is due
+  one interval after *k*). Past it, the values are older than the program's own cycle. A host
+  that holds the scan thread back by an interval or more makes the values not current for that
+  moment, which is what they are. The watchdog's limit (§5, C7a) is not the bound: it is what
+  this bound comes before.
+
+What the rule needs and is not told (an answer without `age_ms` or `fresh_ms`; in RUN, without
+`scan_age_us`, before a program's first scan or from a module that does not say, or without
+`max_scan_us`) makes the values not current, never current. Values that are not current are
+drawn as each view draws values that cannot be read: every state of a diagram UNKNOWN, the view
+saying why (`data-live="unknown"`), and every value of the variables table UNKNOWN with why in
+its title. In STOP only the read's age counts: the values are what the program stopped with. The
+editor judges again at the instant an answer stops being current, so a request left hanging does
+not leave the last values drawn. Requests overlap (each asked on time, whether the one before has
+come back or not, so one left hanging never stops the next): each is numbered when asked, and an
+answer to one older than the newest applied, or asked before the watch was dropped or the store
+reset, is not applied, so an older answer coming back last never replaces a newer one. Settings → Runtimes keeps its own rule (a read of the list
+older than 3 s is the last known state, `RUNTIMES_STALE_AFTER_MS`): it shows what the runtimes say, not a program's
+values, and its fixed bound sees no stalled scan, so it was not reused here.
 
 The front-end's hidden variables are watched for the diagram and not listed in the table. An
 element's variable that is not a variable of the program by itself (an element of an array) is
@@ -2056,9 +2108,9 @@ Each step leaves `dev` working.
 | 2.3 VM | `no_std`, no allocation, `#![forbid(unsafe_code)]`; format 4 (format 1 with strings and the numeric functions, L2c, with its own real functions, §2.3, and the scan clock `NOW`, L4), and formats 1, 2 and 3 read as they were written, their native standard blocks included (a VM reads every format it extends; an instruction newer than a program's format refused at load): bodies, call frames, instance-relative and region-confined addressing; loader checks, with every jump landing on an instruction of its body, and `load_within` a host's limits; run-time checks, budget; the stack and the calls stop at the depths the program declares; faults, with `IndexOutOfRange`, `CallDepthExceeded`, `StackOverflow`, for strings `StringTooLong`, `StringArgument`, `BadString`, `BadNumber`, and `SelectorOutOfRange` |
 | 2.4 Writes to field devices (C1) | Built: `IoStatusHandle::write_tag`, `PUT /api/v1/tags/<uri>/value` (operator), MCP `write_tag`; a driver declares each tag writable or not and the core refuses a read-only one without asking it; a write runs in its connection's task between polls, bounded by the poll's deadline; the answer is `written: true`, `false` or `"unknown"`. Proven by `field_write_tests.rs` (a real Modbus simulator) and through the Modbus module process in `modbus_module.rs`. Ownership of an output by a runtime (write authority) comes with the `runtime` kind |
 | 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Forcing is built (`Call::Force`, `Call::Unforce`, C5c): `runtime_api.rs` forces an output, a setpoint and an input of the running module process over the API and watches the device follow, refuses an operator and a viewer, refuses what cannot be forced, and sees every force released by a stop and by loading the program again. The watchdog is built (C7a): a program in RUN that completes no scan within ten intervals (never less than two seconds), or whose scan thread has ended, is put in FAULT at the next exchange with the reason (`watchdog: …`), every force released, so the core writes the safe values; a scan itself is bounded by the instruction budget. Proven by the module's own tests: a healthy program runs past the limit untouched, and one whose scan thread ends is faulted and asks for no write. RETAIN is built in the runtime and the core (C7b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter and proves that it goes on after a stop and run, after the program is loaded again, after its module process is killed and started again (from the values kept last, not those it was loaded with), and after a load in STOP, while the other counter starts from zero each time, and that a cold start resets it; the module's tests prove that a value is taken only into a variable of the same name, type and size. Since L4 a standard block's state is variables of its own: `runtime_api.rs` runs a RETAIN TON beside a plain one through the real module process, and after a stop and run the RETAIN one carries on from its ET (the time stopped not timed) while the plain one times again from 0, and a cold start resets both. Online change is built (C6b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter, a plain counter, a TON and an output bound to a Modbus simulator, loads a build with one variable added and one removed while it runs, and proves that both counters and the timer go on without resetting, the added variable starts from its initial value, the removed one is reported as dropped, and the device's register, sampled about every millisecond through the load, never holds the safe value nor drops below what the old build commanded before the load; that a cold load resets both counters and what is kept; that a program of another name starts as before; and that an unknown `start` is refused. The module's tests prove the carry rule (same path, type and size; an array of structures or instances not carried; a value given twice taken once; what is not carried listed with why), and that a program started into RUN holds the carried values and clock before its first scan while one loaded in STOP takes none |
-| 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run` (a warm restart), `/cold-start`, `/stop`, `/watch`, `/force` and `/release`, `GET`/`PUT /api/v1/projects/:id/runtimes` (`?start=cold`, and `changes.runtimes` saying how each runtime started: C6b), each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; what is forced in each, a FORCED badge with each variable and its value (`forced UNKNOWN` when the controller does not say), and "Release all" for an engineer, asked first, with the controller's answer shown as it gave it; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
+| 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run` (a warm restart), `/cold-start`, `/stop`, `/watch`, `/force` and `/release`, `GET`/`PUT /api/v1/projects/:id/runtimes` (`?start=cold`, and `changes.runtimes` saying how each runtime started: C6b), each an MCP tool; engineer for all but reading. A watch answer says how old it is (`age_ms`, `fresh_ms`) and how long before the read the program last completed a scan (`state.scan_age_us`, from the VM module; §2.5), proven by `runtime_api.rs` and the module's own test. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; what is forced in each, a FORCED badge with each variable and its value (`forced UNKNOWN` when the controller does not say), and "Release all" for an engineer, asked first, with the controller's answer shown as it gave it; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
 | 2.6 The logic module | Built: `plugins/logic` (programs in ST, LD, FBD or SFC, bindings, check, build; eight MCP tools, each saying which languages it takes; module version 0.5.0, its UI's the same; an SFC program checked with `chart`, written, built, loaded and driving a Modbus simulator through the real module processes, and over MCP, since L3d-1; its actions' and conditions' LD and FBD values as `bodies` in `check` since L3d-1b, `a_chart_with_bodies_in_ld_and_fbd_gives_their_values_apart_from_its_steps`), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes, an LD program among them (created as a TC6 document, a diagnostic at its element, built, loaded, and running a Modbus simulator; an ST program saved without a language beside it, unchanged); its workbench UI `frontend/packages/logic-ui` (tree section with each program's language, program editor, the LD editor for an engineer and the read-only LD view for everyone else, both with the live state, load, load cold, how a load started, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus, and an LD program added from the tree, given rungs over the API, checked with a mistake drawn at its element, bound, loaded and run shows its contacts change state with the device's counter, and an LD program built in the editor from the keyboard and the palette is checked, saved, loaded and run, its motor coil following a start and a stop forced as a pushbutton would set them (L3b-2b). Not built: unit tests in ST, a library of POUs shared by a project's programs |
-| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); the read-only LD view with each diagnostic at its element and its live state from watched values (L3b-1, `ladder.test.tsx`), each element, link and junction with the power the compiler kept and a rung not run as not executed (L3b-2a); the LD editor, as TIA's works (L3b-2b, `ladder-editor.test.tsx`, `ldmodel.test.ts`); the read-only FBD view with each diagnostic at its element and every line's value live, a function not run as not computed and a network not run as not executed (L3c-1, `fbd.test.tsx`); the FBD editor, as TIA's FBD works, standard FBD (L3c-2, `fbd-editor.test.tsx`, `fbdmodel.test.ts`, `fbdedit.test.ts`, `fbd_from_the_editor.rs`); the read-only SFC view (for everyone until L3d-3, a viewer's and an operator's since), with IEC 61131-3's symbols, each diagnostic at its element and the chart's live state: each active step with its time, a transition's condition only where it was evaluated in the last scan, each action's Q, UNKNOWN where a value cannot be read (L3d-2, `sfc.test.tsx`, and a chart run in `scripts/e2e.sh`); its actions and conditions in LD or FBD named with their language, not drawn yet (their values are in `bodies`, §2.17); the SFC editor, as S7-GRAPH's sequence editor works (L3d-3, `sfc-editor.test.tsx`, `sfcmodel.test.ts`, `sfc_from_the_editor.rs`, and a chart built in the editor, loaded and run in `scripts/e2e.sh`). 2.10: not built |
+| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); the read-only LD view with each diagnostic at its element and its live state from watched values (L3b-1, `ladder.test.tsx`), each element, link and junction with the power the compiler kept and a rung not run as not executed (L3b-2a); the LD editor, as TIA's works (L3b-2b, `ladder-editor.test.tsx`, `ldmodel.test.ts`); the read-only FBD view with each diagnostic at its element and every line's value live, a function not run as not computed and a network not run as not executed (L3c-1, `fbd.test.tsx`); the FBD editor, as TIA's FBD works, standard FBD (L3c-2, `fbd-editor.test.tsx`, `fbdmodel.test.ts`, `fbdedit.test.ts`, `fbd_from_the_editor.rs`); the read-only SFC view (for everyone until L3d-3, a viewer's and an operator's since), with IEC 61131-3's symbols, each diagnostic at its element and the chart's live state: each active step with its time, a transition's condition only where it was evaluated in the last scan, each action's Q, UNKNOWN where a value cannot be read (L3d-2, `sfc.test.tsx`, and a chart run in `scripts/e2e.sh`); its actions and conditions in LD or FBD named with their language, not drawn yet (their values are in `bodies`, §2.17); only current values drawn live in every diagram and the variables table, values not current UNKNOWN with why (§2.8, `currencyOf`; `currency.test.ts` and a test in each of `ladder.test.tsx`, `fbd.test.tsx`, `sfc.test.tsx`, `programs.test.tsx`); the SFC editor, as S7-GRAPH's sequence editor works (L3d-3, `sfc-editor.test.tsx`, `sfcmodel.test.ts`, `sfc_from_the_editor.rs`, and a chart built in the editor, loaded and run in `scripts/e2e.sh`). 2.10: not built |
 | 2.9 Emulators | Built: eight programs (`strings.st` since L2c-1, `library.st` since L2c-2), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else. Since L4 the timers and counters in them are the library's, in ST: all 16 runs equal Since L3a a Ladder Diagram joins them (`tests/ladder/oscillator.xml`: two TON, a CTU, rising and falling contacts, a set coil, a jump): all 18 runs equal (rustc 1.100.0, QEMU 8.2.2, run in the CI runner's image). Since L3c-1 the ladder documents of the editor (L3b-2b) and a Function Block Diagram (`tests/fbd/blinker.xml`: two TON, a CTU reset by its own output, a block's output drawn back, a connector, a jump, a function under EN, a REAL) join them: all 26 runs equal (rustc 1.100.0, QEMU 8.2.2, in the CI runner's image with podman). Since L3d-1 two Sequential Function Charts join them (`crates/mythos-logic-graphic/tests/sfc/bottling.xml`: a selection with a skip, a simultaneous divergence and convergence, a jump, N, S, R, L, D, P, DS, named and inline actions, a named transition; `doors.xml`: a chart in a function block, two instances under an FBD program): all 30 runs equal (rustc 1.100.0, QEMU 8.2.2, in the CI runner's image with podman). Since L3d-1b a chart whose actions and conditions are in LD and FBD joins them (`mixer.xml`: an FBD action in its block, an LD and an FBD action of the POU, an FBD condition in its transition, a rung and an FBD network through a connector drawn in the chart): all 36 runs equal (rustc 1.100.0, QEMU 8.2.2, in the CI runner's image with podman) |
 | 2.12 Oracle | `differential_strucpp.rs`: 8 programs, 60 cycles, 9,480 values, all agree except the five deliberate rows of §2.13 (287 values: 167 of the first three, 60 each of INSERT's position and a based literal read as an integer). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE. Unchanged by L4 (the standard blocks in ST): the same 9,480 values, the same 287 |
 | 2.14 Standard library in ST (L4) | `crates/mythos-logic-st/src/library/`: SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD and their INT, DINT and LINT variants, TP, TON, TOF and their TIME variants (22 POUs in 4 files, an index); the intrinsic `__NOW()`; names of the library refused to a program's POUs and types; the library's names resolved among its own; no diagnostic pointing into it. Proven by `standard_library.rs` (14) and `standard_blocks_run_as_the_native_ones.rs` (4: every native block against the library's, 400 sequences of 150 scans each, 540,000 scans in all) |
@@ -2636,3 +2688,73 @@ Evidence of the spike (2026-11-17):
   three ways after every edit, quadratic in the chart's size; it now checks the model after every
   edit and the text every 20th and at the end, and takes 0.8–1.8 s of CPU (before: 3.7–13.2 s),
   measured alternately on one host.
+- **Stale watch** (only current values drawn live, found in review of L3d-2, 2026-11-22). A
+  runtime that says RUN and has stopped scanning answered a watch with its last values and a
+  fresh `age_ms` (the core's age of its read, not of the scan), and every view drew them as
+  current, as it did an answer held while asking got none newer. Added: `RuntimeState::scan_age_us`
+  (`mythos-module`, optional on the wire), filled by the VM module from the instant its last scan
+  completed and absent before the first; `fresh_ms` in the watch answer; MCP `watch_runtime`
+  says how to read both; `currencyOf` and the editor's `useCurrency` (§2.8), drawing values that
+  are not current UNKNOWN with why in the LD, FBD and SFC views and the variables table. Tests:
+  `currency.test.ts` (3: each bound at its exact edge, what is not said), a table of ten answers
+  through each view and the table (`CURRENCY_CASES`: a scan just inside two intervals and the
+  longest scan, the counter held and its age 1 µs past, the counter on again, a read just past
+  1.5 s, one of a second, and an answer without `age_ms`, `fresh_ms`, `scan_age_us` (absent and
+  null) or `max_scan_us`), a controller that answers nothing (watch and runtimes left hanging) in
+  each view and the table, and a stopped program's values kept only while the read is recent;
+  `the_state_says_how_long_ago_a_scan_completed_and_nothing_before_the_first` (the module);
+  `runtime_api.rs` asserts `fresh_ms` and a `scan_age_us` from the real module process. Not
+  covered end to end: `scripts/e2e.sh` cannot stall a scan thread cheaply (the module has no
+  such hook, and adding one to a safety runtime for a test was not done); it runs unchanged
+  against the real server, every live sample of the LD, FBD and SFC scenarios still live: 237
+  checks, all passed. Mutation-checked in a copy of the tree (`git archive` of the commit, its own
+  `pnpm install --frozen-lockfile` and `pnpm lint`, each injection checked as landed, each file
+  restored with `git show`; the copy passed 177 before and after): the check removed from
+  `liveOf` turned the not-current and the hanging test of each of `ladder.test.tsx`,
+  `fbd.test.tsx` and `sfc.test.tsx` red (`draws UNKNOWN, never a state, from values that are not
+  current, and live again once they are`, `… never a value …` for FBD; `stops drawing the last
+  values as live when no newer answer comes`, `… the last state …` for SFC); the check removed
+  from the variables table turned its three red (`says UNKNOWN for values that are not current,
+  and shows them again once they are`, `shows what a stopped program stopped with only while it
+  was read lately`, `stops showing the last values when no newer answer comes`); the scan bound
+  not applied turned `holds a program in RUN scanning while its last scan is within two intervals
+  and its longest scan` and the four table tests red; the read's age not applied turned `holds a
+  read for its freshness and one interval of asking, and not a millisecond longer`, the four table
+  tests, the four hanging tests and the stopped program's red; a scan age or an age not said
+  taken as current each turned `makes values whose age is not said not current, never current`
+  and the four table tests red; the module's `scan_age_us` given before the first scan turned its
+  test red. Not judging again at the instant an answer stops being current survived at first:
+  the runtimes' answers each second redrew the editor; the hanging tests now leave both requests
+  unanswered, and the mutation turns the four of them red. One run of the copy under a load
+  average of 34 (another worktree's build) timed out every test of `fbd.test.tsx` and
+  `fbdmodel.test.ts`'s mixer (untouched here; 0.3 s alone); run again at load 7 it passed 177.
+  **Found in an independent review of the PR (head 8874be6; the Rust side found correct), each
+  in the dangerous direction, fixed:** (A) an answer was aged from when it came, so time in
+  transit did not count (asked at T, `age_ms` 0, held 5 s on its way back: current 1.4 s more);
+  it is aged from when it was asked. (B) the clock was `Date.now()`: the wall clock set back an
+  hour kept held values current and put the re-check off an hour; every age is on
+  `performance.now()`. (C) the interval came from the runtimes list whatever its version (a list
+  of version 1 at 1000 ms judged version 2's answer, 10 ms, 1.5 s without a scan, current); a
+  list of another version than the answer's makes the values not current. (D) polls overlap and
+  an older answer coming back last replaced a newer one, stamped as just come; requests are
+  numbered and only the newest is applied (the runtimes list likewise). And, adjacent: a runtimes
+  read left unanswered left RUN and the last scan figures on the Runtime card unmarked; one still
+  out 3 s after the last answer now marks them LAST KNOWN (§2.6). The review's four repros became
+  named tests, each red on 8874be6's `programs.ts` and `ProgramEditor.tsx` and green after (a copy
+  of da53798 with those two files put back; the other 55 tests of the two files green):
+  `counts the time an answer spent coming back: a read is as old as when it was asked`, `ages
+  what it read on a monotonic clock: a wall clock set back an hour keeps nothing current`, `takes
+  the interval only from the runtimes of the version that answered`, `applies only the newest
+  answer: one asked earlier that comes back later is dropped, and so is one after a drop`, and
+  `marks the runtime last known when the runtimes go unanswered, and shows no value`. The hanging
+  tests now wait for the watch rule's own reason (both requests hang, and the runtimes' rule also
+  ends in UNKNOWN, 3 s after their last answer; the watch's, due at least a second earlier, is
+  the one they prove). Mutation-checked again in a copy of da53798 (182 before and after): the
+  seven mutations above, each still red; the stamp taken on arrival turned `counts the time an
+  answer spent coming back …` red; the wall clock for the monotonic one turned `ages what it read
+  on a monotonic clock …` red; the interval of any version turned `takes the interval only from
+  the runtimes of the version that answered` red; every answer applied turned `applies only the
+  newest answer …` red; an unanswered runtimes read never marked turned `marks the runtime last
+  known when the runtimes go unanswered, and shows no value` red. Under a load average of 10–20
+  (other worktrees' builds) the mixer of `fbdmodel.test.ts` timed out in three of those runs, and
+  only there.

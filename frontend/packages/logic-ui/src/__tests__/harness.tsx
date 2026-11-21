@@ -7,6 +7,7 @@ import { act, type ReactElement } from 'react';
 import { vi } from 'vitest';
 import { activate, MODULE_ID } from '../entry';
 import { useLdPalette } from '../LdInstructions';
+import { usePrograms } from '../programs';
 import type { CheckResult, ProgramEntry, RuntimesAnswer, RuntimeStatus, WatchAnswer, WatchedValue } from '../bridge';
 import { createHost } from '../../../ui-shell/src/modules/host';
 import { render as renderShell, resetStores as resetShell, unmountAll } from '../../../ui-shell/src/__tests__/harness';
@@ -99,15 +100,18 @@ export interface Backend {
   programs: Array<{ entry: ProgramEntry; source: string }>;
   /** What a check of a text answers. Defaults to a program that compiles with no variable. */
   check?: (source: string) => CheckResult;
-  /** `GET /api/v1/runtimes`; `'fails'` answers 500. */
-  runtimes?: RuntimesAnswer | 'fails';
+  /** `GET /api/v1/runtimes`; `'fails'` answers 500; `'hangs'` never answers. */
+  runtimes?: RuntimesAnswer | 'fails' | 'hangs';
   /** The project's saved runtimes. */
   config?: { instances: Array<Record<string, unknown>> } | null;
   /** Whether saving the runtimes applies them (the project is the active one). */
   applied?: boolean;
   warnings?: string[];
-  /** What a watch of a runtime's variables answers; `'fails'`, or left out, answers 502. */
-  watch?: ((variables: string[]) => WatchAnswer) | 'fails';
+  /**
+   * What a watch of a runtime's variables answers; `'fails'`, or left out, answers 502;
+   * `'hangs'` never answers, as a request left hanging.
+   */
+  watch?: ((variables: string[]) => WatchAnswer) | 'fails' | 'hangs';
   /** Answer a call before the fake does, to make one fail. */
   intercept?: (call: Call) => Response | undefined;
 }
@@ -148,21 +152,41 @@ export const runtimesOf = (...runtimes: RuntimeStatus[]): RuntimesAnswer => ({
   problem: null,
 });
 
-/** A watch's answer: `values` by variable name, from a program in `mode`. */
+/** How a watch answer says how old it is: what `watchOf` answers unless told otherwise. */
+export interface Ages {
+  age_ms?: number;
+  fresh_ms?: number;
+  scans?: number;
+  scan_age_us?: number | null;
+  max_scan_us?: number;
+}
+
+/**
+ * A watch's answer: `values` by variable name, from a program in `mode`, read 12 ms ago of a
+ * program whose last scan completed 30 ms before (well inside two of `runtimeOf`'s 100 ms
+ * intervals), as the core gives one. `ages` changes how old it says it is; a key given as
+ * `undefined` is left out of the answer, as a controller that does not say.
+ */
 export const watchOf =
-  (values: Record<string, Partial<WatchedValue>>, mode = 'run') =>
-  (variables: string[]): WatchAnswer => ({
-    id: 'Tank',
-    state: { mode, program: 'Tank', version: 'aaaaaaaaaaaa', scans: 42 },
-    values: variables.map((variable) => ({
-      variable,
-      type: null,
-      value: null,
-      error: `the program has no variable ${variable}`,
-      ...(values[variable] ? { error: null, ...values[variable] } : {}),
-    })),
-    age_ms: 12,
-  });
+  (values: Record<string, Partial<WatchedValue>>, mode = 'run', ages: Ages = {}) =>
+  (variables: string[]): WatchAnswer => {
+    const said = { age_ms: 12, fresh_ms: 1000, scans: 42, scan_age_us: 30_000, max_scan_us: 19, ...ages };
+    const answer = {
+      id: 'Tank',
+      state: { mode, program: 'Tank', version: 'aaaaaaaaaaaa', scans: said.scans, scan_age_us: said.scan_age_us, max_scan_us: said.max_scan_us },
+      values: variables.map((variable) => ({
+        variable,
+        type: null,
+        value: null,
+        error: `the program has no variable ${variable}`,
+        ...(values[variable] ? { error: null, ...values[variable] } : {}),
+      })),
+      age_ms: said.age_ms,
+      fresh_ms: said.fresh_ms,
+    };
+    // Through JSON, as the server sends it: what is undefined is not there.
+    return JSON.parse(JSON.stringify(answer)) as WatchAnswer;
+  };
 
 /** A TC6 document holding the PROGRAM `name` with `elements` as its LD body, between the rails. */
 export const ladderOf = (name: string, elements: string, interface_ = '<interface/>') =>
@@ -233,6 +257,7 @@ export function server(backend: Backend): Call[] {
       if (intercepted) return intercepted;
 
       if (path.endsWith('/api/v1/runtimes')) {
+        if (backend.runtimes === 'hangs') return new Promise<Response>(() => undefined);
         return backend.runtimes === 'fails' || backend.runtimes === undefined
           ? failure(500, 'the runtimes cannot be read')
           : Response.json(backend.runtimes);
@@ -242,6 +267,7 @@ export function server(backend: Backend): Call[] {
         return Response.json({ id: path.split('/').at(-2), state: { mode: 'run', forced: [] } });
       }
       if (/\/api\/v1\/runtimes\/[^/]+\/watch$/.test(path)) {
+        if (backend.watch === 'hangs') return new Promise<Response>(() => undefined);
         return typeof backend.watch === 'function'
           ? Response.json(backend.watch((body as { variables: string[] }).variables))
           : new Response('{"error":"the runtime\'s module does not answer"}', { status: 502, statusText: 'Bad Gateway' });
@@ -378,3 +404,44 @@ export const byTestId = (container: HTMLElement, id: string) => container.queryS
 export const byLabel = (container: HTMLElement, label: string) => container.querySelector(`[aria-label="${label}"]`);
 export const button = (container: HTMLElement, text: string) =>
   [...container.querySelectorAll('button')].find((b) => (b.textContent ?? '').trim() === text) ?? null;
+
+/**
+ * Watch answers each view must not draw as current, beside the ones just inside each bound
+ * (ADR-013 §2.8), in an order a view goes through: `runtimeOf`'s interval is 100 ms and
+ * `watchOf`'s longest scan 19 µs, so a scan is on time within 200.019 ms; an answer is current
+ * within its `fresh_ms` (1000) and one interval of asking (500 ms).
+ */
+export const CURRENCY_CASES: Array<{ label: string; ages: Ages; current: boolean; why?: string }> = [
+  { label: 'a scan just inside two intervals and the longest scan', ages: { scan_age_us: 200_019 }, current: true },
+  {
+    label: 'the scan counter held and its age just past that: a stalled scan thread',
+    ages: { scan_age_us: 200_020 },
+    current: false,
+    why: 'completed no scan for 200.02 ms, past the 200.019 ms',
+  },
+  { label: 'the counter on again, a scan just completed', ages: { scans: 43, scan_age_us: 1_000 }, current: true },
+  { label: 'a read just past its freshness and one interval of asking', ages: { age_ms: 1501 }, current: false, why: 'no newer answer has come' },
+  { label: 'a read of a second ago', ages: { age_ms: 1000 }, current: true },
+  { label: 'an answer that does not say its age', ages: { age_ms: undefined }, current: false, why: 'does not say how old these values are' },
+  { label: 'nor for how long it is current', ages: { fresh_ms: undefined }, current: false, why: 'does not say for how long' },
+  {
+    label: 'nor when the program last completed a scan',
+    ages: { scan_age_us: undefined },
+    current: false,
+    why: 'does not say when the program last completed a scan',
+  },
+  { label: 'a scan age of null, as nothing known', ages: { scan_age_us: null }, current: false, why: 'does not say when the program last completed a scan' },
+  { label: 'nor how long its longest scan took', ages: { max_scan_us: undefined }, current: false, why: 'longest scan' },
+];
+
+/** Change what a watch of `name` answers, and read it now with what was asked last. */
+export async function answerNext(backend: Backend, calls: Call[], name: string, watch: Backend['watch']): Promise<void> {
+  backend.watch = watch;
+  const asked = calls.filter((call) => call.path.endsWith(`/runtimes/${name}/watch`)).at(-1);
+  if (!asked) throw new Error(`${name} was never watched`);
+  const { variables } = asked.body as { variables: string[] };
+  await act(async () => {
+    await usePrograms.getState().readWatch(name, variables);
+  });
+  await settle();
+}

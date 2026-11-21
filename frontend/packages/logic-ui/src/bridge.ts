@@ -286,10 +286,17 @@ export interface WatchedValue {
 /** A program's variables as its last scan left them (`POST /api/v1/runtimes/<id>/watch`). */
 export interface WatchAnswer {
   id: string;
-  /** Which program and version answered, and whether it is in `run`. */
-  state: { mode: string; program: string; version: string; scans: number };
+  /**
+   * Which program and version answered, and whether it is in `run`; `scan_age_us`, how long
+   * before the read the program last completed a scan (absent before its first scan and from a
+   * module that does not say), and `max_scan_us` its longest scan.
+   */
+  state: { mode: string; program: string; version: string; scans: number; max_scan_us?: number; scan_age_us?: number | null };
   values: WatchedValue[];
+  /** How long ago the runtime was read. */
   age_ms: number;
+  /** How old an answer may be and still be given at once (absent from an older server). */
+  fresh_ms?: number;
 }
 
 interface RuntimesConfig {

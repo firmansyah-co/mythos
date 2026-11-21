@@ -121,7 +121,9 @@ pub async fn stop<S: PlatformShm + 'static>(
     command(&state, &id, false, false).await
 }
 
-/// An answer no older than this is given at once; an older one is waited out.
+/// An answer no older than this is given at once; an older one is waited out. Sent with every
+/// answer as `fresh_ms`: a client holding an answer longer than this past its `age_ms` holds
+/// one this route would no longer give (ADR-013 §2.8).
 const WATCH_FRESH: std::time::Duration = std::time::Duration::from_millis(1_000);
 /// How long a watch waits for the runtime's next exchange.
 const WATCH_WAIT: std::time::Duration = std::time::Duration::from_millis(2_500);
@@ -137,8 +139,12 @@ pub struct WatchBody {
 ///
 /// The runtime is asked at its next exchange, so the first answer takes up to one; asking
 /// again within a few seconds keeps it reading, and gives what it last read at once.
-/// `age_ms` says how old the values are. A variable the program does not have, or one that
-/// has no single value (a whole array, a structure), has an `error` instead of a `value`.
+/// `age_ms` says how long ago the runtime was read, `fresh_ms` how old an answer may be and
+/// still be given at once, and `state.scan_age_us` how long before that read the program last
+/// completed a scan (absent before its first scan, and from a module that does not say): a
+/// program that has stopped scanning still answers, with its last values and a growing scan
+/// age. A variable the program does not have, or one that has no single value (a whole array, a
+/// structure), has an `error` instead of a `value`.
 pub async fn watch<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
     Path(id): Path<String>,
@@ -179,6 +185,7 @@ pub async fn watch<S: PlatformShm + 'static>(
                         "state": reply.state,
                         "values": reply.values,
                         "age_ms": age.as_millis() as u64,
+                        "fresh_ms": WATCH_FRESH.as_millis() as u64,
                     }))),
                     Err(why) => Err(failure(StatusCode::BAD_GATEWAY, why)),
                 };

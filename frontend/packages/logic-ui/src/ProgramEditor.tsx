@@ -16,7 +16,7 @@
 // in the editor, the text that is saved, and the program that runs. Nothing that runs changes
 // until "Load" builds the saved text and puts it into the project's runtimes.
 
-import { useEffect, useMemo, useRef, useState, type Ref } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState, type Ref } from 'react';
 import { Check, CirclePlay, CircleStop, Download, Lock, LockOpen, Save, Trash2, Undo2, Upload } from 'lucide-react';
 import type { Panel } from '@mythos/workbench-sdk';
 import { ForcedMark, TagValue } from '@mythos/workbench-sdk/react';
@@ -65,11 +65,15 @@ import { SFC_KIT } from './SfcInstructions';
 import { SfcView } from './SfcView';
 import {
   checkIsCurrent,
+  currencyOf,
   describeStart,
   isDirty,
   loadOf,
+  monotonicNow,
   runState,
   usePrograms,
+  WATCH_POLL_MS,
+  type Currency,
   type ProgramDoc,
   type RunState,
   type WatchView,
@@ -79,8 +83,28 @@ import { SourceEditor, type SourceEditorHandle } from './SourceEditor';
 
 /** How often the controller's runtimes are read while an editor is open. */
 export const RUNTIMES_POLL_MS = 1000;
-/** How often the running program's variables are read while its editor is open. */
-export const WATCH_POLL_MS = 500;
+/**
+ * Whether the program's watched values are current (`currencyOf`), judged again when they stop
+ * being so: an answer held while asking gets none newer ages here, with nothing else to redraw.
+ * `null` while there is no answer of a loaded runtime to judge.
+ */
+function useCurrency(state: RunState, watch: WatchView | undefined): Currency | null {
+  const [turn, judgeAgain] = useReducer((n: number) => n + 1, 0);
+  const answer = watch?.answer ?? null;
+  const sentAtMs = watch?.sentAtMs ?? null;
+  const currency =
+    state.kind === 'loaded' && answer !== null && sentAtMs !== null
+      ? currencyOf(answer, sentAtMs, state.runtime, monotonicNow())
+      : null;
+  const untilMs = currency?.current ? currency.untilMs : null;
+  useEffect(() => {
+    if (untilMs === null) return undefined;
+    // Past the instant, never at it: still current then, it is judged again at the next turn.
+    const timer = setTimeout(judgeAgain, Math.max(0, untilMs - monotonicNow()) + 1);
+    return () => clearTimeout(timer);
+  }, [untilMs, turn]);
+  return currency;
+}
 
 const MODE_TONE: Record<string, string> = { run: 'good', stop: 'neutral', fault: 'bad', unreachable: 'bad' };
 
@@ -484,10 +508,12 @@ function VariableValue({
   variable,
   state,
   watch,
+  currency,
 }: {
   variable: Variable;
   state: RunState;
   watch: WatchView | undefined;
+  currency: Currency | null;
 }) {
   const cell = (dataState: string, text: string, title?: string, flag?: string) => (
     <span
@@ -506,6 +532,10 @@ function VariableValue({
   if (state.stale) return cell('unknown', 'UNKNOWN', 'The runtimes can no longer be read.');
   if (!watch) return cell('none', '—', 'Not read yet.');
   if (watch.answer === null) return cell('unknown', 'UNKNOWN', watch.error ?? undefined);
+  // Values that are not the program's current ones are not shown as its values (ADR-013 §2.8).
+  if (currency === null || !currency.current) {
+    return cell('unknown', 'UNKNOWN', `The values are not current. ${currency?.why ?? 'When they were read is not known.'}`);
+  }
   const found: WatchedValue | undefined = watch.answer.values.find(
     (value) => value.variable.toLowerCase() === variable.path.toLowerCase()
   );
@@ -640,6 +670,7 @@ function saveOpen(open: boolean): void {
 function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: boolean; state: RunState }) {
   const [open, setOpen] = useState(readOpen);
   const watch = usePrograms((s) => s.watches[doc.entry.name]);
+  const currency = useCurrency(state, watch);
   const busy = usePrograms((s) => s.busy !== null);
   const forced = forcedOf(state);
   const setSettings = usePrograms((s) => s.setSettings);
@@ -716,7 +747,7 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
                       <td className="mono">{variable.type}</td>
                       <td>{variable.section}</td>
                       <td>
-                        <VariableValue variable={variable} state={state} watch={watch} />
+                        <VariableValue variable={variable} state={state} watch={watch} currency={currency} />
                         <ForceControl
                           name={entry.name}
                           variable={variable}
@@ -919,7 +950,12 @@ interface DiagramLive {
  * What is drawn live on a Ladder Diagram (its power), a Function Block Diagram (its values) or a
  * Sequential Function Chart (its steps, transitions and actions), and why, or why nothing is.
  */
-function liveOf(doc: ProgramDoc, state: RunState, watch: WatchView | undefined): { live: DiagramLive | null; why: string } {
+function liveOf(
+  doc: ProgramDoc,
+  state: RunState,
+  watch: WatchView | undefined,
+  currency: Currency | null
+): { live: DiagramLive | null; why: string } {
   const check = checkIsCurrent(doc) ? doc.check : null;
   const fbd = doc.entry.language === 'fbd';
   const sfc = doc.entry.language === 'sfc';
@@ -954,6 +990,11 @@ function liveOf(doc: ProgramDoc, state: RunState, watch: WatchView | undefined):
   }
   if (watch.answer.state.mode !== 'run' || watch.answer.state.version !== check.version) {
     return { live: null, why: 'No live state is drawn: the values read are not of this version in RUN.' };
+  }
+  // Values older than the program's cycle or the route's freshness are not drawn as its state.
+  if (currency === null || !currency.current) {
+    const why = currency?.why ?? 'When these values were read is not known.';
+    return { live: { values: null, probes: power, chart }, why: `The values are not current: every state is UNKNOWN. ${why}` };
   }
   const values = new Map(watch.answer.values.map((value) => [value.variable.toLowerCase(), value]));
   return {
@@ -1000,7 +1041,7 @@ function SfcPanel({
     return () => clearTimeout(timer);
   }, [may, current, doc.source, name, checkNow]);
   const watch = usePrograms((s) => s.watches[doc.entry.name]);
-  const { live, why } = liveOf(doc, state, watch);
+  const { live, why } = liveOf(doc, state, watch, useCurrency(state, watch));
   const check = checkIsCurrent(doc) ? doc.check : null;
   const diagnostics = check && !check.ok ? check.diagnostics : [];
   const program = check?.ok ? (check.program ?? null) : null;
@@ -1089,7 +1130,7 @@ function FbdPanel({ doc, fbd, state, may }: { doc: ProgramDoc; fbd: Fbd; state: 
     return () => clearTimeout(timer);
   }, [may, current, doc.source, name, checkNow]);
   const watch = usePrograms((s) => s.watches[doc.entry.name]);
-  const { live, why } = liveOf(doc, state, watch);
+  const { live, why } = liveOf(doc, state, watch, useCurrency(state, watch));
   const check = current ? doc.check : null;
   const diagnostics = check && !check.ok ? check.diagnostics : [];
   const program = check?.ok ? (check.program ?? null) : null;
@@ -1143,7 +1184,7 @@ function LadderPanel({ doc, ladder, state, may }: { doc: ProgramDoc; ladder: Lad
     return () => clearTimeout(timer);
   }, [may, current, doc.source, name, checkNow]);
   const watch = usePrograms((s) => s.watches[doc.entry.name]);
-  const shown = liveOf(doc, state, watch);
+  const shown = liveOf(doc, state, watch, useCurrency(state, watch));
   const live: LadderLive | null = shown.live === null ? null : { values: shown.live.values, power: shown.live.probes };
   const why = shown.why;
   const check = checkIsCurrent(doc) ? doc.check : null;
