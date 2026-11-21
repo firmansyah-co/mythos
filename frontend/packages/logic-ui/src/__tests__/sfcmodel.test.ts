@@ -514,6 +514,23 @@ describe('the structure keeps steps and transitions alternating, every branch cl
     expect(last.ok ? 'taken' : last.error).toBe('A chart keeps its initial step: make another step initial first, or add one.');
   });
 
+  it('refuses what an edit would leave not well formed, where no rule of the edit itself says so', () => {
+    // Start -T- sim{ Step1 | Step2 } -T2- Step3: deleting T2 takes Step3 with it (the element after,
+    // since a convergence stands before it), and leaves the convergence followed by nothing. The
+    // last check of every edit (wellFormed) refuses it.
+    const r = new Run(TEMPLATE('Main'));
+    r.step((m, ids) => insertPair(m, ids, 0, el(1), []));
+    const s1 = r.id;
+    r.step((m, ids) => insertPair(m, ids, 0, el(s1), []));
+    r.step((m, ids) => simBranch(m, ids, 0, el(s1), []));
+    expect(r.chart()).toBe('Start* -FALSE- sim{ Step1 | Step3 } -FALSE- Step2');
+    const items = r.pou().charts[0]?.items ?? [];
+    const t2 = items[3];
+    if (t2?.t !== 'trans' || items[2]?.t !== 'sim') throw new Error('no transition after the convergence');
+    const refused = remove(r.model, 0, el(t2.trans.id));
+    expect(refused.ok ? 'taken' : refused.error).toBe(`That would leave the chart not well formed: the convergence of simultaneous divergence ${items[2].div} is not followed by a transition.`);
+  });
+
   it('renames a step and the jumps to it, moves the initial step, and refuses a name another has', () => {
     const r = new Run(TEMPLATE('Main'));
     r.step((m, ids) => insertPair(m, ids, 0, el(1), []));
