@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <fileHeader companyName="" productName="MythOS logic" productVersion="0.4.0" creationDateTime="2026-11-20T00:00:00Z"/>
+  <contentHeader name="Sequence">
+    <coordinateInfo>
+      <fbd><scaling x="1" y="1"/></fbd>
+      <ld><scaling x="1" y="1"/></ld>
+      <sfc><scaling x="1" y="1"/></sfc>
+    </coordinateInfo>
+  </contentHeader>
+  <types>
+    <dataTypes/>
+    <pous>
+      <pou name="Sequence" pouType="program">
+        <interface><inputVars><variable name="start"><type><BOOL/></type></variable><variable name="stop"><type><BOOL/></type></variable></inputVars><outputVars><variable name="valve"><type><BOOL/></type></variable><variable name="mixer"><type><BOOL/></type></variable><variable name="heater"><type><BOOL/></type></variable><variable name="alarm"><type><BOOL/></type></variable><variable name="batches"><type><INT/></type></variable></outputVars></interface>
+        <body>
+          <SFC>
+            <step localId="1" name="Idle" initialStep="true" width="44" height="16"><position x="0" y="0"/><connectionPointOut formalParameter=""/></step>
+            <transition localId="3"><position x="0" y="30"/><connectionPointIn><connection refLocalId="1"/></connectionPointIn><connectionPointOut/><condition><inline name=""><ST><xhtml:p xmlns:xhtml="http://www.w3.org/1999/xhtml">start</xhtml:p></ST></inline></condition></transition>
+            <step localId="2" name="Fill" width="44" height="16"><position x="0" y="50"/><connectionPointIn><connection refLocalId="3"/></connectionPointIn><connectionPointOut formalParameter=""/><connectionPointOutAction formalParameter=""/></step>
+            <actionBlock localId="4"><position x="60" y="50"/><connectionPointIn><connection refLocalId="2"/></connectionPointIn><action localId="5" qualifier="N"><relPosition x="0" y="0"/><reference name="valve"/></action><action localId="6" qualifier="P1"><relPosition x="0" y="8"/><inline><ST><xhtml:p xmlns:xhtml="http://www.w3.org/1999/xhtml">batches := batches + 1;</xhtml:p></ST></inline></action></actionBlock>
+            <selectionDivergence localId="23"><position x="0" y="80"/><connectionPointIn><connection refLocalId="2"/></connectionPointIn><connectionPointOut formalParameter=""/><connectionPointOut formalParameter=""/></selectionDivergence>
+            <transition localId="8"><position x="0" y="90"/><connectionPointIn><connection refLocalId="23"/></connectionPointIn><connectionPointOut/><condition><inline name=""><ST><xhtml:p xmlns:xhtml="http://www.w3.org/1999/xhtml">Fill.T &gt;= T#50ms</xhtml:p></ST></inline></condition></transition>
+            <simultaneousDivergence localId="16"><position x="0" y="110"/><connectionPointIn><connection refLocalId="8"/></connectionPointIn><connectionPointOut formalParameter=""/><connectionPointOut formalParameter=""/></simultaneousDivergence>
+            <step localId="7" name="Mix" width="44" height="16"><position x="0" y="120"/><connectionPointIn><connection refLocalId="16"/></connectionPointIn><connectionPointOut formalParameter=""/><connectionPointOutAction formalParameter=""/></step>
+            <actionBlock localId="18"><position x="60" y="120"/><connectionPointIn><connection refLocalId="7"/></connectionPointIn><action localId="19" qualifier="L" duration="T#30ms"><relPosition x="0" y="0"/><reference name="mixer"/></action></actionBlock>
+            <step localId="15" name="Heat" width="44" height="16"><position x="150" y="120"/><connectionPointIn><connection refLocalId="16"/></connectionPointIn><connectionPointOut formalParameter=""/><connectionPointOutAction formalParameter=""/></step>
+            <actionBlock localId="20"><position x="210" y="120"/><connectionPointIn><connection refLocalId="15"/></connectionPointIn><action localId="21" qualifier="D" duration="T#20ms"><relPosition x="0" y="0"/><reference name="heater"/></action></actionBlock>
+            <simultaneousConvergence localId="17"><position x="0" y="150"/><connectionPointIn><connection refLocalId="7"/></connectionPointIn><connectionPointIn><connection refLocalId="15"/></connectionPointIn><connectionPointOut formalParameter=""/></simultaneousConvergence>
+            <transition localId="10"><position x="0" y="160"/><connectionPointIn><connection refLocalId="17"/></connectionPointIn><connectionPointOut/><condition><inline name=""><ST><xhtml:p xmlns:xhtml="http://www.w3.org/1999/xhtml">Mix.T &gt;= T#40ms AND Heat.T &gt;= T#40ms</xhtml:p></ST></inline></condition></transition>
+            <transition localId="22"><position x="310" y="90"/><connectionPointIn><connection refLocalId="23"/></connectionPointIn><connectionPointOut/><condition><inline name=""><ST><xhtml:p xmlns:xhtml="http://www.w3.org/1999/xhtml">stop</xhtml:p></ST></inline></condition></transition>
+            <step localId="25" name="Abort" width="44" height="16"><position x="310" y="110"/><connectionPointIn><connection refLocalId="22"/></connectionPointIn><connectionPointOut formalParameter=""/><connectionPointOutAction formalParameter=""/></step>
+            <actionBlock localId="27"><position x="370" y="110"/><connectionPointIn><connection refLocalId="25"/></connectionPointIn><action localId="28" qualifier="S"><relPosition x="0" y="0"/><reference name="alarm"/></action></actionBlock>
+            <transition localId="26"><position x="310" y="140"/><connectionPointIn><connection refLocalId="25"/></connectionPointIn><connectionPointOut/><condition><inline name=""><ST><xhtml:p xmlns:xhtml="http://www.w3.org/1999/xhtml">NOT stop</xhtml:p></ST></inline></condition></transition>
+            <jumpStep localId="29" targetName="Idle"><position x="310" y="160"/><connectionPointIn><connection refLocalId="26"/></connectionPointIn></jumpStep>
+            <selectionConvergence localId="24"><position x="0" y="180"/><connectionPointIn><connection refLocalId="10"/></connectionPointIn><connectionPointOut formalParameter=""/></selectionConvergence>
+            <step localId="9" name="Drain" width="44" height="16"><position x="0" y="190"/><connectionPointIn><connection refLocalId="24"/></connectionPointIn><connectionPointOut formalParameter=""/><connectionPointOutAction formalParameter=""/></step>
+            <actionBlock localId="13"><position x="60" y="190"/><connectionPointIn><connection refLocalId="9"/></connectionPointIn><action localId="14" qualifier="R"><relPosition x="0" y="0"/><reference name="alarm"/></action></actionBlock>
+            <transition localId="12"><position x="0" y="220"/><connectionPointIn><connection refLocalId="9"/></connectionPointIn><connectionPointOut/><condition><inline name=""><ST><xhtml:p xmlns:xhtml="http://www.w3.org/1999/xhtml">Drain.T &gt;= T#20ms</xhtml:p></ST></inline></condition></transition>
+            <jumpStep localId="11" targetName="Idle"><position x="0" y="240"/><connectionPointIn><connection refLocalId="12"/></connectionPointIn></jumpStep>
+          </SFC>
+        </body><addData><data name="urn:mythos:logic:ld-editor" handleUnknown="preserve"><localIds xmlns="urn:mythos:logic:ld-editor" next="30"/></data></addData>
+      </pou>
+    </pous>
+  </types>
+  <instances>
+    <configurations/>
+  </instances>
+</project>

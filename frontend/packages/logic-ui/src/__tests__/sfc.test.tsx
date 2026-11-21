@@ -1,5 +1,6 @@
 // A Sequential Function Chart program in the workbench (ADR-013 L3d-2): its language in the tree,
-// its chart drawn read-only from the TC6 document with IEC 61131-3's forms (§6.7), each
+// its chart drawn from the TC6 document (read-only for a viewer; an engineer's editor, L3d-3, draws
+// it with this view, and these tests run as an engineer unless they say otherwise) with IEC 61131-3's forms (§6.7), each
 // diagnostic at its element, and its live state, drawn only from watched values and only while the
 // runtime runs the version on screen in RUN: each active step marked with its time, a transition's
 // condition only where it was evaluated in the last scan (not evaluated otherwise, never an older
@@ -152,7 +153,8 @@ async function opened(backend: Backend, name = 'Bottling') {
   await settle();
   const container = render(<ProgramEditor name={name} />);
   await settle();
-  await until('the chart is shown', () => byTestId(container, 'sfc-view') ?? byTestId(container, 'sfc-unreadable'));
+  // An engineer gets the chart editor (L3d-3), which draws the chart with the view.
+  await until('the chart is shown', () => byTestId(container, 'sfc-view') ?? byTestId(container, 'sfc-editor') ?? byTestId(container, 'sfc-unreadable'));
   return { calls, container };
 }
 
@@ -219,10 +221,11 @@ describe('a Sequential Function Chart in the tree', () => {
 });
 
 describe('drawing a Sequential Function Chart', () => {
-  it('draws every element of the corpus where the document puts it, read-only for an engineer too', async () => {
+  it('draws every element of the corpus where the document puts it, read-only for a viewer', async () => {
+    // A viewer gets the view (an engineer the editor, L3d-3: sfc-editor.test.tsx): no text area to type in.
+    useSession.setState({ phase: 'signed-in', user: { username: 'vera', display_name: 'Vera', role: 'viewer', via: 'session' } });
     const { container } = await opened(bottling({ check: () => ({ ...compiles()(), version: 'other' }) }));
-    // Signed in as an engineer (the harness's default): still no editor, no text area to type in.
-    expect(byTestId(container, 'sfc-read-only')?.textContent).toContain('the chart editor is not built yet');
+    expect(byTestId(container, 'sfc-read-only')?.textContent).toBe('Read-only: only an engineer changes a program.');
     expect(byTestId(container, 'ld-editor')).toBeNull();
     expect(byTestId(container, 'fbd-editor')).toBeNull();
     // The document's text is folded under the chart, and not drawn until it is opened.
@@ -308,6 +311,8 @@ describe('drawing a Sequential Function Chart', () => {
   });
 
   it('draws a chart of a function block without live state, and says a body of another language is not drawn here', async () => {
+    // The view draws every POU of the document; the editor one at a time, by its tab.
+    useSession.setState({ phase: 'signed-in', user: { username: 'vera', display_name: 'Vera', role: 'viewer', via: 'session' } });
     const { container } = await opened(
       bottling({
         programs: [{ entry: entryOf('Doors', { language: 'sfc' }), source: DOORS }],

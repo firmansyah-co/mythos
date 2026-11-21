@@ -1,8 +1,8 @@
 // The editor of one control program: its Structured Text, or its Ladder Diagram with its live
 // state (LadderEditor for an engineer, LadderView read-only for everyone else), or its Function
 // Block Diagram with its live state (FbdEditor for an engineer, FbdView read-only for everyone
-// else), or its Sequential Function Chart with its live state (SfcView, read-only for everyone
-// until the chart editor, L3d-3), what the compiler says of it, its task settings, its variables with their bindings to tags, and what
+// else), or its Sequential Function Chart with its live state (SfcEditor for an engineer, SfcView
+// read-only for everyone else), what the compiler says of it, its task settings, its variables with their bindings to tags, and what
 // the controller's runtime is doing with it.
 //
 // The work area holds the program and its interface (the variables and their bindings) and
@@ -60,6 +60,8 @@ import { LadderEditor } from './LadderEditor';
 import { LadderView, type LadderLive } from './LadderView';
 import { InstructionsCard } from './LdInstructions';
 import { readSfc, type Sfc } from './sfc';
+import { SfcEditor } from './SfcEditor';
+import { SFC_KIT } from './SfcInstructions';
 import { SfcView } from './SfcView';
 import {
   checkIsCurrent,
@@ -965,24 +967,38 @@ function liveOf(doc: ProgramDoc, state: RunState, watch: WatchView | undefined):
 }
 
 /**
- * The Sequential Function Chart of the program with its live state, read-only for everyone: the
- * chart editor is ADR-013 L3d-3. A chart is written over the API (`save_logic_source`). Its TC6
- * document stays reachable as text, read-only, each diagnostic underlined, for what the chart
- * does not show (a diagnostic with no element, the document as written).
+ * The Sequential Function Chart of the program with its live state: the editor for an engineer
+ * (L3d-3), read-only for everyone else. Its TC6 document is saved through the source route, as an
+ * agent saves it over the API (`save_logic_source`), and the editor follows a source saved
+ * elsewhere. The document stays reachable as text, read-only, each diagnostic underlined, for what
+ * the chart does not show (a diagnostic with no element, the document as written).
  */
 function SfcPanel({
   doc,
   sfc,
   state,
+  may,
   editor,
   text,
 }: {
   doc: ProgramDoc;
   sfc: Sfc;
   state: RunState;
+  may: boolean;
   editor: Ref<SourceEditorHandle>;
   text: Ref<HTMLDetailsElement>;
 }) {
+  const name = doc.entry.name;
+  const setSource = usePrograms((s) => s.setSource);
+  const save = usePrograms((s) => s.save);
+  const checkNow = usePrograms((s) => s.check);
+  const current = checkIsCurrent(doc);
+  // What the compiler says of an edit follows it by itself, after the editor's own check.
+  useEffect(() => {
+    if (!may || current || doc.source === null) return undefined;
+    const timer = setTimeout(() => void checkNow(name, true), LD_CHECK_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [may, current, doc.source, name, checkNow]);
   const watch = usePrograms((s) => s.watches[doc.entry.name]);
   const { live, why } = liveOf(doc, state, watch);
   const check = checkIsCurrent(doc) ? doc.check : null;
@@ -1001,10 +1017,22 @@ function SfcPanel({
       <p className="muted" data-testid="sfc-live" data-live={live === null ? 'none' : live.values === null ? 'unknown' : 'live'}>
         {why}
       </p>
-      <p className="muted" data-testid="sfc-read-only">
-        Read-only for everyone: the chart editor is not built yet. A chart is written over the API (save_logic_source).
-      </p>
-      {sfc.ok ? (
+      {!may && (
+        <p className="muted" data-testid="sfc-read-only">
+          Read-only: only an engineer changes a program.
+        </p>
+      )}
+      {may && sfc.ok && doc.source !== null ? (
+        <SfcEditor
+          text={doc.source}
+          onText={(source) => setSource(name, source)}
+          onSave={() => void save(name)}
+          live={chartLive}
+          program={program}
+          diagnostics={diagnostics}
+          fallback={<SfcView pous={sfc.pous} program={program} live={chartLive} diagnostics={diagnostics} />}
+        />
+      ) : sfc.ok ? (
         <SfcView pous={sfc.pous} program={program} live={chartLive} diagnostics={diagnostics} />
       ) : (
         <div className="notice notice--bad" role="alert" data-testid="sfc-unreadable">
@@ -1368,7 +1396,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
 
   // What goes into the workbench's panes, while the program is there to show.
   const ready = doc !== undefined && doc.source !== null;
-  const instructions = ready && ((isLadder && ladder?.ok === true) || (isFbd && fbd?.ok === true)) && mayEngineer();
+  const instructions = ready && ((isLadder && ladder?.ok === true) || (isFbd && fbd?.ok === true) || (isSfc && sfc?.ok === true)) && mayEngineer();
   const goToRef = useRef<(diagnostic: Diagnostic) => void>(() => undefined);
   const onRemovedRef = useRef(onRemoved);
   onRemovedRef.current = onRemoved;
@@ -1377,7 +1405,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
     const workbench = host();
     // Set in TIA's order: the instructions first, the online tools after.
     if (instructions) {
-      const card = isFbd ? <InstructionsCard kit={FBD_KIT} /> : <InstructionsCard />;
+      const card = isFbd ? <InstructionsCard kit={FBD_KIT} /> : isSfc ? <InstructionsCard kit={SFC_KIT} /> : <InstructionsCard />;
       workbench.setTaskCard(PANES.instructions, { title: 'Instructions', mount: (pane) => draw(pane, card) });
     }
     workbench.setTaskCard(PANES.runtime, { title: 'Runtime', mount: (card) => draw(card, <RuntimeCard name={name} />) });
@@ -1385,7 +1413,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
       workbench.setTaskCard(PANES.instructions, null);
       workbench.setTaskCard(PANES.runtime, null);
     };
-  }, [ready, instructions, isFbd, name]);
+  }, [ready, instructions, isFbd, isSfc, name]);
   const properties = useMemo<Panel>(
     () => ({
       title: 'Program',
@@ -1589,7 +1617,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
           ) : isFbd && fbd !== null ? (
             <FbdPanel doc={doc} fbd={fbd} state={state} may={may} />
           ) : isSfc && sfc !== null ? (
-            <SfcPanel doc={doc} sfc={sfc} state={state} editor={editor} text={sfcText} />
+            <SfcPanel doc={doc} sfc={sfc} state={state} may={may} editor={editor} text={sfcText} />
           ) : (
             <SourceEditor
               ref={editor}
