@@ -4,8 +4,8 @@
 // it (and its priority where the document gives one), a selection divergence or convergence a
 // single line, a simultaneous one a double line, a jump an arrow with the step it goes to, each
 // action block beside its step with a row per association (qualifier and duration, the action
-// or variable it names or its body), comments; every link between them. The editor is L3d-3:
-// this view is everyone's until then.
+// or variable it names or its body), comments; every link between them. Since L3d-3 it is what a
+// viewer and an operator get, and the chart editor (SfcEditor.tsx) draws the chart with it.
 //
 // **Where**: at the document's positions, two and a half times their units, since the steps of a
 // chart written by hand are 40 apart (the corpus, the module's template) and a step's name and
@@ -600,7 +600,7 @@ export function SfcPouView({ pou, live, diagnostics }: { pou: SfcPou; live: SfcL
 }
 
 /** The POU's own actions and transitions, by name with their text, and what the compiler says of each. */
-function NamedBodies({ pou, diagnostics }: { pou: SfcPou; diagnostics: Diagnostic[] }) {
+export function NamedBodies({ pou, diagnostics }: { pou: SfcPou; diagnostics: Diagnostic[] }) {
   if (pou.actions.length === 0 && pou.transitions.length === 0) return null;
   const about = (kind: 'action' | 'transition', name: string) =>
     diagnostics.filter((d) => d.element?.pou === pou.name && (d.element?.[kind] ?? '').toLowerCase() === name.toLowerCase());

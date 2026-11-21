@@ -504,9 +504,9 @@ Its workbench UI (C4), `frontend/packages/logic-ui`, served beside the module (A
   beside the value in the HMI's I/O field (for the project the controller runs), the tag table,
   the inspector and the editor's bound tags; the online tools card counts the forced tags.
 - Not built: watching an element of an array from the table; the FBD editor (L3c-2); the SFC
-  view (L3d-2) and editor (L3d-3). An SFC program's editor says the chart is not drawn yet and
-  shows its TC6 document as text, read-only, each diagnostic underlined at its element's tag,
-  nothing live; it is checked, loaded and run as any program (`sfc.test.tsx`).
+  view (L3d-2) and editor (L3d-3) (each built since, §2.8). An SFC program's editor said the chart was not drawn yet and
+  showed its TC6 document as text, read-only, each diagnostic underlined at its element's tag,
+  nothing live (L3d-1); it is checked, loaded and run as any program (`sfc.test.tsx`).
   An FBD program is drawn read-only, and follows a source saved through `save_logic_source`
   elsewhere unless it has changes of its own, as a Ladder Diagram does. A Ladder
   Diagram is edited in the workbench (§2.8, L3b-2b) and can still be saved through
@@ -847,12 +847,13 @@ the owner's to lead; the editor uses the workbench's classes and tokens (LD's `.
 
 **The Sequential Function Chart view** (L3d-2; `SfcView.tsx`, `sfc.ts`). An SFC program opens in
 the same editor as ST, LD and FBD, with the chart in place of the text; the variables table,
-bindings, Load, Load cold, Run, Stop, Unload, forcing and watching are unchanged. It is read-only
-**for everyone**, an engineer included, and says so: the chart editor is L3d-3, and until then a
-chart is written over the API (`save_logic_source`). The tree adds a program in SFC as in the
+bindings, Load, Load cold, Run, Stop, Unload, forcing and watching are unchanged. It is read-only:
+until L3d-3 for everyone, an engineer included (a chart was written over the API,
+`save_logic_source`); since L3d-3 it is what a viewer and an operator get, and an engineer gets the
+chart editor (below), which draws the chart with it. The tree adds a program in SFC as in the
 other languages (until L3d-2 only the API did): it starts as the module's template, one initial
 step, drawn at once. An open chart follows a source saved elsewhere and checks it at once,
-quietly (above, the live state of LD), which for a chart, written only elsewhere until L3d-3, is
+quietly (above, the live state of LD), which for a chart, written only elsewhere until L3d-3, was
 every save. The TC6 document stays reachable under the chart, folded, as read-only text with each
 diagnostic underlined, drawn only while it is open (a browser lays out what a closed `<details>`
 holds); it opens when the document cannot be read as a chart, at once or after a follow, and a
@@ -928,6 +929,144 @@ table):
   whatever its condition's variable holds; a state the check names no probe for is UNKNOWN; when
   the runtimes or the values cannot be read every state is UNKNOWN; a forced value (a step's
   flag, a condition, an action's variable) is marked FORCED where it is drawn.
+
+**The Sequential Function Chart editor** (L3d-3; `SfcEditor.tsx` beside the view, and
+`sfcmodel.ts`, `sfcedit.ts`, `SfcInstructions.ts`; the splicing and the record of localIds are LD's,
+§2.15). The owner's decisions hold: TIA Portal's workflow and conventions as closely as they can be
+followed, for a chart S7-GRAPH's sequence editor (a step and a transition put as a pair, alternative
+and simultaneous branches, jumps, the end of a sequence; a transition's condition and a step's
+actions edited where they are selected; the initial step marked; online monitoring the view's);
+artwork of our own (no artwork, icon or branding of Siemens), IEC 61131-3's symbols (§6.7), and no
+code of TIA Portal, CODESYS, Beremiz, OpenPLC, 4diac or STruC++ read or copied. The visual design is
+the owner's to lead: the editor uses the workbench's classes and tokens (LD's `.ld-*`, and a few
+`.sfc-*` for layout only).
+
+- **Who, and what is saved**, as LD's and FBD's: an engineer gets the editor, a viewer and an
+  operator the view; unsaved until Save (or Ctrl+S); Load saves first. Every edit changes the model,
+  which is written back into the TC6 text at once; the chart is drawn by the view's `SfcPouView`
+  from that text, with the view's live state (on the PROGRAM only), the view's diagnostics and its
+  list of what it does not draw, and the POU's own actions and transitions under it. Over the
+  drawing the editor draws the selection and its own marks of what is wrong. A document with
+  several POUs in SFC has a tab for each.
+- **A chart is a sequence** (`sfcmodel.ts`): steps, transitions, selections (alternative branches,
+  each starting with a transition), simultaneous constructs (branches each starting with a step)
+  and jumps, the alternation of §6.7.5 kept by construction. *Decided, and why:* every structure
+  operation is checked by `wellFormed` on what it leaves (steps and transitions alternate; a chart
+  starts at a step and does not end at a transition, which must lead to a step; a selection follows
+  a step and, where a branch meets its convergence, is followed by a step or a jump; a simultaneous
+  construct follows a transition and is followed by one, every branch ending at a step that meets
+  its convergence; a jump ends its sequence) and refused with the reason otherwise, so the editor
+  never writes a chart the compiler would refuse for its structure, which is what Table 61 allows;
+  whether a chart is safe and every step reachable (§6.7.5, Figure 26) stays the compiler's to say,
+  drawn at the element it names, since only its exploration of the situations can.
+- **The structure operations**, S7-GRAPH's: **a step and a transition** after the selection (after
+  a step a transition and then a step; after a transition a step and then a transition); **an
+  alternative branch** at a transition, beside it from the step before it to the next step (at the
+  first transition of a branch, one more branch beside it; at a step, at the transition after it;
+  at the last step of a sequence, two transitions meeting at a new step); **a simultaneous branch**
+  at a step right after a transition, beside it up to the next transition; **a jump** after the last
+  step of a sequence (with its transition) or at the last transition of an alternative branch, to
+  the chart's initial step, never out of a simultaneous branch (its other branches would stay
+  active, unsafe); **the end of a sequence** in place of a jump: IEC 61131-3 has no element for
+  S7-GRAPH's sequence end, so it is a step no transition follows (it stays active once reached);
+  **a new sequence** with its initial step beside the others. Delete takes a step or a transition
+  with the element before it (the inverse of putting a pair after it), with the one after it at the
+  head of a sequence or where the one before is the initial step; a jump with its transition; a
+  branch whose only element it was goes with it, and a construct left with one branch becomes that
+  branch; a divergence keeps its first branch that meets its convergence. A branch can be moved left
+  or right: in a selection that is the order its transitions are tested. A new transition's
+  condition is `FALSE`, so nothing moves on through a transition nobody has written (a safety HMI);
+  a new step is `Step<n>`, as S7-GRAPH numbers them, never a name a step, action, transition or
+  variable of the POU has, a jump goes to, or any text of the POU reads (found in review: a name
+  freed by a deletion or a rename was given to the next new step, and a dangling jump or `Old.T`
+  silently went to it). An edit that would leave a chart without its initial step is refused; a
+  pair deleted with the initial step makes the chart's head initial.
+- **Fields**, under the chart for the selection: a step's name (a name another step, an action, a
+  transition or a variable of the POU has is refused) and whether it is the initial step (one per
+  chart, §6.7.2: making one initial moves the mark; a step in a branch cannot be made initial).
+  **A rename follows every reference** (found in review: a rename left `Old.T` in conditions, which
+  the compiler accepted once a new step took the old name): a jump to the step, and every `S.X` and
+  `S.T` of a condition or an action's statements the editor writes, rewritten token by token (an
+  ST tokenizer that steps over comments, strings and typed literals, and does not take `x.Old` for
+  the step); while a text the editor does not write reads the step (an action or a transition of
+  the POU, a body in LD or FBD, a network drawn in the chart), the rename is refused, saying where; its **action
+  table**, as S7-GRAPH's, a row per association: the qualifier (N, R, S, L, D, P, P1, DS; SD, SL and
+  P0 are not offered, refused until the owner decides, §2.17; a found one is shown as refused), the
+  duration where the qualifier takes one (T#1s proposed), and what it runs: an action of the POU or
+  a BOOL variable with completion, declared where it is named (Ctrl+Enter, a BOOL output proposed),
+  or ST statements written in the block. A transition's condition: an ST expression written in it
+  (an expression has no side effect, §6.7.3; a function block call or an assignment cannot be
+  written in one), or a transition of the POU by its name; negated or not. A jump's target step. A
+  divergence: one more branch, or all but the first that meets deleted. Each with what is wrong,
+  the editor's own word at once (a step's name, a condition with nothing written or naming a
+  transition the POU does not have, a jump to a step that does not exist, an action naming nothing,
+  neither an action nor a variable, or a variable that is not a BOOL, a qualifier that takes a
+  duration without one or one that takes none with one, a step's `.X` or `.T` read by a name no step
+  has) and then the compiler's (the quiet check
+  700 ms after the last edit, as LD's), each drawn at its element, an action's at its row.
+- **Bodies in LD and FBD** (§2.17, L3d-1b) are kept as found and named with their language: an
+  action's or a condition's inline body is written back byte for byte, never by the editor; it can
+  be replaced by an ST condition, which drops it. A network drawn in the chart that gives one
+  transition its condition is written as found, moved by as much as its transition moved, and
+  deleted with its transition.
+- **Kept as found.** A chart another tool wrote that is not such a sequence (a link back that is
+  not a jump, a step followed by two elements without a divergence, a branch that meets another
+  convergence or none, a step with two action blocks, an element the editor does not know such as a
+  `macroStep`, two elements with one `localId`, a selection whose priorities the compiler refuses:
+  two alike, some given and some not, one not a whole number; found in review, where such a chart
+  was written without them in an order of the editor's choosing, a refused document becoming an
+  accepted one) is written back byte for byte, its elements not
+  touched, says why, and nothing is put into it. A chart's comments are written as found, where
+  they are.
+- **Layout**, on a grid of 10 in the document's units (the view draws them two and a half times
+  as large): each sequence in a column, its axis where its widest step fits; a step's action block
+  right of it; branches side by side, a branch as wide as its widest step, action block or
+  condition (with room for the state the view writes live); a step 16 high and as wide as the view
+  draws its name (both written, so other tools read a step's size); then its band (the step or its
+  action block, the taller) and 10 below it the transition, 20 below which the next step; charts
+  side by side. Positions are written for every element, so other tools and the view read them.
+  *Not written*: a selection's `priority`, dropped once the branches are ordered by it (the order
+  the compiler tests them), since the editor draws the branches in that order, left to right,
+  which is Table 61 feature 2a and S7-GRAPH's convention, and a branch moved left or right changes
+  it. A chart the editor changes is laid out anew whole, as an FBD network is: a chart is one
+  connected network.
+- **localIds**, as LD's and FBD's (§2.15), and §2.17's constraint for this editor in particular:
+  every element, an action of a block among them, keeps its id while it exists; a new one takes the
+  first id past every `localId` anywhere in the document (an inline body's own ids included) and the
+  record in the POU's `addData` (`urn:mythos:logic:ld-editor`), counted up and never back, so no id
+  an element has had is given to another, after an undo, a deletion or in a new session. An inline
+  body's values are carried by `__SFC_<localId>__…`, so this is what keeps one body's values, an
+  edge's memory among them, out of another at an online change.
+- **Online change.** A step's state is carried by its name (§2.17). When the chart's steps or
+  transitions (its shape: steps by name and initial, each transition's steps before and after)
+  differ from the chart as the editor opened it, the editor says that at the next Load the chart
+  starts again from its initial step, every action idle; a change of an action, a condition or a
+  position alone carries on where the chart was.
+- **Undo and redo** cover every edit, declarations among them. A localId given out is not taken
+  back by undo.
+- **Keys**, while the editor has the focus: Shift+F2 a step and a transition, Shift+F3 an
+  alternative branch, Shift+F8 a simultaneous branch, Shift+F9 a jump, Shift+F7 an N action of the
+  selected step; ↑ and ↓ the previous and next element of the chart in the order it is drawn, ← and
+  → the first element of the branch beside; Ctrl+R a new sequence; Enter the first field of the
+  selection (a step's name, a condition, an action's name, a jump's target); Delete what is
+  selected (an element, a row of the action table); Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo; Ctrl+S
+  save; in a name field LD's keys; in a condition or statements, Enter takes the text and
+  Shift+Enter is a new line. *Why these*: as for FBD, S7-GRAPH's own keys could not be confirmed
+  from a public source, so none is claimed to be TIA's; they are LD's positions given their SFC
+  meaning (Shift+F2 the series, a step and its transition; Shift+F3 beside it the parallel, an
+  alternative; Shift+F8 LD's branch, a simultaneous branch; Shift+F9 LD's close, the jump that closes
+  a sequence; Shift+F7 the coil, an action). The Instructions task card holds the Sequence group (a
+  step and a transition, an alternative branch, a simultaneous branch, a jump, the end of a
+  sequence), the Actions group (one per qualifier offered) and the Chart group (the initial step, a
+  new sequence); the favourites start as a step and a transition, both branches, a jump and an N
+  action, kept per viewer apart from LD's and FBD's (`mythos.logic.sfc.favourites`).
+- Not built: drawing or editing the LD and FBD bodies of actions and conditions with the LD and
+  FBD editors (kept and named with their language); adding, editing or deleting the POU's own
+  actions and transitions (`actions`, `transitions`: shown with their text, named from the action
+  table and the condition, written as found); editing a field in the drawing itself (the fields are
+  under the chart); moving an element by dragging it, copy and paste; a network drawn in the chart
+  put by the editor; a chart's comments edited; editing a chart kept as found; adding a POU to the
+  document; SD, SL and P0 (refused until the owner decides, §2.17).
 
 **What the front-end gives an editor** (L2a; the editor of §2.6 shows it). The spike's parser
 stopped at the first error and recorded only where a construct starts. The ST front-end now:
@@ -1773,7 +1912,10 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
   step). The VM is unchanged, so its firmware is too. The bottling line and the doors run on
   both emulated instruction sets with every scan equal to the host's (all 30 runs of the corpus
   equal, rustc 1.100.0, QEMU 8.2.2, in the CI runner's image).
-- **What the view (L3d-2) and the editor (L3d-3) need.** The view draws each step, transition,
+- **What the view (L3d-2) and the editor (L3d-3) need** (both built, §2.8: the editor keeps every
+  `localId`, gives none an element has had to another, keeps a step's name, says when a change of
+  the steps or transitions restarts the chart, and keeps each LD or FBD body as found, with its
+  `localId`s and an inline condition's `name`). The view draws each step, transition,
   divergence, convergence, jump and action block where the document puts it, with the probes of
   `chart`: a step active or not and its time, a transition's condition only where `ran`, an
   action's Q at each of its associations; UNKNOWN where a value cannot be read, as the LD and FBD
@@ -1874,7 +2016,11 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   side effect. **L3d-2** (done, §2.8): the SFC view, live, read-only for everyone (IEC 61131-3's
   symbols at the document's positions; each active step with its time, a condition only where it
   was evaluated, each action's state, UNKNOWN where a value cannot be read; an action or a
-  condition in LD or FBD named with its language, not drawn yet). **L3d-3**: its editor.
+  condition in LD or FBD named with its language, not drawn yet). **L3d-3** (done, §2.8): the SFC
+  editor, as S7-GRAPH's sequence editor works: steps and transitions put as pairs, alternative and
+  simultaneous branches and jumps, every structure operation leaving a well-formed chart; the
+  action table and conditions in ST edited in place; every localId kept and none given to another;
+  a chart it cannot draw and every LD or FBD body kept as found.
 - L4. **The standard library in ST** (done, §2.14): the standard function blocks written in
   Structured Text, with intrinsics for what ST cannot say (the scan clock, bytecode format 4);
   their state retained like any variable's. Next: OSCAT, once its license is checked.
@@ -1912,13 +2058,13 @@ Each step leaves `dev` working.
 | 2.4 The `runtime` kind (C2) | Built: `ModuleKind::Runtime`, `Call::Exchange`, `Call::Mode`, `RuntimeProgram` (`mythos-module`); `plugins/runtime-vm` (`mythos-module-runtime-vm`: the VM, a scan thread, faults, cold start); `crate::runtimes` (`RuntimeDriver`, ownership, safe values, `BusTags`). Proven by `runtime_vm.rs` (ST compiled, run in the real module process, reading one Modbus simulator and commanding another: follows the plant; an owned output refuses an operator; a setpoint is taken; stop, fault, a killed process and removal each leave the safe values; a tag that is not GOOD feeds no value) and `runtime_api.rs`. A program that publishes no tag, or is bound to nothing, runs all the same (found by the Runtimes page's end-to-end run: it was saved, reported as applied, and never started). Reading variables is built (`Call::Watch`, C5): `runtime_vm.rs` reads locals, array elements, a timer's members and a REAL from the running module process, in RUN and in STOP, and a module without `watch` says so and runs on. Forcing is built (`Call::Force`, `Call::Unforce`, C5c): `runtime_api.rs` forces an output, a setpoint and an input of the running module process over the API and watches the device follow, refuses an operator and a viewer, refuses what cannot be forced, and sees every force released by a stop and by loading the program again. The watchdog is built (C7a): a program in RUN that completes no scan within ten intervals (never less than two seconds), or whose scan thread has ended, is put in FAULT at the next exchange with the reason (`watchdog: …`), every force released, so the core writes the safe values; a scan itself is bounded by the instruction budget. Proven by the module's own tests: a healthy program runs past the limit untouched, and one whose scan thread ends is faulted and asks for no write. RETAIN is built in the runtime and the core (C7b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter and proves that it goes on after a stop and run, after the program is loaded again, after its module process is killed and started again (from the values kept last, not those it was loaded with), and after a load in STOP, while the other counter starts from zero each time, and that a cold start resets it; the module's tests prove that a value is taken only into a variable of the same name, type and size. Since L4 a standard block's state is variables of its own: `runtime_api.rs` runs a RETAIN TON beside a plain one through the real module process, and after a stop and run the RETAIN one carries on from its ET (the time stopped not timed) while the plain one times again from 0, and a cold start resets both. Online change is built (C6b, §2.5): `runtime_api.rs` runs a program with a RETAIN counter, a plain counter, a TON and an output bound to a Modbus simulator, loads a build with one variable added and one removed while it runs, and proves that both counters and the timer go on without resetting, the added variable starts from its initial value, the removed one is reported as dropped, and the device's register, sampled about every millisecond through the load, never holds the safe value nor drops below what the old build commanded before the load; that a cold load resets both counters and what is kept; that a program of another name starts as before; and that an unknown `start` is refused. The module's tests prove the carry rule (same path, type and size; an array of structures or instances not carried; a value given twice taken once; what is not carried listed with why), and that a program started into RUN holds the carried values and clock before its first scan while one loaded in STOP takes none |
 | 2.5 Managing runtimes | Built in the API: `GET /api/v1/runtimes`, `POST /api/v1/runtimes/:runtime/run` (a warm restart), `/cold-start`, `/stop`, `/watch`, `/force` and `/release`, `GET`/`PUT /api/v1/projects/:id/runtimes` (`?start=cold`, and `changes.runtimes` saying how each runtime started: C6b), each an MCP tool; engineer for all but reading. Built in the workbench (C4a): Settings → Runtimes (`RuntimesSettings.tsx`) reads the list about once a second and shows each runtime's module, program and version, its mode as reported with the reason given, its scan figures and its outputs (safe value, what the device last confirmed, whether all are confirmed safe); run and stop for an engineer; what is forced in each, a FORCED badge with each variable and its value (`forced UNKNOWN` when the controller does not say), and "Release all" for an engineer, asked first, with the controller's answer shown as it gave it; the runtime modules with the profile each declares. What the server did not send is `UNKNOWN` or `NOT MEASURED` (the scan figures of a runtime whose module does not answer among them: the server sends zeros there), and a read that fails or is not answered marks the rows as the last known state with their age. Proven by `runtimes.test.tsx` and, against a real server and runtime module, by `scripts/e2e.sh`. Not built: restart as a command of its own; loading a program from the page; the same for paired nodes in Fleet; data types shared in the core |
 | 2.6 The logic module | Built: `plugins/logic` (programs in ST, LD, FBD or SFC, bindings, check, build; eight MCP tools, each saying which languages it takes; module version 0.5.0, its UI's the same; an SFC program checked with `chart`, written, built, loaded and driving a Modbus simulator through the real module processes, and over MCP, since L3d-1; its actions' and conditions' LD and FBD values as `bodies` in `check` since L3d-1b, `a_chart_with_bodies_in_ld_and_fbd_gives_their_values_apart_from_its_steps`), proven by `logic_module.rs` through the real logic, runtime and Modbus module processes, an LD program among them (created as a TC6 document, a diagnostic at its element, built, loaded, and running a Modbus simulator; an ST program saved without a language beside it, unchanged); its workbench UI `frontend/packages/logic-ui` (tree section with each program's language, program editor, the LD editor for an engineer and the read-only LD view for everyone else, both with the live state, load, load cold, how a load started, run, stop, unload), proven by its vitest suite against the workbench's real host and by `scripts/e2e.sh`, where a program typed into the editor is checked, bound, loaded and its result read live from the tag bus, and an LD program added from the tree, given rungs over the API, checked with a mistake drawn at its element, bound, loaded and run shows its contacts change state with the device's counter, and an LD program built in the editor from the keyboard and the palette is checked, saved, loaded and run, its motor coil following a start and a stop forced as a pushbutton would set them (L3b-2b). Not built: unit tests in ST, a library of POUs shared by a project's programs |
-| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); the read-only LD view with each diagnostic at its element and its live state from watched values (L3b-1, `ladder.test.tsx`), each element, link and junction with the power the compiler kept and a rung not run as not executed (L3b-2a); the LD editor, as TIA's works (L3b-2b, `ladder-editor.test.tsx`, `ldmodel.test.ts`); the read-only FBD view with each diagnostic at its element and every line's value live, a function not run as not computed and a network not run as not executed (L3c-1, `fbd.test.tsx`); the FBD editor, as TIA's FBD works, standard FBD (L3c-2, `fbd-editor.test.tsx`, `fbdmodel.test.ts`, `fbdedit.test.ts`, `fbd_from_the_editor.rs`); the read-only SFC view, for everyone, with IEC 61131-3's symbols, each diagnostic at its element and the chart's live state: each active step with its time, a transition's condition only where it was evaluated in the last scan, each action's Q, UNKNOWN where a value cannot be read (L3d-2, `sfc.test.tsx`, and a chart run in `scripts/e2e.sh`); its actions and conditions in LD or FBD named with their language, not drawn yet (their values are in `bodies`, §2.17); an editor for SFC (L3d-3) is not built. 2.10: not built |
+| 2.8, 2.10 | 2.8: the ST editor (2.6), with what the front-end gives it (2.1); the read-only LD view with each diagnostic at its element and its live state from watched values (L3b-1, `ladder.test.tsx`), each element, link and junction with the power the compiler kept and a rung not run as not executed (L3b-2a); the LD editor, as TIA's works (L3b-2b, `ladder-editor.test.tsx`, `ldmodel.test.ts`); the read-only FBD view with each diagnostic at its element and every line's value live, a function not run as not computed and a network not run as not executed (L3c-1, `fbd.test.tsx`); the FBD editor, as TIA's FBD works, standard FBD (L3c-2, `fbd-editor.test.tsx`, `fbdmodel.test.ts`, `fbdedit.test.ts`, `fbd_from_the_editor.rs`); the read-only SFC view (for everyone until L3d-3, a viewer's and an operator's since), with IEC 61131-3's symbols, each diagnostic at its element and the chart's live state: each active step with its time, a transition's condition only where it was evaluated in the last scan, each action's Q, UNKNOWN where a value cannot be read (L3d-2, `sfc.test.tsx`, and a chart run in `scripts/e2e.sh`); its actions and conditions in LD or FBD named with their language, not drawn yet (their values are in `bodies`, §2.17); the SFC editor, as S7-GRAPH's sequence editor works (L3d-3, `sfc-editor.test.tsx`, `sfcmodel.test.ts`, `sfc_from_the_editor.rs`, and a chart built in the editor, loaded and run in `scripts/e2e.sh`). 2.10: not built |
 | 2.9 Emulators | Built: eight programs (`strings.st` since L2c-1, `library.st` since L2c-2), 60 scans each, on both emulated instruction sets, every scan equal to the host's (CI job `logic-vm-bare-metal`). A bug put into REAL addition for Arm only made the two programs that add REALs fail there and nowhere else. Since L4 the timers and counters in them are the library's, in ST: all 16 runs equal Since L3a a Ladder Diagram joins them (`tests/ladder/oscillator.xml`: two TON, a CTU, rising and falling contacts, a set coil, a jump): all 18 runs equal (rustc 1.100.0, QEMU 8.2.2, run in the CI runner's image). Since L3c-1 the ladder documents of the editor (L3b-2b) and a Function Block Diagram (`tests/fbd/blinker.xml`: two TON, a CTU reset by its own output, a block's output drawn back, a connector, a jump, a function under EN, a REAL) join them: all 26 runs equal (rustc 1.100.0, QEMU 8.2.2, in the CI runner's image with podman). Since L3d-1 two Sequential Function Charts join them (`crates/mythos-logic-graphic/tests/sfc/bottling.xml`: a selection with a skip, a simultaneous divergence and convergence, a jump, N, S, R, L, D, P, DS, named and inline actions, a named transition; `doors.xml`: a chart in a function block, two instances under an FBD program): all 30 runs equal (rustc 1.100.0, QEMU 8.2.2, in the CI runner's image with podman). Since L3d-1b a chart whose actions and conditions are in LD and FBD joins them (`mixer.xml`: an FBD action in its block, an LD and an FBD action of the POU, an FBD condition in its transition, a rung and an FBD network through a connector drawn in the chart): all 36 runs equal (rustc 1.100.0, QEMU 8.2.2, in the CI runner's image with podman) |
 | 2.12 Oracle | `differential_strucpp.rs`: 8 programs, 60 cycles, 9,480 values, all agree except the five deliberate rows of §2.13 (287 values: 167 of the first three, 60 each of INSERT's position and a based literal read as an integer). It found one bug, fixed: TP kept ET at PT when the pulse ended with IN already FALSE. Unchanged by L4 (the standard blocks in ST): the same 9,480 values, the same 287 |
 | 2.14 Standard library in ST (L4) | `crates/mythos-logic-st/src/library/`: SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD and their INT, DINT and LINT variants, TP, TON, TOF and their TIME variants (22 POUs in 4 files, an index); the intrinsic `__NOW()`; names of the library refused to a program's POUs and types; the library's names resolved among its own; no diagnostic pointing into it. Proven by `standard_library.rs` (14) and `standard_blocks_run_as_the_native_ones.rs` (4: every native block against the library's, 400 sequences of 150 scans each, 540,000 scans in all) |
 | 2.15 Ladder Diagram (L3a) | `crates/mythos-logic-ld` (`crates/mythos-logic-graphic` since L3c-1, §2.16): PLCopen TC6 XML v2.01 read with `quick-xml` (MIT); the subset of §2.15; the graph checked and lowered to the ST front-end's syntax tree; edges, values used twice and jumps in hidden private variables (`Var::hidden`, `IR_VERSION` 6); diagnostics naming the element (`element`) and the source (`source`); `compile_sources` and `Language::Ld` in the compiler; `layers.rs` gives LD its layer (the IR and the ST front-end) and feeds the guard an LD crate reaching the VM and an ST crate reaching LD. Proven by `ladder_runs_on_the_vm.rs` (26: every element, its table's behaviour scan by scan, EN and ENO, a function of ST and the standard functions as blocks, LD function blocks and functions, jumps both ways, a return, RETAIN and the edge memory of a RETAIN instance, 300 contacts in series and in parallel, the emulator's program), `refusals.rs` (28: every refusal of §2.15 with its message and its element, the JSON of a place, the sources named), `ladder_equals_st.rs` (4 LD programs and their ST twins, 200 random sequences of 100 scans each, every shared variable equal after every scan: 51 variables, 1,020,000 values compared) and `damaged_ladder_never_panics.rs` (3,000 damaged documents, each compiled or refused with a place). Mutation-checked in a copy of the tree (`git archive`, its own target directory; the clean copy passed before and after the restores): parallel branches made AND turned `series_is_and_and_parallel_is_or`, `a_long_series_and_a_wide_parallel_compile_and_run`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program` and `contacts_and_coils_equal_their_st_twin` red; a negated contact's negation dropped turned `a_normally_closed_contact_passes_power_when_its_variable_is_off`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program`, `the_oscillator_the_emulators_run_does_what_its_rungs_say` and `contacts_and_coils_equal_their_st_twin` red; an edge contact never writing its memory turned `a_rising_contact_is_on_for_one_scan_after_its_variable_goes_on`, `a_rising_contact_senses_its_variable_while_its_input_is_off`, `a_falling_contact_is_on_for_one_scan_after_its_variable_goes_off` and `contacts_and_coils_equal_their_st_twin` red; a dangling connection let through turned `a_dangling_connection_is_refused_naming_its_element_and_the_missing_id` and `a_damaged_ladder_document_is_compiled_or_refused_with_places_never_a_panic` red. Since L3b-1 the logic module stores, checks and builds LD programs (2.6). Since L3b-2a every element's output, every junction and every network's flag is kept in a hidden private variable in every build (`Compiled::probes`, §2.15, power for monitoring), proven by `ladder_power_probes.rs` (9) and `a_long_series_of_functions_compiles_and_runs`. Not built: editing LD in the workbench (L3b-2b) |
 | 2.16 Function Block Diagram (L3c-1) | `crates/mythos-logic-graphic`: `fbd.rs`, with `graph.rs` shared with LD; the subset and the semantics of §2.16 and §2.13; every output's value kept in a hidden private variable typed by its value (`ast::TypeSpecKind::OfValue` in the ST front-end), every network's flag; `Holds::Guarded` for a function's result; `Language::Fbd`; `Sources::tc6`. Proven by `fbd_runs_on_the_vm.rs` (13), `fbd_refusals.rs` (15), `fbd_equals_st.rs` (5 FBD programs and their ST twins, 200 random sequences of 100 scans each: every shared variable and every kept value, by the element and output it is about, equal to its twin's after every scan, 3,560,000 values), `damaged_ladder_never_panics.rs` (3,000 damaged FBD documents besides the LD ones), the logic module's own tests (3) and `logic_module.rs` through the real module processes; the emulators (2.9). The workbench: `fbd.test.tsx` (11; 12 since L3d-2, a viewer's diagram following a source saved elsewhere). The editor (L3c-2, §2.8): `fbdmodel.test.ts` (11), `fbd-editor.test.tsx` (10), `fbd_from_the_editor.rs` (4). Not built: a CFC mode (§3) |
-| 2.17 Sequential Function Chart (L3d-1) | `crates/mythos-logic-graphic`: `sfc.rs`; the subset and the semantics of §2.17 and §2.13 (§6.7: steps, transitions, Table 61's divergences and convergences, jumps, action blocks, the action control without final scan, unsafe and unreachable charts refused); every step's flag and time, every transition's condition and enable flag and every action's state kept in private variables (`At::Step`, `At::StepTime`, `At::Transition`, `At::Action`); the scan clock as `ast::ExprKind::Intrinsic`; `Element::action`, `Element::transition`, `TextRange::line`; `Language::Sfc`. Since L3d-1b actions and conditions in LD and FBD (of the POU, in the action block or the transition, or a network drawn in the chart), lowered by `ld::lower` and `fbd::lower` in a namespace of their own, `Probe::body`, `Element::inline`, `bodies` in `check`. Proven by `sfc_runs_on_the_vm.rs` (29: a rule of §6.7 each, the action qualifiers scan by scan, a chart in a function block, a restart, an online change of the same chart and of another, the two charts of the emulators), `sfc_refusals.rs` (38 since L3d-1b: every refusal with its message and its element, a place in a text of several lines as JSON), `sfc_corpus.rs` (1), `sfc_equals_st.rs` (4 charts and their ST twins, the fourth with actions and conditions in LD and FBD, 200 random sequences of 100 scans each: every variable, step flag, step time while active, action flag, transition condition where evaluated and enable flag equal after every scan, 2,270,452 values), `sfc_graphic_bodies.rs` (14: a rule of L3d-1b each, scan by scan, and the mixer of the emulators), `damaged_ladder_never_panics.rs` (3,000 damaged charts: 2,718 refused, 282 compiled; 3,000 damaged mixers with LD and FBD bodies: 2,686 refused, 314 compiled), the logic module's own tests (4), `logic_module.rs` through the real module processes and over MCP; the emulators (2.9). The workbench: `sfc.test.tsx` (3 in L3d-1; 23 since the view, L3d-2, §2.8). Not built: the editor (L3d-3); drawing the LD and FBD bodies of actions and conditions with their views (the view names their language); an action that is a chart, IL, a connection from a step's flag (§2.17); the qualifiers SD, SL, P0 (the owner's decision, §2.17) |
+| 2.17 Sequential Function Chart (L3d-1) | `crates/mythos-logic-graphic`: `sfc.rs`; the subset and the semantics of §2.17 and §2.13 (§6.7: steps, transitions, Table 61's divergences and convergences, jumps, action blocks, the action control without final scan, unsafe and unreachable charts refused); every step's flag and time, every transition's condition and enable flag and every action's state kept in private variables (`At::Step`, `At::StepTime`, `At::Transition`, `At::Action`); the scan clock as `ast::ExprKind::Intrinsic`; `Element::action`, `Element::transition`, `TextRange::line`; `Language::Sfc`. Since L3d-1b actions and conditions in LD and FBD (of the POU, in the action block or the transition, or a network drawn in the chart), lowered by `ld::lower` and `fbd::lower` in a namespace of their own, `Probe::body`, `Element::inline`, `bodies` in `check`. Proven by `sfc_runs_on_the_vm.rs` (29: a rule of §6.7 each, the action qualifiers scan by scan, a chart in a function block, a restart, an online change of the same chart and of another, the two charts of the emulators), `sfc_refusals.rs` (38 since L3d-1b: every refusal with its message and its element, a place in a text of several lines as JSON), `sfc_corpus.rs` (1), `sfc_equals_st.rs` (4 charts and their ST twins, the fourth with actions and conditions in LD and FBD, 200 random sequences of 100 scans each: every variable, step flag, step time while active, action flag, transition condition where evaluated and enable flag equal after every scan, 2,270,452 values), `sfc_graphic_bodies.rs` (14: a rule of L3d-1b each, scan by scan, and the mixer of the emulators), `damaged_ladder_never_panics.rs` (3,000 damaged charts: 2,718 refused, 282 compiled; 3,000 damaged mixers with LD and FBD bodies: 2,686 refused, 314 compiled), the logic module's own tests (4), `logic_module.rs` through the real module processes and over MCP; the emulators (2.9). The workbench: `sfc.test.tsx` (3 in L3d-1; 23 since the view, L3d-2, §2.8). The editor (L3d-3, §2.8): `sfcmodel.test.ts` (31), `sfc-editor.test.tsx` (9), `sfc_from_the_editor.rs` (6). Not built: drawing the LD and FBD bodies of actions and conditions with their views (the view names their language); an action that is a chart, IL, a connection from a step's flag (§2.17); the qualifiers SD, SL, P0 (the owner's decision, §2.17) |
 
 Evidence of the spike (2026-11-17):
 
@@ -2413,3 +2559,80 @@ Evidence of the spike (2026-11-17):
   `local_id`, each turned `names the language of an action or a condition in LD or FBD, lists a
   network drawn in the chart, and marks a diagnostic in a body at what holds it` red (the marks
   went to step Fill and transition 2, which share those ids).
+- **L3d-3** (the Sequential Function Chart editor, 2026-11-22). Added, in
+  `frontend/packages/logic-ui`: `sfcmodel.ts` (a chart read as sequences, `wellFormed`, the grid
+  layout, the writer splicing the POU's body, the record of localIds), `sfcedit.ts` (the structure
+  operations, the fields, the editor's own check), `SfcInstructions.ts` (the Instructions task card's
+  kit and the favourites) and `SfcEditor.tsx` (§2.8); the program editor gives an engineer the
+  editor (the quiet check 700 ms after the last edit, the Instructions task card), a viewer and an
+  operator the view; the view's `NamedBodies` is exported for the editor. No route was added, so no
+  MCP tool. Tests: `sfcmodel.test.ts` (31: every document of the corpus, LD's, FBD's and SFC's,
+  written back byte for byte when nothing changed; the corpus charts read as their sequences; a
+  chart kept as found, why, every edit of it refused and its bytes kept while another POU is edited;
+  a chart laid out anew keeping every element, link, condition, action and comment, and the view
+  drawing the same elements; an inline body in LD or FBD byte for byte and a network drawn in the
+  chart moved with its transition; each structure operation and its refusals; localIds never given
+  out twice after an undo, a deletion or in a new session, nor one an action of a block has; a
+  seeded walk of 300 random edits, every chart well formed and every new id new after each edit,
+  the whole document written and read again every 20th and at the end; the editor's own check; the
+  review's seven, below; the five documents the compiler runs), `sfc-editor.test.tsx` (9: a sequence built
+  from the keyboard and saved; branches, a jump and an action from the task card, by click and by
+  drag, and the favourites; the action table in place; undo and redo; the editor's word and the
+  compiler's at the element; the online-change notice; a chart kept as found; the live state in
+  the editor; a viewer's and an operator's view), `sfc_from_the_editor.rs` (6: the sequence built
+  from the template run on the VM through its simultaneous branch and back, its alternative branch
+  on stop with the left branch tested first; `bottling.xml` and `mixer.xml` after the editor laid
+  them out and added an action, every value equal to the corpus chart's over 600 scans but the
+  action added, which follows its step; and the review's two, below); `sfc.test.tsx` runs as an engineer, in the editor, but for
+  the two tests of what only the view draws (every POU of a document at once), which run as a
+  viewer. `scripts/e2e.sh` 8h opens the new program in the editor, and 8i builds a chart in it
+  from the keyboard (a step and its action declared where it is named, conditions, a jump, an
+  alternative branch with a step of its own), which compiles by the quiet check, is loaded (saved
+  first) and runs: Start, Run and Pause active in turn, the right branch taken, busy on with Run;
+  253 checks, all passed (every screenshot with no control past an edge, the editor's two among
+  them). Mutation-checked in a copy of the tree (`git archive` of the branch, its own `pnpm
+  install --frozen-lockfile` and `pnpm lint`; each injection asserted as landed; each file restored
+  with `git show` and compared with the commit; the copy passed 32 before and after): the record of
+  used ids ignored on open turned `never gives an id out twice, after an undo or a deletion, nor one
+  an inline body has` red; only the chart's own children counted, not the ids nested in a block or
+  a body, turned `gives out no id an action of a block or an inline body has, though no element of
+  the chart has it` red; the guard refusing every edit of a chart kept as found removed turned
+  `keeps a chart it cannot draw as found, says why, and writes it back byte for byte while another
+  chart of the document is edited` red (the writer's own check of a kept chart, mutated alone,
+  turned nothing red: it is unreachable behind that guard, which the test was strengthened to prove
+  for a new sequence, `addChart`, after it first survived); a comment moved instead of written as
+  found turned `writes a chart it laid out with every element, link, condition and action the
+  document had, and the view draws the same elements` and `edits another tool’s chart
+  (bottling.xml)` red; an unchanged inline body written anew turned `keeps an inline body in LD or
+  FBD byte for byte and moves a network drawn in the chart with its transition` and `edits a chart
+  with bodies in LD and FBD … (mixer.xml)` red; the last check of every edit (`wellFormed` in
+  `done`) removed turned `refuses what an edit would leave not well formed, where no rule of the
+  edit itself says so` red (it first survived: every operation's own rules refused what it would
+  break, and the test was added for the one case found where only the last check does, a
+  transition deleted after a simultaneous convergence); a pair put as transition then step after a
+  transition turned `puts a step and a transition after a step, and a step and a transition after a
+  transition`, `deletes a step with the transition before it, …` and `builds the sequence the
+  compiler tests run` red; a step deleted with whatever is beside it turned `deletes a step with the
+  transition before it, …` and `never gives an id out twice, …` red.
+  **Found in review** (of `f72ede5`), each now a named test, red on that commit and green after: a
+  rename left `Old.X`/`Old.T` in conditions and statements, and the next new step took the old name,
+  so a condition timed another step and compiled (`editor_renamed.xml`: written by `f72ede5` as
+  `Step1.T >= T#50ms`, Fill never left; `a_step_renamed_in_the_editor_is_timed_by_its_condition_under_its_new_name`
+  red, `renames every S.X and S.T a condition or statements it writes reads, token by token, …`,
+  `refuses to rename a step a text it does not write reads, and says where (bottling.xml)`, `says
+  where a step’s flag or time is read by a name no step has` red); a jump whose step was deleted went
+  to the next new step of that name (`never gives a new step the name a jump still goes to after its
+  step was deleted` red); a selection the compiler refuses for its priorities was written without
+  them in an order of the editor's choosing, refused becoming accepted (`keeps a selection the
+  compiler refuses for its priorities as found, and says why` red); a step in a branch could be made
+  initial and its deletion leave a chart none (`never makes a step in a branch the initial step, nor
+  leaves a chart without one` red). The test that a laid-out chart drops its priorities was blind
+  (no corpus file had one): `priorities.xml`, whose priorities are the opposite of its branches'
+  order, is written in priority order left to right (`writes a selection ordered by its priorities
+  left to right in that order, without them`, and
+  `a_selection_the_editor_laid_out_in_its_priority_order_takes_the_branch_its_priorities_chose`:
+  both C), green on `f72ede5` as on the fix. The walk of 300 random edits went over its 60 s in CI
+  (79.9 s, the runners sharing the host with the Rust job): it wrote the whole document and read it
+  three ways after every edit, quadratic in the chart's size; it now checks the model after every
+  edit and the text every 20th and at the end, and takes 0.8–1.8 s of CPU (before: 3.7–13.2 s),
+  measured alternately on one host.
