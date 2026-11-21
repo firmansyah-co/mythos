@@ -125,6 +125,11 @@ export interface DiagnosticElement {
   /** A Sequential Function Chart's action or transition of the POU, by its name (ADR-013 §2.17). */
   action?: string | null;
   transition?: string | null;
+  /**
+   * The action of an action block or the transition, by its `localId`, whose inline body in LD
+   * or FBD the message is about; `local_id` is then an element of that body, not of the chart.
+   */
+  inline?: number | null;
   /** `line`: the line of a text of several (an action's body), from 1. */
   text?: { field: string; col: number; end_col: number; line?: number | null } | null;
 }
@@ -187,9 +192,15 @@ export interface CheckResult {
   values?: ValueProbe[];
   /**
    * A Sequential Function Chart's: where each step's flag and time, each transition's condition
-   * and each action's state is kept (ADR-013 §2.17). Not drawn yet: the chart's view is L3d-2.
+   * and each action's state is kept (ADR-013 §2.17), which the chart's view draws (L3d-2).
    */
   chart?: ChartProbe[];
+  /**
+   * A chart's actions and conditions written in LD or FBD (ADR-013 §2.17, L3d-1b): each entry in
+   * LD's or FBD's shape with the body it is in. The chart's view names their language and does
+   * not draw them yet.
+   */
+  bodies?: Array<ValueProbe & { body: { action?: string; transition?: string; inline?: number; wired?: number; language: 'ld' | 'fbd' } }>;
 }
 
 /** Where one state of a chart is kept: a step's (`step`: `X` or `T`), a transition's, an action's. */

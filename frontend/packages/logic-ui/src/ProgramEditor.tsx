@@ -1,7 +1,8 @@
 // The editor of one control program: its Structured Text, or its Ladder Diagram with its live
 // state (LadderEditor for an engineer, LadderView read-only for everyone else), or its Function
 // Block Diagram with its live state (FbdEditor for an engineer, FbdView read-only for everyone
-// else), what the compiler says of it, its task settings, its variables with their bindings to tags, and what
+// else), or its Sequential Function Chart with its live state (SfcView, read-only for everyone
+// until the chart editor, L3d-3), what the compiler says of it, its task settings, its variables with their bindings to tags, and what
 // the controller's runtime is doing with it.
 //
 // The work area holds the program and its interface (the variables and their bindings) and
@@ -40,6 +41,7 @@ import {
   useController,
   useProject,
   useTelemetry,
+  type ChartProbe,
   type CheckResult,
   type Diagnostic,
   type ForcedValue,
@@ -57,6 +59,8 @@ import { readLadder, type Ladder } from './ladder';
 import { LadderEditor } from './LadderEditor';
 import { LadderView, type LadderLive } from './LadderView';
 import { InstructionsCard } from './LdInstructions';
+import { readSfc, type Sfc } from './sfc';
+import { SfcView } from './SfcView';
 import {
   checkIsCurrent,
   describeStart,
@@ -795,6 +799,13 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
 export function placeOf(diagnostic: Diagnostic): string {
   const element = diagnostic.element;
   if (!element) return `${diagnostic.line}:${diagnostic.col}`;
+  // A chart's action or transition, of the POU by its name or written in the chart (its element),
+  // and in a body of LD or FBD that body's own element; the line of a text of several.
+  const line = element.text?.line ? ` line ${element.text.line}` : '';
+  const inBody = element.local_id !== null && element.local_id !== undefined ? ` element ${element.local_id}` : '';
+  if (element.inline !== null && element.inline !== undefined) return `${element.pou} element ${element.inline}, its body${inBody}${line}`;
+  if (element.action) return `${element.pou} action ${element.action}${inBody}${line}`;
+  if (element.transition) return `${element.pou} transition ${element.transition}${inBody}${line}`;
   if (element.local_id !== null && element.local_id !== undefined) return `${element.pou} element ${element.local_id}`;
   if (element.variable) return `${element.pou} variable ${element.variable}`;
   return element.pou === '' ? `${diagnostic.line}:${diagnostic.col}` : element.pou;
@@ -891,27 +902,39 @@ function RemovePanel({ name, busy, onRemoved }: { name: string; busy: boolean; o
   );
 }
 
-/** What is drawn live on a diagram: the watched values and where the check says each is kept. */
+/**
+ * What is drawn live on a diagram: the watched values and where the check says each is kept (a
+ * Ladder Diagram's power or a Function Block Diagram's values in `probes`, a chart's states in
+ * `chart`).
+ */
 interface DiagramLive {
   values: Map<string, WatchedValue> | null;
   probes: ValueProbe[];
+  chart: ChartProbe[];
 }
 
 /**
- * What is drawn live on a Ladder Diagram (its power) or a Function Block Diagram (its values),
- * and why, or why nothing is.
+ * What is drawn live on a Ladder Diagram (its power), a Function Block Diagram (its values) or a
+ * Sequential Function Chart (its steps, transitions and actions), and why, or why nothing is.
  */
 function liveOf(doc: ProgramDoc, state: RunState, watch: WatchView | undefined): { live: DiagramLive | null; why: string } {
   const check = checkIsCurrent(doc) ? doc.check : null;
   const fbd = doc.entry.language === 'fbd';
-  if (check === null || !check.ok) {
-    return { live: null, why: 'No live state is drawn: this text has not compiled. Check it.' };
+  const sfc = doc.entry.language === 'sfc';
+  // Not checked and does not compile are told apart: a text followed from elsewhere is being
+  // checked, and saying it did not compile would be a claim nobody made.
+  if (check === null) {
+    return { live: null, why: 'No live state is drawn: this text has not been checked yet.' };
+  }
+  if (!check.ok) {
+    return { live: null, why: 'No live state is drawn: this text does not compile (see Diagnostics).' };
   }
   if (state.kind === 'unknown') return { live: null, why: `No live state is drawn: what the runtime does is not known (${state.why}).` };
   if (state.kind === 'not-loaded') return { live: null, why: 'No live state is drawn: no runtime runs this program.' };
   const power: ValueProbe[] = (fbd ? check.values : check.power) ?? [];
+  const chart: ChartProbe[] = check.chart ?? [];
   if (state.stale) {
-    return { live: { values: null, probes: power }, why: 'The runtimes can no longer be read: every state is UNKNOWN.' };
+    return { live: { values: null, probes: power, chart }, why: 'The runtimes can no longer be read: every state is UNKNOWN.' };
   }
   if (check.version === undefined || check.version !== state.runtime.version) {
     return {
@@ -920,46 +943,84 @@ function liveOf(doc: ProgramDoc, state: RunState, watch: WatchView | undefined):
     };
   }
   if (state.runtime.mode !== 'run') {
-    const nothing = fbd ? 'nothing is computed' : 'no power flows';
+    const nothing = fbd ? 'nothing is computed' : sfc ? 'the chart is not scanned' : 'no power flows';
     return { live: null, why: `No live state is drawn: the program is in ${state.runtime.mode.toUpperCase()}, so ${nothing}.` };
   }
   if (!watch) return { live: null, why: 'No live state is drawn yet: the values have not been read.' };
   if (watch.answer === null) {
-    return { live: { values: null, probes: power }, why: `The values cannot be read: every state is UNKNOWN. ${watch.error ?? ''}`.trim() };
+    return { live: { values: null, probes: power, chart }, why: `The values cannot be read: every state is UNKNOWN. ${watch.error ?? ''}`.trim() };
   }
   if (watch.answer.state.mode !== 'run' || watch.answer.state.version !== check.version) {
     return { live: null, why: 'No live state is drawn: the values read are not of this version in RUN.' };
   }
   const values = new Map(watch.answer.values.map((value) => [value.variable.toLowerCase(), value]));
   return {
-    live: { values, probes: power },
+    live: { values, probes: power, chart },
     why: fbd
       ? 'Live, as the last scan left it: the value each line carried when its network ran; a network the scan did not run is drawn as not executed, a function that did not run as not computed.'
-      : 'Live, as the last scan left it: the power each element and link had when its rung ran; a rung the scan did not run is drawn as not executed.',
+      : sfc
+        ? 'Live, as the last scan left it: each active step with its time; a transition’s condition where the transition was enabled and its condition evaluated, not evaluated where it was not; each action’s state.'
+        : 'Live, as the last scan left it: the power each element and link had when its rung ran; a rung the scan did not run is drawn as not executed.',
   };
 }
 
 /**
- * A Sequential Function Chart is not drawn yet (its view is ADR-013 L3d-2, its editor L3d-3): its
- * TC6 document is shown as text, read-only, with each diagnostic underlined at the element it is
- * about, and nothing is drawn live. It is written over the API (`save_logic_source`).
+ * The Sequential Function Chart of the program with its live state, read-only for everyone: the
+ * chart editor is ADR-013 L3d-3. A chart is written over the API (`save_logic_source`). Its TC6
+ * document stays reachable as text, read-only, each diagnostic underlined, for what the chart
+ * does not show (a diagnostic with no element, the document as written).
  */
 function SfcPanel({
   doc,
-  diagnostics,
+  sfc,
+  state,
   editor,
+  text,
 }: {
   doc: ProgramDoc;
-  diagnostics: Diagnostic[];
+  sfc: Sfc;
+  state: RunState;
   editor: Ref<SourceEditorHandle>;
+  text: Ref<HTMLDetailsElement>;
 }) {
+  const watch = usePrograms((s) => s.watches[doc.entry.name]);
+  const { live, why } = liveOf(doc, state, watch);
+  const check = checkIsCurrent(doc) ? doc.check : null;
+  const diagnostics = check && !check.ok ? check.diagnostics : [];
+  const program = check?.ok ? (check.program ?? null) : null;
+  const chartLive = live === null ? null : { values: live.values, probes: live.chart };
+  // The text is drawn only while it is open: a browser lays out what a closed <details> holds.
+  const [textOpen, setTextOpen] = useState(!sfc.ok);
+  // A document followed from elsewhere that can no longer be drawn opens its text, as one opened
+  // so does; it is never folded again by itself, the engineer may be reading it.
+  useEffect(() => {
+    if (!sfc.ok) setTextOpen(true);
+  }, [sfc.ok]);
   return (
     <div className="logic-panel" data-testid="sfc-panel">
-      <p className="muted" data-testid="sfc-not-drawn">
-        This Sequential Function Chart is not drawn yet, and its live state is not shown: its PLCopen TC6 document is shown
-        as text, read-only. It is checked, built and loaded as any program, and written over the API (save_logic_source).
+      <p className="muted" data-testid="sfc-live" data-live={live === null ? 'none' : live.values === null ? 'unknown' : 'live'}>
+        {why}
       </p>
-      <SourceEditor ref={editor} source={doc.source ?? ''} readOnly diagnostics={diagnostics} onChange={() => undefined} />
+      <p className="muted" data-testid="sfc-read-only">
+        Read-only for everyone: the chart editor is not built yet. A chart is written over the API (save_logic_source).
+      </p>
+      {sfc.ok ? (
+        <SfcView pous={sfc.pous} program={program} live={chartLive} diagnostics={diagnostics} />
+      ) : (
+        <div className="notice notice--bad" role="alert" data-testid="sfc-unreadable">
+          <p>The chart cannot be drawn: {sfc.error}.</p>
+        </div>
+      )}
+      <details
+        ref={text}
+        className="sfc-document"
+        data-testid="sfc-document"
+        open={textOpen}
+        onToggle={(event) => setTextOpen(event.currentTarget.open)}
+      >
+        <summary>The PLCopen TC6 document, as text</summary>
+        {textOpen && <SourceEditor ref={editor} source={doc.source ?? ''} readOnly diagnostics={diagnostics} onChange={() => undefined} />}
+      </details>
     </div>
   );
 }
@@ -1250,6 +1311,9 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
   const isSfc = doc?.entry.language === 'sfc';
   const fbdSource = isFbd ? (doc?.source ?? null) : null;
   const fbd = useMemo(() => (fbdSource === null ? null : readFbd(fbdSource)), [fbdSource]);
+  const sfcSource = isSfc ? (doc?.source ?? null) : null;
+  const sfc = useMemo(() => (sfcSource === null ? null : readSfc(sfcSource)), [sfcSource]);
+  const sfcText = useRef<HTMLDetailsElement>(null);
   const sourceRead = doc?.source !== null && doc?.source !== undefined;
 
   // The source is read when the editor opens; the first check follows, for the variables.
@@ -1279,7 +1343,11 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
   // (an element of an array), each once.
   const declared = (doc?.variables ?? []).filter((variable) => hasOneValue(variable.type)).map((variable) => variable.path);
   const known = new Set(declared.map((path) => path.toLowerCase()));
-  const extra = [...new Set(elementVariables(isFbd ? fbd : ladder))].filter((path) => {
+  // A chart's states are kept where the check of the text says: each asked for by its path, the
+  // enable flag of a transition with its condition.
+  const chartPaths =
+    isSfc && doc?.check?.ok ? (doc.check.chart ?? []).flatMap((p) => (p.ran === undefined ? [p.variable] : [p.variable, p.ran])) : [];
+  const extra = [...new Set([...elementVariables(isFbd ? fbd : ladder), ...chartPaths])].filter((path) => {
     const fresh = !known.has(path.toLowerCase());
     known.add(path.toLowerCase());
     return fresh;
@@ -1400,13 +1468,20 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
     if (now?.check && checkIsCurrent(now) && !now.check.ok) host().showDiagnostics();
   };
   goToRef.current = (diagnostic: Diagnostic) => {
-    if (!isLadder && !isFbd) {
+    const id = diagnostic.element?.local_id;
+    // In a chart, a diagnostic with no element of the drawing is shown in the document's text.
+    if (isSfc && (id === null || id === undefined)) {
+      // Opening it draws the text; it is gone to once drawn.
+      if (sfcText.current) sfcText.current.open = true;
+      setTimeout(() => editor.current?.goTo(diagnostic.line, diagnostic.col), 0);
+      return;
+    }
+    if (!isLadder && !isFbd && !isSfc) {
       editor.current?.goTo(diagnostic.line, diagnostic.col);
       return;
     }
-    const id = diagnostic.element?.local_id;
     if (id === null || id === undefined) return;
-    const mark = isFbd ? 'fbd-diagnostic' : 'ld-diagnostic';
+    const mark = isFbd ? 'fbd-diagnostic' : isSfc ? 'sfc-diagnostic' : 'ld-diagnostic';
     const found = document.querySelector(`[data-testid="${mark}"][data-local-id="${id}"]`);
     (found as (Element & { scrollIntoView?: (arg?: unknown) => void }) | null)?.scrollIntoView?.({ block: 'center' });
   };
@@ -1513,8 +1588,8 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
             <LadderPanel doc={doc} ladder={ladder} state={state} may={may} />
           ) : isFbd && fbd !== null ? (
             <FbdPanel doc={doc} fbd={fbd} state={state} may={may} />
-          ) : isSfc ? (
-            <SfcPanel doc={doc} diagnostics={diagnostics} editor={editor} />
+          ) : isSfc && sfc !== null ? (
+            <SfcPanel doc={doc} sfc={sfc} state={state} editor={editor} text={sfcText} />
           ) : (
             <SourceEditor
               ref={editor}

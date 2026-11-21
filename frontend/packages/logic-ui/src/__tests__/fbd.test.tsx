@@ -426,6 +426,22 @@ describe('the live state of a running Function Block Diagram', () => {
     expect(container.querySelectorAll('[data-state="on"], [data-state="off"], [data-state="value"]')).toHaveLength(0);
   });
 
+  it('follows a diagram saved elsewhere for a viewer: read again, checked quietly, and drawn live again', async () => {
+    const backend = main();
+    const { calls, container } = await opened(backend);
+    await live(container);
+    const checks = () => calls.filter((c) => c.path.endsWith('/check'));
+    const before = checks().length;
+    const edited = MAIN.replace('Every element', 'Edited by an agent');
+    backend.programs[0]!.source = edited;
+    await doing(() => usePrograms.getState().reread('Main'));
+    await until('the new text is drawn', () => (element(container, 90).textContent?.includes('Edited by an agent') ? true : null));
+    await until('it is checked', () => (checks().length > before ? true : null));
+    expect((checks().at(-1)?.body as { source?: string }).source).toBe(edited);
+    await live(container);
+    expect(line(container, 1, 3)).toBe('on');
+  });
+
   it('draws nothing live of a program in STOP', async () => {
     const { container } = await opened(
       main({ runtimes: runtimesOf(runtimeOf('Main', { version: VERSION, mode: 'stop' })), watch: watchOf(RUNNING, 'stop') })

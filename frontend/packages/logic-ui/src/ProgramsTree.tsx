@@ -133,12 +133,15 @@ function AddProgram({ openEditor }: { openEditor: (name: string) => void }) {
           disabled={busy === 'creating'}
           onChange={(event) => {
             const chosen = event.target.value;
-            setLanguage(chosen === 'ld' || chosen === 'fbd' ? chosen : 'st');
+            setLanguage(chosen === 'ld' || chosen === 'fbd' || chosen === 'sfc' ? chosen : 'st');
           }}
         >
           <option value="st">ST</option>
           <option value="ld">LD</option>
           <option value="fbd">FBD</option>
+          {/* A chart starts as the module's template, one initial step; it is drawn, and written
+              over the API until its editor (ADR-013 L3d-3). */}
+          <option value="sfc">SFC</option>
         </select>
       </div>
       {invalid && (

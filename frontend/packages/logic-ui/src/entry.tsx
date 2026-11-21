@@ -7,7 +7,7 @@ import { bind } from './bridge';
 import { draw } from './draw';
 import { ProgramEditor } from './ProgramEditor';
 import { ProgramsTree } from './ProgramsTree';
-import { anyDirty, usePrograms } from './programs';
+import { anyDirty, followsSavedSource, usePrograms } from './programs';
 // Extracted by the build into `logic.css` beside `entry.js`, which `stylesheet()` links.
 import './logic.css';
 
@@ -58,10 +58,8 @@ export function activate(host: WorkbenchHost): Dispose {
       const program = (data as { program?: unknown }).program;
       const what = (data as { what?: unknown }).what;
       // A diagram's view follows what an agent or another workbench saved, unless it has changes
-      // here (a Function Block Diagram is not edited here yet, ADR-013 L3c-1).
-      const ladder = state.programs.find(
-        (doc) => doc.entry.name === program && (doc.entry.language === 'ld' || doc.entry.language === 'fbd')
-      );
+      // here.
+      const ladder = state.programs.find((doc) => doc.entry.name === program && followsSavedSource(doc.entry.language));
       if (what === 'source' && ladder && ladder.source !== null) {
         void state.reread(ladder.entry.name);
         return;
