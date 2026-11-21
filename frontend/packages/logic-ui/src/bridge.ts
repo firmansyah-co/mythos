@@ -187,7 +187,7 @@ export interface CheckResult {
   values?: ValueProbe[];
   /**
    * A Sequential Function Chart's: where each step's flag and time, each transition's condition
-   * and each action's state is kept (ADR-013 §2.17). Not drawn yet: the chart's view is L3d-2.
+   * and each action's state is kept (ADR-013 §2.17), which the chart's view draws (L3d-2).
    */
   chart?: ChartProbe[];
 }

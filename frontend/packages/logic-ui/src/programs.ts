@@ -155,6 +155,14 @@ export function isDirty(doc: ProgramDoc): boolean {
   return doc.source !== doc.savedSource || canonical(doc.entry) !== doc.savedEntry;
 }
 
+/**
+ * Whether an open program follows a source saved elsewhere (an agent over MCP, another workbench)
+ * by reading it again: a diagram, LD, FBD or SFC, whose view draws the saved text. A chart above
+ * all: until its editor (ADR-013 L3d-3) it is only ever written elsewhere, and a view left on an
+ * older text would never be live (its check's version is not the runtime's).
+ */
+export const followsSavedSource = (language: string): boolean => language === 'ld' || language === 'fbd' || language === 'sfc';
+
 export function anyDirty(state: Pick<ProgramsState, 'programs'>): boolean {
   return state.programs.some(isDirty);
 }
@@ -343,12 +351,18 @@ export const usePrograms = create<ProgramsState>((set, get) => {
       try {
         const read = await api.read(projectId, name);
         if (!still(projectId)) return;
-        change(name, (d) =>
+        let followed = false;
+        change(name, (d) => {
           // An edit made here while the read was on its way is kept.
-          isDirty(d) || d.source === null
-            ? d
-            : { ...d, source: read.source, savedSource: read.source, readError: null }
-        );
+          if (isDirty(d) || d.source === null) return d;
+          followed = d.source !== read.source;
+          return { ...d, source: read.source, savedSource: read.source, readError: null };
+        });
+        // A text followed from elsewhere is checked at once, quietly (nobody here asked: the
+        // editor is not busy, a failure is logged, and an answer for an older text is dropped),
+        // so what everyone sees, a viewer's diagram as an engineer's, is checked text and can be
+        // drawn live, rather than an unchecked one that never would be.
+        if (followed) void get().check(name, true);
       } catch (cause) {
         log.error(`Program ${name} could not be read again: ${message(cause)}`);
       }

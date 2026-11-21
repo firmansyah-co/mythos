@@ -232,6 +232,37 @@ button.logic-diagnostic:hover {
   margin: 0 0 6px;
 }
 
+/* A Sequential Function Chart (ADR-013 §2.8, L3d-2): the POU's own actions and transitions under
+   the chart, each with its text; the document as text folded under them. Workbench tokens only;
+   the visual design is the owner's to lead. */
+
+.sfc-bodies {
+  margin: 8px 0 0;
+}
+
+.sfc-bodies dt {
+  font-weight: 600;
+}
+
+.sfc-bodies dd {
+  margin: 2px 0 8px 12px;
+}
+
+.sfc-bodies pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: var(--fs-xs);
+}
+
+.sfc-document {
+  margin-top: 8px;
+}
+
+.sfc-document summary {
+  cursor: pointer;
+  color: var(--c-text-muted);
+}
+
 .logic-panel__actions {
   display: flex;
   /* A task card is narrow: the commands go on as many rows as they need, never past its edge. */
