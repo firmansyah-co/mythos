@@ -1,12 +1,15 @@
 # The self-hosted runner image
 
-One job of CI runs on `arc-runner-org`, a runner scale set (Actions Runner Controller) in the
-k3s cluster on the development machine: `shm-latency-gates` of `.github/workflows/ci.yml`, the
-release latency gates and the benchmark of the shared memory engine, which measure that machine.
-Every other job runs on GitHub's hosted runners since 2026-11-22 (the repository is public, so
-they cost nothing): the self-hosted machine is shared with the builds of whoever works on it,
-and a suite that competes with them is slow and goes red on tests that pass alone. A pull
-request from a fork does not get this job: it would run the fork's code on this machine.
+**No job runs on this runner since 2026-11-22.** `arc-runner-org` is a runner scale set (Actions
+Runner Controller) in the k3s cluster on the development machine. Every job of CI and of the
+release workflows now runs on GitHub's hosted runners (the repository is public, so they cost
+nothing): the self-hosted machine is shared with the builds of whoever works on it, and a suite
+that competes with them is slow and goes red on tests that pass alone. The latency tests of the
+shared memory engine, which measured this machine, are a hosted job that reports and holds
+nothing (`shm-latency-report` in `.github/workflows/ci.yml`).
+
+The scale set, its image and the weekly rebuild below are still installed; whether to keep them
+for a job that needs this machine, or to remove them, is the owner's to decide.
 
 This directory is what the runners of that scale set start from.
 

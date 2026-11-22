@@ -49,8 +49,7 @@ permissions:
 jobs:
   release-build:
     name: Release Build & Packaging Sanity
-    # GitHub's hosted runner since 2026-11-22, as the suites of ci.yml: the self-hosted runner
-    # keeps only what measures it (ci.yml, `shm-latency-gates`).
+    # GitHub's hosted runner since 2026-11-22, as every job of ci.yml.
     runs-on: ubuntu-latest
     # A release build of the Tauri host is heavier than the test suite. Without a bound a hang
     # would run to GitHub's 6h default (same reasoning as frontend-tests' 30 minutes).
