@@ -153,7 +153,7 @@ COPY frontend/ ./
 RUN pnpm --filter @mythos/ui-shell build
 
 # Stage 2: Compile the Rust Microkernel and First-Party Plugins
-FROM rust:1.82-bookworm AS backend-builder
+FROM rust:1.89-bookworm AS backend-builder
 WORKDIR /build/backend
 RUN apt-get update && apt-get install -y clang libclang-dev pkg-config
 COPY Cargo.toml Cargo.lock ./

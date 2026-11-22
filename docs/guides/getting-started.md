@@ -4,7 +4,7 @@ Build MythOS from source, start a controller, and sign in for the first time. Ba
 
 ## Building from source
 
-Requirements: Linux, macOS or Windows; Rust 1.82 or newer, Node.js 22 and pnpm. On Windows the
+Requirements: Linux, macOS or Windows; Rust 1.89 or newer, Node.js 22 and pnpm. On Windows the
 executables end in `.exe` (`target\debug\mythos-server.exe`) and the variables below are set with
 `$env:NAME = "value"` in PowerShell.
 

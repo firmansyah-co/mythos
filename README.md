@@ -100,7 +100,7 @@ are [ADR-010](specs/adr/ADR-010-modules-are-processes.md) (modules are processes
 
 ## Quick start
 
-You need Rust 1.82 or newer, Node.js 22 and pnpm, on Linux, macOS or Windows.
+You need Rust 1.89 or newer, Node.js 22 and pnpm, on Linux, macOS or Windows.
 
 ```bash
 git clone https://github.com/firmansyah-co/mythos.git

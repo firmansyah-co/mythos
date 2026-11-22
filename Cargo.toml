@@ -27,7 +27,9 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82.0"
+# 1.89: the data module holds a lock between processes with `std::fs::File::lock`, stable since
+# then (ADR-014, D3). A workspace member cannot ask for more than the workspace says it needs.
+rust-version = "1.89.0"
 authors = ["adrianaryaputra <adrian@firmansyah.co>"]
 license = "MPL-2.0"
 
