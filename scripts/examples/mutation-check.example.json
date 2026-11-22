@@ -1,0 +1,12 @@
+{
+  "test": {"cmd": ["cargo", "test", "-p", "mythos-update"], "cwd": "."},
+  "mutations": [
+    {
+      "name": "a busy program (ETXTBSY) is never recognised, so it is not waited out",
+      "file": "crates/mythos-update/src/install.rs",
+      "replace": [
+        {"old": "    cfg!(unix) && error.raw_os_error() == Some(26)\n", "new": "    let _ = error;\n    false\n"}
+      ]
+    }
+  ]
+}
