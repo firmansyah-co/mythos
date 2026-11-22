@@ -299,35 +299,6 @@ fn return_in_an_action_is_refused() {
 }
 
 #[test]
-fn the_qualifiers_sd_sl_and_p0_are_refused_with_the_reason() {
-    for (q, d, reason) in [
-        (
-            "SD",
-            Some("T#1s"),
-            "an SD action whose step is left before the delay starts at once",
-        ),
-        (
-            "SL",
-            Some("T#1s"),
-            "an SL action whose step is left before the limit ends at once",
-        ),
-        (
-            "P0",
-            None,
-            "a P0 action would run at a cold start whatever its step",
-        ),
-    ] {
-        let p = base().actions_of(5, 200, 80, "3", &[(6, q, d, Act::Name("lamp"))]);
-        let (id, msg, _) = one(refused(&[p]));
-        assert_eq!(id, Some(6));
-        assert!(
-            msg.contains(reason) && msg.contains("ADR-013 §2.17"),
-            "{q}: {msg}"
-        );
-    }
-}
-
-#[test]
 fn a_qualifier_not_in_table_59_is_refused() {
     let p = base().actions_of(
         5,

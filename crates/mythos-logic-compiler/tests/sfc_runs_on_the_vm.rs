@@ -599,6 +599,368 @@ fn a_ds_action_is_stored_only_if_its_step_lasted_its_delay() {
 }
 
 #[test]
+fn an_sd_action_starts_its_full_delay_after_it_was_stored_whether_or_not_its_step_was_left() {
+    // Table 59 feature 8 (stored and time delayed), ADR-013 §2.17. S is active from scan 1
+    // (10 ms), which stores the action; it is left in scan 2, 10 ms into the 30 ms delay. The
+    // action starts at 40 ms, the full delay: by Figure 23 with rule c's T#0s it would have
+    // started in scan 3, at once. It stays active until Idle's R (scan 8).
+    assert_eq!(
+        trace(
+            qualified("SD", Some("T#30ms")),
+            &[G, W, STOP, W, W, W, W, RESET, W]
+        ),
+        "000011110"
+    );
+    // The same delay when its step is still active.
+    assert_eq!(
+        trace(
+            qualified("SD", Some("T#30ms")),
+            &[G, W, W, W, W, W, STOP, RESET, W]
+        ),
+        "000011110"
+    );
+}
+
+#[test]
+fn an_r_association_ends_an_sd_delay_and_the_next_one_runs_in_full() {
+    // R in Off (scan 3) resets SD_FF while the delay runs: the action never starts. Stored
+    // again from scan 6 (60 ms), it starts 30 ms later, in scan 9: nothing is left of the
+    // first delay.
+    assert_eq!(
+        trace(
+            qualified_reset_in("SD", Some("T#30ms"), "5"),
+            &[G, W, STOP, W, RESET, G, W, W, W, W, W]
+        ),
+        "00000000011"
+    );
+}
+
+#[test]
+fn an_sl_action_runs_its_full_limit_whether_or_not_its_step_was_left_and_no_longer() {
+    // Table 59 feature 10 (stored and time limited), ADR-013 §2.17. Stored in scan 1 (10 ms),
+    // its step left in scan 2: it runs until 40 ms, the full 30 ms. By Figure 23 with rule
+    // c's T#0s it would have ended in scan 3, at once.
+    assert_eq!(
+        trace(
+            qualified("SL", Some("T#30ms")),
+            &[G, W, STOP, W, W, W, RESET, W]
+        ),
+        "01110000"
+    );
+    // No longer while its step stays active.
+    assert_eq!(
+        trace(
+            qualified("SL", Some("T#30ms")),
+            &[G, W, W, W, W, W, STOP, W]
+        ),
+        "01110000"
+    );
+    // R ends it at once (Off, scan 3), 70 ms before its limit.
+    assert_eq!(
+        trace(
+            qualified_reset_in("SL", Some("T#100ms"), "5"),
+            &[G, W, STOP, W, W]
+        ),
+        "01100"
+    );
+}
+
+/// Idle (initial) --go--> A --stop--> B --reset--> Idle, with no action block: no R on the way
+/// round, unless a test puts one.
+fn three_steps(more: &[(&str, &str)]) -> Pou {
+    let mut vars = vec![("go", "BOOL"), ("stop", "BOOL"), ("reset", "BOOL")];
+    vars.extend_from_slice(more);
+    Pou::program("Main")
+        .sfc()
+        .vars(&vars)
+        .step(1, 100, 0, "Idle", true, &["8"])
+        .trans(2, 100, 40, "go", &["1"])
+        .step(3, 100, 80, "A", false, &["2"])
+        .trans(4, 100, 120, "stop", &["3"])
+        .step(5, 100, 160, "B", false, &["4"])
+        .trans(8, 100, 200, "reset", &["5"])
+}
+
+/// `qual` on `act` in A with `in_a`, and in B with `in_b`.
+fn stored_twice(qual: &str, in_a: &str, in_b: &str) -> Pou {
+    three_steps(&[("act", "BOOL")])
+        .actions_of(6, 200, 80, "3", &[(7, qual, Some(in_a), Act::Name("act"))])
+        .actions_of(
+            9,
+            200,
+            160,
+            "5",
+            &[(10, qual, Some(in_b), Act::Name("act"))],
+        )
+}
+
+#[test]
+fn an_sd_action_two_steps_store_starts_only_when_the_delay_of_each_is_over() {
+    // Found in review: with one duration per action, B's T#20ms replaced A's T#100ms while the
+    // timer ran from A's store, and the action started 20 ms after A stored it. Each
+    // association is timed by itself (ADR-013 §2.17): A stores at 10 ms, so not before 110 ms.
+    assert_eq!(
+        trace(
+            stored_twice("SD", "T#100ms", "T#20ms"),
+            &[G, W, STOP, W, W, W, W, W, W, W, W, W, W]
+        ),
+        "0000000000011"
+    );
+    // And B's own delay in full: A (T#20ms, over at 30 ms) is left in scan 1; B stores at
+    // 20 ms with T#100ms, so not before 120 ms.
+    assert_eq!(
+        trace(
+            stored_twice("SD", "T#20ms", "T#100ms"),
+            &[G, STOP, W, W, W, W, W, W, W, W, W, W, W, W]
+        ),
+        "00000000000011"
+    );
+}
+
+#[test]
+fn an_sd_action_that_has_started_stays_active_until_r_whatever_stores_it_again() {
+    // Found in review: A's T#20ms starts the action in scan 3; B, entered in scan 5 with
+    // T#100ms, raised the one timer's PT above its elapsed time and the action stopped, with
+    // no R. Started is kept until R.
+    assert_eq!(
+        trace(
+            stored_twice("SD", "T#20ms", "T#100ms"),
+            &[G, W, W, W, STOP, W, W, W, W, W, W, W, W]
+        ),
+        "0001111111111"
+    );
+}
+
+#[test]
+fn an_sd_step_entered_again_while_its_delay_runs_starts_the_delay_again() {
+    // No R on the way round. A stores at 10 ms with T#60ms and is left; entered again at
+    // 50 ms, the delay counts from there: 110 ms, not 70 ms. In doubt the action is off.
+    let p = three_steps(&[("act", "BOOL")]).actions_of(
+        6,
+        200,
+        80,
+        "3",
+        &[(7, "SD", Some("T#60ms"), Act::Name("act"))],
+    );
+    assert_eq!(
+        trace(p, &[G, W, STOP, RESET, G, W, W, W, W, W, W, W, W]),
+        "0000000000011"
+    );
+}
+
+#[test]
+fn an_sl_action_ends_at_the_first_limit_that_is_over_and_stays_ended_until_r() {
+    // Each association's limit counts from when its step first stored the action; the first
+    // one over ends it. A at 10 ms with T#100ms, B at 30 ms with T#20ms: ended at 50 ms.
+    assert_eq!(
+        trace(
+            stored_twice("SL", "T#100ms", "T#20ms"),
+            &[G, W, STOP, W, W, W, W, W]
+        ),
+        "01111000"
+    );
+    // A's T#20ms is over at 30 ms: B's longer limit does not start it again.
+    assert_eq!(
+        trace(
+            stored_twice("SL", "T#20ms", "T#100ms"),
+            &[G, W, STOP, W, W, W]
+        ),
+        "011000"
+    );
+    // Nor does its own step entered again, without an R between (scan 5).
+    let p = three_steps(&[("act", "BOOL")]).actions_of(
+        6,
+        200,
+        80,
+        "3",
+        &[(7, "SL", Some("T#30ms"), Act::Name("act"))],
+    );
+    assert_eq!(trace(p, &[G, W, STOP, RESET, G, W, W, W]), "01110000");
+}
+
+/// `act` over seven scans with `qual` on it in A, which stays active, its duration the variable
+/// `d`: T#20ms until scan 3, a minute from scan 4.
+fn with_a_duration_that_grows(qual: &str) -> String {
+    let p = three_steps(&[("act", "BOOL"), ("d", "TIME")]).actions_of(
+        6,
+        200,
+        80,
+        "3",
+        &[(7, qual, Some("d"), Act::Name("act"))],
+    );
+    let mut r = run(&[p]);
+    let mut out = String::new();
+    for k in 0..7 {
+        let d = if k < 4 { 20 } else { 60_000 };
+        r.set("d", Value::Time(d * support::MS));
+        r.set("go", Value::Bool(k == 0));
+        r.scan_at(k * 10);
+        out.push(if r.bool("act") { '1' } else { '0' });
+    }
+    out
+}
+
+#[test]
+fn an_sd_action_that_has_started_stays_so_when_its_duration_grows() {
+    // The duration is read while the step is active. The T#20ms is over in scan 3 and the
+    // action starts; from scan 4 the variable is a minute. A TON's Q falls when its PT passes
+    // its elapsed time, which would stop the action with no R. Started is kept.
+    assert_eq!(with_a_duration_that_grows("SD"), "0001111");
+}
+
+#[test]
+fn an_sl_action_that_has_ended_stays_so_when_its_duration_grows() {
+    // The limit is over in scan 3 and the action ends; the minute from scan 4 would make the
+    // timer's Q fall and start the action again, with no R. Ended is kept.
+    assert_eq!(with_a_duration_that_grows("SL"), "0110000");
+}
+
+#[test]
+fn several_p0_associations_of_an_action_are_one_falling_edge_as_figure_23_has_them() {
+    // A and B both pulse `act` on P0, and the chart goes from A straight into B: the input is
+    // the OR of the two steps (Figure 23, as P and P1), which does not fall until B is left
+    // (scan 4). In doubt the action is off.
+    let p = three_steps(&[("act", "BOOL")])
+        .actions_of(6, 200, 80, "3", &[(7, "P0", None, Act::Name("act"))])
+        .actions_of(9, 200, 160, "5", &[(10, "P0", None, Act::Name("act"))]);
+    assert_eq!(trace(p, &[G, W, STOP, W, RESET, W, W]), "0000010");
+}
+
+#[test]
+fn an_action_named_as_a_part_of_another_action_s_control_shares_nothing_with_it() {
+    // Found in review: `act`'s kept SD duration was `__SFC_ACT_SD_T`, which is also the T of
+    // an action named `act_SD`; its T#0s, written every scan, ended `act`'s delay at once.
+    for other in [
+        "act_SD",
+        "act_SD_7",
+        "act_SD_7_KEPT",
+        "act_SL",
+        "act_P0",
+        "other",
+    ] {
+        let p = three_steps(&[("act", "BOOL"), (other, "BOOL")])
+            .actions_of(
+                6,
+                200,
+                80,
+                "3",
+                &[(7, "SD", Some("T#100ms"), Act::Name("act"))],
+            )
+            .actions_of(
+                9,
+                200,
+                0,
+                "1",
+                &[(10, "L", Some("T#1ms"), Act::Name(other))],
+            );
+        assert_eq!(
+            trace(p, &[G, W, STOP, W, W, W, W, W, W, W, W, W, W]),
+            "0000000000011",
+            "{other}"
+        );
+    }
+}
+
+#[test]
+fn an_sd_or_sl_action_keeps_the_duration_a_variable_had_while_its_step_was_active() {
+    // The duration is read each scan its step is active and kept from then on: a variable
+    // changed after the step was left changes nothing of a delay or a limit that is running.
+    for (qual, expected) in [("SD", "0000111"), ("SL", "0111000")] {
+        let p = Pou::program("Main")
+            .sfc()
+            .vars(&[
+                ("go", "BOOL"),
+                ("stop", "BOOL"),
+                ("act", "BOOL"),
+                ("reset", "BOOL"),
+                ("d", "TIME"),
+            ])
+            .step(1, 100, 0, "Idle", true, &["8"])
+            .trans(2, 100, 40, "go", &["1"])
+            .step(3, 100, 80, "S", false, &["2"])
+            .trans(4, 100, 120, "stop", &["3"])
+            .step(5, 100, 160, "Off", false, &["4"])
+            .trans(8, 100, 200, "reset", &["5"])
+            .actions_of(6, 200, 80, "3", &[(7, qual, Some("d"), Act::Name("act"))]);
+        let mut r = run(&[p]);
+        let mut out = String::new();
+        for (k, (go, stop)) in [
+            (true, false),
+            (false, false),
+            (false, true),
+            (false, false),
+            (false, false),
+            (false, false),
+            (false, false),
+        ]
+        .iter()
+        .enumerate()
+        {
+            // 30 ms while S is active (scans 1 and 2); zero, then a minute, once it is left.
+            let d = match k {
+                0..=2 => 30,
+                3 => 0,
+                _ => 60_000,
+            };
+            r.set("d", Value::Time(d * support::MS));
+            r.set("go", Value::Bool(*go));
+            r.set("stop", Value::Bool(*stop));
+            r.scan_at(k as i64 * 10);
+            out.push(if r.bool("act") { '1' } else { '0' });
+        }
+        assert_eq!(out, expected, "{qual}");
+    }
+}
+
+#[test]
+fn a_p0_action_is_active_for_one_scan_after_its_step_was_left_and_never_at_a_start() {
+    // Table 59 feature 12 (pulse, falling edge), without final scan. S is left in scan 3; the
+    // action is active in scan 4 only.
+    assert_eq!(
+        trace(qualified("P0", None), &[G, W, W, STOP, W, W]),
+        "000010"
+    );
+    // At a cold start no step was left: nothing runs (the R association is in Off here, so
+    // it is not what keeps the action off in Idle). Figure 23's F_TRIG is TRUE at its first
+    // execution (Table 44), which would run the action in scan 0 whatever its step.
+    assert_eq!(
+        trace(qualified_reset_in("P0", None, "5"), &[W, W, W]),
+        "000"
+    );
+    // And again each time its step is left.
+    assert_eq!(
+        trace(
+            qualified_reset_in("P0", None, "1"),
+            &[G, STOP, W, RESET, G, STOP, W, W]
+        ),
+        "00100010"
+    );
+}
+
+#[test]
+fn a_cold_start_drops_an_sd_delay_that_was_running_and_runs_no_p0_action() {
+    // Nothing of the action control is retained (ADR-013 §2.17): after a cold start the chart
+    // is at its initial step, the delay that was running is gone and the action never starts;
+    // a step that was active before the cold start was not left by the chart, so P0 is silent.
+    for qual in ["SD", "P0"] {
+        let d = (qual == "SD").then_some("T#30ms");
+        let mut r = run(&[qualified_reset_in(qual, d, "5")]);
+        r.set("go", Value::Bool(true));
+        r.scan_at(0);
+        r.set("go", Value::Bool(false));
+        r.scan_at(10);
+        assert!(r.bool("S.X"), "{qual}");
+        let p = Program::load(&r.c.bytecode).unwrap();
+        cold_start(&p, &mut r.memory).unwrap();
+        for k in 0..8 {
+            r.scan_at(k * 10);
+            assert!(r.bool("Idle.X") && !r.bool("S.X"), "{qual} scan {k}");
+            assert!(!r.bool("act"), "{qual} scan {k}");
+        }
+    }
+}
+
+#[test]
 fn an_action_of_statements_runs_while_it_is_active_and_its_flag_says_so() {
     // §6.7.4.6 rule a, Table 60 feature 2: the statements run while Q is TRUE, and Q is read
     // as Count.Q. Without final scan, they do not run once more after Q falls, nor at a cold
@@ -840,6 +1202,52 @@ fn a_build_of_another_chart_that_takes_over_the_variables_starts_it_again_from_i
 }
 
 #[test]
+fn a_chart_started_again_by_a_build_of_another_chart_runs_no_p0_action_and_drops_an_sd_delay() {
+    // An online change to another chart starts it again from its initial step (above): the
+    // step that was active was not left by the chart, so P0 does not pulse, and what was
+    // stored is not any more, so the SD delay that was running never starts the action.
+    for qual in ["SD", "SL", "P0"] {
+        let d = (qual != "P0").then_some("T#30ms");
+        let mut r = run(&[qualified_reset_in(qual, d, "5")]);
+        r.set("go", Value::Bool(true));
+        r.scan_at(0);
+        r.set("go", Value::Bool(false));
+        r.scan_at(10);
+        assert!(r.bool("S.X"), "{qual}");
+        // A new initial step Zero before Idle.
+        let after = project(&[Pou::program("Main")
+            .sfc()
+            .vars(&[
+                ("go", "BOOL"),
+                ("stop", "BOOL"),
+                ("act", "BOOL"),
+                ("reset", "BOOL"),
+            ])
+            .step(20, 100, -80, "Zero", true, &["8"])
+            .trans(21, 100, -40, "go", &["20"])
+            .step(1, 100, 0, "Idle", false, &["21"])
+            .trans(2, 100, 40, "go", &["1"])
+            .step(3, 100, 80, "S", false, &["2"])
+            .trans(4, 100, 120, "stop", &["3"])
+            .step(5, 100, 160, "Off", false, &["4"])
+            .trans(8, 100, 200, "reset", &["5"])
+            .actions_of(6, 200, 80, "3", &[(7, qual, d, Act::Name("act"))])
+            .actions_of(9, 200, 0, "5", &[(10, "R", None, Act::Name("act"))])]);
+        let mut r = take_over(&r, &after);
+        assert!(r.bool("S.X"), "{qual}: carried by its name");
+        for k in 2..10 {
+            r.scan_at(k * 10);
+            assert_eq!(
+                active(&r, &["Zero", "Idle", "S", "Off"]),
+                ["Zero"],
+                "{qual} scan {k}"
+            );
+            assert!(!r.bool("act"), "{qual} scan {k}");
+        }
+    }
+}
+
+#[test]
 fn a_chart_and_an_st_function_block_compile_together() {
     // A chart's action calls a function block of the project's ST source.
     let st = "FUNCTION_BLOCK Twice VAR_INPUT x : INT; END_VAR VAR_OUTPUT y : INT; END_VAR y := 2 * x; END_FUNCTION_BLOCK";
@@ -1074,6 +1482,43 @@ fn a_chart_instance_first_called_late_times_its_initial_step_from_its_first_call
         !r.bool("a.Busy.X") && !r.bool("y"),
         "Busy 20 ms after a's first call"
     );
+}
+
+#[test]
+fn a_step_that_loops_to_itself_is_not_entered_again_for_an_sd_delay_or_a_p0_pulse() {
+    // As the test below, for SD and P0: the action control sees S's flag, which stays TRUE
+    // when S's transition leads back to S, so the SD delay is not started again (it would be
+    // if S were left for a scan and entered again) and P0 has no falling edge. Found in the
+    // second review: the rule was written as "a step entered again", which a loop to itself
+    // is not, for any qualifier. S is stored in scan 1 (10 ms) with T#60ms and loops in scan
+    // 3: the action starts at 70 ms.
+    for (qual, duration, expected) in [
+        ("SD", Some("T#60ms"), "000000011111"),
+        ("P0", None, "000000000000"),
+    ] {
+        let p = Pou::program("Main")
+            .sfc()
+            .vars(&[("go", "BOOL"), ("again", "BOOL"), ("act", "BOOL")])
+            .step(1, 100, 0, "Idle", true, &[])
+            .trans(2, 100, 40, "go", &["1"])
+            .step(3, 100, 80, "S", false, &["2"])
+            .trans(4, 100, 120, "again", &["3"])
+            .jump_step(5, 100, 160, "S", &["4"])
+            .actions_of(6, 200, 80, "3", &[(7, qual, duration, Act::Name("act"))]);
+        let mut r = run(&[p]);
+        let mut out = String::new();
+        let mut times = Vec::new();
+        for k in 0..12 {
+            r.set("go", Value::Bool(k == 0));
+            r.set("again", Value::Bool(k == 3));
+            r.scan_at(k * 10);
+            times.push(r.int("S.T") / support::MS);
+            out.push(if r.bool("act") { '1' } else { '0' });
+        }
+        // S's own time does start again in scan 3.
+        assert_eq!(times[..6], [0, 10, 20, 0, 10, 20], "{qual}");
+        assert_eq!(out, expected, "{qual}");
+    }
 }
 
 #[test]
