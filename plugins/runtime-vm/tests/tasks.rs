@@ -29,7 +29,7 @@ fn one_at_a_time() -> MutexGuard<'static, ()> {
 /// whose own sleeping thread was not away that long.
 struct Timekeeper {
     stop: Arc<AtomicBool>,
-    thread: std::thread::JoinHandle<Duration>,
+    thread: std::thread::JoinHandle<(Duration, u32)>,
 }
 
 impl Timekeeper {
@@ -37,21 +37,22 @@ impl Timekeeper {
         let stop = Arc::new(AtomicBool::new(false));
         let seen = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
-            let mut longest = Duration::ZERO;
+            let (mut longest, mut wakings) = (Duration::ZERO, 0u32);
             let mut last = Instant::now();
             while !seen.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(1));
                 let now = Instant::now();
                 longest = longest.max(now - last);
+                wakings += 1;
                 last = now;
             }
-            longest
+            (longest, wakings)
         });
         Timekeeper { stop, thread }
     }
 
-    /// The longest the thread was away.
-    fn longest(self) -> Duration {
+    /// The longest the thread was away, and how many times it woke.
+    fn longest(self) -> (Duration, u32) {
         self.stop.store(true, Ordering::SeqCst);
         self.thread.join().expect("the timekeeper does not panic")
     }
@@ -345,28 +346,30 @@ fn a_higher_priority_task_preempts_a_long_lower_one() {
     // and age of the last run of the low task, then the runs, overruns and age of the high.
     let began = Instant::now();
     let mut trace = String::new();
-    let r = exchange_for(
-        &mut engine,
-        Duration::from_millis(2_000),
-        Duration::from_millis(10),
-        |_| Vec::new(),
-        |r| {
-            use std::fmt::Write;
-            let (l, h) = (task(&r.state, "low"), task(&r.state, "high"));
-            let _ = writeln!(
-                trace,
-                "{:>7.1} ms  low {} runs {} preempted age {:?} us  high {} runs {} overruns age {:?} us",
-                began.elapsed().as_secs_f64() * 1e3,
-                l.runs,
-                l.preemptions,
-                l.run_age_us,
-                h.runs,
-                h.overruns,
-                h.run_age_us
-            );
-        },
-    );
-    let away = keeper.longest();
+    let r = loop {
+        use std::fmt::Write;
+        let asked = began.elapsed();
+        let r = exchange(&mut engine, Vec::new());
+        let answered = began.elapsed();
+        let (l, h) = (task(&r.state, "low"), task(&r.state, "high"));
+        let _ = writeln!(
+            trace,
+            "{:>7.1} ms (+{:>5.2})  low {} runs {} preempted age {:?} us  high {} runs {} overruns age {:?} us",
+            asked.as_secs_f64() * 1e3,
+            (answered - asked).as_secs_f64() * 1e3,
+            l.runs,
+            l.preemptions,
+            l.run_age_us,
+            h.runs,
+            h.overruns,
+            h.run_age_us
+        );
+        if answered >= Duration::from_millis(2_000) {
+            break r;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let (away, wakings) = keeper.longest();
     let (low, high) = (task(&r.state, "low"), task(&r.state, "high"));
     assert_eq!(r.state.mode, RuntimeMode::Run, "{:?}", r.state.fault);
     assert!(low.runs > 0, "{low:?}");
@@ -381,16 +384,17 @@ fn a_higher_priority_task_preempts_a_long_lower_one() {
     if away < Duration::from_millis(high_ms / 2) {
         assert_eq!(
             high.overruns, 0,
-            "a sleeping thread was away at most {away:?}, a low run alone took {alone:?}: \
-             {high:?}\n{low:?}\n{trace}"
+            "a sleeping thread was away at most {away:?} and woke {wakings} times, a low run \
+             alone took {alone:?}: {high:?}\n{low:?}\n{trace}"
         );
     } else {
         // Written past the capture of a passing test's output: a claim not made is to be seen
         // in the log of the run that did not make it.
         let said = format!(
             "NOT SHOWN on this machine: that the high task misses no due time. A thread \
-             sleeping 1 ms was away {away:?}, the high interval is {high_ms} ms, and the high \
-             task counted {} overruns in {} runs.\n",
+             sleeping 1 ms was away {away:?} and woke {wakings} times, the high interval is \
+             {high_ms} ms, a low run alone took {alone:?}, and the high task counted {} \
+             overruns in {} runs.\n{high:?}\n{low:?}\n{trace}",
             high.overruns, high.runs
         );
         let _ = std::io::Write::write_all(&mut std::io::stderr(), said.as_bytes());
