@@ -1248,6 +1248,10 @@ async fn an_agent_writes_checks_and_builds_a_program_over_mcp() {
             "save_logic_library_source",
             "delete_logic_library_source",
             "check_logic_library",
+            "list_logic_runtimes",
+            "get_logic_runtime",
+            "save_logic_runtime",
+            "delete_logic_runtime",
         ]
     );
 
@@ -1513,4 +1517,237 @@ async fn the_library_is_written_read_checked_and_deleted_through_the_server() {
         .collect();
     assert!(listed.is_empty(), "{listed:?}");
     rig.close().await;
+}
+
+const RUNTIMES: &str = "/api/v1/projects/plant/logic/runtimes";
+
+/// A runtime of two tasks over the server: Writer fast, Reader slow.
+fn line() -> Value {
+    json!({ "module": "vm", "target": "pc", "run": true, "tasks": [
+        { "name": "fast", "kind": { "type": "cyclic", "interval_ms": 20 }, "priority": 1, "programs": ["Writer"] },
+        { "name": "slow", "kind": { "type": "cyclic", "interval_ms": 50 }, "priority": 5, "programs": ["reader"] }
+    ]})
+}
+
+/// The task configuration through the server: a viewer reads it, an operator and a viewer may
+/// not write it, an engineer saves and deletes a runtime, refusals carry the module's status
+/// and words, and the file is the module's own `logic/tasks.json`, in this project alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn runtimes_are_configured_listed_and_deleted_through_the_server() {
+    let rig = rig().await;
+    for name in ["Writer", "Reader"] {
+        rig.eng("POST", PROGRAMS, Some(json!({"name": name})), 201)
+            .await;
+    }
+    let file = rig.project.join("logic").join("tasks.json");
+    let (status, listed) = rig.send(&rig.viewer, "GET", RUNTIMES, None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["runtimes"], json!([]));
+    assert_eq!(listed["problems"], json!([]));
+    let ids: Vec<&str> = listed["implied"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["Writer", "Reader"]);
+    assert!(!file.exists(), "a read made tasks.json");
+
+    let uri = format!("{RUNTIMES}/Line");
+    for session in [&rig.viewer, &rig.operator] {
+        let (status, _) = rig.send(session, "PUT", &uri, Some(line())).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = rig.send(session, "DELETE", &uri, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+    assert!(!file.exists());
+    let saved = rig.eng("PUT", &uri, Some(line()), 200).await;
+    assert_eq!(saved["created"], true, "{saved}");
+    assert_eq!(saved["runtime"]["tasks"][1]["programs"], json!(["Reader"]));
+    let stored: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(stored["runtimes"][0], saved["runtime"]);
+    let (status, one) = rig
+        .send(&rig.viewer, "GET", &format!("{RUNTIMES}/line"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(one, json!({"runtime": saved["runtime"], "implied": false}));
+
+    // The module's refusals, with its status and words.
+    for (id, status, said) in [
+        ("CON", 400, "'CON' cannot be a runtime id: it is a device name on Windows (CON, PRN, AUX, NUL, COM0 to COM9, LPT0 to LPT9)"),
+        ("a.b", 400, "'a.b' is not a runtime id: use 1 to 64 letters, digits, '-' or '_'"),
+        ("writer", 409, "'writer' is a program of the project; a runtime is not named like a program"),
+        ("LINE", 409, "the project already has a runtime 'Line'; names that differ only in case are one name"),
+    ] {
+        let refused = rig
+            .eng("PUT", &format!("{RUNTIMES}/{id}"), Some(line()), status)
+            .await;
+        assert_eq!(refused, json!({"error": said}));
+    }
+    let refused = rig
+        .eng("DELETE", &format!("{PROGRAMS}/Writer"), None, 409)
+        .await;
+    assert_eq!(
+        refused["error"],
+        "program 'Writer' is in task 'fast' of runtime 'Line': take it out of the runtime first"
+    );
+    let refused = rig
+        .eng("POST", PROGRAMS, Some(json!({"name": "line"})), 409)
+        .await;
+    assert_eq!(
+        refused["error"],
+        "the project has a runtime 'Line'; a program is not named like a runtime"
+    );
+
+    // Another project has none.
+    let other = rig
+        .eng("GET", "/api/v1/projects/other/logic/runtimes", None, 200)
+        .await;
+    assert_eq!(
+        other,
+        json!({"runtimes": [], "implied": [], "problems": []})
+    );
+
+    let deleted = rig.eng("DELETE", &uri, None, 200).await;
+    assert_eq!(deleted, json!({"deleted": "Line"}));
+    rig.eng("DELETE", &uri, None, 404).await;
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "{\n  \"runtimes\": []\n}\n"
+    );
+    let listed = rig.eng("GET", RUNTIMES, None, 200).await;
+    assert_eq!(listed["implied"].as_array().unwrap().len(), 2, "{listed}");
+    rig.close().await;
+}
+
+/// An agent configures a runtime over MCP alone; the runtime is named by `runtime_id`, which
+/// every runtime tool requires.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_configures_a_runtime_over_mcp() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Arc::new(ControllerStorage::new(dir.path()).unwrap());
+    storage
+        .create_project(&ProjectConfig::new("plant", "Plant"))
+        .unwrap();
+    let path = Path::new(LOGIC);
+    let module = Arc::new(ModuleBinary {
+        path: path.to_path_buf(),
+        manifest: read_manifest(path).await.unwrap(),
+        fingerprint: Fingerprint::of(path).unwrap(),
+    });
+    let state = ApiState::<mythos_pal::MemoryShm>::new(
+        storage,
+        Arc::new(RwLock::new(TagCatalog::new())),
+        None,
+    );
+    let services = ServiceHost::new(state.hmi_events.clone());
+    services.sync(vec![module]).await;
+    let app = create_router(state.with_services(Arc::clone(&services)));
+    let rpc = |method: &'static str, params: Value| {
+        let app = app.clone();
+        async move {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header(header::HOST, "127.0.0.1:8080")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json, text/event-stream")
+                .body(Body::from(
+                    json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                        .to_string(),
+                ))
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        }
+    };
+    let tool = |name: &'static str, arguments: Value| {
+        let call = rpc("tools/call", json!({"name": name, "arguments": arguments}));
+        async move { call.await["result"].clone() }
+    };
+
+    let listed = rpc("tools/list", json!({})).await;
+    let schema = |name: &str| {
+        listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("no tool {name}"))["inputSchema"]
+            .clone()
+    };
+    assert_eq!(
+        schema("list_logic_runtimes")["required"],
+        json!(["project_id"])
+    );
+    for name in ["get_logic_runtime", "delete_logic_runtime"] {
+        assert_eq!(
+            schema(name)["required"],
+            json!(["project_id", "runtime_id"]),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        schema("save_logic_runtime")["required"],
+        json!(["project_id", "runtime_id", "body"])
+    );
+
+    for name in ["Writer", "Reader"] {
+        let created = tool(
+            "create_logic_program",
+            json!({"project_id": "plant", "body": {"name": name}}),
+        )
+        .await;
+        assert_eq!(created["isError"], false, "{created}");
+    }
+    let without = tool(
+        "save_logic_runtime",
+        json!({"project_id": "plant", "body": line()}),
+    )
+    .await;
+    assert_eq!(without["isError"], true, "{without}");
+    assert_eq!(without["content"][0]["text"], "'runtime_id' is required");
+    let saved = tool(
+        "save_logic_runtime",
+        json!({"project_id": "plant", "runtime_id": "Line", "body": line()}),
+    )
+    .await;
+    assert_eq!(saved["isError"], false, "{saved}");
+    assert_eq!(
+        saved["structuredContent"]["body"]["created"], true,
+        "{saved}"
+    );
+    let got = tool(
+        "get_logic_runtime",
+        json!({"project_id": "plant", "runtime_id": "Line"}),
+    )
+    .await;
+    assert_eq!(got["structuredContent"]["body"]["implied"], false, "{got}");
+    let all = tool("list_logic_runtimes", json!({"project_id": "plant"})).await;
+    assert_eq!(
+        all["structuredContent"]["body"]["runtimes"][0]["id"], "Line",
+        "{all}"
+    );
+    let refused = tool(
+        "save_logic_runtime",
+        json!({"project_id": "plant", "runtime_id": "Reader", "body": line()}),
+    )
+    .await;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert_eq!(refused["structuredContent"]["status"], 409, "{refused}");
+    let deleted = tool(
+        "delete_logic_runtime",
+        json!({"project_id": "plant", "runtime_id": "Line"}),
+    )
+    .await;
+    assert_eq!(
+        deleted["structuredContent"]["body"],
+        json!({"deleted": "Line"}),
+        "{deleted}"
+    );
+    services.shutdown().await;
 }

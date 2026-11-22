@@ -52,6 +52,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tokio::sync::Mutex;
 
+mod runtimes;
+
 pub const MODULE_ID: &str = "org.mythos.logic";
 /// The module's name in URLs and its data directory: `/api/v1/projects/:id/logic/…`.
 pub const PROVIDES: &str = "logic";
@@ -61,6 +63,16 @@ pub const PROGRAMS_CHANGED_EVENT: &str = "LOGIC_PROGRAMS_CHANGED";
 /// "what": "saved" | "deleted"}`. Not [`PROGRAMS_CHANGED_EVENT`], whose `program` the
 /// workbench reads.
 pub const LIBRARY_CHANGED_EVENT: &str = "LOGIC_LIBRARY_CHANGED";
+/// Sent when a runtime of the project's task configuration is saved or deleted: `{"project",
+/// "runtime", "what": "saved" | "deleted"}`. Not [`PROGRAMS_CHANGED_EVENT`], whose `program`
+/// and `what` the workbench acts on.
+pub const RUNTIMES_CHANGED_EVENT: &str = "LOGIC_RUNTIMES_CHANGED";
+/// In the module's directory, the file whose lock every write holds, so that two processes
+/// serving one project (a hot swap starts the new one before the old one stops) never read and
+/// write at the same time: the task configuration and the programs must agree, and they are two
+/// files. It ends in `.tmp`, so a device's plant slice leaves it out. It is made by the first
+/// write and never removed: removing a lock file lets two writers each lock a different file.
+pub const LOCK_FILE: &str = ".lock.tmp";
 
 const PROGRAMS_FILE: &str = "programs.json";
 const SOURCES_DIR: &str = "programs";
@@ -162,20 +174,9 @@ fn load(data: &Path) -> Result<Programs, Refusal> {
     }
 }
 
-/// Write a file whole or not at all: a temporary beside it, then a rename.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
-    let fail = |e: std::io::Error| error(500, format!("{}: {e}", path.display()));
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(fail)?;
-    }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes).map_err(fail)?;
-    std::fs::rename(&tmp, path).map_err(fail)
-}
-
 fn save(data: &Path, programs: &Programs) -> Result<(), Refusal> {
     let bytes = serde_json::to_vec_pretty(programs).map_err(|e| error(500, e))?;
-    write_atomic(&data.join(PROGRAMS_FILE), &bytes)
+    write_synced(&data.join(PROGRAMS_FILE), &bytes)
 }
 
 /// The file of a program's source: `.st` or, for a diagram, `.xml`.
@@ -635,6 +636,31 @@ fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
         return Err(error(500, message));
     }
     Ok(())
+}
+
+/// Hold the lock of [`LOCK_FILE`] in `data` until the file returned is dropped. The lock is
+/// the operating system's, so it holds between processes; it waits while another holds it.
+/// The data module holds its own the same way; the two may not depend on each other.
+fn lock_writes(data: &Path) -> Result<std::fs::File, Refusal> {
+    let path = data.join(LOCK_FILE);
+    let fail = |e: std::io::Error| error(500, format!("{}: {e}", path.display()));
+    std::fs::create_dir_all(data).map_err(|e| error(500, format!("{}: {e}", data.display())))?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(fail)?;
+    file.lock().map_err(fail)?;
+    Ok(file)
+}
+
+/// Whether a call only reads: it writes nothing, so it takes no lock and makes no file.
+fn only_reads(call: &HttpCall) -> bool {
+    call.method == "GET"
+        || (call.method == "POST"
+            && (call.route.ends_with("/check") || call.route.ends_with("/build")))
 }
 
 /// The temporary a write of `path` goes through: beside it, `.<file>.<pid>.tmp`. The pid keeps
@@ -1400,6 +1426,39 @@ fn settings_schema() -> Value {
     })
 }
 
+/// The body `save_logic_runtime` takes: a runtime without its id, which is the path's.
+fn runtime_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["module", "target", "run", "tasks"],
+        "properties": {
+            "module": { "type": "string", "description": "The runtime module that runs it, for example vm" },
+            "target": { "type": "string", "description": "The target profile its programs are compiled for, for example pc" },
+            "run": { "type": "boolean", "description": "Whether it is put in RUN when it is loaded" },
+            "tasks": { "type": "array", "minItems": 1, "description": "Its tasks; every program of the runtime is in exactly one",
+                "items": {
+                    "type": "object",
+                    "required": ["name", "kind", "priority", "programs"],
+                    "properties": {
+                        "name": { "type": "string", "description": "1 to 64 letters, digits, - or _" },
+                        "kind": { "type": "object", "required": ["type"],
+                            "description": "cyclic {interval_ms, phase_ms (default 0)}, cycle {min_cycle_ms (default 0)}, startup {}, or event {tag}: at each rising edge of a BOOL tag",
+                            "properties": {
+                                "type": { "type": "string", "enum": ["cyclic", "cycle", "startup", "event"] },
+                                "interval_ms": { "type": "integer", "minimum": 1 },
+                                "phase_ms": { "type": "integer", "minimum": 0 },
+                                "min_cycle_ms": { "type": "integer", "minimum": 0 },
+                                "tag": { "type": "string" }
+                            } },
+                        "priority": { "type": "integer", "minimum": 0, "maximum": 31, "description": "0 is the highest, 31 the lowest" },
+                        "watchdog_ms": { "type": "integer", "minimum": 1, "description": "How long the task may owe a run before the runtime is stopped; absent: the runtime's default" },
+                        "programs": { "type": "array", "items": { "type": "string" }, "description": "Programs of the project, in the order they run" }
+                    }
+                } }
+        }
+    })
+}
+
 /// What `mythos-module-logic --manifest` prints.
 pub fn manifest() -> ModuleManifest {
     ModuleManifest {
@@ -1475,6 +1534,15 @@ pub fn manifest() -> ModuleManifest {
                         "source": { "type": "string", "description": "That source's text; give name with it" }
                     }
                 })), &[]),
+            route("GET", "/runtimes", "viewer", "list_logic_runtimes",
+                "The project's runtimes as authored in the logic module (logic/tasks.json): 'runtimes', each configured one with its module, target, run and tasks; 'implied', the runtime each program named by no configured runtime runs alone in (its id the program's name, one cyclic task at the program's interval, priority 31), derived and never written; and 'problems', what the stored files break of the rules (after a hand edit). Reads only; nothing is written, built or loaded.", None, &[]),
+            route("GET", "/runtimes/:runtime", "viewer", "get_logic_runtime",
+                "One runtime of the project, configured or implied (a program running alone, by its name), with 'implied' saying which. Ids are compared without regard to case; the answer has the stored spelling. Reads only; nothing is written, built or loaded.", None, &[]),
+            route("PUT", "/runtimes/:runtime", "engineer", "save_logic_runtime",
+                "Make or replace a configured runtime of the project: the runtime module that runs it, the target profile its programs are compiled for, whether it is put in RUN when loaded, and its tasks, each naming programs of the project in the order they run (stored in the spelling of the program list). Refused, and nothing saved, when the id is a device name on Windows, differs only in case from another runtime's, or is a program's name; when a task names a program the project lacks or a program of another runtime; or when the tasks do not check as the core checks them. Nothing is built or loaded by this call.",
+                Some(runtime_schema()), &[]),
+            route("DELETE", "/runtimes/:runtime", "engineer", "delete_logic_runtime",
+                "Remove a configured runtime from the project: its programs run alone again, each in its own runtime. A runtime that the core already runs is not touched, and nothing is loaded.", None, &[]),
         ],
     }
 }
@@ -1534,17 +1602,65 @@ pub struct Logic {
     writes: Mutex<()>,
 }
 
+/// The name and data of an event a call sends when it changed something.
+type Event = (&'static str, Value);
+
 impl Logic {
-    fn handle_in(&self, call: &HttpCall, data: &Path, events: &Events) -> HttpReply {
-        let project = call.project.clone().unwrap_or_default();
-        let name = call.params.get("program").map(String::as_str).unwrap_or("");
-        let changed = |what: &str, name: &str| {
-            events.send(
-                PROGRAMS_CHANGED_EVENT,
-                json!({ "project": project, "program": name, "what": what }),
+    /// Answer `call`, with the event to send when it changed something. [`Service::handle`]
+    /// is this, with the event sent.
+    pub async fn serve(&self, call: &HttpCall) -> (HttpReply, Option<Event>) {
+        let Some(data) = call.data_dir.as_ref().map(PathBuf::from) else {
+            return (
+                HttpReply::error(500, "the server gave the logic module no data directory"),
+                None,
             );
         };
-        match (call.method.as_str(), call.route.as_str()) {
+        // A program's name becomes a file name: nothing but a valid name gets that far.
+        if let Some(name) = call.params.get("program") {
+            if !valid_name(name) {
+                return (
+                    HttpReply::error(400, format!("'{name}' is not a program name")),
+                    None,
+                );
+            }
+        }
+        // So does a library source's.
+        if let Some(name) = call.params.get("name") {
+            if let Some(problem) = library_name_problem(name) {
+                return (HttpReply::error(400, problem), None);
+            }
+        }
+        // A runtime's id is the core's runtime id.
+        if let Some(id) = call.params.get("runtime") {
+            if let Some(problem) = runtimes::id_problem(id) {
+                return (HttpReply::error(400, problem), None);
+            }
+        }
+        let _guard = self.writes.lock().await;
+        // A write also holds the lock between processes (see [`LOCK_FILE`]). A read does not:
+        // it writes nothing, and makes no file.
+        let _lock = if only_reads(call) {
+            None
+        } else {
+            match lock_writes(&data) {
+                Ok(file) => Some(file),
+                Err((status, body)) => return (HttpReply::json(status, body), None),
+            }
+        };
+        self.handle_in(call, &data)
+    }
+
+    fn handle_in(&self, call: &HttpCall, data: &Path) -> (HttpReply, Option<Event>) {
+        let project = call.project.clone().unwrap_or_default();
+        let name = call.params.get("program").map(String::as_str).unwrap_or("");
+        let event = std::cell::RefCell::new(None);
+        let changed = |what: &str, name: &str| {
+            *event.borrow_mut() = Some((
+                PROGRAMS_CHANGED_EVENT,
+                json!({ "project": project, "program": name, "what": what }),
+            ));
+        };
+        let reply = match (call.method.as_str(), call.route.as_str()) {
             ("GET", "/programs") => reply(load(data).map(|p| json!({ "programs": p.programs })), 200),
             ("POST", "/programs") => reply(
                 body::<Create>(call).and_then(|b| {
@@ -1554,9 +1670,24 @@ impl Logic {
                             format!("'{}' is not a program name: a letter, then letters, digits or _, at most 64", b.name),
                         ));
                     }
+                    // A new name only: a program that already has such a name still reads,
+                    // checks, builds and deletes.
+                    if device_name(&b.name) {
+                        return Err(error(
+                            400,
+                            format!("'{}' cannot be a program name: it is a device name on Windows (CON, PRN, AUX, NUL, COM0 to COM9, LPT0 to LPT9)", b.name),
+                        ));
+                    }
                     let mut programs = load(data)?;
                     if programs.programs.iter().any(|p| p.name.eq_ignore_ascii_case(&b.name)) {
                         return Err(error(409, format!("the project already has a program '{}'", b.name)));
+                    }
+                    let configured = runtimes::load(data)?;
+                    if let Some(r) = configured.runtimes.iter().find(|r| r.id.eq_ignore_ascii_case(&b.name)) {
+                        return Err(error(
+                            409,
+                            format!("the project has a runtime '{}'; a program is not named like a runtime", r.id),
+                        ));
                     }
                     let entry = ProgramEntry {
                         name: b.name.clone(),
@@ -1572,7 +1703,7 @@ impl Logic {
                     };
                     check_entry(&entry).map_err(|e| error(400, e))?;
                     let source = template(&b.name, &entry.language, std::time::SystemTime::now());
-                    write_atomic(&source_path(data, &entry), source.as_bytes())?;
+                    write_synced(&source_path(data, &entry), source.as_bytes())?;
                     programs.programs.push(entry.clone());
                     save(data, &programs)?;
                     changed("created", &b.name);
@@ -1591,7 +1722,7 @@ impl Logic {
             ("PUT", "/programs/:program/source") => reply(
                 body::<SourceBody>(call).and_then(|b| {
                     let entry = find(&load(data)?, name)?.clone();
-                    write_atomic(&source_path(data, &entry), b.source.as_bytes())?;
+                    write_synced(&source_path(data, &entry), b.source.as_bytes())?;
                     changed("source", name);
                     Ok(json!({ "saved": true }))
                 }),
@@ -1627,6 +1758,12 @@ impl Logic {
             ("DELETE", "/programs/:program") => reply(
                 load(data).and_then(|mut programs| {
                     let entry = find(&programs, name)?.clone();
+                    if let Some((runtime, task)) = runtimes::assigned(&runtimes::load(data)?, name) {
+                        return Err(error(
+                            409,
+                            format!("program '{name}' is in task '{task}' of runtime '{runtime}': take it out of the runtime first"),
+                        ));
+                    }
                     programs.programs.retain(|p| p.name != name);
                     save(data, &programs)?;
                     let _ = std::fs::remove_file(source_path(data, &entry));
@@ -1663,14 +1800,16 @@ impl Logic {
                 200,
             ),
             (_, route) if route == "/library" || route.starts_with("/library/") => {
-                let (reply, event) = library(call, data);
-                if let Some(event) = event {
-                    events.send(LIBRARY_CHANGED_EVENT, event);
-                }
-                reply
+                let (reply, sent) = library(call, data);
+                return (reply, sent.map(|e| (LIBRARY_CHANGED_EVENT, e)));
+            }
+            (_, route) if route == "/runtimes" || route.starts_with("/runtimes/") => {
+                let (reply, sent) = runtimes::runtimes(call, data);
+                return (reply, sent.map(|e| (RUNTIMES_CHANGED_EVENT, e)));
             }
             (method, route) => HttpReply::error(404, format!("the logic module has no route {method} {route}")),
-        }
+        };
+        (reply, event.into_inner())
     }
 }
 
@@ -1800,23 +1939,11 @@ fn check_library(mut project: Project, draft: Option<(String, String)>) -> Value
 #[async_trait]
 impl Service for Logic {
     async fn handle(&self, call: HttpCall, events: &Events) -> HttpReply {
-        let Some(data) = call.data_dir.as_ref().map(PathBuf::from) else {
-            return HttpReply::error(500, "the server gave the logic module no data directory");
-        };
-        // A program's name becomes a file name: nothing but a valid name gets that far.
-        if let Some(name) = call.params.get("program") {
-            if !valid_name(name) {
-                return HttpReply::error(400, format!("'{name}' is not a program name"));
-            }
+        let (reply, event) = self.serve(&call).await;
+        if let Some((name, data)) = event {
+            events.send(name, data);
         }
-        // So does a library source's.
-        if let Some(name) = call.params.get("name") {
-            if let Some(problem) = library_name_problem(name) {
-                return HttpReply::error(400, problem);
-            }
-        }
-        let _guard = self.writes.lock().await;
-        self.handle_in(&call, &data, events)
+        reply
     }
 }
 
