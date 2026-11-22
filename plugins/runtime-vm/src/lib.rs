@@ -789,6 +789,12 @@ impl Live {
             last_scan_us: self.last_scan_us,
             max_scan_us: self.max_scan_us,
             overruns: self.overruns,
+            // `beat` is set when a scan completes; before the first scan it is when the program
+            // was fed, which is not the age of anything a scan left.
+            scan_age_us: self
+                .beat
+                .filter(|_| self.scans > 0)
+                .map(|beat| beat.elapsed().as_micros().min(u64::MAX as u128) as u64),
             forced: self
                 .forces
                 .iter()
@@ -1640,6 +1646,27 @@ mod tests {
             assert_eq!(l.mode, mode);
             assert_eq!(l.forces.len(), 1);
         }
+    }
+
+    #[test]
+    fn the_state_says_how_long_ago_a_scan_completed_and_nothing_before_the_first() {
+        let plan = retaining(json!([])).unwrap();
+        let ago = Duration::from_millis(1_500);
+        let stalled = live(RuntimeMode::Run, true, Some(Instant::now() - ago));
+        let age = stalled
+            .state(&plan)
+            .scan_age_us
+            .expect("a scan has completed");
+        assert!(age >= ago.as_micros() as u64, "{age} µs");
+
+        // Fed, no scan completed yet: `beat` is when it was fed, which is not a scan's age.
+        let mut fed = live(RuntimeMode::Run, true, Some(Instant::now()));
+        fed.scans = 0;
+        assert_eq!(fed.state(&plan).scan_age_us, None);
+        assert_eq!(
+            live(RuntimeMode::Run, false, None).state(&plan).scan_age_us,
+            None
+        );
     }
 
     #[test]

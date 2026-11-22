@@ -14,6 +14,8 @@ import { ProgramEditor } from '../ProgramEditor';
 import { ProgramsTree } from '../ProgramsTree';
 import { usePrograms } from '../programs';
 import {
+  answerNext,
+  CURRENCY_CASES,
   byLabel,
   byTestId,
   click,
@@ -423,6 +425,46 @@ describe('the live state of a running Function Block Diagram', () => {
       'unknown',
       'unknown',
     ]);
+    expect(container.querySelectorAll('[data-state="on"], [data-state="off"], [data-state="value"]')).toHaveLength(0);
+  });
+
+  it('draws UNKNOWN, never a value, from values that are not current, and live again once they are', async () => {
+    const backend = main();
+    const { calls, container } = await opened(backend);
+    await live(container);
+    for (const { label, ages, current, why } of CURRENCY_CASES) {
+      await answerNext(backend, calls, 'Main', watchOf(RUNNING, 'run', ages));
+      expect(byTestId(container, 'fbd-live')?.getAttribute('data-live'), label).toBe(current ? 'live' : 'unknown');
+      if (current) {
+        expect(line(container, 1, 3), label).toBe('on');
+        expect(value(container, 11, 'OUT'), label).toEqual({ state: 'value', text: '7', forced: null });
+        continue;
+      }
+      expect(byTestId(container, 'fbd-live')?.textContent, label).toContain(why);
+      for (const [from, to] of [
+        [1, 3],
+        [3, 4],
+        [10, 11],
+        [33, 34],
+      ] as const) {
+        expect(line(container, from, to), label).toBe('unknown');
+      }
+      expect(value(container, 11, 'OUT')?.state ?? 'unknown', label).toBe('unknown');
+      expect(container.querySelectorAll('[data-state="on"], [data-state="off"], [data-state="value"]'), label).toHaveLength(0);
+    }
+  });
+
+  it('stops drawing the last values as live when no newer answer comes', async () => {
+    const backend = main();
+    const { container } = await opened(backend);
+    await live(container);
+    // A controller that answers nothing any more: no request comes back to redraw the editor.
+    backend.watch = 'hangs';
+    backend.runtimes = 'hangs';
+    // Its own reason, which only the watch's rule gives (the runtimes' comes later).
+    await until('the values are no longer current', () => (byTestId(container, 'fbd-live')?.textContent?.includes('no newer answer has come') ? true : null));
+    expect(byTestId(container, 'fbd-live')?.getAttribute('data-live')).toBe('unknown');
+    expect(line(container, 1, 3)).toBe('unknown');
     expect(container.querySelectorAll('[data-state="on"], [data-state="off"], [data-state="value"]')).toHaveLength(0);
   });
 

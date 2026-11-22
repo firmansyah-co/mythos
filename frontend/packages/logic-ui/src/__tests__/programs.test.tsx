@@ -7,6 +7,8 @@ import { useModuleUi } from '../../../ui-shell/src/modules/registry';
 import { ProgramsTree } from '../ProgramsTree';
 import { isDirty, usePrograms } from '../programs';
 import {
+  answerNext,
+  CURRENCY_CASES,
   button,
   byLabel,
   byTestId,
@@ -29,6 +31,7 @@ import {
   typeInto,
   typeSource,
   unmountAll,
+  until,
   watchOf,
   useController,
   useSession,
@@ -848,6 +851,73 @@ describe('the values of the running program', () => {
     await doing(() => state().readWatch('Tank', ['level', 'ok', 'speed', 'run', 't.ET', 'note']));
     expect(values(container)).toEqual(Array(6).fill('unknown:UNKNOWN'));
     expect(container.querySelector('[data-testid="variable-value"]')?.getAttribute('title')).toContain('does not answer');
+  });
+
+  it('says UNKNOWN for values that are not current, and shows them again once they are', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')), watch: watchOf(RUNNING) });
+    const { calls, container } = await opened(backend);
+    expect(values(container)[0]).toBe('live:20');
+    for (const { label, ages, current, why } of CURRENCY_CASES) {
+      await answerNext(backend, calls, 'Tank', watchOf(RUNNING, 'run', ages));
+      if (current) {
+        expect(values(container).slice(0, 2), label).toEqual(['live:20', 'live:TRUE']);
+        continue;
+      }
+      expect(values(container), label).toEqual(Array(6).fill('unknown:UNKNOWN'));
+      expect(container.querySelector('[data-testid="variable-value"]')?.getAttribute('title'), label).toContain(why);
+    }
+  });
+
+  it('shows what a stopped program stopped with only while it was read lately', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank', { mode: 'stop' })), watch: watchOf(RUNNING, 'stop') });
+    const { calls, container } = await opened(backend);
+    // Not scanning is what STOP is: no scan age is asked of it, only a recent read.
+    await answerNext(backend, calls, 'Tank', watchOf(RUNNING, 'stop', { scan_age_us: undefined }));
+    expect(values(container).slice(0, 2)).toEqual(['stopped:20stop', 'stopped:TRUEstop']);
+    await answerNext(backend, calls, 'Tank', watchOf(RUNNING, 'stop', { age_ms: 1501 }));
+    expect(values(container)[0]).toBe('unknown:UNKNOWN');
+  });
+
+  it('stops showing the last values when no newer answer comes', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')), watch: watchOf(RUNNING) });
+    const { container } = await opened(backend);
+    expect(values(container)[0]).toBe('live:20');
+    // A controller that answers nothing any more: no request comes back to redraw the editor.
+    backend.watch = 'hangs';
+    backend.runtimes = 'hangs';
+    // Its own reason, which only the watch's rule gives (the runtimes' comes later).
+    const reason = () => container.querySelector('[data-testid="variable-value"]')?.getAttribute('title') ?? '';
+    await until('the values are no longer current', () => (reason().includes('no newer answer has come') ? true : null));
+    expect(values(container)[0]).toBe('unknown:UNKNOWN');
+  });
+
+  it('ages what it read on a monotonic clock: a wall clock set back an hour keeps nothing current', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')), watch: watchOf(RUNNING) });
+    const { container } = await opened(backend);
+    expect(values(container)[0]).toBe('live:20');
+    const wall = Date.now.bind(Date);
+    const back = vi.spyOn(Date, 'now').mockImplementation(() => wall() - 3_600_000);
+    try {
+      // The runtimes go on answering (and redrawing); only the watch is left hanging.
+      backend.watch = 'hangs';
+      await until('the values are no longer current', () => (values(container)[0] === 'unknown:UNKNOWN' ? true : null));
+      expect(container.querySelector('[data-testid="variable-value"]')?.getAttribute('title')).toContain('no newer answer has come');
+    } finally {
+      back.mockRestore();
+    }
+  });
+
+  it('marks the runtime last known when the runtimes go unanswered, and shows no value', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')), watch: watchOf(RUNNING) });
+    const { container } = await opened(backend);
+    expect(values(container)[0]).toBe('live:20');
+    expect(byTestId(container, 'runtime-stale')).toBeNull();
+    // Asked, never answered: no error comes back to say so.
+    backend.runtimes = 'hangs';
+    await until('the runtime is marked last known', () => byTestId(container, 'runtime-stale'));
+    expect(byTestId(container, 'runtime-stale')?.textContent).toBe('LAST KNOWN');
+    expect(byTestId(container, 'runtime-stale-why')?.textContent).toContain('what was last known, not what is');
+    expect(values(container)[0]).toBe('unknown:UNKNOWN');
   });
 
   it('shows no value once the runtimes can no longer be read', async () => {
