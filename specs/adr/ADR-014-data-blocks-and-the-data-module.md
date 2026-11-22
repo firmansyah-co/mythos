@@ -1,6 +1,6 @@
 # ADR-014: Data Blocks, User Types and the Data Module
 
-- **Status**: ACCEPTED (design; nothing of it is built)
+- **Status**: ACCEPTED (design; of its slices D1, the compiler, is built: §6)
 - **Date**: 2026-11-22
 - **Requested by**: Adrian ("kalau aku mau ga area bersama gitu, tapi ada modul data (db) dimana
   kita bisa susun UDT dan sejenisnya"; "gimana biar hampir instant dan ga kena exchange
@@ -253,7 +253,7 @@ Each is one slice, built through the workflow topology, with its own evidence fi
 
 | Slice | What | Depends on |
 |-------|------|------------|
-| D1 | Compiler: several sources in one compilation; `VAR_EXTERNAL` against given data block declarations; the copy's address, the layout hash and the written members in the compiled program | — |
+| D1 (done) | Compiler: several sources in one compilation; `VAR_EXTERNAL` against given data block declarations; the copy's address, the layout hash and the written members in the compiled program | — |
 | D2 | Protocol, runtime module and core: data blocks in a runtime's configuration, master copies, hand-over at program start and end, the one-writer and layout checks, retained blocks, live values | D1 (C8b is built) |
 | D3 | Data module: store, check, routes and MCP tools; the logic module builds with `<project>/data/` and its library | D1 |
 | C8c | Logic module: runtimes and task configuration (ADR-013 §2.19) | — |
@@ -283,6 +283,18 @@ OPC UA.
 
 ## 6. Status
 
-Nothing of this ADR is built. `VAR_GLOBAL` and `VAR_EXTERNAL` are refused by both front ends
-today, a source has exactly one `PROGRAM` and the logic module compiles each program from its
-own source alone.
+**D1 is built** (evidence: [ADR-013 evidence, D1](ADR-013-evidence/25-d1.md)). The compiler
+takes library sources and data block declarations (`Sources.library`, `Sources.data`), takes
+`VAR_EXTERNAL` and `VAR_EXTERNAL CONSTANT` in a `PROGRAM` in Structured Text and
+`externalVars` in a TC6 document, says for each data block a program declares where its copy
+is, its layout hash and which top-level members the program writes (`Compiled.data`), and
+lays a project's blocks out with no program (`check_project`). The library is checked alone
+first, so it means the same in every program; what a program does not use adds nothing to
+what is compiled, and a program without library or data blocks compiles to the bytes it
+compiled to before.
+
+**Nothing uses it yet.** The logic module still compiles each program from its own source
+alone, no runtime hands a data block over, and there is no data module and no editor: D2 to
+D5, T2 and T3 are not built. `VAR_GLOBAL` stays refused, and so do `VAR_EXTERNAL` in a
+function block or function, a data block whose type is not a structure, and a per-block
+initial value.
