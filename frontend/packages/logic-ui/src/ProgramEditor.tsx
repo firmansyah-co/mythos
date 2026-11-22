@@ -37,6 +37,7 @@ import {
 } from './bindings';
 import {
   host,
+  isOfThisProgram,
   mayEngineer,
   useController,
   useProject,
@@ -828,6 +829,30 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
   );
 }
 
+const NOTHING_TO_DRAW: Diagnostic[] = [];
+const drawn = new WeakMap<CheckResult, Diagnostic[]>();
+
+/**
+ * The diagnostics a failed check draws on the program (the text's underlines and line messages,
+ * the diagrams' marks): only those of the program's own text ({@link isOfThisProgram}). One of
+ * the library or the project's types is about a line of another file and is only listed. Kept
+ * per check, so a view's memo sees the same list until the check changes.
+ */
+function drawnOf(check: CheckResult | null): Diagnostic[] {
+  if (!check || check.ok) return NOTHING_TO_DRAW;
+  let ours = drawn.get(check);
+  if (!ours) {
+    ours = check.diagnostics.filter(isOfThisProgram);
+    drawn.set(check, ours);
+  }
+  return ours;
+}
+
+/** Where a diagnostic of another source is: its path, and its line and column when it has a line. */
+function placeElsewhere(diagnostic: Diagnostic): string {
+  return diagnostic.line === 0 ? `${diagnostic.source ?? ''}` : `${diagnostic.source ?? ''} ${diagnostic.line}:${diagnostic.col}`;
+}
+
 /** Where a diagnostic is: a line and column of the text, or in a Ladder Diagram its element. */
 export function placeOf(diagnostic: Diagnostic): string {
   const element = diagnostic.element;
@@ -874,20 +899,29 @@ function CheckPanel({ doc, goTo }: { doc: ProgramDoc; goTo: (diagnostic: Diagnos
         </p>
       ) : (
         <ul className="logic-diagnostics" aria-label="Diagnostics">
-          {check.diagnostics.map((diagnostic, index) => (
-            <li key={index}>
-              <button
-                type="button"
-                className="logic-diagnostic"
-                data-testid="diagnostic"
-                data-local-id={diagnostic.element?.local_id ?? undefined}
-                onClick={() => goTo(diagnostic)}
-              >
-                <span className="mono logic-diagnostic__at">{placeOf(diagnostic)}</span>
+          {check.diagnostics.map((diagnostic, index) =>
+            isOfThisProgram(diagnostic) ? (
+              <li key={index}>
+                <button
+                  type="button"
+                  className="logic-diagnostic"
+                  data-testid="diagnostic"
+                  data-local-id={diagnostic.element?.local_id ?? undefined}
+                  onClick={() => goTo(diagnostic)}
+                >
+                  <span className="mono logic-diagnostic__at">{placeOf(diagnostic)}</span>
+                  {diagnostic.message}
+                </button>
+              </li>
+            ) : (
+              // Of the library or the project's types: a place in another file, so listed with
+              // its source and not a button that would jump into this program's text.
+              <li key={index} className="logic-diagnostic logic-diagnostic--plain" data-testid="diagnostic-elsewhere">
+                <span className="mono logic-diagnostic__at">{placeElsewhere(diagnostic)}</span>
                 {diagnostic.message}
-              </button>
-            </li>
-          ))}
+              </li>
+            )
+          )}
         </ul>
       )}
       {(check.binding_problems?.length ?? 0) > 0 && (
@@ -898,6 +932,21 @@ function CheckPanel({ doc, goTo }: { doc: ProgramDoc; goTo: (diagnostic: Diagnos
             </li>
           ))}
         </ul>
+      )}
+      {(check.project_problems?.length ?? 0) > 0 && (
+        <>
+          <p className="muted" data-testid="project-problems-note">
+            The project's types and data blocks do not check, so this program was compiled without them.
+          </p>
+          <ul className="logic-diagnostics" aria-label="Problems in the project's types and data blocks">
+            {check.project_problems?.map((problem, index) => (
+              <li key={index} className="logic-diagnostic logic-diagnostic--plain" data-testid="project-problem">
+                <span className="mono logic-diagnostic__at">{placeElsewhere(problem)}</span>
+                {problem.message}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </div>
   );
@@ -1043,7 +1092,7 @@ function SfcPanel({
   const watch = usePrograms((s) => s.watches[doc.entry.name]);
   const { live, why } = liveOf(doc, state, watch, useCurrency(state, watch));
   const check = checkIsCurrent(doc) ? doc.check : null;
-  const diagnostics = check && !check.ok ? check.diagnostics : [];
+  const diagnostics = drawnOf(check);
   const program = check?.ok ? (check.program ?? null) : null;
   const chartLive = live === null ? null : { values: live.values, probes: live.chart };
   // The text is drawn only while it is open: a browser lays out what a closed <details> holds.
@@ -1132,7 +1181,7 @@ function FbdPanel({ doc, fbd, state, may }: { doc: ProgramDoc; fbd: Fbd; state: 
   const watch = usePrograms((s) => s.watches[doc.entry.name]);
   const { live, why } = liveOf(doc, state, watch, useCurrency(state, watch));
   const check = current ? doc.check : null;
-  const diagnostics = check && !check.ok ? check.diagnostics : [];
+  const diagnostics = drawnOf(check);
   const program = check?.ok ? (check.program ?? null) : null;
   const outputTypes = useMemo(() => outputTypesOf(check ?? null), [check]);
   const view = fbd.ok ? <FbdView pous={fbd.pous} program={program} live={live} diagnostics={diagnostics} /> : null;
@@ -1188,7 +1237,7 @@ function LadderPanel({ doc, ladder, state, may }: { doc: ProgramDoc; ladder: Lad
   const live: LadderLive | null = shown.live === null ? null : { values: shown.live.values, power: shown.live.probes };
   const why = shown.why;
   const check = checkIsCurrent(doc) ? doc.check : null;
-  const diagnostics = check && !check.ok ? check.diagnostics : [];
+  const diagnostics = drawnOf(check);
   const program = check?.ok ? (check.program ?? null) : null;
   return (
     <div className="logic-panel" data-testid="ld-panel">
@@ -1327,6 +1376,9 @@ function CheckCard({ name, goTo }: { name: string; goTo: (diagnostic: Diagnostic
  */
 function problemCount(doc: ProgramDoc | undefined): number | null {
   if (!doc || doc.check === null || !checkIsCurrent(doc)) return null;
+  // Every diagnostic counts, those of another source too (the library, the project's types):
+  // each stops this program from compiling. `project_problems` do not: the program was
+  // compiled without the project's types and data blocks, and they are listed apart.
   return (doc.check.ok ? 0 : doc.check.diagnostics.length) + (doc.check.binding_problems?.length ?? 0);
 }
 
@@ -1521,7 +1573,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
   const dirty = isDirty(doc);
   const working = busy !== null;
   const state = runState(name, runtimes);
-  const diagnostics = checkIsCurrent(doc) && doc.check && !doc.check.ok ? doc.check.diagnostics : [];
+  const diagnostics = drawnOf(checkIsCurrent(doc) ? doc.check : null);
   // What runs is another version than the last one built here: said, since the text may differ.
   const differs =
     state.kind === 'loaded' && doc.built !== null && doc.built.version !== state.runtime.version;
