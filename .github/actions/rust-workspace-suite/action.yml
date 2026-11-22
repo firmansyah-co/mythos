@@ -1,0 +1,45 @@
+# The Rust lints and tests of one system, for the jobs "Rust Workspace on windows-latest" and
+# "Rust Workspace on macos-latest" of ci.yml. The steps are here, once, because those two are
+# jobs of their own and no longer one job with a matrix: a job with a matrix that is skipped
+# reports its name with the expression in it ("Rust Workspace on ${{ matrix.os }}"), so the
+# two required checks never report and the merge queue waits for them until it gives up
+# (seen on the first pull request through the queue, #182, 2026-11-22).
+#
+# The job checks the code out first: a local action is read from the checkout. Each step runs
+# in the shell a job's own step has by default on that system (pwsh on Windows, bash on macOS),
+# so the tests run in the environment they ran in as steps of the job.
+name: Rust workspace lints and tests
+description: Clippy, the whole test suite, and the service installed for real, on this system.
+runs:
+  using: composite
+  steps:
+    - name: Install Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    - name: Cache Cargo Build
+      uses: Swatinem/rust-cache@v2
+
+    - name: Cargo Clippy Audit
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: cargo clippy --workspace --all-targets -- -D warnings
+
+    # --no-fail-fast: a failure in one test binary must not hide what the others say.
+    # MYTHOS_TEST_MDNS: two discovery modules hear each other over multicast (ADR-012 §2.2),
+    # which these hosted runners have; a container may not, so elsewhere that test says SKIP.
+    - name: Run All Workspace Tests
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      env:
+        MYTHOS_TEST_MDNS: "1"
+      run: cargo test --workspace --no-fail-fast
+
+    # ADR-012 step 2: `mythos service install` installs mythos-server as a real service of the
+    # runner's operating system (Task Scheduler as SYSTEM on Windows; launchd as root through
+    # passwordless sudo on macOS), checks it answers, uninstalls it and checks it stopped. A
+    # developer's machine never runs this: the test is ignored without MYTHOS_TEST_SERVICE=1.
+    - name: Install mythos-server as a real service, then remove it
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      env:
+        MYTHOS_TEST_SERVICE: "1"
+      run: cargo test -p mythos-cli --test service_roundtrip -- --ignored --nocapture

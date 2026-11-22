@@ -248,48 +248,33 @@ jobs:
   # The release latency tests and the p99 report are `shm-latency-report` above, reported and not
   # enforced. `cargo test` here runs only the debug smoke check
   # (a 250 ns best-batch backstop against a lock or syscall on the hot path).
-  cross-platform-tests:
-    name: Rust Workspace on ${{ matrix.os }}
+  # Two jobs, not one with a matrix: when the suites are skipped in the merge queue (above), a
+  # job with a matrix reports its name unexpanded and the two required checks never report.
+  # Their names are required status checks of dev: they must not change. The steps are in
+  # .github/actions/rust-workspace-suite.
+  windows-tests:
+    name: Rust Workspace on windows-latest
     needs: already-verified
     if: ${{ !cancelled() && needs.already-verified.outputs.verified != 'true' }}
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     timeout-minutes: 60
-    strategy:
-      # One platform failing must not hide what the other says.
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+      - name: Lints, tests and the service
+        uses: ./.github/actions/rust-workspace-suite
 
-      - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Cache Cargo Build
-        uses: Swatinem/rust-cache@v2
-
-      - name: Cargo Clippy Audit
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      # --no-fail-fast: a failure in one test binary must not hide what the others say.
-      # MYTHOS_TEST_MDNS: two discovery modules hear each other over multicast (ADR-012 §2.2),
-      # which these hosted runners have; a container may not, so elsewhere that test says SKIP.
-      - name: Run All Workspace Tests
-        env:
-          MYTHOS_TEST_MDNS: "1"
-        run: cargo test --workspace --no-fail-fast
-
-      # ADR-012 step 2: `mythos service install` installs mythos-server as a real service of the
-      # runner's operating system (Task Scheduler as SYSTEM on Windows; launchd as root through
-      # passwordless sudo on macOS), checks it answers, uninstalls it and checks it stopped. A
-      # developer's machine never runs this: the test is ignored without MYTHOS_TEST_SERVICE=1.
-      - name: Install mythos-server as a real service, then remove it
-        env:
-          MYTHOS_TEST_SERVICE: "1"
-        run: cargo test -p mythos-cli --test service_roundtrip -- --ignored --nocapture
+  macos-tests:
+    name: Rust Workspace on macos-latest
+    needs: already-verified
+    if: ${{ !cancelled() && needs.already-verified.outputs.verified != 'true' }}
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Lints, tests and the service
+        uses: ./.github/actions/rust-workspace-suite
 
   # ADR-013: the logic VM's core must run on microcontrollers (ESP32, RP2040) as well as in the
   # PC runner. This links it into bare-metal firmware for both, with `core` alone, from the first
