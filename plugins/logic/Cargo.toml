@@ -2,7 +2,7 @@
 name = "mythos-logic"
 # A module has its own version (ADR-011 §2.6): it is released and replaced on its own,
 # and the server says which version of it runs. Bump it when the module changes.
-version = "0.5.0"
+version = "0.6.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -17,6 +17,7 @@ workspace = true
 [dependencies]
 mythos-module.workspace = true
 mythos-logic-compiler.workspace = true
+mythos-logic-st.workspace = true
 async-trait.workspace = true
 hex.workspace = true
 serde.workspace = true
@@ -27,3 +28,9 @@ tokio = { workspace = true, features = ["sync"] }
 [[bin]]
 name = "mythos-module-logic"
 path = "src/bin/mythos-module-logic.rs"
+
+[dev-dependencies]
+tempfile.workspace = true
+# Only to pin the two copies of the file rule together (a test): dev-dependencies do not
+# count as a module depending on another (module_boundaries.rs).
+mythos-data = { path = "../data" }

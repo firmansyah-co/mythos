@@ -126,7 +126,7 @@ impl Inputs {
         for s in c.symbols.iter().filter(|s| s.writable && s.array.is_none()) {
             let r = self.next();
             let v = match s.ty.as_str() {
-                "BOOL" => Value::Bool(r % 4 == 0),
+                "BOOL" => Value::Bool(r.is_multiple_of(4)),
                 "SINT" => Value::Sint((r % 200) as i8),
                 "INT" => Value::Int((r % 2_000) as i16 - 1_000),
                 "DINT" => Value::Dint((r % 200_000) as i32 - 100_000),

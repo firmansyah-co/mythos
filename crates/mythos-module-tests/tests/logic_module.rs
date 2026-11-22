@@ -1243,6 +1243,11 @@ async fn an_agent_writes_checks_and_builds_a_program_over_mcp() {
             "delete_logic_program",
             "check_logic_program",
             "build_logic_program",
+            "list_logic_library",
+            "get_logic_library_source",
+            "save_logic_library_source",
+            "delete_logic_library_source",
+            "check_logic_library",
         ]
     );
 
@@ -1382,4 +1387,130 @@ async fn an_agent_writes_checks_and_builds_a_program_over_mcp() {
     assert_eq!(refused["error"], "the project has no program 'Pump'");
 
     services.shutdown().await;
+}
+
+/// A project of today (no library, no data) answers as it did before D3: the check has no
+/// `data` or `project_problems`, the built instance and its program no `data`, and the project
+/// is given no data directory by the logic module.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_of_today_answers_without_any_data_key() {
+    let rig = rig().await;
+    let tank = format!("{PROGRAMS}/Tank");
+    rig.eng("POST", PROGRAMS, Some(json!({"name": "Tank"})), 201)
+        .await;
+    rig.eng(
+        "PUT",
+        &format!("{tank}/source"),
+        Some(json!({"source": TANK})),
+        200,
+    )
+    .await;
+    rig.eng("PUT", &format!("{tank}/settings"), Some(settings()), 200)
+        .await;
+    let checked = rig.eng("POST", &format!("{tank}/check"), None, 200).await;
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert!(checked.get("data").is_none(), "{checked}");
+    assert!(checked.get("project_problems").is_none(), "{checked}");
+    let built = rig.eng("POST", &format!("{tank}/build"), None, 200).await;
+    assert!(built.get("project_problems").is_none(), "{built}");
+    let instance = built["instance"].as_object().unwrap();
+    let keys: Vec<&str> = instance.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["id", "module", "program", "run"], "{built}");
+    assert!(
+        built["instance"]["program"].get("data").is_none(),
+        "{built}"
+    );
+    assert!(
+        !rig.project.join("data").exists(),
+        "the logic module made a data directory"
+    );
+    rig.close().await;
+}
+
+/// The library through the server: an engineer writes a source, a viewer reads and checks it,
+/// an operator may not write it, and a name that is not one, or is a device of Windows, is
+/// refused before anything is looked up.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_library_is_written_read_checked_and_deleted_through_the_server() {
+    let rig = rig().await;
+    let library = "/api/v1/projects/plant/logic/library";
+    let motors =
+        "FUNCTION Twice : INT\nVAR_INPUT x : INT; END_VAR\n  Twice := x * 2;\nEND_FUNCTION\n";
+    let (status, _) = rig
+        .send(
+            &rig.operator,
+            "PUT",
+            &format!("{library}/Motors"),
+            Some(json!({"source": motors})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let saved = rig
+        .eng(
+            "PUT",
+            &format!("{library}/Motors"),
+            Some(json!({"source": motors})),
+            200,
+        )
+        .await;
+    assert_eq!(saved, json!({"name": "Motors", "created": true}));
+    assert_eq!(
+        std::fs::read_to_string(rig.project.join("logic").join("library").join("Motors.st"))
+            .unwrap(),
+        motors
+    );
+    let (status, listed) = rig.send(&rig.viewer, "GET", library, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed, json!({"sources": [{"name": "Motors"}]}));
+    let (status, checked) = rig
+        .send(&rig.viewer, "POST", &format!("{library}/check"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(checked, json!({"ok": true, "diagnostics": []}));
+
+    // Every program is compiled with it.
+    let tank = format!("{PROGRAMS}/Tank");
+    rig.eng("POST", PROGRAMS, Some(json!({"name": "Tank"})), 201)
+        .await;
+    let twice = TANK.replace("(setpoint - level) * 10", "Twice(setpoint - level) * 5");
+    rig.eng(
+        "PUT",
+        &format!("{tank}/source"),
+        Some(json!({"source": twice})),
+        200,
+    )
+    .await;
+    let checked = rig.eng("POST", &format!("{tank}/check"), None, 200).await;
+    assert_eq!(checked["ok"], true, "{checked}");
+
+    for (name, said) in [
+        ("CoN", "'CoN' cannot be a library source name: it is a device name on Windows (CON, PRN, AUX, NUL, COM0 to COM9, LPT0 to LPT9)"),
+        ("lpt1", "'lpt1' cannot be a library source name: it is a device name on Windows (CON, PRN, AUX, NUL, COM0 to COM9, LPT0 to LPT9)"),
+        ("a.b", "'a.b' is not a library source name: a letter, then letters, digits or _, at most 64"),
+    ] {
+        let refused = rig
+            .eng(
+                "PUT",
+                &format!("{library}/{name}"),
+                Some(json!({"source": motors})),
+                400,
+            )
+            .await;
+        assert_eq!(refused["error"], said);
+    }
+    rig.eng("GET", &format!("{library}/..%2Fprograms.json"), None, 400)
+        .await;
+    rig.eng("GET", &format!("{library}/Pumps"), None, 404).await;
+    let deleted = rig
+        .eng("DELETE", &format!("{library}/MOTORS"), None, 200)
+        .await;
+    assert_eq!(deleted, json!({"deleted": "Motors"}));
+    // Without it the program no longer compiles.
+    let checked = rig.eng("POST", &format!("{tank}/check"), None, 200).await;
+    assert_eq!(checked["ok"], false, "{checked}");
+    let listed: Vec<_> = std::fs::read_dir(rig.project.join("logic").join("library"))
+        .unwrap()
+        .collect();
+    assert!(listed.is_empty(), "{listed:?}");
+    rig.close().await;
 }

@@ -17,7 +17,7 @@ use mythos_plugin_sdk::{MythosPlugin, PluginContext};
 use mythos_runtime_vm::VmEngine;
 use serde_json::{json, Value};
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// These tests run schedulers that preempt: one at a time, so that they do not share the
@@ -29,12 +29,7 @@ fn one_at_a_time() -> MutexGuard<'static, ()> {
 
 /// Drive a future of the engine to its end: its calls never wait on anything.
 fn finish<T>(future: impl std::future::Future<Output = T>) -> T {
-    struct Nothing;
-    impl std::task::Wake for Nothing {
-        fn wake(self: Arc<Self>) {}
-    }
-    let waker = std::task::Waker::from(Arc::new(Nothing));
-    let mut context = std::task::Context::from_waker(&waker);
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
     let mut future = std::pin::pin!(future);
     loop {
         if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut context) {

@@ -2370,3 +2370,4 @@ edit the same lines. `scripts/check-adr-evidence.sh` fails if a file is not list
 - **C8b** (several programs in several tasks in one runtime: the module protocol, the VM runner and the core, 2026-11-22): [`24-c8b.md`](ADR-013-evidence/24-c8b.md)
 - **D1** (data blocks in the compiler, the first slice of ADR-014: library sources, VAR_EXTERNAL, the members a program writes, the layout hash, 2026-11-22): [`25-d1.md`](ADR-013-evidence/25-d1.md)
 - **D2** (data blocks handed over between the programs of one runtime, the second slice of ADR-014: the module protocol, the runtime module and the core, 2026-11-22): [`26-d2.md`](ADR-013-evidence/26-d2.md)
+- **D3** (the data module, and the logic module building with a project's types, data blocks and library: the third slice of ADR-014, 2026-11-22): [`27-d3.md`](ADR-013-evidence/27-d3.md)

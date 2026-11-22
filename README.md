@@ -100,7 +100,7 @@ are [ADR-010](specs/adr/ADR-010-modules-are-processes.md) (modules are processes
 
 ## Quick start
 
-You need Rust 1.82 or newer, Node.js 22 and pnpm, on Linux, macOS or Windows.
+You need Rust 1.89 or newer, Node.js 22 and pnpm, on Linux, macOS or Windows.
 
 ```bash
 git clone https://github.com/firmansyah-co/mythos.git
@@ -108,7 +108,8 @@ cd mythos
 
 # the server, the CLI and every module
 cargo build --bin mythos-server --bin mythos --bin mythos-module-modbus --bin mythos-module-hmi \
-  --bin mythos-module-logic --bin mythos-module-runtime-vm --bin mythos-module-discovery
+  --bin mythos-module-logic --bin mythos-module-runtime-vm --bin mythos-module-discovery \
+  --bin mythos-module-data
 (cd frontend && pnpm install --frozen-lockfile && pnpm build)
 
 MYTHOS_STORAGE_ROOT="$PWD/.mythos-data" \

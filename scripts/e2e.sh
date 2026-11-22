@@ -52,6 +52,7 @@ echo "=== build ==="
     && cargo build -p mythos-runtime-vm --bin mythos-module-runtime-vm \
     && cargo build -p mythos-logic-compiler --example runtime_program \
     && cargo build -p mythos-logic --bin mythos-module-logic \
+    && cargo build -p mythos-data --bin mythos-module-data \
     && cargo build -p mythos-module-tests --bin service-module-under-test \
     && cargo build -p driver-modbus --features sim --example modbus_sim ) \
     || cannot_run "the server or the simulator did not build"
@@ -95,6 +96,8 @@ cp "$ROOT/target/debug/mythos-module-runtime-vm" "$WORK/install/bin/"
 cp "$ROOT/target/debug/mythos-module-logic" "$WORK/install/bin/"
 cp "$ROOT/frontend/packages/logic-ui/dist/entry.js" "$ROOT/frontend/packages/logic-ui/dist/logic.css" \
     "$WORK/install/modules-ui/org.mythos.logic/"
+# User types and data blocks (ADR-014 §2.8): a service module with no UI of its own yet.
+cp "$ROOT/target/debug/mythos-module-data" "$WORK/install/bin/"
 cp "$ROOT/target/debug/service-module-under-test" "$WORK/install/bin/mythos-module-notes"
 cp "$ROOT/crates/mythos-module-tests/ui/entry.js" "$WORK/install/modules-ui/org.mythos.test.notes/"
 API="http://127.0.0.1:${HTTP_PORT}"

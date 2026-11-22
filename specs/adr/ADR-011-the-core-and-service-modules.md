@@ -68,7 +68,9 @@ process speaking the ADR-010 protocol, with these additions:
 - **Data.** The core gives a service module, per call, the directory that holds its data for
   that project (`<storage root>/<project>/<name>/`) after validating the project id. The module
   owns the files in it; the core owns the directory's place. A module never opens another
-  module's directory or the core's.
+  module's directory or the core's. A module may read, never write, a directory that another
+  module's ADR names as its contract (ADR-014 section 2.8: the logic module reads
+  `<project>/data/`).
 - **Events.** A module may send events (a screen released, a definition changed); the core
   relays them on the telemetry stream to every open workbench and operator station.
 - **No tag-bus writes.** As for drivers, a service module never writes tags. Reading live values

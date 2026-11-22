@@ -47,7 +47,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82.0"
+rust-version = "1.89.0"
 authors = ["adrianaryaputra <adrian@firmansyah.co>"]
 license = "MPL-2.0"
 

@@ -2478,6 +2478,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mythos-data"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "mythos-logic-compiler",
+ "mythos-logic-st",
+ "mythos-module",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "mythos-desktop"
 version = "0.1.0"
 dependencies = [
@@ -2517,15 +2531,18 @@ dependencies = [
 
 [[package]]
 name = "mythos-logic"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "hex",
+ "mythos-data",
  "mythos-logic-compiler",
+ "mythos-logic-st",
  "mythos-module",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "tokio",
 ]
 
@@ -2604,6 +2621,7 @@ dependencies = [
  "futures-util",
  "hex",
  "mythos-core",
+ "mythos-data",
  "mythos-discovery",
  "mythos-hmi",
  "mythos-logic",

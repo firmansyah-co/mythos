@@ -198,7 +198,7 @@ fn modules_stay_modules() {
 
     // The check means nothing if it found nothing to check.
     let modules = modules(&graph, &root);
-    for expected in ["mythos-hmi", "driver-modbus"] {
+    for expected in ["mythos-hmi", "driver-modbus", "mythos-data"] {
         assert!(
             modules.contains(expected),
             "{expected} is not among the modules found: {modules:?}"

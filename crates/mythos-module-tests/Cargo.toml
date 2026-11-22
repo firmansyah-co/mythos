@@ -56,6 +56,11 @@ path = "src/bin/stubborn-runtime-under-test.rs"
 name = "logic-module-under-test"
 path = "src/bin/logic-module-under-test.rs"
 
+# The data module (ADR-014 §2.8): a project's user types and data blocks.
+[[bin]]
+name = "data-module-under-test"
+path = "src/bin/data-module-under-test.rs"
+
 [dependencies]
 mythos-plugin-sdk.workspace = true
 driver-modbus.workspace = true
@@ -63,6 +68,7 @@ mythos-runtime-vm = { path = "../../plugins/runtime-vm" }
 mythos-discovery = { path = "../../plugins/discovery" }
 mythos-hmi = { path = "../../plugins/hmi" }
 mythos-logic = { path = "../../plugins/logic" }
+mythos-data = { path = "../../plugins/data" }
 mythos-module.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true

@@ -235,8 +235,8 @@ impl ModbusResponse {
                 }
                 let reg_data = &pdu[2..2 + byte_count];
                 let mut regs = Vec::with_capacity(byte_count / 2);
-                for chunk in reg_data.chunks_exact(2) {
-                    regs.push(u16::from_be_bytes([chunk[0], chunk[1]]));
+                for chunk in reg_data.as_chunks::<2>().0 {
+                    regs.push(u16::from_be_bytes(*chunk));
                 }
                 Ok(Self::Registers(regs))
             }

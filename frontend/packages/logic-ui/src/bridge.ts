@@ -112,8 +112,26 @@ export interface Diagnostic {
    * its text the message is about. Absent for Structured Text.
    */
   element?: DiagnosticElement | null;
-  /** The source it is in, when a program is compiled from more than one. */
+  /**
+   * The source it is in, when a program is compiled from more than one: the program's own file
+   * by its name (`Tank.st`), any other source (the project's library, its user types) by its path
+   * under the project (`logic/library/Motors.st`, `data/types/Shared.st`). See
+   * {@link isOfThisProgram}.
+   */
   source?: string | null;
+}
+
+/**
+ * Whether a diagnostic is about the program's own text, so its line and column, or its element,
+ * are places in that program: true when it names no source, or a source with no `/`. The logic
+ * module names the program's own source by its file name, which has no `/`, and every other
+ * source it compiles the program with (the library, the project's types) by its path under the
+ * project, which always has one. A diagnostic of another source must not be drawn on the
+ * program: its line 3 is line 3 of that other file.
+ */
+export function isOfThisProgram(diagnostic: Diagnostic): boolean {
+  const source = diagnostic.source;
+  return source === undefined || source === null || source === '' || !source.includes('/');
 }
 
 export interface DiagnosticElement {
@@ -201,6 +219,13 @@ export interface CheckResult {
    * not draw them yet.
    */
   bodies?: Array<ValueProbe & { body: { action?: string; transition?: string; inline?: number; wired?: number; language: 'ld' | 'fbd' } }>;
+  /**
+   * Present only when the project's stored user types and data blocks do not check, so the
+   * program was compiled without them: why, in the shape of the diagnostics. An item names its
+   * source (`data/types/Shared.st`) with a line, or no source and line 0 when the problem is of
+   * the whole (the data blocks' file cannot be read). Never places in the program's text.
+   */
+  project_problems?: Diagnostic[];
 }
 
 /** Where one state of a chart is kept: a step's (`step`: `X` or `T`), a transition's, an action's. */
@@ -221,6 +246,8 @@ export interface BuildResult {
   memory_size: number;
   /** What the project's runtimes take: `{ id, module, run, program }`. */
   instance: { id: string } & Record<string, unknown>;
+  /** As a check's {@link CheckResult.project_problems}: why the project's types and data blocks were left out. */
+  project_problems?: Diagnostic[];
 }
 
 export interface OutputStatus {

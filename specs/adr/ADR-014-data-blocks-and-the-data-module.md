@@ -1,7 +1,7 @@
 # ADR-014: Data Blocks, User Types and the Data Module
 
-- **Status**: ACCEPTED (design; of its slices D1, the compiler, and D2, the runtime's hand-over of
-  a data block, are built: §6)
+- **Status**: ACCEPTED (design; of its slices D1, the compiler, D2, the runtime's hand-over of
+  a data block, and D3, the data module and the logic module's use of it, are built: §6)
 - **Date**: 2026-11-22
 - **Requested by**: Adrian ("kalau aku mau ga area bersama gitu, tapi ada modul data (db) dimana
   kita bisa susun UDT dan sejenisnya"; "gimana biar hampir instant dan ga kena exchange
@@ -183,6 +183,10 @@ here.
   layout hash, or a program's hash differs from the data block's definition. The message names
   the programs to build again. A type changed in the data module makes the programs that use it
   out of date; the logic module shows that, and builds them again on request, never silently.
+  What is built (D3): the data module answers, for a save of a type or a block, which blocks
+  changed their layout (`changed`), and a build carries the layout of each block in its
+  `data`. Comparing that with a running runtime's status, and offering to build again, is left
+  to the editor and the runtime slices.
 - At an online change the master copy carries on member by member, by path and type, the way a
   program's variables carry on today. A member whose type changed takes its initial value.
 - In tiers 2 and 3 a reader whose layout hash differs from the header's reads nothing and
@@ -213,6 +217,8 @@ program's source. So the project gets a **library**: sources without a `PROGRAM`
 blocks, functions) that every program of the project is compiled with. The compiler takes
 several sources in one compilation; exactly one of them holds the `PROGRAM`. This closes the
 item ADR-013 §5 lists as not built ("a library of POUs shared by a project's programs").
+A library source holds functions and function blocks, and a `TYPE` in it is refused: the data
+module is the one owner of the project's types (D3).
 
 ### 2.8 Which module owns what
 
@@ -265,7 +271,7 @@ Each is one slice, built through the workflow topology, with its own evidence fi
 |-------|------|------------|
 | D1 (done) | Compiler: several sources in one compilation; `VAR_EXTERNAL` against given data block declarations; the copy's address, the layout hash and the written members in the compiled program | — |
 | D2 (done) | Protocol, runtime module and core: data blocks in a runtime's configuration, master copies, hand-over at program start and task end, the one-writer and layout checks, retained blocks, live values | D1 (C8b is built) |
-| D3 | Data module: store, check, routes and MCP tools; the logic module builds with `<project>/data/` and its library | D1 |
+| D3 (done) | Data module: store, check, routes and MCP tools; the logic module builds with `<project>/data/` and its library | D1 |
 | C8c | Logic module: runtimes and task configuration (ADR-013 §2.19) | — |
 | D4 | Workbench: editor for types and data blocks, live values | D3 |
 | C8d | Workbench: tasks (ADR-013 §2.19) | C8c, D2 |
@@ -324,8 +330,27 @@ writer. A runtime without data blocks runs and serialises as before. What a hand
 per program run, and how long the lock is held for it, are NOT MEASURED. A kept value of a
 RETAIN block that the module does not take is only a warning in the module's log.
 
-**Not built.** The logic module still sends no `data` for any program, so only the API and
-the MCP can configure a runtime with data blocks today. A runtime now hands a block over; the
-logic module, the data module and the editor are still not built: D3 to D5, T2 and T3 are not
-built. `VAR_GLOBAL` stays refused, and so do `VAR_EXTERNAL` in a function block or function, a
+**D3 is built** (evidence: [ADR-013 evidence, D3](ADR-013-evidence/27-d3.md)). The data
+module (`plugins/data`, `org.mythos.data`) stores a project's types as `data/types/<Name>.st`
+and its data blocks as `data/blocks.json`, checks every write with the compiler over the whole
+new state and refuses one that leaves it not checking, answers each block's layout hash, size
+and members and which blocks changed their layout, and has eight routes, each an MCP tool.
+Its writes hold a lock between processes. The logic module (0.6.0) has a library of functions
+and function blocks in `logic/library/`, refuses a `TYPE` in it, reads `<project>/data/`
+without writing it, and builds a program with the project's types, library and blocks: the
+instance carries `data` and the program's `data`, and the build is refused when the protocol's
+`check_data` refuses it. When the stored data does not check, a program without `VAR_EXTERNAL`
+still builds and the answer carries `project_problems`. The two modules meet only in the
+project's files, and a program builds with the data module unloaded. A project without data
+or library builds to the bytes and the version it had. Two programs that share a block can be
+loaded only as one runtime composed by hand, until the logic module builds runtimes of several
+programs (C8c). The workbench draws a diagnostic from another file on the program's own text
+and does not show `project_problems`. The cost of checking the data before each compile is NOT
+MEASURED, and two processes during a hot swap can lose one of two simultaneous writes of the
+logic module's files (NOT TESTED).
+
+**Not built.** The editor for types, data blocks and the library (D4), runtimes of several
+programs built by the logic module (C8c), and D5, T2 and T3 are not built, so a runtime with
+data blocks is configured by the API, the MCP or a test-composed instance, and the data module
+is used over the API and the MCP only. `VAR_GLOBAL` stays refused, and so do `VAR_EXTERNAL` in a function block or function, a
 data block whose type is not a structure, and a per-block initial value.
