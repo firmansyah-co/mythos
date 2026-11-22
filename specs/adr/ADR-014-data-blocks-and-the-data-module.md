@@ -1,6 +1,7 @@
 # ADR-014: Data Blocks, User Types and the Data Module
 
-- **Status**: ACCEPTED (design; of its slices D1, the compiler, is built: §6)
+- **Status**: ACCEPTED (design; of its slices D1, the compiler, and D2, the runtime's hand-over of
+  a data block, are built: §6)
 - **Date**: 2026-11-22
 - **Requested by**: Adrian ("kalau aku mau ga area bersama gitu, tapi ada modul data (db) dimana
   kita bisa susun UDT dan sejenisnya"; "gimana biar hampir instant dan ga kena exchange
@@ -254,7 +255,7 @@ Each is one slice, built through the workflow topology, with its own evidence fi
 | Slice | What | Depends on |
 |-------|------|------------|
 | D1 (done) | Compiler: several sources in one compilation; `VAR_EXTERNAL` against given data block declarations; the copy's address, the layout hash and the written members in the compiled program | — |
-| D2 | Protocol, runtime module and core: data blocks in a runtime's configuration, master copies, hand-over at program start and end, the one-writer and layout checks, retained blocks, live values | D1 (C8b is built) |
+| D2 (done) | Protocol, runtime module and core: data blocks in a runtime's configuration, master copies, hand-over at program start and end, the one-writer and layout checks, retained blocks, live values | D1 (C8b is built) |
 | D3 | Data module: store, check, routes and MCP tools; the logic module builds with `<project>/data/` and its library | D1 |
 | C8c | Logic module: runtimes and task configuration (ADR-013 §2.19) | — |
 | D4 | Workbench: editor for types and data blocks, live values | D3 |
@@ -293,8 +294,27 @@ first, so it means the same in every program; what a program does not use adds n
 what is compiled, and a program without library or data blocks compiles to the bytes it
 compiled to before.
 
-**Nothing uses it yet.** The logic module still compiles each program from its own source
-alone, no runtime hands a data block over, and there is no data module and no editor: D2 to
-D5, T2 and T3 are not built. `VAR_GLOBAL` stays refused, and so do `VAR_EXTERNAL` in a
-function block or function, a data block whose type is not a structure, and a per-block
-initial value.
+**D2 is built** (evidence: [ADR-013 evidence, D2](ADR-013-evidence/26-d2.md)). The module
+protocol takes a runtime's `data` (the blocks, each with its layout hash and `retain`) and, in
+each program, the `DataUse` the compiler gave it; `check_data` refuses a bad block name, a
+layout or members that differ from the program's, a CONSTANT block written, a member with two
+writers, an input or a setpoint bound to a member, and members that overlap. The VM runtime
+module (0.6.0, profile `data` tier 1) keeps one master of each block that a program declares,
+and each program has its own copy in its image. A task run hands over as a whole at its end:
+the master and the images change together, so a program of another task never sees a block
+half written, and a later program of the same task takes an earlier one's members at once.
+A run that faults hands nothing over. A forced member wins over the hand-over. A member has one
+writer. After a restart every copy is set from the master; a RETAIN block keeps its master
+across a warm restart when its layout and size are the same; an online change composes each
+master again from the writers' copies and adds nothing on the wire. The core takes `data` in
+`runtimes.json` and in the MCP schema, refuses a block in two runtimes (R16) and a runtime
+module that does not say it hands data blocks over (R17), and its status names each member's
+writer. A runtime without data blocks runs and serialises as before. What a hand-over costs
+per program run, and how long the lock is held for it, are NOT MEASURED. A kept value of a
+RETAIN block that the module does not take is only a warning in the module's log.
+
+**Not built.** The logic module still sends no `data` for any program, so only the API and
+the MCP can configure a runtime with data blocks today. A runtime now hands a block over; the
+logic module, the data module and the editor are still not built: D3 to D5, T2 and T3 are not
+built. `VAR_GLOBAL` stays refused, and so do `VAR_EXTERNAL` in a function block or function, a
+data block whose type is not a structure, and a per-block initial value.
