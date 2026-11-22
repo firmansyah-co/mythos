@@ -608,8 +608,8 @@ editor's own:
   (`state.scan_age_us`) within two of its intervals (`interval_ms` of `GET /api/v1/runtimes`)
   and its longest scan (`state.max_scan_us`), the interval taken only from a runtime of the
   version that answered: a list read before a load still names the old version's interval, and
-  until it names the answer's the values are not current. The VM's scan thread catches up on a scan that
-  starts less than an interval late and counts one that starts later as an overrun, so a
+  until it names the answer's the values are not current. The VM's scheduler makes no run that falls due while
+  the last has not ended and counts it as an overrun, so a
   program scanning without overrun completes a scan at least that often (scan *k* starts within
   an interval of its due time and ends within its longest scan of starting; scan *k+1* is due
   one interval after *k*). Past it, the values are older than the program's own cycle. A host
@@ -2181,7 +2181,7 @@ follows from them. Today a runtime runs one program on one interval (§2.6, "As 
 
 - C8a (done). **The VM**: a run that can be suspended and resumed, and the scheduler as a part of the
   VM's crate that needs `core` alone, with the test of equality above. No runtime uses it yet.
-- C8b. **The runtime module and the core**: several programs and tasks in one runtime, the
+- C8b (done). **The runtime module and the core**: several programs and tasks in one runtime, the
   images, the state per task, the watchdog per task; a project of today runs unchanged.
 - C8c. **The logic module**: runtimes and their task configuration as data of the project,
   with routes and MCP tools; build and load of a runtime with several programs.
@@ -2229,7 +2229,7 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   runtime's tasks are set as CODESYS sets them, per runtime; priorities are IEC 61131-3's, 0
   the highest; a task of higher priority preempts one of lower in the VM; each task has its
   process image. In four slices: **C8a** (done) the VM (a run suspended and resumed, the scheduler),
-  **C8b** the runtime module and the core, **C8c** the logic module, **C8d** the workbench.
+  **C8b** (done) the runtime module and the core, **C8c** the logic module, **C8d** the workbench.
 
 **After L3 and C8** (the owner, 2026-11-18; `specs/tasks.md`, "Long-term horizons"): alarms and
 the historian, then the foundation for IEC 62443, then an OPC UA server, each as modules.
@@ -2334,7 +2334,7 @@ Each step leaves `dev` working.
 | 2.16 Function Block Diagram (L3c-1) | `crates/mythos-logic-graphic`: `fbd.rs`, with `graph.rs` shared with LD; the subset and the semantics of §2.16 and §2.13; every output's value kept in a hidden private variable typed by its value (`ast::TypeSpecKind::OfValue` in the ST front-end), every network's flag; `Holds::Guarded` for a function's result; `Language::Fbd`; `Sources::tc6`. Proven by `fbd_runs_on_the_vm.rs` (13), `fbd_refusals.rs` (15), `fbd_equals_st.rs` (5 FBD programs and their ST twins, 200 random sequences of 100 scans each: every shared variable and every kept value, by the element and output it is about, equal to its twin's after every scan, 3,560,000 values), `damaged_ladder_never_panics.rs` (3,000 damaged FBD documents besides the LD ones), the logic module's own tests (3) and `logic_module.rs` through the real module processes; the emulators (2.9). The workbench: `fbd.test.tsx` (11; 12 since L3d-2, a viewer's diagram following a source saved elsewhere). The editor (L3c-2, §2.8): `fbdmodel.test.ts` (11), `fbd-editor.test.tsx` (10), `fbd_from_the_editor.rs` (4). Not built: a CFC mode (§3) |
 | 2.17 Sequential Function Chart (L3d-1) | `crates/mythos-logic-graphic`: `sfc.rs`; the subset and the semantics of §2.17 and §2.13 (§6.7: steps, transitions, Table 61's divergences and convergences, jumps, action blocks, the action control without final scan, unsafe and unreachable charts refused); every step's flag and time, every transition's condition and enable flag and every action's state kept in private variables (`At::Step`, `At::StepTime`, `At::Transition`, `At::Action`); the scan clock as `ast::ExprKind::Intrinsic`; `Element::action`, `Element::transition`, `TextRange::line`; `Language::Sfc`. Since L3d-1b actions and conditions in LD and FBD (of the POU, in the action block or the transition, or a network drawn in the chart), lowered by `ld::lower` and `fbd::lower` in a namespace of their own, `Probe::body`, `Element::inline`, `bodies` in `check`. Proven by `sfc_runs_on_the_vm.rs` (29: a rule of §6.7 each, the action qualifiers scan by scan, a chart in a function block, a restart, an online change of the same chart and of another, the two charts of the emulators), `sfc_refusals.rs` (38 since L3d-1b: every refusal with its message and its element, a place in a text of several lines as JSON), `sfc_corpus.rs` (1), `sfc_equals_st.rs` (4 charts and their ST twins, the fourth with actions and conditions in LD and FBD, 200 random sequences of 100 scans each: every variable, step flag, step time while active, action flag, transition condition where evaluated and enable flag equal after every scan, 2,270,452 values), `sfc_graphic_bodies.rs` (14: a rule of L3d-1b each, scan by scan, and the mixer of the emulators), `damaged_ladder_never_panics.rs` (3,000 damaged charts: 2,718 refused, 282 compiled; 3,000 damaged mixers with LD and FBD bodies: 2,686 refused, 314 compiled), the logic module's own tests (4), `logic_module.rs` through the real module processes and over MCP; the emulators (2.9). The workbench: `sfc.test.tsx` (3 in L3d-1; 23 since the view, L3d-2, §2.8). The editor (L3d-3, §2.8): `sfcmodel.test.ts` (31), `sfc-editor.test.tsx` (9), `sfc_from_the_editor.rs` (6). Not built: drawing the LD and FBD bodies of actions and conditions with their views (the view names their language); an action that is a chart, IL, a connection from a step's flag (§2.17); the qualifiers SD, SL, P0 (the owner's decision, §2.17) |
 | 2.18 Firmware for microcontrollers | Planned, nothing built. What exists is 2.9's: the VM built for thumbv6m and riscv32imc and run in emulators. Xtensa: not built. A real board: none has run it. |
-| 2.19 Task configuration (C8) | C8a built: `mythos_logic_vm::Run` (a scan in pieces, suspended and resumed) and `mythos_logic_vm::sched` (which task runs next); no runtime uses them yet. C8b to C8d not built: a runtime still runs one program on one interval. |
+| 2.19 Task configuration (C8) | C8a built: `mythos_logic_vm::Run` (a scan in pieces, suspended and resumed) and `mythos_logic_vm::sched` (which task runs next). C8b built: a runtime, in `RuntimeInstance` (`program` or `programs`, and `tasks`) and in the VM runtime module, runs several programs in tasks of the kinds cycle, cyclic, startup and event, with priorities, preemption by the VM and a process image per task; the module says what it runs in `profile.tasks`, and the core refuses a configuration an older module cannot run. C8c and C8d not built: the logic module and the workbench still make and show one program per runtime, and neither edits or shows tasks. |
 
 The evidence of the spike (2026-11-17) and of each slice after it, with its tests, measurements and mutation checks, is in its own file in
 [`ADR-013-evidence/`](ADR-013-evidence/). A new slice adds a file there and one line here, so two slices open at once do not
@@ -2363,3 +2363,4 @@ edit the same lines. `scripts/check-adr-evidence.sh` fails if a file is not list
 - **Stale watch** (only current values drawn live, found in review of L3d-2, 2026-11-22): [`21-stale-watch.md`](ADR-013-evidence/21-stale-watch.md)
 - **SD, SL and P0** (the three qualifiers refused until the owner decided, 2026-11-22: taken as Table 59 names them, §2.17): [`22-sd-sl-and-p0.md`](ADR-013-evidence/22-sd-sl-and-p0.md)
 - **C8a** (the VM's part of task configuration: a run suspended and resumed, the scheduler core, 2026-11-22): [`23-c8a.md`](ADR-013-evidence/23-c8a.md)
+- **C8b** (several programs in several tasks in one runtime: the module protocol, the VM runner and the core, 2026-11-22): [`24-c8b.md`](ADR-013-evidence/24-c8b.md)
