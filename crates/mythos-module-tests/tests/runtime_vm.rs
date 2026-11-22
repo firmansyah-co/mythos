@@ -1278,13 +1278,24 @@ async fn an_output_of_a_program_whose_task_has_not_run_is_written_its_safe_value
         300,
     )
     .await;
-    p.until("the status says the pump was written its safe value", |s| {
-        s.tank.as_ref().is_some_and(|t| {
-            t.outputs
-                .iter()
-                .any(|o| o.tag == PUMP && o.written == Some(json!(false)))
-        })
-    })
+    // The status is of the last exchange the core has taken in, which can be one behind the
+    // write the drive already shows: in the first exchange the pump is written its safe value
+    // and the speed is still the 0 of a program that has not ended a run. So both are waited
+    // for, not the pump alone (on CI the status was once read at that first exchange: scans 1,
+    // speed written 0, while the drive held 300).
+    p.until(
+        "the status says the pump was written its safe value and the speed its computed one",
+        |s| {
+            s.tank.as_ref().is_some_and(|t| {
+                let written = |tag: &str, value: serde_json::Value| {
+                    t.outputs
+                        .iter()
+                        .any(|o| o.tag == tag && o.written == Some(value.clone()))
+                };
+                written(PUMP, json!(false)) && written(SPEED, json!(300))
+            })
+        },
+    )
     .await;
     let tank = p.tank();
     assert_eq!(tank.mode, "run", "{tank:?}");
