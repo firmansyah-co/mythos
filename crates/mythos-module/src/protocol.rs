@@ -447,6 +447,11 @@ pub struct RuntimeState {
     pub max_scan_us: u64,
     /// Scans that started late because the one before had not finished.
     pub overruns: u64,
+    /// How long before this answer the program last completed a scan, in µs: how old the values
+    /// a scan left are. `None` until a scan has completed since the program was put in RUN, and
+    /// from a module that does not say (ADR-013 §2.8: a view then draws nothing as current).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_age_us: Option<u64>,
     /// The variables held at a value by [`Call::Force`]. Empty from a module that cannot force.
     #[serde(default)]
     pub forced: Vec<ForcedValue>,

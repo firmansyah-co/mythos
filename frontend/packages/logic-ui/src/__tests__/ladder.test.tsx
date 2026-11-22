@@ -12,8 +12,10 @@ import { ProgramEditor } from '../ProgramEditor';
 import { ProgramsTree } from '../ProgramsTree';
 import { usePrograms } from '../programs';
 import {
+  answerNext,
   byLabel,
   byTestId,
+  CURRENCY_CASES,
   click,
   doing,
   endTest,
@@ -502,6 +504,44 @@ describe('the live state of a running Ladder Diagram', () => {
     }
     expect([...container.querySelectorAll('[data-testid="ld-rung"]')].map((r) => r.getAttribute('data-state'))).toEqual(['unknown', 'unknown']);
     expect(container.querySelectorAll('[data-state="on"], [data-state="off"], [data-state="not-executed"]')).toHaveLength(0);
+  });
+
+  it('draws UNKNOWN, never a state, from values that are not current, and live again once they are', async () => {
+    const backend = main();
+    const { calls, container } = await opened(backend);
+    expect(byTestId(container, 'ld-live')?.getAttribute('data-live')).toBe('live');
+    for (const { label, ages, current, why } of CURRENCY_CASES) {
+      await answerNext(backend, calls, 'Main', watchOf(RUNNING, 'run', ages));
+      expect(byTestId(container, 'ld-live')?.getAttribute('data-live'), label).toBe(current ? 'live' : 'unknown');
+      if (current) {
+        expect(stateOf(container, 10), label).toBe('on');
+        expect(valueOf(container, 11), label).toBe('ON');
+        continue;
+      }
+      expect(byTestId(container, 'ld-live')?.textContent, label).toContain(why);
+      for (const id of [10, 11, 12, 13, 41, 42]) {
+        expect(stateOf(container, id), label).toBe('unknown');
+        expect(valueOf(container, id), label).toBe('UNKNOWN');
+      }
+      expect(link(container, 1, 10), label).toBe('unknown');
+      expect(container.querySelectorAll('[data-state="on"], [data-state="off"], [data-state="not-executed"]'), label).toHaveLength(0);
+    }
+  });
+
+  it('stops drawing the last values as live when no newer answer comes', async () => {
+    const backend = main();
+    const { container } = await opened(backend);
+    expect(stateOf(container, 10)).toBe('on');
+    // Asked, never answered: what was read ages, with nothing else to redraw the diagram.
+    // A controller that answers nothing any more: no request comes back to redraw the editor.
+    backend.watch = 'hangs';
+    backend.runtimes = 'hangs';
+    // Its own reason, which only the watch's rule gives: the runtimes' rule, 3 s after their last
+    // answer, says the runtimes cannot be read, and comes later.
+    await until('the values are no longer current', () => (byTestId(container, 'ld-live')?.textContent?.includes('no newer answer has come') ? true : null));
+    expect(byTestId(container, 'ld-live')?.getAttribute('data-live')).toBe('unknown');
+    expect(stateOf(container, 10)).toBe('unknown');
+    expect(valueOf(container, 11)).toBe('UNKNOWN');
   });
 
   it('draws one value the runtime does not have as UNKNOWN, and the others as they are', async () => {

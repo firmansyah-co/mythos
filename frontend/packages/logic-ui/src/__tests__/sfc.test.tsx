@@ -18,6 +18,8 @@ import { followsSavedSource, usePrograms } from '../programs';
 import { readSfc } from '../sfc';
 import { place } from '../SfcView';
 import {
+  answerNext,
+  CURRENCY_CASES,
   byLabel,
   byTestId,
   click,
@@ -597,6 +599,42 @@ describe('the live state of a running Sequential Function Chart', () => {
         '[data-state="active"], [data-state="inactive"], [data-state="true"], [data-state="false"], [data-state="on"], [data-state="off"]'
       )
     ).toHaveLength(0);
+  });
+
+  it('draws UNKNOWN, never a state, from values that are not current, and live again once they are', async () => {
+    const backend = bottling();
+    const { calls, container } = await opened(backend);
+    await live(container);
+    const states = () =>
+      container.querySelectorAll(
+        '[data-state="active"], [data-state="inactive"], [data-state="true"], [data-state="false"], [data-state="on"], [data-state="off"]'
+      );
+    for (const { label, ages, current, why } of CURRENCY_CASES) {
+      await answerNext(backend, calls, 'Bottling', watchOf(RUNNING, 'run', ages));
+      expect(liveness(container), label).toBe(current ? 'live' : 'unknown');
+      if (current) {
+        expect(step(container, 3).state, label).toBe('active');
+        continue;
+      }
+      expect(byTestId(container, 'sfc-live')?.textContent, label).toContain(why);
+      for (const id of Object.keys(STEPS)) expect(step(container, Number(id)).state, label).toBe('unknown');
+      for (const id of TRANSITIONS) expect(condition(container, id).state, label).toBe('unknown');
+      for (const id of Object.keys(ACTIONS)) expect(action(container, Number(id)).state, label).toBe('unknown');
+      expect(states(), label).toHaveLength(0);
+    }
+  });
+
+  it('stops drawing the last state as live when no newer answer comes', async () => {
+    const backend = bottling();
+    const { container } = await opened(backend);
+    await live(container);
+    // A controller that answers nothing any more: no request comes back to redraw the editor.
+    backend.watch = 'hangs';
+    backend.runtimes = 'hangs';
+    // Its own reason, which only the watch's rule gives (the runtimes' comes later).
+    await until('the state is no longer current', () => (byTestId(container, 'sfc-live')?.textContent?.includes('no newer answer has come') ? true : null));
+    expect(liveness(container)).toBe('unknown');
+    expect(step(container, 3).state).toBe('unknown');
   });
 
   it('draws UNKNOWN where the check does not say where a state is kept', async () => {

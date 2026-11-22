@@ -53,7 +53,7 @@ export interface RuntimesView {
   modules: string[] | null;
   /** Why the last read failed. While set, `runtimes` is what was read before, not what is. */
   error: string | null;
-  /** When the last read succeeded (ms). */
+  /** When the last read that succeeded was sent (ms, `monotonicNow`). */
   readAtMs: number | null;
 }
 
@@ -62,6 +62,91 @@ export interface WatchView {
   /** `null`: not read, or the last read failed: nothing read before is shown as a value. */
   answer: WatchAnswer | null;
   error: string | null;
+  /**
+   * When the request `answer` answers was sent (ms, `monotonicNow`); `null` with no answer. Not
+   * when it came: the time it spent in transit is time its values aged, so the send time is a
+   * bound on their age that never says them younger than they are.
+   */
+  sentAtMs: number | null;
+}
+
+/** How often the running program's variables are read while its editor is open. */
+export const WATCH_POLL_MS = 500;
+
+/**
+ * The clock every age the editor judges is measured on: monotonic, so that setting the wall
+ * clock (back an hour, or forward) neither keeps old values current nor puts off judging them.
+ */
+export const monotonicNow = (): number => performance.now();
+
+/**
+ * How long the runtimes may go unanswered before what was read of them is the last known state,
+ * not the current one: the rule of Settings → Runtimes (`RUNTIMES_STALE_AFTER_MS`, 3 s for a list
+ * read once a second), reused for the same list read as often.
+ */
+export const RUNTIMES_STALE_AFTER_MS = 3000;
+
+/** Whether the values of a watch answer are the program's current ones, and until when. */
+export type Currency = { current: true; untilMs: number } | { current: false; why: string };
+
+const isAmount = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+const millis = (us: number) => `${(us / 1000).toFixed(3).replace(/\.?0+$/, '')} ms`;
+
+/**
+ * Whether the values of `answer`, asked for at `sentAtMs`, are what the program does at `nowMs`
+ * (both `monotonicNow`; ADR-013 §2.8). Both bounds are worked out from what the controller says, none is a
+ * constant of this view's:
+ *
+ * - the read is recent: its age (`age_ms` and the time since it came) is within `fresh_ms`, the
+ *   oldest answer the route gives as current, and one interval of asking (`WATCH_POLL_MS`). An
+ *   answer older than that should have been replaced and was not: asking has stopped getting
+ *   answers (a request left hanging, a core no longer reading the runtime);
+ * - in RUN, the program was scanning when read: its last scan had completed within two of its
+ *   intervals and its longest scan (`scan_age_us` against `interval_ms` and `max_scan_us`), the
+ *   interval taken only from a `runtime` of the version that answered (another version's
+ *   interval is not this program's: a list read before a load still names the old one). A
+ *   scan starting less than an interval late is on time (the VM's scan thread counts an overrun
+ *   from one interval), so on time a program completes one at least that often; past it, its
+ *   scan thread has stopped or fallen behind, and the values are older than the program's own
+ *   cycle (a runtime still saying RUN, before its watchdog's ten intervals have passed).
+ *
+ * What it needs and is not told makes the values not current, never current.
+ */
+export function currencyOf(answer: WatchAnswer, sentAtMs: number, runtime: RuntimeStatus, nowMs: number): Currency {
+  const age: unknown = answer.age_ms;
+  const fresh: unknown = answer.fresh_ms;
+  if (!isAmount(age)) return { current: false, why: 'The controller does not say how old these values are.' };
+  if (!isAmount(fresh)) return { current: false, why: 'The controller does not say for how long its values are current.' };
+  const allowed = fresh + WATCH_POLL_MS;
+  const read = age + Math.max(0, nowMs - sentAtMs);
+  if (read > allowed) {
+    return {
+      current: false,
+      why: `They were read ${Math.round(read)} ms ago and no newer answer has come: an answer is current for ${fresh} ms, and one is asked for every ${WATCH_POLL_MS} ms.`,
+    };
+  }
+  if (answer.state.mode === 'run') {
+    const scan: unknown = answer.state.scan_age_us;
+    const longest: unknown = answer.state.max_scan_us;
+    const interval: unknown = runtime.interval_ms;
+    if (!isAmount(scan)) return { current: false, why: 'The runtime does not say when the program last completed a scan.' };
+    if (!isAmount(longest)) return { current: false, why: 'The runtime does not say how long the program’s longest scan took.' };
+    if (runtime.version !== answer.state.version) {
+      return {
+        current: false,
+        why: `The runtimes were read of version ${runtime.version} and the values are of version ${answer.state.version}: the interval of the version that answered is not known yet.`,
+      };
+    }
+    if (!isAmount(interval) || interval === 0) return { current: false, why: 'The program’s interval is not known.' };
+    const bound = 2 * interval * 1000 + longest;
+    if (scan > bound) {
+      return {
+        current: false,
+        why: `When read, the program had completed no scan for ${millis(scan)}, past the ${millis(bound)} within which a program scanning every ${interval} ms completes one (two intervals and its longest scan): it is not scanning on time.`,
+      };
+    }
+  }
+  return { current: true, untilMs: sentAtMs + allowed - age };
 }
 
 export interface ProgramsState {
@@ -235,7 +320,43 @@ const EMPTY = {
   watches: {} as Record<string, WatchView>,
 };
 
+/**
+ * Requests overlap (each is asked on time, whether the one before has come back or not), and an
+ * answer may come after a newer one: each is numbered when asked, and one older than what was
+ * last applied, or than a drop or a reset, is not applied. Numbers grow across every program.
+ */
+let asked = 0;
+/** The newest request applied (or dropped) for each program's watch, by program name. */
+const watchApplied = new Map<string, number>();
+/** The newest runtimes request asked, and the newest applied. */
+let runtimesAsked = 0;
+let runtimesApplied = 0;
+/** Nothing asked before this was applied: the store was reset after it was asked. */
+let floor = 0;
+/** Fires when no read of the runtimes has come back for `RUNTIMES_STALE_AFTER_MS`. */
+let runtimesOverdue: ReturnType<typeof setTimeout> | null = null;
+
 export const usePrograms = create<ProgramsState>((set, get) => {
+  /** (Re)start waiting for the runtimes: past the bound with a read still out, what was read is no longer what is. */
+  const awaitRuntimes = () => {
+    if (runtimesOverdue !== null) clearTimeout(runtimesOverdue);
+    runtimesOverdue = setTimeout(() => {
+      runtimesOverdue = null;
+      // Only while a read is out: an editor that stopped reading has nothing overdue.
+      if (runtimesAsked <= Math.max(runtimesApplied, floor)) return;
+      set((state) =>
+        state.runtimes.error !== null
+          ? state
+          : {
+              runtimes: {
+                ...state.runtimes,
+                error: `the controller has not answered for ${RUNTIMES_STALE_AFTER_MS / 1000} s`,
+              },
+            }
+      );
+    }, RUNTIMES_STALE_AFTER_MS);
+  };
+
   const change = (name: string, edit: (doc: ProgramDoc) => ProgramDoc) =>
     set((state) => ({
       programs: state.programs.map((doc) => (doc.entry.name === name ? edit(doc) : doc)),
@@ -284,7 +405,12 @@ export const usePrograms = create<ProgramsState>((set, get) => {
       }
     },
 
-    reset: () => set({ ...EMPTY }),
+    reset: () => {
+      floor = asked;
+      if (runtimesOverdue !== null) clearTimeout(runtimesOverdue);
+      runtimesOverdue = null;
+      set({ ...EMPTY });
+    },
 
     create: async (name, language = 'st') => {
       const projectId = get().projectId;
@@ -524,36 +650,60 @@ export const usePrograms = create<ProgramsState>((set, get) => {
     },
 
     readRuntimes: async () => {
+      const number = ++asked;
+      runtimesAsked = number;
+      const sentAtMs = monotonicNow();
+      if (runtimesOverdue === null) awaitRuntimes();
+      const newest = () => {
+        if (number <= Math.max(runtimesApplied, floor)) return false;
+        runtimesApplied = number;
+        return true;
+      };
       try {
         const answer = await api.runtimes();
+        if (!newest()) return;
+        awaitRuntimes();
         set({
           runtimes: {
             runtimes: answer.runtimes,
             modules: answer.modules.map((module) => module.provides),
             error: null,
-            readAtMs: Date.now(),
+            readAtMs: sentAtMs,
           },
         });
       } catch (cause) {
+        if (!newest()) return;
         // What was read before stays, marked by the error: it is no longer what is.
         set((state) => ({ runtimes: { ...state.runtimes, error: message(cause) } }));
       }
     },
 
     readWatch: async (name, variables) => {
+      const number = ++asked;
+      const sentAtMs = monotonicNow();
+      const newest = () => {
+        if (number <= Math.max(watchApplied.get(name) ?? 0, floor)) return false;
+        watchApplied.set(name, number);
+        return true;
+      };
       try {
         const answer = await api.watch(name, variables);
-        set((state) => ({ watches: { ...state.watches, [name]: { answer, error: null } } }));
+        if (!newest()) return;
+        set((state) => ({ watches: { ...state.watches, [name]: { answer, error: null, sentAtMs } } }));
       } catch (cause) {
+        if (!newest()) return;
         // The values read before are dropped: shown on, they would read as the program's now.
-        set((state) => ({ watches: { ...state.watches, [name]: { answer: null, error: message(cause) } } }));
+        set((state) => ({ watches: { ...state.watches, [name]: { answer: null, error: message(cause), sentAtMs: null } } }));
       }
     },
 
-    dropWatch: (name) =>
+    dropWatch: (name) => {
+      // An answer to a request asked before the drop is not shown after it.
+      watchApplied.set(name, asked);
       set((state) => {
         const { [name]: _dropped, ...watches } = state.watches;
         return { watches };
-      }),
+      });
+    },
   };
 });

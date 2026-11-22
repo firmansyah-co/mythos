@@ -389,6 +389,20 @@ async fn an_engineer_loads_a_program_it_runs_the_plant_and_each_role_does_what_i
         body["age_ms"].as_u64().is_some_and(|age| age <= 1_000),
         "the values come with their age: {body}"
     );
+    assert_eq!(
+        body["fresh_ms"], 1_000,
+        "and how long an answer is given as current: {body}"
+    );
+    // How long before the read the program last completed a scan: a program in RUN past the
+    // watchdog's two seconds would be faulted, so a scanning one is well inside it. The view's
+    // tighter bound (two intervals and the longest scan) is not asserted here: a CI runner may
+    // hold the scan thread back for a moment, and that is the views' business to show.
+    assert!(
+        body["state"]["scan_age_us"]
+            .as_u64()
+            .is_some_and(|age| age < 2_000_000),
+        "the values come with the age of the scan that left them: {body}"
+    );
     let (status, body) = rig
         .send(
             &rig.viewer,
