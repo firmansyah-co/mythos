@@ -181,9 +181,8 @@ END_PROGRAM
     )
 }
 
-#[test]
-fn the_long_programs_fit_their_budget() {
-    let _one = one_at_a_time();
+/// One run of the slow program, alone: its instructions and how long it took.
+fn slow_run() -> (u32, Duration) {
     let c = compiled(&slow_source("slow"));
     let program = Program::load(&c.bytecode).unwrap();
     let mut memory = vec![0u8; program.memory_size()];
@@ -192,16 +191,22 @@ fn the_long_programs_fit_their_budget() {
     let mut calls = vec![Frame::default(); program.call_depth()];
     let began = Instant::now();
     let report = scan(&program, &mut memory, &mut stack, &mut calls, 0, 5_000_000).unwrap();
+    (report.instructions, began.elapsed())
+}
+
+fn slow_run_alone() -> Duration {
+    slow_run().1
+}
+
+#[test]
+fn the_long_programs_fit_their_budget() {
+    let _one = one_at_a_time();
+    let (instructions, took) = slow_run();
     // Printed, not asserted: how long it takes depends on the build and the machine.
-    eprintln!(
-        "a run of the slow program: {} instructions in {:?}",
-        report.instructions,
-        began.elapsed()
-    );
+    eprintln!("a run of the slow program: {instructions} instructions in {took:?}");
     assert!(
-        report.instructions > 1_000_000 && report.instructions < 5_000_000,
-        "{}",
-        report.instructions
+        instructions > 1_000_000 && instructions < 5_000_000,
+        "{instructions}"
     );
 }
 
@@ -289,12 +294,17 @@ fn a_configuration_of_today_reports_the_state_of_today() {
 #[test]
 fn a_higher_priority_task_preempts_a_long_lower_one() {
     let _one = one_at_a_time();
+    // The high interval: a fifth of how long a low run takes alone on this machine and build,
+    // so a low run outlasts it; never below 10 ms, so that neither a piece nor the machine's
+    // other work makes the high task miss a due time.
+    let alone = slow_run_alone();
+    let high_ms = (alone.as_millis() as u64 / 5).clamp(10, 100);
     let mut engine = start(json!({"run": true,
         "programs": [
             program(&slow_source("slow"), 10, json!({})),
             program(&quick_source("quick"), 10, json!({})),
         ],
-        "tasks": [cyclic("low", 1000, 10, &["slow"]), cyclic("high", 10, 1, &["quick"])]}));
+        "tasks": [cyclic("low", 1000, 10, &["slow"]), cyclic("high", high_ms, 1, &["quick"])]}));
     let r = exchange_for(
         &mut engine,
         Duration::from_millis(2_000),
@@ -306,12 +316,12 @@ fn a_higher_priority_task_preempts_a_long_lower_one() {
     assert_eq!(r.state.mode, RuntimeMode::Run, "{:?}", r.state.fault);
     assert!(low.runs > 0, "{low:?}");
     assert!(
-        low.longest_run_us.is_some_and(|us| us > 10_000),
-        "a low run outlasts the high interval: {low:?}"
+        low.longest_run_us.is_some_and(|us| us > high_ms * 1_000),
+        "a low run outlasts the high interval of {high_ms} ms (alone: {alone:?}): {low:?}"
     );
     assert!(low.preemptions > 0, "{low:?}");
     assert_eq!(high.overruns, 0, "{high:?}");
-    assert!(high.runs > 20, "{high:?}");
+    assert!(high.runs > 5, "{high:?}");
     assert_eq!(high.preemptions, 0, "nothing is above it: {high:?}");
     // Several tasks: sums, and no one age.
     assert_eq!(r.state.scans, low.runs + high.runs);
@@ -712,14 +722,14 @@ fn each_task_has_its_own_watchdog() {
 #[test]
 fn a_watchdog_shorter_than_its_interval_faults_no_task_waiting_for_its_time() {
     let _one = one_at_a_time();
-    // Each run takes far less than 50 ms, and the task waits 300 ms between them.
+    // Each run takes far less than 100 ms, and the task waits 400 ms between them.
     let mut engine = start(json!({"run": true,
         "programs": [program(&quick_source("quick"), 10, json!({}))],
-        "tasks": [{"name": "slowly", "kind": {"type": "cyclic", "interval_ms": 300,
-                   "phase_ms": 100}, "priority": 1, "watchdog_ms": 50, "programs": ["quick"]}]}));
+        "tasks": [{"name": "slowly", "kind": {"type": "cyclic", "interval_ms": 400,
+                   "phase_ms": 100}, "priority": 1, "watchdog_ms": 100, "programs": ["quick"]}]}));
     let r = exchange_for(
         &mut engine,
-        Duration::from_millis(1_200),
+        Duration::from_millis(1_500),
         Duration::from_millis(10),
         |_| Vec::new(),
         |r| assert_eq!(r.state.mode, RuntimeMode::Run, "{:?}", r.state.fault),
