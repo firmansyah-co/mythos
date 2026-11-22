@@ -615,6 +615,8 @@ fn build(
         inputs: entry.inputs.clone(),
         outputs: entry.outputs.clone(),
         published: entry.published.clone(),
+        // This plugin builds no program with data blocks yet (ADR-014, D2 stage 1).
+        data: Vec::new(),
     };
 
     // A tag nothing provides now is said, not refused: the connection that provides it may

@@ -335,6 +335,11 @@ pub struct RetainedValue {
     pub ty: String,
     /// The variable's bytes in the runtime module's own form, as lowercase hex.
     pub bytes: String,
+    /// Only for a data block's master copy (ADR-014): the block's layout hash. `path` is then
+    /// the block's name, `ty` its type and `bytes` the whole master. `None` for a variable of a
+    /// program, and absent from the JSON, so a value kept before data blocks reads unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
 }
 
 // -----------------------------------------------------------------------------
@@ -367,6 +372,261 @@ pub struct RuntimeProgram {
     /// Variables published as tags of the runtime's own.
     #[serde(default)]
     pub published: Vec<PublishedBinding>,
+    /// The data blocks it declares in `VAR_EXTERNAL`, as the compiler says (ADR-014). Empty,
+    /// and absent from the JSON, for a program that declares none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data: Vec<DataUse>,
+}
+
+// -----------------------------------------------------------------------------
+// Data blocks (ADR-014)
+// -----------------------------------------------------------------------------
+
+/// One data block a program declares in `VAR_EXTERNAL`: the compiler's `DataUse`, in the same
+/// JSON. This crate does not depend on the compiler.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataUse {
+    /// As the project declares it.
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// The layout hash: 16 lowercase hex digits.
+    pub layout: String,
+    /// Of the program's copy, in the program's memory.
+    pub offset: u32,
+    pub size: u32,
+    /// Declared `VAR_EXTERNAL CONSTANT`. Required: no default.
+    pub constant: bool,
+    /// The top-level members, in declaration order.
+    pub members: Vec<DataMember>,
+}
+
+/// A top-level member of a data block as a program declares it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataMember {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// Inside the block.
+    pub offset: u32,
+    pub size: u32,
+    /// The program writes it. Required: a missing `written` read as false would hide a writer
+    /// from the one-writer check, and the member would never be handed over.
+    pub written: bool,
+}
+
+/// One data block of a runtime: the compiler's `DataLayout` without `written`, and whether
+/// its value is kept across a warm restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataBlock {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    pub layout: String,
+    pub size: u32,
+    pub members: Vec<DataBlockMember>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retain: bool,
+}
+
+/// A top-level member of a data block of a runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataBlockMember {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    pub offset: u32,
+    pub size: u32,
+}
+
+/// What a runtime module says, in its manifest's `profile.data`, about the data blocks it hands
+/// over between programs. A module that says nothing hands none over.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataSupport {
+    /// The tiers it hands blocks over in: 1, between the programs of one runtime.
+    pub tiers: Vec<u8>,
+}
+
+impl DataSupport {
+    /// The data support a runtime module's profile declares; `None` when it declares none, or
+    /// declares it in a form this crate cannot read.
+    pub fn of(profile: &Value) -> Option<DataSupport> {
+        serde_json::from_value(profile.get("data")?.clone()).ok()
+    }
+}
+
+/// A data block's name: an IEC identifier, a letter or `_` first, then letters, digits or `_`.
+fn valid_block_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// 16 lowercase hex digits.
+fn valid_layout(layout: &str) -> bool {
+    layout.len() == 16
+        && layout
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+}
+
+/// The first segment of a variable's name: before its first `.` or `[`.
+fn first_segment(variable: &str) -> &str {
+    let end = variable.find(['.', '[']).unwrap_or(variable.len());
+    variable[..end].trim()
+}
+
+/// Check the data blocks of one runtime against its programs (ADR-014): every name valid,
+/// every block a program declares in the runtime's `data` and laid out as it was built with,
+/// each member written by one program at most, and no tag written into a member. The same
+/// check, word for word, in the core and in a runtime module. Block names are compared without
+/// regard to case.
+pub fn check_data(programs: &[&RuntimeProgram], data: &[DataBlock]) -> Result<(), String> {
+    for (i, b) in data.iter().enumerate() {
+        let name = &b.name;
+        if !valid_block_name(name) {
+            return Err(format!(
+                "'{name}' is not a data block name: use a letter or '_' first, then letters, digits or '_'"
+            ));
+        }
+        if data[..i].iter().any(|c| c.name.eq_ignore_ascii_case(name)) {
+            return Err(format!("two data blocks are named '{name}'"));
+        }
+        if programs.iter().any(|p| p.name.eq_ignore_ascii_case(name)) {
+            return Err(format!(
+                "data block '{name}' has the name of a program of this runtime"
+            ));
+        }
+        if !valid_layout(&b.layout) {
+            return Err(format!(
+                "data block '{name}': its layout '{}' is not 16 lowercase hex digits",
+                b.layout
+            ));
+        }
+        for (j, m) in b.members.iter().enumerate() {
+            let end = u64::from(m.offset) + u64::from(m.size);
+            if end > u64::from(b.size) {
+                return Err(format!(
+                    "data block '{name}': member '{}' lies outside its {} bytes",
+                    m.name, b.size
+                ));
+            }
+            // The hand-over copies each written member whole: two members that share a byte
+            // would let two programs write it.
+            if let Some(o) = b.members[..j].iter().find(|o| {
+                u64::from(o.offset) < end
+                    && u64::from(m.offset) < u64::from(o.offset) + u64::from(o.size)
+            }) {
+                return Err(format!(
+                    "data block '{name}': members '{}' and '{}' overlap",
+                    o.name, m.name
+                ));
+            }
+        }
+    }
+    let names = if data.is_empty() {
+        "it has none".to_string()
+    } else {
+        format!(
+            "it has: {}",
+            data.iter()
+                .map(|b| b.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    for p in programs {
+        let pn = &p.name;
+        for (j, u) in p.data.iter().enumerate() {
+            let un = &u.name;
+            if p.data[..j].iter().any(|v| v.name.eq_ignore_ascii_case(un)) {
+                return Err(format!("program '{pn}' declares data block '{un}' twice"));
+            }
+            let Some(b) = data.iter().find(|b| b.name.eq_ignore_ascii_case(un)) else {
+                return Err(format!(
+                    "program '{pn}' uses data block '{un}', which is not in the runtime's data ({names})"
+                ));
+            };
+            if u.layout != b.layout || u.size != b.size {
+                return Err(format!(
+                    "program '{pn}' was built with data block '{un}' laid out as {} ({} bytes), and the runtime's '{}' is laid out as {} ({} bytes): build '{pn}' again",
+                    u.layout, u.size, b.name, b.layout, b.size
+                ));
+            }
+            let same_members = u.members.len() == b.members.len()
+                && u.members.iter().zip(&b.members).all(|(m, n)| {
+                    m.name == n.name && m.ty == n.ty && m.offset == n.offset && m.size == n.size
+                });
+            if u.ty != b.ty || !same_members {
+                return Err(format!(
+                    "program '{pn}' was built with data block '{un}' of type {} with other members than the runtime's {}: build '{pn}' again",
+                    u.ty, b.ty
+                ));
+            }
+            if u.constant {
+                if let Some(m) = u.members.iter().find(|m| m.written) {
+                    return Err(format!(
+                        "program '{pn}' declares data block '{un}' CONSTANT and writes its member '{}'",
+                        m.name
+                    ));
+                }
+            }
+        }
+    }
+    for b in data {
+        for (i, m) in b.members.iter().enumerate() {
+            let mut writer: Option<&str> = None;
+            for p in programs {
+                let writes = p
+                    .data
+                    .iter()
+                    .find(|u| u.name.eq_ignore_ascii_case(&b.name))
+                    .is_some_and(|u| u.members[i].written);
+                if !writes {
+                    continue;
+                }
+                if let Some(a) = writer {
+                    return Err(format!(
+                        "data block '{}': member '{}' is written by programs '{a}' and '{}'; a member has one writer",
+                        b.name, m.name, p.name
+                    ));
+                }
+                writer = Some(&p.name);
+            }
+        }
+    }
+    for p in programs {
+        let block_of = |variable: &str| {
+            let first = first_segment(variable);
+            p.data
+                .iter()
+                .find(|u| u.name.eq_ignore_ascii_case(first))
+                .map(|u| u.name.as_str())
+        };
+        for i in &p.inputs {
+            if let Some(b) = block_of(&i.variable) {
+                return Err(format!(
+                    "program '{}': {} is a member of data block '{b}', which only a program writes: a tag cannot be read into it",
+                    p.name, i.variable
+                ));
+            }
+        }
+        for s in p.published.iter().filter(|s| s.writable) {
+            if let Some(b) = block_of(&s.variable) {
+                return Err(format!(
+                    "program '{}': {} is a member of data block '{b}', which only a program writes: it cannot be a setpoint",
+                    p.name, s.variable
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// What of a tag a variable takes.
@@ -1100,7 +1360,318 @@ mod tests {
             inputs: Vec::new(),
             outputs: Vec::new(),
             published: Vec::new(),
+            data: Vec::new(),
         }
+    }
+
+    const HASH: &str = "0123456789abcdef";
+
+    /// Block `S` of type `T`: members `a` (INT at 0) and `b` (DINT at 4), 8 bytes.
+    fn block(name: &str) -> DataBlock {
+        DataBlock {
+            name: name.into(),
+            ty: "T".into(),
+            layout: HASH.into(),
+            size: 8,
+            members: vec![
+                DataBlockMember {
+                    name: "a".into(),
+                    ty: "INT".into(),
+                    offset: 0,
+                    size: 2,
+                },
+                DataBlockMember {
+                    name: "b".into(),
+                    ty: "DINT".into(),
+                    offset: 4,
+                    size: 4,
+                },
+            ],
+            retain: false,
+        }
+    }
+
+    /// Program `name` declaring `block` (as [`block`] lays it out) at offset 16, writing the
+    /// members whose names are in `writes`.
+    fn user(name: &str, block_name: &str, writes: &[&str]) -> RuntimeProgram {
+        let b = block(block_name);
+        let mut p = program(name);
+        p.data.push(DataUse {
+            name: block_name.into(),
+            ty: b.ty.clone(),
+            layout: b.layout.clone(),
+            offset: 16,
+            size: b.size,
+            constant: false,
+            members: b
+                .members
+                .iter()
+                .map(|m| DataMember {
+                    name: m.name.clone(),
+                    ty: m.ty.clone(),
+                    offset: m.offset,
+                    size: m.size,
+                    written: writes.contains(&m.name.as_str()),
+                })
+                .collect(),
+        });
+        p
+    }
+
+    #[test]
+    fn check_data_refuses_each_thing_it_can_get_wrong() {
+        let check = |programs: &[&RuntimeProgram], data: &[DataBlock]| {
+            check_data(programs, data).err().unwrap_or_default()
+        };
+        // What is right: one writer of `a`, one of `b`, a block no program declares, and the
+        // runtime of today.
+        let (w, r) = (user("w", "S", &["a"]), user("r", "s", &["b"]));
+        assert_eq!(
+            check_data(&[&w, &r], &[block("S"), block("Unused")]),
+            Ok(())
+        );
+        assert_eq!(check_data(&[&program("p")], &[]), Ok(()));
+
+        // R1.
+        for bad in ["", "1x", "a.b", "a b", "x-y", "é"] {
+            assert_eq!(
+                check(&[&w], &[block(bad)]),
+                format!("'{bad}' is not a data block name: use a letter or '_' first, then letters, digits or '_'")
+            );
+        }
+        assert_eq!(check_data(&[], &[block("_x9")]), Ok(()));
+        // R2.
+        assert_eq!(
+            check(&[&w], &[block("S"), block("s")]),
+            "two data blocks are named 's'"
+        );
+        // R3.
+        assert_eq!(
+            check(&[&w], &[block("W")]),
+            "data block 'W' has the name of a program of this runtime"
+        );
+        // R4.
+        for bad in [
+            "0123456789ABCDEF",
+            "0123456789abcde",
+            "0123456789abcdef0",
+            "0123456789abcdeg",
+        ] {
+            let mut b = block("S");
+            b.layout = bad.into();
+            assert_eq!(
+                check(&[&w], &[b]),
+                format!("data block 'S': its layout '{bad}' is not 16 lowercase hex digits")
+            );
+        }
+        // R5, without overflowing.
+        let mut b = block("S");
+        b.members[1].offset = 5;
+        assert_eq!(
+            check(&[&w], &[b.clone()]),
+            "data block 'S': member 'b' lies outside its 8 bytes"
+        );
+        b.members[1].offset = u32::MAX;
+        assert_eq!(
+            check(&[&w], &[b]),
+            "data block 'S': member 'b' lies outside its 8 bytes"
+        );
+        // R5a, members that overlap: `a` widened over `b`, either way round, and checked before
+        // any program's use (whose members must equal the runtime's anyway).
+        let mut b = block("S");
+        b.members[0].size = 8;
+        assert_eq!(
+            check(&[&w], &[b.clone()]),
+            "data block 'S': members 'a' and 'b' overlap"
+        );
+        b.members.swap(0, 1);
+        assert_eq!(
+            check(&[&w], &[b]),
+            "data block 'S': members 'b' and 'a' overlap"
+        );
+        // Touching is not overlapping; a member of no bytes overlaps none.
+        let mut b = block("S");
+        b.members[0].size = 4;
+        b.members.push(DataBlockMember {
+            name: "empty".into(),
+            ty: "T0".into(),
+            offset: 4,
+            size: 0,
+        });
+        assert_eq!(check_data(&[], &[b]), Ok(()));
+        // R6.
+        let mut twice = user("w", "S", &[]);
+        let mut again = twice.data[0].clone();
+        again.name = "s".into();
+        twice.data.push(again);
+        assert_eq!(
+            check(&[&twice], &[block("S")]),
+            "program 'w' declares data block 's' twice"
+        );
+        // R7.
+        assert_eq!(
+            check(&[&w], &[block("Other"), block("More")]),
+            "program 'w' uses data block 'S', which is not in the runtime's data (it has: Other, More)"
+        );
+        assert_eq!(
+            check(&[&w], &[]),
+            "program 'w' uses data block 'S', which is not in the runtime's data (it has none)"
+        );
+        // R8: layout, then size.
+        let mut other = block("S");
+        other.layout = "fedcba9876543210".into();
+        assert_eq!(
+            check(&[&w], &[other]),
+            "program 'w' was built with data block 'S' laid out as 0123456789abcdef (8 bytes), and the runtime's 'S' is laid out as fedcba9876543210 (8 bytes): build 'w' again"
+        );
+        let mut bigger = block("S");
+        bigger.size = 12;
+        assert_eq!(
+            check(&[&w], &[bigger]),
+            "program 'w' was built with data block 'S' laid out as 0123456789abcdef (8 bytes), and the runtime's 'S' is laid out as 0123456789abcdef (12 bytes): build 'w' again"
+        );
+        // R9: the same hash and size, and another type, or another member's name, type,
+        // offset or size, or one member fewer.
+        let r9 = "program 'w' was built with data block 'S' of type T with other members than the runtime's";
+        let mut renamed = block("S");
+        renamed.ty = "U".into();
+        assert_eq!(check(&[&w], &[renamed]), format!("{r9} U: build 'w' again"));
+        for change in 0..5 {
+            let mut b = block("S");
+            match change {
+                0 => b.members[1].name = "c".into(),
+                1 => b.members[1].ty = "REAL".into(),
+                2 => b.members[1].offset = 2,
+                3 => b.members[1].size = 2,
+                _ => {
+                    b.members.pop();
+                }
+            }
+            assert_eq!(
+                check(&[&w], &[b]),
+                format!("{r9} T: build 'w' again"),
+                "{change}"
+            );
+        }
+        // R10.
+        let mut constant = user("w", "S", &["b"]);
+        constant.data[0].constant = true;
+        assert_eq!(
+            check(&[&constant], &[block("S")]),
+            "program 'w' declares data block 'S' CONSTANT and writes its member 'b'"
+        );
+        let mut reads = user("w", "S", &[]);
+        reads.data[0].constant = true;
+        assert_eq!(check_data(&[&reads], &[block("S")]), Ok(()));
+        // R11.
+        let (a, b2) = (user("a", "S", &["b"]), user("b2", "S", &["a", "b"]));
+        assert_eq!(
+            check(&[&a, &b2], &[block("S")]),
+            "data block 'S': member 'b' is written by programs 'a' and 'b2'; a member has one writer"
+        );
+        // R12 and R13: a member's first segment, without regard to case; an output and a
+        // read-only published binding are allowed.
+        let mut bound = user("r", "S", &[]);
+        bound.outputs.push(OutputBinding {
+            variable: "S.a".into(),
+            tag: "external.A.B.o".into(),
+            safe: Value::from(0),
+        });
+        bound.published.push(PublishedBinding {
+            variable: "S.b".into(),
+            tag: "internal.R.b".into(),
+            writable: false,
+        });
+        bound.inputs.push(InputBinding {
+            variable: "Sx".into(),
+            tag: "external.A.B.c".into(),
+            of: InputOf::Value,
+        });
+        assert_eq!(check_data(&[&bound], &[block("S")]), Ok(()));
+        let mut input = bound.clone();
+        input.inputs.push(InputBinding {
+            variable: "s.a".into(),
+            tag: "external.A.B.c".into(),
+            of: InputOf::Value,
+        });
+        assert_eq!(
+            check(&[&input], &[block("S")]),
+            "program 'r': s.a is a member of data block 'S', which only a program writes: a tag cannot be read into it"
+        );
+        let mut setpoint = bound.clone();
+        setpoint.published.push(PublishedBinding {
+            variable: "S[0]".into(),
+            tag: "internal.R.x".into(),
+            writable: true,
+        });
+        assert_eq!(
+            check(&[&setpoint], &[block("S")]),
+            "program 'r': S[0] is a member of data block 'S', which only a program writes: it cannot be a setpoint"
+        );
+    }
+
+    #[test]
+    fn data_has_a_fixed_shape_and_is_absent_from_a_configuration_of_today() {
+        // A program of today, and a RETAIN value of today: no `data`, no `layout` key.
+        let p = serde_json::to_value(program("p")).unwrap();
+        assert!(p.get("data").is_none(), "{p}");
+        let kept = RetainedValue {
+            path: "n".into(),
+            ty: "DINT".into(),
+            bytes: "01000000".into(),
+            layout: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&kept).unwrap(),
+            json!({"path": "n", "type": "DINT", "bytes": "01000000"})
+        );
+        let read: RetainedValue =
+            serde_json::from_value(json!({"path": "n", "type": "DINT", "bytes": "01000000"}))
+                .unwrap();
+        assert_eq!(read, kept);
+
+        // Pinned literally.
+        let w = user("w", "S", &["a"]);
+        assert_eq!(
+            serde_json::to_value(&w.data[0]).unwrap(),
+            json!({"name": "S", "type": "T", "layout": HASH, "offset": 16, "size": 8,
+                   "constant": false, "members": [
+                       {"name": "a", "type": "INT", "offset": 0, "size": 2, "written": true},
+                       {"name": "b", "type": "DINT", "offset": 4, "size": 4, "written": false}]})
+        );
+        assert_eq!(
+            serde_json::to_value(block("S")).unwrap(),
+            json!({"name": "S", "type": "T", "layout": HASH, "size": 8, "members": [
+                {"name": "a", "type": "INT", "offset": 0, "size": 2},
+                {"name": "b", "type": "DINT", "offset": 4, "size": 4}]})
+        );
+        let mut kept_block = block("S");
+        kept_block.retain = true;
+        assert_eq!(
+            serde_json::to_value(kept_block).unwrap()["retain"],
+            json!(true)
+        );
+
+        // `written` and `constant` are required; an unknown field is refused.
+        let member = json!({"name": "a", "type": "INT", "offset": 0, "size": 2});
+        assert!(serde_json::from_value::<DataMember>(member).is_err());
+        let mut use_ = serde_json::to_value(&w.data[0]).unwrap();
+        use_.as_object_mut().unwrap().remove("constant");
+        assert!(serde_json::from_value::<DataUse>(use_).is_err());
+        let mut extra = serde_json::to_value(block("S")).unwrap();
+        extra["colour"] = json!("red");
+        assert!(serde_json::from_value::<DataBlock>(extra).is_err());
+    }
+
+    #[test]
+    fn a_module_says_it_hands_data_blocks_over_in_its_profile_or_does_not() {
+        assert_eq!(
+            DataSupport::of(&json!({"name": "pc", "data": {"tiers": [1]}})),
+            Some(DataSupport { tiers: vec![1] })
+        );
+        assert_eq!(DataSupport::of(&json!({"name": "pc"})), None);
+        assert_eq!(DataSupport::of(&Value::Null), None);
+        assert_eq!(DataSupport::of(&json!({"data": true})), None);
     }
 
     fn task(name: &str, kind: TaskKind, programs: &[&str]) -> TaskConfig {

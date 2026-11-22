@@ -12,7 +12,9 @@ use mythos_core::auth::{Auth, Role};
 use mythos_core::io::{DriverRegistry, IoManager};
 use mythos_core::storage::{ControllerStorage, ProjectConfig};
 use mythos_core::tag::TagCatalog;
-use mythos_logic_compiler::{compile, TargetProfile};
+use mythos_logic_compiler::{
+    check_project, compile, compile_sources, DataBlock, Sources, TargetProfile,
+};
 use mythos_pal::DefaultShm;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -1802,5 +1804,310 @@ async fn a_save_for_an_older_runtime_module_is_refused_and_says_why() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["config"], Value::Null, "{body}");
+    rig.io.shutdown().await;
+}
+
+// -----------------------------------------------------------------------------
+// Data blocks shared by the programs of one runtime (ADR-014, D2)
+// -----------------------------------------------------------------------------
+
+const COUNT_TYPES: &str = "TYPE Count : STRUCT v : DINT; END_STRUCT; END_TYPE";
+const COUNT_BLOCK: DataBlock = DataBlock {
+    name: "S",
+    ty: "Count",
+};
+/// Counts in the block (`S.v`), and in a variable of its own that is never kept (`n`).
+const BUMPER: &str = "PROGRAM Bumper
+VAR n : DINT; END_VAR
+VAR_EXTERNAL S : Count; END_VAR
+  S.v := S.v + 1;
+  n := n + 1;
+END_PROGRAM";
+/// Takes what Bumper handed over.
+const TAKER: &str = "PROGRAM Taker
+VAR got : DINT; END_VAR
+VAR_EXTERNAL S : Count; END_VAR
+  got := S.v;
+END_PROGRAM";
+
+fn count_program(source: &str, version: &str) -> Value {
+    let c = compile_sources(
+        &Sources {
+            st: Some(("main.st", source)),
+            library: &[("types.st", COUNT_TYPES)],
+            data: &[COUNT_BLOCK],
+            ..Default::default()
+        },
+        &TargetProfile::pc(),
+    )
+    .unwrap_or_else(|d| panic!("{d:?}"));
+    json!({
+        "name": c.name, "version": version, "interval_ms": 20,
+        "code": hex::encode(&c.bytecode), "symbols": c.symbols, "data": c.data,
+    })
+}
+
+/// The block S as the project lays it out, kept across a warm restart when `retain`.
+fn count_block(retain: bool) -> Value {
+    let l = check_project(&Sources {
+        library: &[("types.st", COUNT_TYPES)],
+        data: &[COUNT_BLOCK],
+        ..Default::default()
+    })
+    .unwrap_or_else(|d| panic!("{d:?}"))
+    .remove(0);
+    json!({
+        "name": l.name, "type": l.ty, "layout": l.layout, "size": l.size, "retain": retain,
+        "members": l.members.iter().map(|m| json!({
+            "name": m.name, "type": m.ty, "offset": m.offset, "size": m.size,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// The runtime `shared`: Bumper every 20 ms, Taker every 30 ms, sharing S.
+fn sharing(version: &str, retain: bool) -> Value {
+    json!({"instances": [{
+        "id": "shared", "module": "vm", "run": true,
+        "programs": [count_program(BUMPER, version), count_program(TAKER, version)],
+        "tasks": [
+            {"name": "b", "kind": {"type": "cyclic", "interval_ms": 20}, "priority": 1, "programs": ["Bumper"]},
+            {"name": "t", "kind": {"type": "cyclic", "interval_ms": 30}, "priority": 2, "programs": ["Taker"]}
+        ],
+        "data": [count_block(retain)]
+    }]})
+}
+
+impl Rig {
+    async fn save(&self, config: Value) -> (StatusCode, Value) {
+        self.send(
+            &self.engineer,
+            "PUT",
+            "/api/v1/projects/plant/runtimes",
+            Some(config),
+        )
+        .await
+    }
+
+    /// `Bumper.S.v`, `Bumper.n` and `Taker.got` as their last runs left them, once `holds`
+    /// says so. A 502 on the way (the old process's failure, kept up to 1 s) is asked again.
+    async fn shared_when(
+        &self,
+        what: &str,
+        holds: impl Fn(i64, i64, i64) -> bool,
+    ) -> (i64, i64, i64) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let (status, body) = self
+                .send(
+                    &self.viewer,
+                    "POST",
+                    "/api/v1/runtimes/shared/watch",
+                    Some(json!({"variables": ["Bumper.S.v", "Bumper.n", "Taker.got"]})),
+                )
+                .await;
+            if status == StatusCode::OK && body["state"]["mode"] == "run" {
+                let at = |k: usize| body["values"][k]["value"].as_i64();
+                if let (Some(v), Some(n), Some(got)) = (at(0), at(1), at(2)) {
+                    if holds(v, n, got) {
+                        return (v, n, got);
+                    }
+                }
+            }
+            assert!(Instant::now() < deadline, "never: {what}; {status} {body}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// What the server keeps for the block S of `shared`, once `holds` says so.
+    async fn kept_block_when(
+        &self,
+        what: &str,
+        layout: &Value,
+        holds: impl Fn(i64) -> bool,
+    ) -> i64 {
+        let file = self
+            ._root
+            .path()
+            .join("projects/.mythos-system/retain/plant/shared.json");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(&file) {
+                let kept: Value = serde_json::from_str(&text).unwrap();
+                let block = kept
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|k| k["path"] == "S")
+                    .unwrap_or_else(|| panic!("the block is kept: {kept}"));
+                assert_eq!(block["type"], "Count", "{kept}");
+                assert_eq!(&block["layout"], layout, "{kept}");
+                let bytes = hex::decode(block["bytes"].as_str().unwrap()).unwrap();
+                let v = i64::from(i32::from_le_bytes(bytes.try_into().unwrap()));
+                if holds(v) {
+                    return v;
+                }
+            }
+            assert!(Instant::now() < deadline, "never kept: {what}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_save_with_a_data_mistake_is_refused_with_its_message_and_nothing_is_saved() {
+    let rig = rig().await;
+    // Taker writes S.v too: two writers of one member.
+    let mut two_writers = sharing("v1", false);
+    two_writers["instances"][0]["programs"][1]["data"][0]["members"][0]["written"] = json!(true);
+    // The block S in a second runtime too.
+    let mut two_runtimes = sharing("v1", false);
+    let mut other = two_runtimes["instances"][0].clone();
+    other["id"] = json!("other");
+    two_runtimes["instances"]
+        .as_array_mut()
+        .unwrap()
+        .push(other);
+    for (config, message) in [
+        (two_writers, "runtime 'shared': data block 'S': member 'v' is written by programs 'Bumper' and 'Taker'; a member has one writer"),
+        (two_runtimes, "data block 'S' is in runtimes 'shared' and 'other'; a data block shared between runtimes is not built yet"),
+    ] {
+        let (status, body) = rig.save(config).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], message, "{body}");
+    }
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "GET",
+            "/api/v1/projects/plant/runtimes",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["config"], Value::Null, "{body}");
+    rig.io.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_save_of_a_program_sent_without_the_data_its_code_declares_is_refused() {
+    let rig = rig().await;
+    // Taker sent with its code and symbols only. The core does not read symbols (they are the
+    // module's own); the save asks the module, which loads the program and refuses it.
+    let mut config = sharing("v1", false);
+    config["instances"][0]["programs"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("data");
+    let (status, body) = rig.save(config).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"], "the runtimes configuration has problems and was not saved",
+        "{body}"
+    );
+    let message = body["problems"][0]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("program 'Taker': its code declares data block 'S' (S")
+            && message.contains("), and its data does not"),
+        "{body}"
+    );
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "GET",
+            "/api/v1/projects/plant/runtimes",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["config"], Value::Null, "{body}");
+    rig.io.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_save_with_data_blocks_for_an_older_runtime_module_is_refused_and_says_why() {
+    let rig = rig_with(&[(STUBBORN, "mythos-module-stubborn")]).await;
+    let mut config = grouped(&[COUNT], "v1");
+    config["instances"][0]["module"] = json!("stubborn");
+    config["instances"][0]["data"] = json!([count_block(false)]);
+    let (status, body) = rig.save(config).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let message = body["problems"][0]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("runtime 'counter' has data blocks (S); the runtime module 'stubborn' (version 0.0.0) does not say it hands data blocks over: install a newer build of it"),
+        "{body}"
+    );
+    rig.io.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_retained_block_survives_a_killed_process() {
+    let rig = rig().await;
+    let (status, body) = rig.save(sharing("v1", true)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let layout = count_block(true)["layout"].clone();
+    rig.shared_when("Bumper counts past 60 and Taker follows", |v, _, got| {
+        v > 60 && got > 0
+    })
+    .await;
+    let tank = rig.tank().await;
+    assert_eq!(tank["data"][0]["retain"], true, "{tank}");
+    assert_eq!(tank["data"][0]["members"][0]["writer"], "Bumper", "{tank}");
+
+    // The server keeps the block's master, under its layout.
+    let kept = rig
+        .kept_block_when("the block counted past 60", &layout, |v| v > 60)
+        .await;
+    let pid = tank["pid"].as_u64().unwrap() as u32;
+    kill(pid);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let runtime = rig.tank().await;
+        if runtime["restarts"].as_u64() >= Some(1)
+            && runtime["mode"] == "run"
+            && runtime["pid"].as_u64().is_some_and(|p| p as u32 != pid)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never started again: {runtime}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Bumper's count went on from what was kept (n, never kept, says how far since), and
+    // Taker took it.
+    let (v, n, _) = rig
+        .shared_when("the new process counts", |_, n, _| n > 0)
+        .await;
+    assert!(
+        v >= kept + n,
+        "the block went on from what was kept ({kept}): {v}, n {n}"
+    );
+    rig.shared_when("Taker takes the count that went on", |_, _, got| got > kept)
+        .await;
+    rig.io.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_online_change_carries_a_block_through_the_core() {
+    let rig = rig().await;
+    // Not RETAIN: only the online change can carry it on.
+    let (status, body) = rig.save(sharing("v1", false)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (before, _, _) = rig
+        .shared_when("Bumper counts past 60", |v, _, got| v > 60 && got > 0)
+        .await;
+    let (status, body) = rig.save(sharing("v2", false)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["changes"]["runtimes"][0]["start"], "online", "{body}");
+    rig.tank_when("v2 runs", |t| {
+        t["version"] == "v2, v2" && t["mode"] == "run"
+    })
+    .await;
+    // Its counter goes on: not reset to 0 by the new build, in the writer and in the reader.
+    let (v, n, got) = rig
+        .shared_when("v2 counts", |_, n, got| n > before && got > 0)
+        .await;
+    assert!(
+        v >= before && got >= before,
+        "went on from {before}: S.v {v}, got {got}, n {n}"
+    );
     rig.io.shutdown().await;
 }

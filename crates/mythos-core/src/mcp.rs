@@ -494,7 +494,58 @@ fn task_kind() -> Value {
     })
 }
 
+/// A data block as a program uses it (`program.data[]`), and as a runtime holds it
+/// (`data[]`): the compiler's JSON, with no field the route does not take.
+fn data_schemas() -> (Value, Value) {
+    let member = |written: bool| {
+        let mut properties = json!({
+            "name": { "type": "string" },
+            "type": { "type": "string" },
+            "offset": { "type": "integer", "minimum": 0, "description": "Inside the block, in bytes" },
+            "size": { "type": "integer", "minimum": 0 }
+        });
+        let mut required = vec!["name", "type", "offset", "size"];
+        if written {
+            properties["written"] = json!({ "type": "boolean", "description": "Whether the program's code writes it, as the compiler says; a member has one writer in a runtime. Never change it: a program whose code writes a member its data says it does not write is faulted at the end of its first task run" });
+            required.push("written");
+        }
+        json!({ "type": "object", "required": required, "additionalProperties": false, "properties": properties })
+    };
+    let layout = json!({ "type": "string", "pattern": "^[0-9a-f]{16}$", "description": "The layout hash the compiler gives: 16 lowercase hex digits" });
+    let used = json!({
+        "type": "object",
+        "required": ["name", "type", "layout", "offset", "size", "constant", "members"],
+        "additionalProperties": false,
+        "description": "A data block the program declares in VAR_EXTERNAL, exactly as the logic compiler gives it in the compiled program's data; no route of this server returns it. Required for every block the code declares: the runtime module refuses a program whose symbols have a data block, or a member of one, that its data leaves out",
+        "properties": {
+            "name": { "type": "string", "description": "A block of the runtime's data" },
+            "type": { "type": "string" },
+            "layout": layout.clone(),
+            "offset": { "type": "integer", "minimum": 0, "description": "Of the program's copy, in its memory" },
+            "size": { "type": "integer", "minimum": 0 },
+            "constant": { "type": "boolean", "description": "Declared VAR_EXTERNAL CONSTANT: it writes no member" },
+            "members": { "type": "array", "items": member(true) }
+        }
+    });
+    let held = json!({
+        "type": "object",
+        "required": ["name", "type", "layout", "size", "members"],
+        "additionalProperties": false,
+        "description": "A data block the runtime's programs share: one master copy, each member handed from its one writer to the programs that read it",
+        "properties": {
+            "name": { "type": "string", "description": "A letter or _ first, then letters, digits or _; not a program's name; in one runtime only" },
+            "type": { "type": "string" },
+            "layout": layout,
+            "size": { "type": "integer", "minimum": 0 },
+            "members": { "type": "array", "items": member(false), "description": "Its top-level members: the members of each program's data for this block without their written, which this list does not take; no two may share a byte" },
+            "retain": { "type": "boolean", "description": "Whether its value is kept across a warm restart; left out, it is not" }
+        }
+    });
+    (used, held)
+}
+
 fn runtimes_config_body() -> Value {
+    let (used, held) = data_schemas();
     let program = json!({
         "type": "object",
         "required": ["name", "version", "interval_ms", "code"],
@@ -512,7 +563,8 @@ fn runtimes_config_body() -> Value {
                 "safe": { "type": ["number", "boolean"], "description": "What the tag is written whenever the program is not running" } } } },
             "published": { "type": "array", "items": { "type": "object", "required": ["variable", "tag"], "properties": {
                 "variable": { "type": "string" }, "tag": { "type": "string", "description": "Starts with internal." },
-                "writable": { "type": "boolean" } } } }
+                "writable": { "type": "boolean" } } } },
+            "data": { "type": "array", "items": used, "description": "The data blocks it declares in VAR_EXTERNAL; left out, none" }
         }
     });
     let task = json!({
@@ -537,14 +589,15 @@ fn runtimes_config_body() -> Value {
                 "items": {
                     "type": "object",
                     "required": ["id", "module", "run"],
-                    "description": "One runtime: program, or programs with tasks; never both.",
+                    "description": "One runtime: program, or programs with tasks; never both; data: the data blocks its programs share.",
                     "properties": {
                         "id": { "type": "string", "description": "Letters, digits, - and _" },
                         "module": { "type": "string", "description": "A runtime module's 'provides', for example vm" },
                         "run": { "type": "boolean", "description": "Whether it is put in RUN when loaded" },
                         "program": program,
                         "programs": { "type": "array", "items": program, "description": "Several programs in one runtime module process" },
-                        "tasks": { "type": "array", "items": task, "description": "The tasks that run the programs; left out, one program runs cyclic at its interval_ms" }
+                        "tasks": { "type": "array", "items": task, "description": "The tasks that run the programs; left out, one program runs cyclic at its interval_ms" },
+                        "data": { "type": "array", "items": held, "description": "The data blocks its programs share; left out, none" }
                     }
                 }
             }
@@ -1197,7 +1250,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "list_runtimes",
         title: "List the runtimes of this node",
-        description: "Every program this node executes: its mode (run, stop, fault, or unreachable when its module does not answer) and why, scan count and times (null when nothing is known: the module does not answer, or no scan has run; never 0 in their place), and each output with what the device last confirmed and whether it is at its safe value. A runtime with tasks written out also lists its programs with their versions and each task with its runs, overruns, preemptions and run times; its interval_ms is that of its fastest cyclic task, null when it has none. Also the runtime modules found, each with the target profile a program is compiled for.",
+        description: "Every program this node executes: its mode (run, stop, fault, or unreachable when its module does not answer) and why, scan count and times (null when nothing is known: the module does not answer, or no scan has run; never 0 in their place), and each output with what the device last confirmed and whether it is at its safe value. A runtime with tasks written out also lists its programs with their versions and each task with its runs, overruns, preemptions and run times; its interval_ms is that of its fastest cyclic task, null when it has none. A runtime with data blocks lists them in data, each member with its writer: the program that writes it, null when none does. Also the runtime modules found, each with the target profile a program is compiled for.",
         method: "GET",
         path: "/api/v1/runtimes",
         query: &[],
@@ -1285,7 +1338,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "save_runtimes_config",
         title: "Save a project's runtimes",
-        description: "Check and save the programs a project runs. Each instance names a runtime module (list_runtimes shows them), whether to run at once, and a program: its code and symbols as the logic compiler made them, the tags read into variables (inputs), the variables written to field tags with the safe value each tag takes whenever the program is not running (outputs), and the variables published as tags starting with internal. (published; writable makes one a setpoint an operator may write). A runtime of several programs gives them in programs instead of program, and tasks that say which task runs each (cyclic, cycle, startup or event, at a priority from 0, the highest, to 31); its variables are then named program.variable. A runtime module that does not say it runs tasks is refused such a runtime. The module loads each program to check it; anything that does not load is refused and nothing is saved. For the active project the runtimes are then made to match: 'applied' true says the configuration was put in force, not that every program started. 'changes.failed' lists each instance that did not start, with why; read list_runtimes for what runs. A new build of a program in run replaces it online: it takes over every variable of the same name, type and size (RETAIN or not) and scans on, its outputs never going to their safe values; start=cold starts every program it starts or replaces from its initial values instead, RETAIN ones included. 'changes.runtimes' says for each how it started: start online (with carried, the count, and dropped and initialized, the variables that did not carry over and why), warm (RETAIN values kept, the rest initial; why says why not online) or cold. Forces are released by a load either way.",
+        description: "Check and save the programs a project runs. Each instance names a runtime module (list_runtimes shows them), whether to run at once, and a program: its code and symbols as the logic compiler made them, its data (each data block its code declares in VAR_EXTERNAL, as the compiler gave it; required when it declares any), the tags read into variables (inputs), the variables written to field tags with the safe value each tag takes whenever the program is not running (outputs), and the variables published as tags starting with internal. (published; writable makes one a setpoint an operator may write). A runtime of several programs gives them in programs instead of program, and tasks that say which task runs each (cyclic, cycle, startup or event, at a priority from 0, the highest, to 31); its variables are then named program.variable. A runtime module that does not say it runs tasks is refused such a runtime. An instance's data lists the data blocks its programs share: each block in one runtime only, each member written by one program at most, no tag read into a member and no member made a setpoint; a runtime module that does not say it hands data blocks over is refused a runtime with data. The layout hash, offsets and written flags of a block come only from the logic compiler: no route of this server returns them. The module loads each program to check it; anything that does not load is refused and nothing is saved. For the active project the runtimes are then made to match: 'applied' true says the configuration was put in force, not that every program started. 'changes.failed' lists each instance that did not start, with why; read list_runtimes for what runs. A new build of a program in run replaces it online: it takes over every variable of the same name, type and size (RETAIN or not) and scans on, its outputs never going to their safe values; start=cold starts every program it starts or replaces from its initial values instead, RETAIN ones included. 'changes.runtimes' says for each how it started: start online (with carried, the count, and dropped and initialized, the variables that did not carry over and why), warm (RETAIN values kept, the rest initial; why says why not online) or cold. Forces are released by a load either way.",
         method: "PUT",
         path: "/api/v1/projects/:id/runtimes",
         query: &[(
@@ -1883,6 +1936,125 @@ mod tests {
         }]}))
         .unwrap();
         assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_mcp_schema_describes_data() {
+        use crate::runtimes::RuntimesConfig;
+        let schema = runtimes_config_body();
+        let instance = &schema["properties"]["instances"]["items"];
+        assert!(instance["description"]
+            .as_str()
+            .unwrap()
+            .ends_with("data: the data blocks its programs share."));
+        let held = &instance["properties"]["data"]["items"];
+        let used = &instance["properties"]["programs"]["items"]["properties"]["data"]["items"];
+        assert_eq!(
+            used, &instance["properties"]["program"]["properties"]["data"]["items"],
+            "the same for program and programs"
+        );
+        let names = |v: &Value| -> Vec<String> {
+            let mut n: Vec<String> = v
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r.as_str().unwrap().to_string())
+                .collect();
+            n.sort_unstable();
+            n
+        };
+        let keys = |v: &Value| -> Vec<String> {
+            let mut n: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+            n.sort_unstable();
+            n
+        };
+        for v in [
+            held,
+            used,
+            &held["properties"]["members"]["items"],
+            &used["properties"]["members"]["items"],
+        ] {
+            assert_eq!(v["additionalProperties"], json!(false), "{v}");
+        }
+        // Required as the route requires: `constant` and `written` have no default; `retain` has.
+        assert_eq!(
+            names(&used["required"]),
+            ["constant", "layout", "members", "name", "offset", "size", "type"]
+        );
+        assert_eq!(
+            names(&used["properties"]["members"]["items"]["required"]),
+            ["name", "offset", "size", "type", "written"]
+        );
+        assert_eq!(
+            names(&held["required"]),
+            ["layout", "members", "name", "size", "type"]
+        );
+        assert_eq!(
+            keys(&held["properties"]),
+            ["layout", "members", "name", "retain", "size", "type"]
+        );
+        assert_eq!(
+            names(&held["properties"]["members"]["items"]["required"]),
+            keys(&held["properties"]["members"]["items"]["properties"])
+        );
+
+        // A body written as the schema says validates; one field more, the route refuses.
+        let member = json!({"name": "x", "type": "DINT", "offset": 0, "size": 4});
+        let mut written = member.clone();
+        written["written"] = json!(true);
+        let body = json!({"instances": [{
+            "id": "t", "module": "vm", "run": true,
+            "program": {"name": "a", "version": "1", "interval_ms": 20, "code": "00",
+                "data": [{"name": "S", "type": "T", "layout": "0123456789abcdef", "offset": 0,
+                          "size": 4, "constant": false, "members": [written]}]},
+            "data": [{"name": "S", "type": "T", "layout": "0123456789abcdef", "size": 4,
+                      "retain": true, "members": [member]}]
+        }]});
+        let config: RuntimesConfig = serde_json::from_value(body.clone()).unwrap();
+        assert_eq!(config.validate(), Ok(()));
+        let mut extra = body;
+        extra["instances"][0]["data"][0]["members"][0]["written"] = json!(false);
+        assert!(serde_json::from_value::<RuntimesConfig>(extra)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown field `written`"));
+    }
+
+    #[test]
+    fn the_runtime_tools_say_what_they_take_and_report_of_data_blocks() {
+        let tool = |name: &str| {
+            TOOLS
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("no tool {name}"))
+                .description
+        };
+        let save = tool("save_runtimes_config");
+        for said in [
+            "its data (each data block its code declares in VAR_EXTERNAL, as the compiler gave it; required when it declares any)",
+            "a runtime module that does not say it hands data blocks over is refused a runtime with data",
+            "each block in one runtime only",
+            "no route of this server returns them",
+        ] {
+            assert!(save.contains(said), "save_runtimes_config: {said}");
+        }
+        assert!(tool("list_runtimes")
+            .contains("lists them in data, each member with its writer: the program that writes it, null when none does"));
+        let (used, held) = data_schemas();
+        assert!(used["description"]
+            .as_str()
+            .unwrap()
+            .contains("Required for every block the code declares"));
+        assert!(held["properties"]["members"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("without their written, which this list does not take"));
+        assert!(
+            used["properties"]["members"]["items"]["properties"]["written"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("Never change it")
+        );
     }
 
     #[test]

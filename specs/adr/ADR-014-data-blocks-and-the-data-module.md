@@ -1,6 +1,7 @@
 # ADR-014: Data Blocks, User Types and the Data Module
 
-- **Status**: ACCEPTED (design; of its slices D1, the compiler, is built: §6)
+- **Status**: ACCEPTED (design; of its slices D1, the compiler, and D2, the runtime's hand-over of
+  a data block, are built: §6)
 - **Date**: 2026-11-22
 - **Requested by**: Adrian ("kalau aku mau ga area bersama gitu, tapi ada modul data (db) dimana
   kita bisa susun UDT dan sejenisnya"; "gimana biar hampir instant dan ga kena exchange
@@ -15,8 +16,8 @@ ADR-013 (the logic compiler and VM; §2.19, task configuration).
 area; a data module in which user types and data blocks are made; a copy per program with one
 writer per member, handed over inside the runtime without an exchange; and the same between
 runtimes and between devices in the medium term. The author added, and the owner has not yet
-said yes or no to: the hand-over at each program's start and end rather than each task's
-(§2.3); the library of function blocks and functions (§2.7); data blocks typed by a function
+said yes or no to: when a hand-over is made (§2.3: a later program of the same task sees an
+earlier one's writes at once; other tasks see a task's run when the whole task run has ended); the library of function blocks and functions (§2.7); data blocks typed by a function
 block (§2.6); and tier 3 waiting for the security foundation (§2.4, §4). Each can be changed
 without undoing the rest.
 
@@ -91,24 +92,33 @@ in program text: the data block is the global declaration. `CONFIGURATION` text 
   into a running program's memory. A member that is neither written by a program nor writable
   from outside keeps its initial value, and the build says so as a warning.
 - When a program **starts in a task run**, the runtime copies into its copy every member it
-  does not write, from the master copy. When the program **ends**, the runtime copies the
-  members it writes from its copy into the master copy. Both copies are made by the scheduler
-  thread between pieces of execution, so no program is running while a copy is made.
+  does not write: from the copy of the member's writer when that writer is an earlier program
+  of the same task that has already ended in this task run, otherwise from the master copy.
+- When the **task run ends**, the runtime copies, for each program of the task, the members it
+  writes from its copy into the master copy, in the same step in which the task's outputs are
+  written. A task run that faults, or that a change of mode cut short, copies nothing into the
+  master. All copies are made by the scheduler thread between pieces of execution, so no
+  program is running while a copy is made.
+- (As first written, this section handed over when each *program* ended. That cannot be kept
+  together with "a faulted run hands nothing over": when the second program of a task faults,
+  the first has already handed over. D2 was built with the rule above.)
 
 What follows:
 
-- A reader sees, for all members written by one program, the values of **one** completed run of
-  that program. A preempted program has published nothing of the run it is in the middle of. A
-  half-written structure cannot be observed.
+- A reader in another task sees, for all members written by the programs of one task, the
+  values of **one** completed run of that task. A preempted task has published nothing of the
+  run it is in the middle of. A half-written structure cannot be observed, and neither can the
+  first program's members of a run whose second program has not ended.
 - Within one task the programs run in order, and a later program sees what an earlier one
-  wrote in the same task run. Across tasks a program sees what the writer published at the end
-  of its last completed run.
+  wrote in the same task run. Across tasks a program sees what the writer's task published at
+  the end of its last completed run.
 - The delay from a write to its use is the wait for the reader's next start, not an exchange
   period. Nothing crosses a process boundary and the core is not involved.
 - A program's inputs from the plant stay fixed per **task** run (the process image, ADR-013
-  §2.19); data blocks are handed over per **program** run. The difference is deliberate: an
-  input changes outside the controller and must be the same for every program of the task; a
-  data block member changes only when its one writer ends a run.
+  §2.19). A data block member is taken in per **program** run and published per **task** run:
+  an input changes outside the controller and must be the same for every program of the task;
+  a data block member changes only when its one writer has run, and the task publishes it
+  together with its outputs.
 
 This is the rule IEC 61131-3 gives for data between program organization units in tasks: a
 consumer's inputs from one producer all come from the same evaluation of it.
@@ -130,7 +140,7 @@ where the master copy is and what the reader learns about its age.
 lives in a **data segment**: a shared memory object separate from the tag bus, created through
 the same portable layer (`DefaultShm`), holding the block's bytes and a header with the layout
 hash (§2.5), a sequence counter, the writer's count of publications and a timestamp. The
-writing runtime's process publishes into it when the writing program ends a run; a reading
+writing runtime's process publishes into it when the writing task's run ends (§2.3); a reading
 runtime's process copies from it when a reading program starts, retrying while the sequence
 counter shows a publication in progress. Rules:
 
@@ -254,7 +264,7 @@ Each is one slice, built through the workflow topology, with its own evidence fi
 | Slice | What | Depends on |
 |-------|------|------------|
 | D1 (done) | Compiler: several sources in one compilation; `VAR_EXTERNAL` against given data block declarations; the copy's address, the layout hash and the written members in the compiled program | — |
-| D2 | Protocol, runtime module and core: data blocks in a runtime's configuration, master copies, hand-over at program start and end, the one-writer and layout checks, retained blocks, live values | D1 (C8b is built) |
+| D2 (done) | Protocol, runtime module and core: data blocks in a runtime's configuration, master copies, hand-over at program start and task end, the one-writer and layout checks, retained blocks, live values | D1 (C8b is built) |
 | D3 | Data module: store, check, routes and MCP tools; the logic module builds with `<project>/data/` and its library | D1 |
 | C8c | Logic module: runtimes and task configuration (ADR-013 §2.19) | — |
 | D4 | Workbench: editor for types and data blocks, live values | D3 |
@@ -293,8 +303,29 @@ first, so it means the same in every program; what a program does not use adds n
 what is compiled, and a program without library or data blocks compiles to the bytes it
 compiled to before.
 
-**Nothing uses it yet.** The logic module still compiles each program from its own source
-alone, no runtime hands a data block over, and there is no data module and no editor: D2 to
-D5, T2 and T3 are not built. `VAR_GLOBAL` stays refused, and so do `VAR_EXTERNAL` in a
-function block or function, a data block whose type is not a structure, and a per-block
-initial value.
+**D2 is built** (evidence: [ADR-013 evidence, D2](ADR-013-evidence/26-d2.md)). The module
+protocol takes a runtime's `data` (the blocks, each with its layout hash and `retain`) and, in
+each program, the `DataUse` the compiler gave it; `check_data` refuses a bad block name, a
+layout or members that differ from the program's, a CONSTANT block written, a member with two
+writers, an input or a setpoint bound to a member, and members that overlap. The VM runtime
+module (0.6.0, profile `data` tier 1) keeps one master of each block that a program declares,
+and each program has its own copy in its image. A task run hands over as a whole at its end:
+the master and the images change together, so a program of another task never sees a block
+half written, and a later program of the same task takes an earlier one's members at once.
+A run that faults hands nothing over. A forced member wins over the hand-over. A member has one
+writer. The module also refuses a program whose code declares a block, or has a member, that
+its `data` leaves out, and a task run in which a program changed a member its `data` says it
+does not write faults the runtime instead of handing over. After a restart every copy is set from the master; a RETAIN block keeps its master
+across a warm restart when its layout and size are the same; an online change composes each
+master again from the writers' copies and adds nothing on the wire. The core takes `data` in
+`runtimes.json` and in the MCP schema, refuses a block in two runtimes (R16) and a runtime
+module that does not say it hands data blocks over (R17), and its status names each member's
+writer. A runtime without data blocks runs and serialises as before. What a hand-over costs
+per program run, and how long the lock is held for it, are NOT MEASURED. A kept value of a
+RETAIN block that the module does not take is only a warning in the module's log.
+
+**Not built.** The logic module still sends no `data` for any program, so only the API and
+the MCP can configure a runtime with data blocks today. A runtime now hands a block over; the
+logic module, the data module and the editor are still not built: D3 to D5, T2 and T3 are not
+built. `VAR_GLOBAL` stays refused, and so do `VAR_EXTERNAL` in a function block or function, a
+data block whose type is not a structure, and a per-block initial value.

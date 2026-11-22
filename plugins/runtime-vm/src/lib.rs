@@ -31,9 +31,10 @@ use mythos_logic_vm::{
     read, read_string, string_size, write, ElemType, Fault, Program, Value as VmValue,
 };
 use mythos_module::protocol::{
-    check_tasks, implied_task, CarryReport, ExchangeReply, InputOf, ModuleKind, ModuleManifest,
-    NotCarried, ProgramVariables, RetainedValue, RuntimeMode, RuntimeProgram, RuntimeState,
-    TaskConfig, WatchReply, WatchedValue, WireInput, WireOutput, WireSample, PROTOCOL_VERSION,
+    check_data, check_tasks, implied_task, CarryReport, DataBlock, ExchangeReply, InputOf,
+    ModuleKind, ModuleManifest, NotCarried, ProgramVariables, RetainedValue, RuntimeMode,
+    RuntimeProgram, RuntimeState, TaskConfig, WatchReply, WatchedValue, WireInput, WireOutput,
+    WireSample, PROTOCOL_VERSION,
 };
 use mythos_module::RuntimeEngine;
 use mythos_plugin_sdk::{
@@ -76,7 +77,9 @@ pub fn manifest() -> ModuleManifest {
             "max_memory": 64 * 1024 * 1024,
             "max_code": 64 * 1024 * 1024,
             // ADR-013 §2.19: it runs several programs in tasks of every kind.
-            "tasks": {"kinds": ["cycle", "cyclic", "startup", "event"]}
+            "tasks": {"kinds": ["cycle", "cyclic", "startup", "event"]},
+            // ADR-014: it hands data blocks over between the programs of one runtime.
+            "data": {"tiers": [1]}
         }),
     }
 }
@@ -100,6 +103,9 @@ struct StartConfig {
     /// The tasks that run them; none for one program in its implied task.
     #[serde(default)]
     tasks: Vec<TaskConfig>,
+    /// The data blocks its programs share (ADR-014); none for a runtime of today.
+    #[serde(default)]
+    data: Vec<DataBlock>,
     /// Whether to put it in RUN at once. Otherwise it is loaded and waits in STOP.
     #[serde(default)]
     run: bool,
@@ -139,6 +145,10 @@ struct SymbolEntry {
     /// Inside a function block instance and not one of its inputs: only the block writes it.
     #[serde(default)]
     private: bool,
+    /// How it is declared: `external` for a program's copy of a data block (ADR-014), or a
+    /// part of one. Absent from symbols made before data blocks.
+    #[serde(default)]
+    section: Option<String>,
 }
 
 /// What an array symbol holds: enough to find one element.
@@ -303,6 +313,7 @@ fn plan(config: &Value) -> Result<Loaded, PluginError> {
         program,
         programs,
         tasks,
+        data,
         run,
         retained,
         carried,
@@ -314,6 +325,7 @@ fn plan(config: &Value) -> Result<Loaded, PluginError> {
         (None, _) => programs,
     };
     check_tasks(&programs.iter().collect::<Vec<_>>(), &tasks).map_err(invalid)?;
+    check_data(&programs.iter().collect::<Vec<_>>(), &data).map_err(invalid)?;
     let implied = tasks.is_empty();
     if implied && programs[0].interval_ms == 0 {
         return Err(invalid("interval_ms must be at least 1"));
@@ -328,6 +340,11 @@ fn plan(config: &Value) -> Result<Loaded, PluginError> {
             }
             other => other,
         })?);
+    }
+    // Every copy of a data block inside its program's memory, where its symbols put it: the
+    // hand-over copies by these offsets, so none may lead outside a memory.
+    for plan in &plans {
+        check_copies(plan).map_err(invalid)?;
     }
     // Inside one runtime, as inside one program: one variable to a tag.
     let mut outputs = HashSet::new();
@@ -352,11 +369,100 @@ fn plan(config: &Value) -> Result<Loaded, PluginError> {
         tasks
     };
     Ok(Loaded {
-        layout: Layout::new(plans, tasks, implied).map_err(invalid)?,
+        layout: Layout::new(plans, tasks, implied, data).map_err(invalid)?,
         run,
         retained,
         carried,
     })
+}
+
+/// Check that each data block a program declares lies inside its memory (R14), and that its
+/// symbols put each member where its data says (R15): the member's own symbol, or the leaves
+/// under it, starting at the member's offset and none outside it.
+fn check_copies(plan: &Plan) -> Result<(), String> {
+    let p = &plan.program.name;
+    for u in &plan.program.data {
+        let b = &u.name;
+        if u64::from(u.offset) + u64::from(u.size) > plan.memory_size as u64 {
+            return Err(format!(
+                "program '{p}': its copy of data block '{b}' lies outside the program's memory"
+            ));
+        }
+        let misplaced = || {
+            format!("program '{p}': its symbols do not place data block '{b}' where its data says")
+        };
+        for m in &u.members {
+            let at = u64::from(u.offset) + u64::from(m.offset);
+            let end = at + u64::from(m.size);
+            let own = format!("{b}.{}", m.name).to_ascii_lowercase();
+            let under = |path: &str| {
+                path == own
+                    || path
+                        .strip_prefix(own.as_str())
+                        .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+            };
+            let leaves: Vec<&SymbolEntry> = plan
+                .symbols
+                .iter()
+                .filter(|(path, _)| under(path))
+                .map(|(_, s)| s)
+                .collect();
+            let first = leaves.iter().map(|s| u64::from(s.offset)).min();
+            let inside = leaves.iter().all(|s| {
+                u64::from(s.offset) >= at && u64::from(s.offset) + u64::from(s.size) <= end
+            });
+            if first != Some(at) || !inside {
+                return Err(misplaced());
+            }
+        }
+    }
+    // The other way round: every part of a data block's copy the code has (a symbol declared
+    // `external`) is of a block the program's data declares, and inside a member it lists. A
+    // block left out of the data, or a member left out of a block, would never be handed over,
+    // and the program would run on a copy nothing updates.
+    let mut externals: Vec<&SymbolEntry> = plan
+        .symbols
+        .values()
+        .filter(|s| s.section.as_deref() == Some("external"))
+        .collect();
+    externals.sort_by(|a, b| a.path.cmp(&b.path));
+    for s in externals {
+        let block = first_segment(&s.path);
+        let Some(u) = plan
+            .program
+            .data
+            .iter()
+            .find(|u| u.name.eq_ignore_ascii_case(block))
+        else {
+            return Err(format!(
+                "program '{p}': its code declares data block '{block}' ({}), and its data does not",
+                s.path
+            ));
+        };
+        let Some(rest) = s.path.get(block.len()..).filter(|r| !r.is_empty()) else {
+            continue;
+        };
+        let member = rest
+            .strip_prefix('.')
+            .map(first_segment)
+            .unwrap_or_default();
+        if !u
+            .members
+            .iter()
+            .any(|m| m.name.eq_ignore_ascii_case(member))
+        {
+            return Err(format!(
+                "program '{p}': its code has {} in data block '{}', and its data lists no member '{member}' of it",
+                s.path, u.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The first segment of a path: before its first `.` or `[`.
+fn first_segment(path: &str) -> &str {
+    &path[..path.find(['.', '[']).unwrap_or(path.len())]
 }
 
 /// Check one program and work out where its variables are.
@@ -472,6 +578,7 @@ fn snapshot(plan: &Plan, memory: &[u8]) -> Vec<RetainedValue> {
             path: path.clone(),
             ty: ty.clone(),
             bytes: hex::encode(&memory[*offset as usize..(*offset + *size) as usize]),
+            layout: None,
         })
         .collect()
 }
@@ -533,6 +640,7 @@ fn all_values(plan: &Plan, memory: &[u8]) -> Vec<RetainedValue> {
             path: s.path.clone(),
             ty: s.ty.clone(),
             bytes: hex::encode(&memory[s.offset as usize..(s.offset + s.size) as usize]),
+            layout: None,
         })
         .collect()
 }
@@ -628,6 +736,73 @@ fn carry(plan: &Plan, memory: &mut [u8], values: &[RetainedValue]) -> CarryRepor
         });
     }
     report
+}
+
+/// After an online change's carry, the leaves of block copies that took a running value and
+/// lose it: each member of a master is set from one copy (its writer's, or the first declaring
+/// program's for a member no program writes) and then spread into every copy, so a copy's leaf
+/// keeps its carried value only when that copy's leaf carried too. `initialized[p]` is the
+/// paths, in lower case, of program `p`'s variables that took no running value. Gives
+/// `(program, path, why)` for each leaf that carried and is set back.
+fn set_from_another_copy(
+    layout: &Layout,
+    initialized: &[HashSet<String>],
+) -> Vec<(usize, String, String)> {
+    let mut out = Vec::new();
+    for spec in &layout.blocks {
+        let Some(first) = spec.first else {
+            continue;
+        };
+        for (i, writer) in spec.writer.iter().enumerate() {
+            let (s, sj) = writer.unwrap_or(first);
+            let source = &layout.plans[s];
+            let src_prefix = format!(
+                "{}.{}",
+                source.program.data[sj].name, source.program.data[sj].members[i].name
+            )
+            .to_ascii_lowercase();
+            for &(p, j) in &spec.uses {
+                if p == s {
+                    continue;
+                }
+                let plan = &layout.plans[p];
+                let u = &plan.program.data[j];
+                let prefix = format!("{}.{}", u.name, u.members[i].name).to_ascii_lowercase();
+                for entry in variables_in_memory(plan) {
+                    let key = entry.path.to_ascii_lowercase();
+                    let Some(rest) = key.strip_prefix(prefix.as_str()) else {
+                        continue;
+                    };
+                    if !(rest.is_empty() || rest.starts_with('.') || rest.starts_with('[')) {
+                        continue;
+                    }
+                    if initialized[p].contains(&key) {
+                        continue;
+                    }
+                    let from = format!("{src_prefix}{rest}");
+                    let carried_there =
+                        source.symbols.contains_key(&from) && !initialized[s].contains(&from);
+                    if !carried_there {
+                        let shown = source
+                            .symbols
+                            .get(&from)
+                            .map(|e| e.path.clone())
+                            .unwrap_or(from);
+                        out.push((
+                            p,
+                            entry.path.clone(),
+                            format!(
+                                "every copy of data block '{}' is set from {}, which took no running value",
+                                spec.config.name,
+                                layout.full_name(s, &shown)
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 fn declarations(layout: &Layout) -> Vec<TagDeclaration> {
@@ -920,8 +1095,15 @@ impl MythosPlugin for VmEngine {
                     dropped,
                     ..CarryReport::default()
                 };
+                let mut initialized = Vec::new();
                 for (p, values) in each.iter().enumerate() {
                     let r = carry(&layout.plans[p], &mut shared.programs[p].image, values);
+                    initialized.push(
+                        r.initialized
+                            .iter()
+                            .map(|n| n.variable.to_ascii_lowercase())
+                            .collect::<HashSet<String>>(),
+                    );
                     report.carried += r.carried;
                     let full = |n: NotCarried| NotCarried {
                         variable: layout.full_name(p, &n.variable),
@@ -932,7 +1114,21 @@ impl MythosPlugin for VmEngine {
                         .initialized
                         .extend(r.initialized.into_iter().map(full));
                 }
+                // A copy that carried a member whose master is set from a copy that did not:
+                // spread below gives it that copy's value, so it did not carry.
+                for (p, path, why) in set_from_another_copy(&layout, &initialized) {
+                    report.carried = report.carried.saturating_sub(1);
+                    report.initialized.push(NotCarried {
+                        variable: layout.full_name(p, &path),
+                        why,
+                    });
+                }
                 shared.carry = report;
+                // Each data block's master from the carried copies of its writers (with every
+                // task run handing over whole, a master's member is its writer's copy), then
+                // every copy from its master.
+                shared.compose(&layout);
+                shared.spread(&layout);
                 let clock = Duration::from_nanos(carried.clock_ns.max(0) as u64);
                 if let Some(since) = Instant::now().checked_sub(clock) {
                     shared.since = since;
@@ -1184,6 +1380,7 @@ impl RuntimeEngine for VmEngine {
 
     /// The values of its RETAIN variables now; for a program that has not run, the values the
     /// host gave, so that a runtime loaded in STOP never has its kept values replaced by zeros.
+    /// Then each RETAIN data block's master, by the block's name and with its layout.
     async fn retained(&mut self, _ctx: &PluginContext) -> Result<Vec<RetainedValue>, PluginError> {
         let running = self.running()?;
         let layout = &running.layout;
@@ -1197,6 +1394,7 @@ impl RuntimeEngine for VmEngine {
             };
             values.extend(named(layout, p, mine));
         }
+        values.extend(g.kept_blocks(layout));
         values.extend(g.unclaimed.iter().cloned());
         Ok(values)
     }
@@ -1422,6 +1620,7 @@ mod tests {
             path: path.into(),
             ty: ty.into(),
             bytes: bytes.into(),
+            layout: None,
         };
         let mut fresh = vec![0u8; plan.memory_size];
         let refused = restore(
@@ -1602,6 +1801,7 @@ mod tests {
             path: path.into(),
             ty: ty.into(),
             bytes: bytes.into(),
+            layout: None,
         }
     }
 
