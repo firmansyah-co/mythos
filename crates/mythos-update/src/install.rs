@@ -337,8 +337,9 @@ fn check_runs_within(mythos: &Path, within: Duration) -> Result<String, InstallE
 }
 
 /// Whether starting a program failed because its file is open for writing somewhere (ETXTBSY,
-/// 26 on Linux, macOS and the BSDs). By its number: `ErrorKind::ExecutableFileBusy` is newer
-/// than the workspace's minimum Rust. Windows has no such refusal.
+/// 26 on Linux, macOS and the BSDs; Linux is where it was seen, macOS executes such a file).
+/// By its number: `ErrorKind::ExecutableFileBusy` is newer than the workspace's minimum Rust.
+/// Windows has no such refusal.
 fn is_busy(error: &std::io::Error) -> bool {
     cfg!(unix) && error.raw_os_error() == Some(26)
 }
@@ -419,8 +420,10 @@ mod tests {
     }
 
     /// A program that answers `--version`, in a directory of its own, and a descriptor open
-    /// for writing on it: while that is held, the system refuses to execute the file.
-    #[cfg(unix)]
+    /// for writing on it: while that is held, Linux refuses to execute the file. Linux only:
+    /// macOS executes a file that is open for writing (its runner ran both tests' program at
+    /// once), so there is nothing to wait out there.
+    #[cfg(target_os = "linux")]
     fn busy_program(name: &str) -> (PathBuf, PathBuf, fs::File) {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("mythos-update-{name}-{}", std::process::id()));
@@ -433,7 +436,7 @@ mod tests {
         (dir, program, held)
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_new_mythos_that_is_busy_for_a_moment_is_run_once_it_is_free() {
         let (dir, program, held) = busy_program("busy-for-a-moment");
@@ -453,7 +456,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_new_mythos_that_stays_busy_is_refused_with_the_reason_when_its_time_is_over() {
         let (dir, program, held) = busy_program("stays-busy");
