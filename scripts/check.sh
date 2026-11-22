@@ -30,8 +30,12 @@ esac
 mkdir -p "$LOG_DIR"
 
 # The commit and the dirty state are read before any gate runs: they describe the
-# tree that was checked. Outside a git checkout they are UNKNOWN, never guessed.
-if commit="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)"; then
+# tree that was checked. Outside a git checkout they are UNKNOWN, never guessed: a
+# copy unpacked under another checkout's target/ would otherwise report that
+# checkout's commit, and "clean" because target/ is ignored.
+toplevel="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$toplevel" ] && [ "$(cd "$toplevel" && pwd -P)" = "$(cd "$ROOT" && pwd -P)" ] \
+    && commit="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)"; then
     if [ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]; then
         tree_state="dirty (uncommitted changes)"
     else
