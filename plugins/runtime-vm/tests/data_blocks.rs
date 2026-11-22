@@ -893,6 +893,37 @@ fn the_module_refuses_a_copy_outside_its_memory() {
         e.contains("other members than the runtime's T"),
         "R9 before R15: {e}"
     );
+    // R15 from the symbols' side, each way on its own: a member whose first leaf is missing,
+    // so its leaves begin past its offset; and one whose leaf lies past its end.
+    let symbols = |change: &dyn Fn(&mut Vec<Value>)| {
+        let mut a = program(SHARED, WRITER);
+        let mut list = a["symbols"].as_array().unwrap().clone();
+        change(&mut list);
+        a["symbols"] = Value::Array(list);
+        json!({"data": data(SHARED, false), "programs": [a, program(SHARED, READER)],
+               "tasks": [cyclic("t", 5, 5, &["A", "B"])]})
+    };
+    let at = |list: &[Value], path: &str| {
+        list.iter()
+            .position(|s| s["path"] == path)
+            .unwrap_or_else(|| panic!("no symbol {path}"))
+    };
+    for change in [
+        &(|list: &mut Vec<Value>| {
+            let x = at(list, "S.pos.x");
+            list.remove(x);
+        }) as &dyn Fn(&mut Vec<Value>),
+        &|list: &mut Vec<Value>| {
+            let (y, back) = (at(list, "S.pos.y"), at(list, "S.back"));
+            list[y]["offset"] = list[back]["offset"].clone();
+        },
+    ] {
+        let e = refused(symbols(change));
+        assert!(
+            e.contains("program 'A': its symbols do not place data block 'S' where its data says"),
+            "{e}"
+        );
+    }
     // And the shared check, through the module: R11.
     let e = refused(config(&|d| d["members"][2]["written"] = json!(true)));
     assert!(
