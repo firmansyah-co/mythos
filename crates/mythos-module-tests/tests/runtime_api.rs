@@ -914,6 +914,19 @@ impl Rig {
     /// gives the old process's failure. It is asked again until the deadline, and a 502 still
     /// standing then fails the test with it.
     async fn counted_when(&self, what: &str, holds: impl Fn(i64, i64, &str) -> bool) -> (i64, i64) {
+        self.counted_of(None, what, holds).await
+    }
+
+    /// [`Self::counted_when`], of the program `version` only. The server keeps a watch answer for
+    /// up to `WATCH_FRESH` (1 s), so right after a load the runtimes list can already name the new
+    /// program while the watch still gives the answer of the one before, which its
+    /// `state.version` says. Such an answer is asked for again until the deadline.
+    async fn counted_of(
+        &self,
+        version: Option<&str>,
+        what: &str,
+        holds: impl Fn(i64, i64, &str) -> bool,
+    ) -> (i64, i64) {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let (status, body) = self.watch_counter().await;
@@ -923,6 +936,11 @@ impl Rig {
                 continue;
             }
             assert_eq!(status, StatusCode::OK, "{body}");
+            if version.is_some_and(|v| body["state"]["version"] != v) {
+                assert!(Instant::now() < deadline, "never: {what}; {body}");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                continue;
+            }
             let (total, n, mode) = Self::counts(&body);
             if holds(total, n, &mode) {
                 return (total, n);
@@ -1448,8 +1466,12 @@ async fn a_new_build_of_a_running_program_is_changed_online_and_a_cold_load_or_a
         assert!(Instant::now() < deadline, "Tally never ran: {body}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    // Of Tally itself: the answer the server still keeps of Counter, for up to a second after
+    // the load, has Counter's total and n (seen on Windows: "total 104; n 104" against 101 kept).
     let (total, n) = rig
-        .counted_when("Tally scans", |_, n, mode| mode == "run" && n > 0)
+        .counted_of(Some("tally"), "Tally scans", |_, n, mode| {
+            mode == "run" && n > 0
+        })
         .await;
     assert!(
         total >= kept + n && n < running_total,
