@@ -269,19 +269,25 @@ fn each_refusal_of_a_data_block_has_its_message() {
         ],
     );
     assert_eq!(messages(&d), ["data block 'RECIPE' is declared twice"]);
-    // A structure of the program is not one of the library.
+    // A structure of the program is not one of the library: the project, checked alone as
+    // check_project checks it, has no such type, and every program is told the same.
+    let local = [DataBlock {
+        name: "B",
+        ty: "Local",
+    }];
     let d = refused(
         "TYPE Local : STRUCT a : INT; END_STRUCT; END_TYPE PROGRAM Main END_PROGRAM",
         &[RECIPES],
-        &[DataBlock {
-            name: "B",
-            ty: "Local",
-        }],
+        &local,
     );
-    assert_eq!(
-        messages(&d),
-        ["data block 'B' is a Local, a structure of the program; a data block is an instance of a structure type of the library"]
-    );
+    assert_eq!(messages(&d), ["data block 'B': there is no type Local"]);
+    let alone = check_project(&Sources {
+        library: &[RECIPES],
+        data: &local,
+        ..Default::default()
+    })
+    .expect_err("refused alone");
+    assert_eq!(messages(&alone), messages(&d));
 
     // A program's declaration.
     for (src, message) in [
@@ -1034,4 +1040,184 @@ fn external_vars_constant_in_tc6_reads_and_refuses_a_store() {
         ["Line is declared VAR_EXTERNAL CONSTANT: the program reads it and does not write it"]
     );
     assert_eq!(d[0].source.as_deref(), Some("main.xml"));
+}
+
+// Review findings of slice D1, each a test of its own.
+
+/// A library type that names a type only a program declares: the library does not stand
+/// alone, so every program is refused as check_project is, with the library source named,
+/// and no program gets a layout of the block that depends on its own types.
+#[test]
+fn a_library_type_naming_a_type_only_a_program_declares_is_refused_in_every_program() {
+    let lib = (
+        "lib.st",
+        "TYPE Rec : STRUCT p : FromProgram; n : INT; END_STRUCT; END_TYPE",
+    );
+    let data = [DataBlock {
+        name: "R",
+        ty: "Rec",
+    }];
+    let told = ["FromProgram is not a type this compiler knows"];
+    let alone = check_project(&Sources {
+        library: &[lib],
+        data: &data,
+        ..Default::default()
+    })
+    .expect_err("the library alone is refused");
+    assert_eq!(messages(&alone), told);
+    for program in [
+        "TYPE FromProgram : STRUCT a : INT; END_STRUCT; END_TYPE
+         PROGRAM A VAR_EXTERNAL R : Rec; END_VAR R.n := 1; END_PROGRAM",
+        "TYPE FromProgram : STRUCT a : LREAL; b : LREAL; END_STRUCT; END_TYPE
+         PROGRAM B VAR_EXTERNAL R : Rec; END_VAR R.n := 2; END_PROGRAM",
+    ] {
+        let d = refused(program, &[lib], &data);
+        assert_eq!(messages(&d), told, "{program}");
+        assert_eq!(d[0].source.as_deref(), Some("lib.st"));
+        assert_eq!(d[0].line, 1);
+    }
+    // A library function calling a function only the program declares, likewise.
+    let calls = ("calls.st", "FUNCTION Lib : INT Lib := Own(); END_FUNCTION");
+    let d = refused(
+        "FUNCTION Own : INT Own := 1; END_FUNCTION PROGRAM Main END_PROGRAM",
+        &[calls],
+        &[],
+    );
+    assert_eq!(d.len(), 1, "{:?}", messages(&d));
+    assert_eq!(d[0].source.as_deref(), Some("calls.st"));
+    let alone = check_project(&Sources {
+        library: &[calls],
+        ..Default::default()
+    })
+    .expect_err("refused alone");
+    assert_eq!(messages(&alone), messages(&d));
+    // The control: a library that stands alone compiles with the same programs' types.
+    let sound = (
+        "lib.st",
+        "TYPE Inner : STRUCT a : INT; END_STRUCT; Rec : STRUCT p : Inner; n : INT; END_STRUCT; END_TYPE",
+    );
+    let a = compiled(
+        "PROGRAM A VAR_EXTERNAL R : Rec; END_VAR R.n := 1; END_PROGRAM",
+        &[sound],
+        &data,
+    );
+    let layouts = check_project(&Sources {
+        library: &[sound],
+        data: &data,
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(a.data[0].layout, layouts[0].layout);
+}
+
+/// A data block named like a POU of one program: the program's names are not the project's,
+/// so check_project and the compile of every program give one answer.
+#[test]
+fn a_data_block_named_like_a_program_gets_one_answer_from_check_project_and_every_compile() {
+    let lib = ("t.st", "TYPE T : STRUCT a : INT; END_STRUCT; END_TYPE");
+    let main = [DataBlock {
+        name: "Main",
+        ty: "T",
+    }];
+    let alone = check_project(&Sources {
+        library: &[lib],
+        data: &main,
+        ..Default::default()
+    });
+    assert_eq!(alone.map(|l| l.len()), Ok(1));
+    compiled("PROGRAM Other END_PROGRAM", &[lib], &main);
+    compiled("PROGRAM Main END_PROGRAM", &[lib], &main);
+    // A block whose type is a program's name: no type of the project, everywhere.
+    let x = [DataBlock {
+        name: "X",
+        ty: "Main",
+    }];
+    let told = ["data block 'X': there is no type Main"];
+    let alone = check_project(&Sources {
+        library: &[lib],
+        data: &x,
+        ..Default::default()
+    })
+    .expect_err("refused alone");
+    assert_eq!(messages(&alone), told);
+    assert_eq!(
+        messages(&refused("PROGRAM Main END_PROGRAM", &[lib], &x)),
+        told
+    );
+    assert_eq!(
+        messages(&refused("PROGRAM Other END_PROGRAM", &[lib], &x)),
+        told
+    );
+}
+
+const HUGE: &str = "TYPE Huge : STRUCT a : ARRAY [0..2000000000] OF LINT; b : ARRAY [0..2000000000] OF LINT; END_STRUCT; END_TYPE";
+
+/// A library type too large for the bytecode format, used by no program: refused in every
+/// program and by check_project, as the same type in a program's own source is.
+#[test]
+fn a_library_type_too_large_to_lay_out_is_refused_unused_as_in_the_program() {
+    let program = "PROGRAM Main VAR x : INT; END_VAR x := 1; END_PROGRAM";
+    let told = ["32000000016 bytes of variables is more than the bytecode format can hold"];
+    let own = format!("{HUGE}\n{program}");
+    assert_eq!(messages(&refused(&own, &[], &[])), told, "the control");
+    assert_eq!(messages(&refused(program, &[("big.st", HUGE)], &[])), told);
+    let alone = check_project(&Sources {
+        library: &[("big.st", HUGE)],
+        ..Default::default()
+    })
+    .expect_err("refused alone");
+    assert_eq!(messages(&alone), told);
+}
+
+/// Data blocks that each fit are not refused by check_project for their sum: no program holds
+/// every block of a project.
+#[test]
+fn check_project_refuses_no_blocks_that_each_fit_for_their_sum() {
+    // 800,000,000 bytes each; three are more than the format holds in one program.
+    let lib = [(
+        "big.st",
+        "TYPE Big : STRUCT a : ARRAY [0..99999999] OF LINT; END_STRUCT; END_TYPE",
+    )];
+    let block = |name| DataBlock { name, ty: "Big" };
+    let three = [block("A"), block("B"), block("C")];
+    let layouts = check_project(&Sources {
+        library: &lib,
+        data: &three,
+        ..Default::default()
+    })
+    .unwrap_or_else(|d| panic!("{:?}", messages(&d)));
+    assert_eq!(layouts.len(), 3);
+    assert!(layouts.iter().all(|l| l.size == 800_000_000));
+    // The control: one program holding all three is refused by the format.
+    let d = refused(
+        "PROGRAM Main VAR_EXTERNAL A : Big; B : Big; C : Big; END_VAR END_PROGRAM",
+        &lib,
+        &three,
+    );
+    assert_eq!(
+        messages(&d),
+        ["2400000000 bytes of variables is more than the bytecode format can hold"]
+    );
+}
+
+/// More library sources than are taken: told once, and nothing that only follows from it.
+#[test]
+fn too_many_library_sources_is_told_once() {
+    let mut texts: Vec<(String, String)> = (0..=mythos_logic_st::project::MAX_SOURCES)
+        .map(|k| (format!("l{k}.st"), String::new()))
+        .collect();
+    texts[0].1 = "TYPE Point : STRUCT x : INT; END_STRUCT; END_TYPE".into();
+    let lib: Vec<(&str, &str)> = texts
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let d = refused(
+        "PROGRAM Main VAR p : Point; END_VAR p.x := 1; END_PROGRAM",
+        &lib,
+        &[],
+    );
+    assert_eq!(
+        messages(&d),
+        ["the project has 1025 library sources; at most 1024 are taken"]
+    );
 }

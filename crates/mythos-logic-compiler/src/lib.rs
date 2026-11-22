@@ -196,10 +196,15 @@ fn lower_sources_with_probes(
 /// Check the library sources and the data block declarations of `sources` alone (its `st`
 /// and `tc6` are not looked at), and lay the blocks out, each as a program's copy of it is
 /// laid out, in the order of [`Sources::data`].
+///
+/// Every type and POU of the library is checked and laid out whether a block uses it or not,
+/// so one that no program could ever hold is refused here; each block is refused only for
+/// what it is alone ([`mythos_logic_backend_vm::data_layouts`]). A program compiled in the
+/// project is refused for whatever this refuses ([`compile_sources`]).
 pub fn check_project(sources: &Sources) -> Result<Vec<DataLayout>, Vec<Diagnostic>> {
     let unit = mythos_logic_st::check_project(&sources.project())?;
-    let out = mythos_logic_backend_vm::emit(&unit).map_err(|d| vec![d])?;
-    let data = data_uses(&unit, &out.externals, sources.data);
+    let externals = mythos_logic_backend_vm::data_layouts(&unit).map_err(|d| vec![d])?;
+    let data = data_uses(&unit, &externals, sources.data);
     Ok(data
         .into_iter()
         .map(|d| DataLayout {
@@ -274,6 +279,11 @@ pub fn compile_sources(
     target: &TargetProfile,
 ) -> Result<Compiled, Vec<Diagnostic>> {
     let (unit, probes) = lower_sources_with_probes(sources)?;
+    if !sources.project().is_empty() {
+        // The project alone, laid out: a library type no program could hold is refused in
+        // every program, used or not, as one in the program's own source is.
+        check_project(sources)?;
+    }
     let mut compiled = compile_unit(unit, target, sources.data)?;
     compiled.probes = probes;
     Ok(compiled)

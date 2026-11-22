@@ -4,9 +4,12 @@
 //! declares in `VAR_EXTERNAL`.
 //!
 //! **One namespace.** The POUs and types of every library source are added to the program's
-//! syntax tree and checked with it by the one rule of names the checker has: a program, and
-//! each library source, may use what any of them declares, in any order, and a name declared
-//! twice is refused wherever the two are.
+//! syntax tree and checked with it by the one rule of names the checker has: a program may
+//! use what any library source declares, a library source what any other declares, in any
+//! order, and a name declared twice is refused wherever the two are. **The library stands
+//! alone:** it is first checked with no program ([`crate::check_project`]), so a library
+//! source never uses a name only a program declares, and a data block is laid out alike in
+//! every program.
 //!
 //! **Everything checked, only what is used compiled.** A program is checked with every
 //! library source whole, so a mistake in a part no program uses is still told. It is then
@@ -78,6 +81,9 @@ pub fn add_library(tree: &mut Source, diags: &mut Vec<Diagnostic>, project: &Pro
             "the project has {} library sources; at most {MAX_SOURCES} are taken",
             project.library.len()
         )));
+        // None is read, so what they declare is not known: nothing is said about its
+        // absence, as for a source too long to read below.
+        tree.lost.extend([ast::Lost::Function, ast::Lost::Type]);
         return;
     }
     for (k, (name, text)) in project.library.iter().enumerate() {

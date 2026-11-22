@@ -365,6 +365,21 @@ struct Plan<'u> {
 /// that with the place; this is the backstop for a unit that came from elsewhere), or is
 /// larger than the format can describe.
 fn plan(u: &Unit) -> Result<Plan<'_>, Diagnostic> {
+    plan_as(u, Program::Whole)
+}
+
+/// How [`plan_as`] takes the program's variables.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Program {
+    /// Together, in one memory: a program to be emitted.
+    Whole,
+    /// Each on its own: each a data block of a project that no one program holds all of
+    /// ([`data_layouts`]).
+    EachVariable,
+}
+
+/// [`plan`], with the program's variables taken as `program` says.
+fn plan_as(u: &Unit, program: Program) -> Result<Plan<'_>, Diagnostic> {
     if u.ir_version != IR_VERSION {
         return Err(Diagnostic::whole(format!(
             "the unit is IR version {}; this backend reads version {IR_VERSION}",
@@ -406,14 +421,18 @@ fn plan(u: &Unit) -> Result<Plan<'_>, Diagnostic> {
             memory = memory.saturating_add(lay.pous[p].size);
         }
     }
+    let together = program == Program::Whole;
     let largest = lay
         .pous
         .iter()
+        .enumerate()
+        .filter(|(p, _)| together || *p != u.entry)
+        .map(|(_, l)| l)
         .chain(lay.structs.iter())
         .map(|l| l.size)
         .max()
         .unwrap_or(0)
-        .max(memory);
+        .max(if together { memory } else { 0 });
     // Scratch is a few bytes per CASE and per call of an instance in an array; leaving room
     // for it here means no address computed below can pass 32 bits.
     if largest > (u32::MAX / 2) as u64 {
@@ -432,6 +451,18 @@ fn plan(u: &Unit) -> Result<Plan<'_>, Diagnostic> {
 /// bytes per CASE) is not in it; `Output::memory_size` is the whole.
 pub fn variable_memory(u: &Unit) -> Result<u64, Diagnostic> {
     plan(u).map(|p| p.memory)
+}
+
+/// The layout of each data block the program of `u` declares, with no code emitted: for
+/// laying out the data blocks of a project with no program of its own (ADR-014, slice D1),
+/// declared as the variables of a program that does nothing.
+///
+/// Refused as [`emit`] refuses `u` for what is in it, every type and POU whether the program
+/// uses it or not, except that the program's variables are not taken together: no program
+/// holds every block of a project, and a block is refused only for what it is alone. Each
+/// layout's `offset` is where it would be in that program, which is no program's.
+pub fn data_layouts(u: &Unit) -> Result<Vec<ExternalLayout>, Diagnostic> {
+    plan_as(u, Program::EachVariable).map(|p| p.lay.externals())
 }
 
 /// Lay `u` out and emit its bytecode. `Err` as [`variable_memory`].

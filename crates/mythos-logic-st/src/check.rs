@@ -743,9 +743,19 @@ impl Checker {
                     "data block '{name}': {name} is a name of the standard; choose another"
                 ))
             }
-            Some(u) if self.names.iter().any(|(n, _, _)| *n == u) => Some(format!(
+            // Of the project, so of a library source: a program's own POUs and types are not
+            // the project's, and the answer is the same in every program and with none.
+            Some(u)
+                if self
+                    .names
+                    .iter()
+                    .zip(&self.name_lines)
+                    .any(|((n, _, _), line)| *n == u && project::source_of(*line).is_some()) =>
+            {
+                Some(format!(
                 "data block '{name}': {name} is also the name of a type or POU of the project; a data block needs its own"
-            )),
+            ))
+            }
             Some(_) if self.data[..k].iter().any(|(n, _)| n.eq_ignore_ascii_case(&name)) => {
                 Some(format!("data block '{name}' is declared twice"))
             }
@@ -765,6 +775,8 @@ impl Checker {
             Some(Named::Struct(i)) if project::source_of(self.struct_lines[i]).is_some() => {
                 Some(Ty::Struct(i))
             }
+            // A program's own structure. Through `crate::lower_tree_in` this is not met: the
+            // project is checked alone first, where there is no such type, and that is told.
             Some(Named::Struct(_)) => {
                 self.diags.push(Diagnostic::whole(format!(
                     "data block '{name}' is a {ty_name}, a structure of the program; a data block is an instance of a structure type of the library"

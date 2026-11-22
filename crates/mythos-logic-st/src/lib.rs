@@ -92,8 +92,14 @@ pub fn lower_project(st: Option<(&str, &str)>, project: &Project) -> Result<Unit
 /// [`lower_tree`], in `project`: `ast` holds the program's POUs and types and those of the
 /// project's library sources ([`project::add_library`]).
 ///
-/// Everything in `ast` is checked, so a mistake in a part of the library the program does not
-/// use is told; what is lowered is the program with only what it uses of the library
+/// The project is checked first alone ([`check_project`]): the library sources may use only
+/// one another and the standard library, never a name only the program declares, so that a
+/// library and its data blocks mean the same in every program. When that refuses the
+/// project, its diagnostics are given with those of reading the program's own sources, and
+/// the program is not checked further: what it would say could follow from the library.
+///
+/// Then everything in `ast` is checked, so a mistake in a part of the library the program
+/// does not use is told; what is lowered is the program with only what it uses of the library
 /// ([`project::used_only`]), and with only the data blocks it declares. A diagnostic on a
 /// line of a library source is given that source's line and name ([`project::name_sources`]).
 /// With no library and no data block, this is [`lower_tree`].
@@ -105,23 +111,19 @@ pub fn lower_tree_in(
     if project.is_empty() {
         return lower_tree(ast, diags);
     }
-    let finish = |diags: Vec<Diagnostic>| {
-        let mut diags = library::as_the_compilers(diags);
-        diags.sort_by_key(|d| (d.line, d.col));
-        project::name_sources(diags, project)
-    };
-    // Everything, checked.
-    let mut whole = ast.clone();
-    let mut diags = diags;
-    library::add_used(&mut whole, &mut diags);
-    match check::check_in(&whole, project) {
-        Ok(_) if diags.is_empty() => {}
-        Ok(_) => return Err(finish(diags)),
-        Err(more) => {
-            diags.extend(more);
-            return Err(finish(diags));
+    let finish = |diags: Vec<Diagnostic>| finish_in(diags, project);
+    // The project alone.
+    if let Err(mut alone) = check_project(project) {
+        // What reading the program's own sources said; the library's is in `alone`.
+        for d in finish(diags) {
+            if d.source.is_none() && !alone.contains(&d) {
+                alone.push(d);
+            }
         }
+        return Err(alone);
     }
+    // Everything, checked.
+    check_whole(ast.clone(), diags, project)?;
     // What the program uses, lowered.
     let mut used = project::used_only(ast);
     let data = project::declared(&used, project.data);
@@ -183,5 +185,31 @@ pub fn check_project(project: &Project) -> Result<Unit, Vec<Diagnostic>> {
         partial_body: false,
         library: false,
     });
-    lower_tree_in(ast, diags, project)
+    check_whole(ast, diags, project)
+}
+
+/// Check every type and POU of `ast` (with what reading it said in `diags`) in `project`,
+/// with the POUs of the standard library it uses; the unit holds all of them, used or not.
+fn check_whole(
+    mut ast: ast::Source,
+    mut diags: Vec<Diagnostic>,
+    project: &Project,
+) -> Result<Unit, Vec<Diagnostic>> {
+    library::add_used(&mut ast, &mut diags);
+    match check::check_in(&ast, project) {
+        Ok(unit) if diags.is_empty() => Ok(unit),
+        Ok(_) => Err(finish_in(diags, project)),
+        Err(more) => {
+            diags.extend(more);
+            Err(finish_in(diags, project))
+        }
+    }
+}
+
+/// The diagnostics of a program in `project`, in the order of their places, each on a line
+/// of a library source given that source's line and name.
+fn finish_in(diags: Vec<Diagnostic>, project: &Project) -> Vec<Diagnostic> {
+    let mut diags = library::as_the_compilers(diags);
+    diags.sort_by_key(|d| (d.line, d.col));
+    project::name_sources(diags, project)
 }
