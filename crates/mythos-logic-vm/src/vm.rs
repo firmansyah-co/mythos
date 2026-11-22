@@ -310,6 +310,8 @@ fn fetch(cell: Cell, b: &[u8]) -> u64 {
 /// executing at most `budget` instructions. `stack` and `calls` are working space the host
 /// owns: at least [`Program::stack_depth`] slots and [`Program::call_depth`] frames. What the
 /// host gives beyond that is not used.
+///
+/// A whole [`Run`] in one piece.
 pub fn scan(
     program: &Program,
     memory: &mut [u8],
@@ -318,497 +320,618 @@ pub fn scan(
     now: i64,
     budget: u32,
 ) -> Result<ScanReport, Fault> {
-    if memory.len() != program.memory_size() {
-        return Err(Fault::WrongSizes);
+    let mut run = Run::begin(program, now, budget);
+    match run.go(program, memory, stack, calls, u32::MAX)? {
+        Piece::Ended(report) => Ok(report),
+        // A piece of u32::MAX instructions stops at the budget, which is not above it.
+        Piece::Suspended => Err(Fault::BudgetExceeded),
     }
-    // The stack is as deep, and calls may nest as deep, as the program declares and no
-    // deeper, whatever the host gave: a program behaves the same on every host, and one that
-    // would go deeper than it says is found on a PC, not on the controller.
-    let stack = stack
-        .get_mut(..program.stack_depth())
-        .ok_or(Fault::WrongSizes)?;
-    let calls = calls
-        .get_mut(..program.call_depth())
-        .ok_or(Fault::WrongSizes)?;
-    let code = program.code;
-    let mut s = Stack {
-        slots: stack,
-        sp: 0,
-        pc: 0,
-    };
-    let mut pc = program.entry() as usize;
-    // The instance a function block's body runs on, and how many calls are in progress.
-    let mut base = 0u32;
-    let mut depth = 0usize;
-    let mut count = 0u32;
-    loop {
-        if count >= budget {
-            return Err(Fault::BudgetExceeded);
+}
+
+/// What a piece of a run came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Piece {
+    /// The run reached its end: the scan is complete.
+    Ended(ScanReport),
+    /// The piece's instructions are done and the run is not: continue it with
+    /// [`Run::resume`].
+    Suspended,
+}
+
+/// One scan that can be suspended between instructions and resumed later, so that a scheduler
+/// can run another program in between (ADR-013 §2.19). Everything the scan keeps while it runs
+/// is here, with the clock and the budget it began with; the memory, the stack and the call
+/// frames stay the host's, which gives the same ones to every piece until the run ends and
+/// writes nothing into them in between.
+///
+/// A run in pieces computes exactly what [`scan`] computes: the same memory, the same report,
+/// and the same fault at the same instruction, [`Fault::BudgetExceeded`] included, because the
+/// budget counts the instructions of the whole run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Run {
+    pc: u32,
+    sp: u32,
+    base: u32,
+    depth: u32,
+    count: u32,
+    now: i64,
+    budget: u32,
+    /// How the run ended, once it has.
+    end: Option<Result<ScanReport, Fault>>,
+}
+
+impl Run {
+    /// A run of `program` at time `now`, of at most `budget` instructions, not yet started.
+    pub fn begin(program: &Program, now: i64, budget: u32) -> Run {
+        Run {
+            pc: program.entry(),
+            sp: 0,
+            base: 0,
+            depth: 0,
+            count: 0,
+            now,
+            budget,
+            end: None,
         }
-        count += 1;
-        s.pc = pc as u32;
-        let at = pc as u32;
-        let opcode = *code.get(pc).ok_or(Fault::BadCode(at))?;
-        let len = crate::format::instruction_len(opcode).ok_or(Fault::BadCode(at))?;
-        if pc + len > code.len() {
-            return Err(Fault::BadCode(at));
+    }
+
+    /// The clock the run began with, the one `NOW` and the timers read in every piece.
+    pub fn now(&self) -> i64 {
+        self.now
+    }
+
+    /// The instructions executed so far, over every piece: when the run is suspended, when it
+    /// has ended (as its report says) and when it exceeded its budget (the budget). After any
+    /// other fault it is the count when the piece that faulted began; the fault's code offset
+    /// says where it stopped.
+    pub fn instructions(&self) -> u32 {
+        self.count
+    }
+
+    /// Whether the run has ended, with its report or a fault.
+    pub fn ended(&self) -> bool {
+        self.end.is_some()
+    }
+
+    /// Continue the run for at most `piece` instructions; a piece of 0 is a piece of 1, so every
+    /// call makes progress. `program`, `memory`, `stack` and `calls` are those the run began
+    /// with, as [`scan`] takes them. A run that has ended answers how it ended again, executing
+    /// nothing.
+    pub fn resume(
+        &mut self,
+        program: &Program,
+        memory: &mut [u8],
+        stack: &mut [u64],
+        calls: &mut [Frame],
+        piece: u32,
+    ) -> Result<Piece, Fault> {
+        if let Some(end) = self.end {
+            return end.map(Piece::Ended);
         }
-        let operand = || u32_at(code, pc + 1);
-        let mut next = pc + len;
-        // Loads and stores were checked against the memory size when the program was loaded,
-        // but `get` keeps that a fact of this function too.
-        let mem = |addr: u32, n: usize| -> Result<&[u8], Fault> {
-            range(addr, n, memory.len())
-                .and_then(|r| memory.get(r))
-                .ok_or(Fault::BadCode(at))
+        let outcome = self.go(program, memory, stack, calls, piece.max(1));
+        match outcome {
+            Ok(Piece::Suspended) => {}
+            Ok(Piece::Ended(report)) => self.end = Some(Ok(report)),
+            Err(fault) => self.end = Some(Err(fault)),
+        }
+        outcome
+    }
+
+    fn go(
+        &mut self,
+        program: &Program,
+        memory: &mut [u8],
+        stack: &mut [u64],
+        calls: &mut [Frame],
+        piece: u32,
+    ) -> Result<Piece, Fault> {
+        if memory.len() != program.memory_size() {
+            return Err(Fault::WrongSizes);
+        }
+        let budget = self.budget;
+        let now = self.now;
+        // Where this piece stops: its instructions done, or the budget, whichever comes first.
+        // One comparison per instruction, as before there were pieces.
+        let stop = budget.min(self.count.saturating_add(piece));
+        // The stack is as deep, and calls may nest as deep, as the program declares and no
+        // deeper, whatever the host gave: a program behaves the same on every host, and one that
+        // would go deeper than it says is found on a PC, not on the controller.
+        let stack = stack
+            .get_mut(..program.stack_depth())
+            .ok_or(Fault::WrongSizes)?;
+        let calls = calls
+            .get_mut(..program.call_depth())
+            .ok_or(Fault::WrongSizes)?;
+        let code = program.code;
+        let mut s = Stack {
+            slots: stack,
+            sp: self.sp as usize,
+            pc: 0,
         };
-        match opcode {
-            op::END => {
-                return Ok(ScanReport {
-                    instructions: count,
-                })
-            }
-            op::JMP => next = operand() as usize,
-            op::JZ => {
-                if s.pop()? == 0 {
-                    next = operand() as usize;
+        let mut pc = self.pc as usize;
+        // The instance a function block's body runs on, and how many calls are in progress.
+        let mut base = self.base;
+        let mut depth = self.depth as usize;
+        let mut count = self.count;
+        loop {
+            if count >= stop {
+                if count >= budget {
+                    self.count = count;
+                    return Err(Fault::BudgetExceeded);
                 }
+                self.pc = pc as u32;
+                self.sp = s.sp as u32;
+                self.base = base;
+                self.depth = depth as u32;
+                self.count = count;
+                return Ok(Piece::Suspended);
             }
-            op::CALL | op::CALLFB => {
-                let (target, instance) = program
-                    .body(u16::from_le_bytes([code[pc + 1], code[pc + 2]]))
-                    .ok_or(Fault::BadCode(at))?;
-                // The instance of a function block is where its place says, whole: an offset
-                // may not put its end outside the place's region, nor outside the memory.
-                let callee_base = if opcode == op::CALLFB {
-                    let n = instance as usize;
-                    let start = resolve(place_at(code, pc + 3), n, base, &mut s)?;
-                    range(start, n, memory.len()).ok_or(Fault::BadCode(at))?;
-                    start
-                } else {
-                    base
-                };
-                let frame = calls.get_mut(depth).ok_or(Fault::CallDepthExceeded(at))?;
-                *frame = Frame {
-                    ret: next as u32,
-                    base,
-                };
-                depth += 1;
-                base = callee_base;
-                next = target as usize;
+            count += 1;
+            s.pc = pc as u32;
+            let at = pc as u32;
+            let opcode = *code.get(pc).ok_or(Fault::BadCode(at))?;
+            let len = crate::format::instruction_len(opcode).ok_or(Fault::BadCode(at))?;
+            if pc + len > code.len() {
+                return Err(Fault::BadCode(at));
             }
-            op::RET => {
-                // The loader lets no RET into the program's body; a return with no call in
-                // progress is still not followed.
-                depth = depth.checked_sub(1).ok_or(Fault::BadCode(at))?;
-                let frame = calls.get(depth).ok_or(Fault::BadCode(at))?;
-                base = frame.base;
-                next = frame.ret as usize;
-            }
-            op::INIT => {
-                let r = range(operand(), u32_at(code, pc + 5) as usize, memory.len())
-                    .ok_or(Fault::BadCode(at))?;
-                let from = program.init.get(r.clone()).ok_or(Fault::BadCode(at))?;
-                memory
-                    .get_mut(r)
-                    .ok_or(Fault::BadCode(at))?
-                    .copy_from_slice(from);
-            }
-            op::MOVE => {
-                let n = operand() as usize;
-                let src = resolve(place_at(code, pc + 5 + PLACE_LEN), n, base, &mut s)?;
-                let dst = resolve(place_at(code, pc + 5), n, base, &mut s)?;
-                let src = range(src, n, memory.len()).ok_or(Fault::BadCode(at))?;
-                let dst = range(dst, n, memory.len()).ok_or(Fault::BadCode(at))?;
-                copy(memory, src, dst).ok_or(Fault::BadCode(at))?;
-            }
-            op::IDX | op::IDX64 => {
-                let v = s.pop()?;
-                let lo = operand() as i32;
-                let count = u32_at(code, pc + 5);
-                let stride = u32_at(code, pc + 9);
-                // How far the subscript is above the lower bound; negative when it is below.
-                let above = if opcode == op::IDX {
-                    (i32_of(v) as i64) - (lo as i64)
-                } else {
-                    (v as i64).checked_sub(lo as i64).unwrap_or(-1)
-                };
-                // IEC 61131-3 ed. 3 §6.4.4.5.1: a subscript outside the declared range is an
-                // error. Here it stops the scan; it never reaches another variable.
-                let k = u32::try_from(above)
-                    .ok()
-                    .filter(|k| *k < count)
-                    .ok_or(Fault::IndexOutOfRange(at))?;
-                // The loader checked that `count * stride` fits in the memory, so this does
-                // not wrap.
-                s.push(k.wrapping_mul(stride) as u64)?;
-            }
-            op::LD_BOOL => {
-                let v = mem(operand(), 1)?[0] != 0;
-                s.push(v as u64)?;
-            }
-            op::LD_I8 => {
-                let v = mem(operand(), 1)?[0] as i8;
-                s.push(of_i32(v as i32))?;
-            }
-            op::LD_I16 => {
-                let b = mem(operand(), 2)?;
-                s.push(of_i32(i16::from_le_bytes([b[0], b[1]]) as i32))?;
-            }
-            op::LD_I32 | op::LD_F32 => {
-                let b = mem(operand(), 4)?;
-                s.push(u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u64)?;
-            }
-            op::LD_I64 | op::LD_F64 => {
-                let b = mem(operand(), 8)?;
-                let mut x = [0u8; 8];
-                x.copy_from_slice(b);
-                s.push(u64::from_le_bytes(x))?;
-            }
-            op::ST_BOOL | op::ST_8 | op::ST_16 | op::ST_32 | op::ST_64 => {
-                let v = s.pop()?;
-                let n = match opcode {
-                    op::ST_BOOL | op::ST_8 => 1,
-                    op::ST_16 => 2,
-                    op::ST_32 => 4,
-                    _ => 8,
-                };
-                let r = range(operand(), n, memory.len()).ok_or(Fault::BadCode(at))?;
-                let dst = memory.get_mut(r).ok_or(Fault::BadCode(at))?;
-                let v = if opcode == op::ST_BOOL {
-                    (v != 0) as u64
-                } else {
-                    v
-                };
-                dst.copy_from_slice(&v.to_le_bytes()[..n]);
-            }
-            op::PUSH32 => s.push(operand() as u64)?,
-            op::PUSH64 => {
-                let mut x = [0u8; 8];
-                x.copy_from_slice(&code[pc + 1..pc + 9]);
-                s.push(u64::from_le_bytes(x))?;
-            }
-            op::ADD_I32..=op::MOD_I32 => {
-                let (a, b) = s.pop2()?;
-                let (a, b) = (i32_of(a), i32_of(b));
-                let r = match opcode {
-                    op::ADD_I32 => a.wrapping_add(b),
-                    op::SUB_I32 => a.wrapping_sub(b),
-                    op::MUL_I32 => a.wrapping_mul(b),
-                    op::DIV_I32 => {
-                        if b == 0 {
-                            return Err(Fault::DivideByZero(at));
-                        }
-                        a.wrapping_div(b)
+            let operand = || u32_at(code, pc + 1);
+            let mut next = pc + len;
+            // Loads and stores were checked against the memory size when the program was loaded,
+            // but `get` keeps that a fact of this function too.
+            let mem = |addr: u32, n: usize| -> Result<&[u8], Fault> {
+                range(addr, n, memory.len())
+                    .and_then(|r| memory.get(r))
+                    .ok_or(Fault::BadCode(at))
+            };
+            match opcode {
+                op::END => {
+                    self.count = count;
+                    return Ok(Piece::Ended(ScanReport {
+                        instructions: count,
+                    }));
+                }
+                op::JMP => next = operand() as usize,
+                op::JZ => {
+                    if s.pop()? == 0 {
+                        next = operand() as usize;
                     }
-                    // IEC 61131-3 ed. 3 Table 29 footnote e: MOD by zero is 0, not an error.
-                    _ => {
-                        if b == 0 {
-                            0
-                        } else {
-                            a.wrapping_rem(b)
-                        }
-                    }
-                };
-                s.push(of_i32(r))?;
-            }
-            op::NEG_I32 => {
-                let a = i32_of(s.pop()?);
-                s.push(of_i32(a.wrapping_neg()))?;
-            }
-            op::ADD_I64..=op::MOD_I64 => {
-                let (a, b) = s.pop2()?;
-                let (a, b) = (a as i64, b as i64);
-                let r = match opcode {
-                    op::ADD_I64 => a.wrapping_add(b),
-                    op::SUB_I64 => a.wrapping_sub(b),
-                    op::MUL_I64 => a.wrapping_mul(b),
-                    op::DIV_I64 => {
-                        if b == 0 {
-                            return Err(Fault::DivideByZero(at));
-                        }
-                        a.wrapping_div(b)
-                    }
-                    // IEC 61131-3 ed. 3 Table 29 footnote e: MOD by zero is 0, not an error.
-                    _ => {
-                        if b == 0 {
-                            0
-                        } else {
-                            a.wrapping_rem(b)
-                        }
-                    }
-                };
-                s.push(r as u64)?;
-            }
-            op::NEG_I64 => {
-                let a = s.pop()? as i64;
-                s.push(a.wrapping_neg() as u64)?;
-            }
-            op::ADD_F32..=op::DIV_F32 => {
-                let (a, b) = s.pop2()?;
-                let (a, b) = (f32_of(a), f32_of(b));
-                let r = match opcode {
-                    op::ADD_F32 => a + b,
-                    op::SUB_F32 => a - b,
-                    op::MUL_F32 => a * b,
-                    _ => a / b,
-                };
-                s.push(of_f32(r))?;
-            }
-            op::NEG_F32 => {
-                let a = f32_of(s.pop()?);
-                s.push(of_f32(-a))?;
-            }
-            op::ADD_F64..=op::DIV_F64 => {
-                let (a, b) = s.pop2()?;
-                let (a, b) = (f64::from_bits(a), f64::from_bits(b));
-                let r = match opcode {
-                    op::ADD_F64 => a + b,
-                    op::SUB_F64 => a - b,
-                    op::MUL_F64 => a * b,
-                    _ => a / b,
-                };
-                s.push(r.to_bits())?;
-            }
-            op::NEG_F64 => {
-                let a = f64::from_bits(s.pop()?);
-                s.push((-a).to_bits())?;
-            }
-            x if (op::CMP_I32..op::CMP_I32 + 6).contains(&x) => {
-                let (a, b) = s.pop2()?;
-                s.push(cmp(x - op::CMP_I32, i32_of(a), i32_of(b)))?;
-            }
-            x if (op::CMP_I64..op::CMP_I64 + 6).contains(&x) => {
-                let (a, b) = s.pop2()?;
-                s.push(cmp(x - op::CMP_I64, a as i64, b as i64))?;
-            }
-            x if (op::CMP_F32..op::CMP_F32 + 6).contains(&x) => {
-                let (a, b) = s.pop2()?;
-                s.push(cmp(x - op::CMP_F32, f32_of(a), f32_of(b)))?;
-            }
-            x if (op::CMP_F64..op::CMP_F64 + 6).contains(&x) => {
-                let (a, b) = s.pop2()?;
-                s.push(cmp(x - op::CMP_F64, f64::from_bits(a), f64::from_bits(b)))?;
-            }
-            op::AND | op::OR | op::XOR => {
-                let (a, b) = s.pop2()?;
-                let (a, b) = (a != 0, b != 0);
-                let r = match opcode {
-                    op::AND => a && b,
-                    op::OR => a || b,
-                    _ => a != b,
-                };
-                s.push(r as u64)?;
-            }
-            op::NOT => {
-                let a = s.pop()?;
-                s.push((a == 0) as u64)?;
-            }
-            op::I32_TO_I64 => {
-                let a = i32_of(s.pop()?);
-                s.push(a as i64 as u64)?;
-            }
-            op::I64_TO_I32 => {
-                let a = s.pop()? as i64;
-                s.push(of_i32(a as i32))?;
-            }
-            op::I32_TO_F32 => {
-                let a = i32_of(s.pop()?);
-                s.push(of_f32(a as f32))?;
-            }
-            op::I32_TO_F64 => {
-                let a = i32_of(s.pop()?);
-                s.push((a as f64).to_bits())?;
-            }
-            op::I64_TO_F64 => {
-                let a = s.pop()? as i64;
-                s.push((a as f64).to_bits())?;
-            }
-            op::I64_TO_F32 => {
-                let a = s.pop()? as i64;
-                s.push(of_f32(a as f32))?;
-            }
-            op::F32_TO_F64 => {
-                let a = f32_of(s.pop()?);
-                s.push((a as f64).to_bits())?;
-            }
-            op::F64_TO_F32 => {
-                let a = f64::from_bits(s.pop()?);
-                s.push(of_f32(a as f32))?;
-            }
-            op::F32_TO_I32 => {
-                let a = f32_of(s.pop()?) as f64;
-                s.push(of_i32(round_f64(a) as i32))?;
-            }
-            op::F64_TO_I32 => {
-                let a = f64::from_bits(s.pop()?);
-                s.push(of_i32(round_f64(a) as i32))?;
-            }
-            op::F32_TO_I64 => {
-                let a = f32_of(s.pop()?) as f64;
-                s.push(round_f64(a) as i64 as u64)?;
-            }
-            op::F64_TO_I64 => {
-                let a = f64::from_bits(s.pop()?);
-                s.push(round_f64(a) as i64 as u64)?;
-            }
-            op::WRAP_I16 => {
-                let a = i32_of(s.pop()?);
-                s.push(of_i32(a as i16 as i32))?;
-            }
-            op::WRAP_I8 => {
-                let a = i32_of(s.pop()?);
-                s.push(of_i32(a as i8 as i32))?;
-            }
-            op::I64_TO_BOOL => {
-                let a = s.pop()?;
-                s.push((a != 0) as u64)?;
-            }
-            op::FB | op::FBP => {
-                let kind = FbKind::from_code(code[pc + 1]).ok_or(Fault::BadCode(at))?;
-                let n = kind.size() as usize;
-                let start = if opcode == op::FB {
-                    u32_at(code, pc + 2)
-                } else {
-                    resolve(place_at(code, pc + 2), n, base, &mut s)?
-                };
-                let r = range(start, n, memory.len()).ok_or(Fault::BadCode(at))?;
-                let x = memory.get_mut(r).ok_or(Fault::BadCode(at))?;
-                fb::run(kind, x, now);
-            }
-            op::RFN | op::RFN32 => {
-                let v = s.pop()?;
-                let x = if opcode == op::RFN {
-                    f64::from_bits(v)
-                } else {
-                    f32_of(v) as f64
-                };
-                let r = match code[pc + 1] {
-                    rfn::SQRT => math::sqrt(x),
-                    rfn::LN => math::ln(x),
-                    rfn::LOG => math::log10(x),
-                    rfn::EXP => math::exp(x),
-                    rfn::SIN => math::sin(x),
-                    rfn::COS => math::cos(x),
-                    rfn::TAN => math::tan(x),
-                    rfn::ASIN => math::asin(x),
-                    rfn::ACOS => math::acos(x),
-                    rfn::ATAN => math::atan(x),
-                    rfn::TRUNC => math::trunc(x),
-                    _ => return Err(Fault::BadCode(at)),
-                };
-                s.push(if opcode == op::RFN {
-                    r.to_bits()
-                } else {
-                    of_f32(r as f32)
-                })?;
-            }
-            op::ATAN2_F64..=op::EXPTI_F32 => {
-                let (a, b) = s.pop2()?;
-                let wide = matches!(opcode, op::ATAN2_F64 | op::EXPT_F64 | op::EXPTI_F64);
-                let real = |v: u64| {
-                    if wide {
-                        f64::from_bits(v)
+                }
+                op::CALL | op::CALLFB => {
+                    let (target, instance) = program
+                        .body(u16::from_le_bytes([code[pc + 1], code[pc + 2]]))
+                        .ok_or(Fault::BadCode(at))?;
+                    // The instance of a function block is where its place says, whole: an offset
+                    // may not put its end outside the place's region, nor outside the memory.
+                    let callee_base = if opcode == op::CALLFB {
+                        let n = instance as usize;
+                        let start = resolve(place_at(code, pc + 3), n, base, &mut s)?;
+                        range(start, n, memory.len()).ok_or(Fault::BadCode(at))?;
+                        start
                     } else {
-                        f32_of(v) as f64
-                    }
-                };
-                let r = match opcode {
-                    op::ATAN2_F64 | op::ATAN2_F32 => math::atan2(real(a), real(b)),
-                    op::EXPT_F64 | op::EXPT_F32 => math::pow(real(a), real(b)),
-                    _ => math::pow(real(a), b as i64 as f64),
-                };
-                s.push(if wide { r.to_bits() } else { of_f32(r as f32) })?;
-            }
-            op::ABS_I32 => {
-                let a = i32_of(s.pop()?);
-                s.push(of_i32(a.wrapping_abs()))?;
-            }
-            op::ABS_I64 => {
-                let a = s.pop()? as i64;
-                s.push(a.wrapping_abs() as u64)?;
-            }
-            op::ABS_F32 => {
-                let a = s.pop()?;
-                s.push(a & 0x7FFF_FFFF)?;
-            }
-            op::ABS_F64 => {
-                let a = s.pop()?;
-                s.push(a & !(1 << 63))?;
-            }
-            op::NOW => s.push(now as u64)?,
-            op::CHKSEL => {
-                let k = s.pop()? as i64;
-                if k < 0 || k >= operand() as i64 {
-                    return Err(Fault::SelectorOutOfRange(at));
-                }
-            }
-            x if string_shape(x).is_some() => {
-                let (operands, ints) = string_shape(x).unwrap_or((0, 0));
-                // The integers are on top, the last pushed first popped.
-                let mut n = [0i64; 2];
-                for k in (0..ints).rev() {
-                    n[k] = s.pop()? as i64;
-                }
-                let first = pc + 1 + (x == op::SCMP) as usize;
-                let mut o = [Str { cap: 0, at: 0 }; 3];
-                for k in (0..operands).rev() {
-                    let (cap, p) = string_operand_at(code, first + k * SOP_LEN);
-                    let size = string_size(cap) as usize;
-                    let start = resolve(p, size, base, &mut s)?;
-                    range(start, size, memory.len()).ok_or(Fault::BadCode(at))?;
-                    o[k] = Str { cap, at: start };
-                }
-                match x {
-                    op::SMOVE => strings::assign(memory, o[0], o[1], at)?,
-                    op::SCMP => {
-                        let order = strings::compare(memory, o[0], o[1], at)?;
-                        s.push(cmp(code[pc + 1], order, 0))?;
-                    }
-                    op::SLEN => s.push(of_i32(strings::length(memory, o[0], at)?))?,
-                    op::SCAT => strings::concat(memory, o[0], o[1], o[2], at)?,
-                    op::SLEFT | op::SRIGHT => {
-                        strings::side(memory, o[0], o[1], n[0], x == op::SLEFT, at)?
-                    }
-                    op::SMID => strings::mid(memory, o[0], o[1], n[0], n[1], at)?,
-                    op::SDELETE => strings::delete(memory, o[0], o[1], n[0], n[1], at)?,
-                    op::SINSERT => strings::insert(memory, o[0], o[1], o[2], n[0], at)?,
-                    op::SREPLACE => strings::replace(memory, o[0], o[1], o[2], n[0], n[1], at)?,
-                    op::SFIND => s.push(of_i32(strings::find(memory, o[0], o[1], at)?))?,
-                    op::ITOS => strings::from_int(memory, o[0], n[0], at)?,
-                    op::STOI => s.push(strings::to_int(memory, o[0], at)? as u64)?,
-                    _ => return Err(Fault::BadCode(at)),
-                }
-            }
-            // Loads and stores relative to the base, or through a place.
-            _ => {
-                let Some((store, cell, reach)) = access(opcode) else {
-                    return Err(Fault::BadCode(at));
-                };
-                let n = cell.size();
-                let value = if store { s.pop()? } else { 0 };
-                let start = match reach {
-                    Reach::Relative => base.checked_add(operand()).ok_or(Fault::BadCode(at))?,
-                    Reach::Place => resolve(place_at(code, pc + 1), n, base, &mut s)?,
-                    Reach::Absolute => return Err(Fault::BadCode(at)),
-                };
-                let r = range(start, n, memory.len()).ok_or(Fault::BadCode(at))?;
-                if store {
-                    let value = if cell == Cell::Bool {
-                        (value != 0) as u64
-                    } else {
-                        value
+                        base
                     };
+                    let frame = calls.get_mut(depth).ok_or(Fault::CallDepthExceeded(at))?;
+                    *frame = Frame {
+                        ret: next as u32,
+                        base,
+                    };
+                    depth += 1;
+                    base = callee_base;
+                    next = target as usize;
+                }
+                op::RET => {
+                    // The loader lets no RET into the program's body; a return with no call in
+                    // progress is still not followed.
+                    depth = depth.checked_sub(1).ok_or(Fault::BadCode(at))?;
+                    let frame = calls.get(depth).ok_or(Fault::BadCode(at))?;
+                    base = frame.base;
+                    next = frame.ret as usize;
+                }
+                op::INIT => {
+                    let r = range(operand(), u32_at(code, pc + 5) as usize, memory.len())
+                        .ok_or(Fault::BadCode(at))?;
+                    let from = program.init.get(r.clone()).ok_or(Fault::BadCode(at))?;
                     memory
                         .get_mut(r)
                         .ok_or(Fault::BadCode(at))?
-                        .copy_from_slice(&value.to_le_bytes()[..n]);
-                } else {
-                    let bytes = memory.get(r).ok_or(Fault::BadCode(at))?;
-                    s.push(fetch(cell, bytes))?;
+                        .copy_from_slice(from);
+                }
+                op::MOVE => {
+                    let n = operand() as usize;
+                    let src = resolve(place_at(code, pc + 5 + PLACE_LEN), n, base, &mut s)?;
+                    let dst = resolve(place_at(code, pc + 5), n, base, &mut s)?;
+                    let src = range(src, n, memory.len()).ok_or(Fault::BadCode(at))?;
+                    let dst = range(dst, n, memory.len()).ok_or(Fault::BadCode(at))?;
+                    copy(memory, src, dst).ok_or(Fault::BadCode(at))?;
+                }
+                op::IDX | op::IDX64 => {
+                    let v = s.pop()?;
+                    let lo = operand() as i32;
+                    let count = u32_at(code, pc + 5);
+                    let stride = u32_at(code, pc + 9);
+                    // How far the subscript is above the lower bound; negative when it is below.
+                    let above = if opcode == op::IDX {
+                        (i32_of(v) as i64) - (lo as i64)
+                    } else {
+                        (v as i64).checked_sub(lo as i64).unwrap_or(-1)
+                    };
+                    // IEC 61131-3 ed. 3 §6.4.4.5.1: a subscript outside the declared range is an
+                    // error. Here it stops the scan; it never reaches another variable.
+                    let k = u32::try_from(above)
+                        .ok()
+                        .filter(|k| *k < count)
+                        .ok_or(Fault::IndexOutOfRange(at))?;
+                    // The loader checked that `count * stride` fits in the memory, so this does
+                    // not wrap.
+                    s.push(k.wrapping_mul(stride) as u64)?;
+                }
+                op::LD_BOOL => {
+                    let v = mem(operand(), 1)?[0] != 0;
+                    s.push(v as u64)?;
+                }
+                op::LD_I8 => {
+                    let v = mem(operand(), 1)?[0] as i8;
+                    s.push(of_i32(v as i32))?;
+                }
+                op::LD_I16 => {
+                    let b = mem(operand(), 2)?;
+                    s.push(of_i32(i16::from_le_bytes([b[0], b[1]]) as i32))?;
+                }
+                op::LD_I32 | op::LD_F32 => {
+                    let b = mem(operand(), 4)?;
+                    s.push(u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u64)?;
+                }
+                op::LD_I64 | op::LD_F64 => {
+                    let b = mem(operand(), 8)?;
+                    let mut x = [0u8; 8];
+                    x.copy_from_slice(b);
+                    s.push(u64::from_le_bytes(x))?;
+                }
+                op::ST_BOOL | op::ST_8 | op::ST_16 | op::ST_32 | op::ST_64 => {
+                    let v = s.pop()?;
+                    let n = match opcode {
+                        op::ST_BOOL | op::ST_8 => 1,
+                        op::ST_16 => 2,
+                        op::ST_32 => 4,
+                        _ => 8,
+                    };
+                    let r = range(operand(), n, memory.len()).ok_or(Fault::BadCode(at))?;
+                    let dst = memory.get_mut(r).ok_or(Fault::BadCode(at))?;
+                    let v = if opcode == op::ST_BOOL {
+                        (v != 0) as u64
+                    } else {
+                        v
+                    };
+                    dst.copy_from_slice(&v.to_le_bytes()[..n]);
+                }
+                op::PUSH32 => s.push(operand() as u64)?,
+                op::PUSH64 => {
+                    let mut x = [0u8; 8];
+                    x.copy_from_slice(&code[pc + 1..pc + 9]);
+                    s.push(u64::from_le_bytes(x))?;
+                }
+                op::ADD_I32..=op::MOD_I32 => {
+                    let (a, b) = s.pop2()?;
+                    let (a, b) = (i32_of(a), i32_of(b));
+                    let r = match opcode {
+                        op::ADD_I32 => a.wrapping_add(b),
+                        op::SUB_I32 => a.wrapping_sub(b),
+                        op::MUL_I32 => a.wrapping_mul(b),
+                        op::DIV_I32 => {
+                            if b == 0 {
+                                return Err(Fault::DivideByZero(at));
+                            }
+                            a.wrapping_div(b)
+                        }
+                        // IEC 61131-3 ed. 3 Table 29 footnote e: MOD by zero is 0, not an error.
+                        _ => {
+                            if b == 0 {
+                                0
+                            } else {
+                                a.wrapping_rem(b)
+                            }
+                        }
+                    };
+                    s.push(of_i32(r))?;
+                }
+                op::NEG_I32 => {
+                    let a = i32_of(s.pop()?);
+                    s.push(of_i32(a.wrapping_neg()))?;
+                }
+                op::ADD_I64..=op::MOD_I64 => {
+                    let (a, b) = s.pop2()?;
+                    let (a, b) = (a as i64, b as i64);
+                    let r = match opcode {
+                        op::ADD_I64 => a.wrapping_add(b),
+                        op::SUB_I64 => a.wrapping_sub(b),
+                        op::MUL_I64 => a.wrapping_mul(b),
+                        op::DIV_I64 => {
+                            if b == 0 {
+                                return Err(Fault::DivideByZero(at));
+                            }
+                            a.wrapping_div(b)
+                        }
+                        // IEC 61131-3 ed. 3 Table 29 footnote e: MOD by zero is 0, not an error.
+                        _ => {
+                            if b == 0 {
+                                0
+                            } else {
+                                a.wrapping_rem(b)
+                            }
+                        }
+                    };
+                    s.push(r as u64)?;
+                }
+                op::NEG_I64 => {
+                    let a = s.pop()? as i64;
+                    s.push(a.wrapping_neg() as u64)?;
+                }
+                op::ADD_F32..=op::DIV_F32 => {
+                    let (a, b) = s.pop2()?;
+                    let (a, b) = (f32_of(a), f32_of(b));
+                    let r = match opcode {
+                        op::ADD_F32 => a + b,
+                        op::SUB_F32 => a - b,
+                        op::MUL_F32 => a * b,
+                        _ => a / b,
+                    };
+                    s.push(of_f32(r))?;
+                }
+                op::NEG_F32 => {
+                    let a = f32_of(s.pop()?);
+                    s.push(of_f32(-a))?;
+                }
+                op::ADD_F64..=op::DIV_F64 => {
+                    let (a, b) = s.pop2()?;
+                    let (a, b) = (f64::from_bits(a), f64::from_bits(b));
+                    let r = match opcode {
+                        op::ADD_F64 => a + b,
+                        op::SUB_F64 => a - b,
+                        op::MUL_F64 => a * b,
+                        _ => a / b,
+                    };
+                    s.push(r.to_bits())?;
+                }
+                op::NEG_F64 => {
+                    let a = f64::from_bits(s.pop()?);
+                    s.push((-a).to_bits())?;
+                }
+                x if (op::CMP_I32..op::CMP_I32 + 6).contains(&x) => {
+                    let (a, b) = s.pop2()?;
+                    s.push(cmp(x - op::CMP_I32, i32_of(a), i32_of(b)))?;
+                }
+                x if (op::CMP_I64..op::CMP_I64 + 6).contains(&x) => {
+                    let (a, b) = s.pop2()?;
+                    s.push(cmp(x - op::CMP_I64, a as i64, b as i64))?;
+                }
+                x if (op::CMP_F32..op::CMP_F32 + 6).contains(&x) => {
+                    let (a, b) = s.pop2()?;
+                    s.push(cmp(x - op::CMP_F32, f32_of(a), f32_of(b)))?;
+                }
+                x if (op::CMP_F64..op::CMP_F64 + 6).contains(&x) => {
+                    let (a, b) = s.pop2()?;
+                    s.push(cmp(x - op::CMP_F64, f64::from_bits(a), f64::from_bits(b)))?;
+                }
+                op::AND | op::OR | op::XOR => {
+                    let (a, b) = s.pop2()?;
+                    let (a, b) = (a != 0, b != 0);
+                    let r = match opcode {
+                        op::AND => a && b,
+                        op::OR => a || b,
+                        _ => a != b,
+                    };
+                    s.push(r as u64)?;
+                }
+                op::NOT => {
+                    let a = s.pop()?;
+                    s.push((a == 0) as u64)?;
+                }
+                op::I32_TO_I64 => {
+                    let a = i32_of(s.pop()?);
+                    s.push(a as i64 as u64)?;
+                }
+                op::I64_TO_I32 => {
+                    let a = s.pop()? as i64;
+                    s.push(of_i32(a as i32))?;
+                }
+                op::I32_TO_F32 => {
+                    let a = i32_of(s.pop()?);
+                    s.push(of_f32(a as f32))?;
+                }
+                op::I32_TO_F64 => {
+                    let a = i32_of(s.pop()?);
+                    s.push((a as f64).to_bits())?;
+                }
+                op::I64_TO_F64 => {
+                    let a = s.pop()? as i64;
+                    s.push((a as f64).to_bits())?;
+                }
+                op::I64_TO_F32 => {
+                    let a = s.pop()? as i64;
+                    s.push(of_f32(a as f32))?;
+                }
+                op::F32_TO_F64 => {
+                    let a = f32_of(s.pop()?);
+                    s.push((a as f64).to_bits())?;
+                }
+                op::F64_TO_F32 => {
+                    let a = f64::from_bits(s.pop()?);
+                    s.push(of_f32(a as f32))?;
+                }
+                op::F32_TO_I32 => {
+                    let a = f32_of(s.pop()?) as f64;
+                    s.push(of_i32(round_f64(a) as i32))?;
+                }
+                op::F64_TO_I32 => {
+                    let a = f64::from_bits(s.pop()?);
+                    s.push(of_i32(round_f64(a) as i32))?;
+                }
+                op::F32_TO_I64 => {
+                    let a = f32_of(s.pop()?) as f64;
+                    s.push(round_f64(a) as i64 as u64)?;
+                }
+                op::F64_TO_I64 => {
+                    let a = f64::from_bits(s.pop()?);
+                    s.push(round_f64(a) as i64 as u64)?;
+                }
+                op::WRAP_I16 => {
+                    let a = i32_of(s.pop()?);
+                    s.push(of_i32(a as i16 as i32))?;
+                }
+                op::WRAP_I8 => {
+                    let a = i32_of(s.pop()?);
+                    s.push(of_i32(a as i8 as i32))?;
+                }
+                op::I64_TO_BOOL => {
+                    let a = s.pop()?;
+                    s.push((a != 0) as u64)?;
+                }
+                op::FB | op::FBP => {
+                    let kind = FbKind::from_code(code[pc + 1]).ok_or(Fault::BadCode(at))?;
+                    let n = kind.size() as usize;
+                    let start = if opcode == op::FB {
+                        u32_at(code, pc + 2)
+                    } else {
+                        resolve(place_at(code, pc + 2), n, base, &mut s)?
+                    };
+                    let r = range(start, n, memory.len()).ok_or(Fault::BadCode(at))?;
+                    let x = memory.get_mut(r).ok_or(Fault::BadCode(at))?;
+                    fb::run(kind, x, now);
+                }
+                op::RFN | op::RFN32 => {
+                    let v = s.pop()?;
+                    let x = if opcode == op::RFN {
+                        f64::from_bits(v)
+                    } else {
+                        f32_of(v) as f64
+                    };
+                    let r = match code[pc + 1] {
+                        rfn::SQRT => math::sqrt(x),
+                        rfn::LN => math::ln(x),
+                        rfn::LOG => math::log10(x),
+                        rfn::EXP => math::exp(x),
+                        rfn::SIN => math::sin(x),
+                        rfn::COS => math::cos(x),
+                        rfn::TAN => math::tan(x),
+                        rfn::ASIN => math::asin(x),
+                        rfn::ACOS => math::acos(x),
+                        rfn::ATAN => math::atan(x),
+                        rfn::TRUNC => math::trunc(x),
+                        _ => return Err(Fault::BadCode(at)),
+                    };
+                    s.push(if opcode == op::RFN {
+                        r.to_bits()
+                    } else {
+                        of_f32(r as f32)
+                    })?;
+                }
+                op::ATAN2_F64..=op::EXPTI_F32 => {
+                    let (a, b) = s.pop2()?;
+                    let wide = matches!(opcode, op::ATAN2_F64 | op::EXPT_F64 | op::EXPTI_F64);
+                    let real = |v: u64| {
+                        if wide {
+                            f64::from_bits(v)
+                        } else {
+                            f32_of(v) as f64
+                        }
+                    };
+                    let r = match opcode {
+                        op::ATAN2_F64 | op::ATAN2_F32 => math::atan2(real(a), real(b)),
+                        op::EXPT_F64 | op::EXPT_F32 => math::pow(real(a), real(b)),
+                        _ => math::pow(real(a), b as i64 as f64),
+                    };
+                    s.push(if wide { r.to_bits() } else { of_f32(r as f32) })?;
+                }
+                op::ABS_I32 => {
+                    let a = i32_of(s.pop()?);
+                    s.push(of_i32(a.wrapping_abs()))?;
+                }
+                op::ABS_I64 => {
+                    let a = s.pop()? as i64;
+                    s.push(a.wrapping_abs() as u64)?;
+                }
+                op::ABS_F32 => {
+                    let a = s.pop()?;
+                    s.push(a & 0x7FFF_FFFF)?;
+                }
+                op::ABS_F64 => {
+                    let a = s.pop()?;
+                    s.push(a & !(1 << 63))?;
+                }
+                op::NOW => s.push(now as u64)?,
+                op::CHKSEL => {
+                    let k = s.pop()? as i64;
+                    if k < 0 || k >= operand() as i64 {
+                        return Err(Fault::SelectorOutOfRange(at));
+                    }
+                }
+                x if string_shape(x).is_some() => {
+                    let (operands, ints) = string_shape(x).unwrap_or((0, 0));
+                    // The integers are on top, the last pushed first popped.
+                    let mut n = [0i64; 2];
+                    for k in (0..ints).rev() {
+                        n[k] = s.pop()? as i64;
+                    }
+                    let first = pc + 1 + (x == op::SCMP) as usize;
+                    let mut o = [Str { cap: 0, at: 0 }; 3];
+                    for k in (0..operands).rev() {
+                        let (cap, p) = string_operand_at(code, first + k * SOP_LEN);
+                        let size = string_size(cap) as usize;
+                        let start = resolve(p, size, base, &mut s)?;
+                        range(start, size, memory.len()).ok_or(Fault::BadCode(at))?;
+                        o[k] = Str { cap, at: start };
+                    }
+                    match x {
+                        op::SMOVE => strings::assign(memory, o[0], o[1], at)?,
+                        op::SCMP => {
+                            let order = strings::compare(memory, o[0], o[1], at)?;
+                            s.push(cmp(code[pc + 1], order, 0))?;
+                        }
+                        op::SLEN => s.push(of_i32(strings::length(memory, o[0], at)?))?,
+                        op::SCAT => strings::concat(memory, o[0], o[1], o[2], at)?,
+                        op::SLEFT | op::SRIGHT => {
+                            strings::side(memory, o[0], o[1], n[0], x == op::SLEFT, at)?
+                        }
+                        op::SMID => strings::mid(memory, o[0], o[1], n[0], n[1], at)?,
+                        op::SDELETE => strings::delete(memory, o[0], o[1], n[0], n[1], at)?,
+                        op::SINSERT => strings::insert(memory, o[0], o[1], o[2], n[0], at)?,
+                        op::SREPLACE => strings::replace(memory, o[0], o[1], o[2], n[0], n[1], at)?,
+                        op::SFIND => s.push(of_i32(strings::find(memory, o[0], o[1], at)?))?,
+                        op::ITOS => strings::from_int(memory, o[0], n[0], at)?,
+                        op::STOI => s.push(strings::to_int(memory, o[0], at)? as u64)?,
+                        _ => return Err(Fault::BadCode(at)),
+                    }
+                }
+                // Loads and stores relative to the base, or through a place.
+                _ => {
+                    let Some((store, cell, reach)) = access(opcode) else {
+                        return Err(Fault::BadCode(at));
+                    };
+                    let n = cell.size();
+                    let value = if store { s.pop()? } else { 0 };
+                    let start = match reach {
+                        Reach::Relative => base.checked_add(operand()).ok_or(Fault::BadCode(at))?,
+                        Reach::Place => resolve(place_at(code, pc + 1), n, base, &mut s)?,
+                        Reach::Absolute => return Err(Fault::BadCode(at)),
+                    };
+                    let r = range(start, n, memory.len()).ok_or(Fault::BadCode(at))?;
+                    if store {
+                        let value = if cell == Cell::Bool {
+                            (value != 0) as u64
+                        } else {
+                            value
+                        };
+                        memory
+                            .get_mut(r)
+                            .ok_or(Fault::BadCode(at))?
+                            .copy_from_slice(&value.to_le_bytes()[..n]);
+                    } else {
+                        let bytes = memory.get(r).ok_or(Fault::BadCode(at))?;
+                        s.push(fetch(cell, bytes))?;
+                    }
                 }
             }
+            pc = next;
         }
-        pc = next;
     }
 }

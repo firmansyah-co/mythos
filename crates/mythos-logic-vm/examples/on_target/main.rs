@@ -18,7 +18,7 @@
 #[cfg(target_os = "none")]
 mod firmware {
     use core::panic::PanicInfo;
-    use mythos_logic_vm::{cold_start, crc32, scan, Frame, Limits, Program};
+    use mythos_logic_vm::{cold_start, crc32, Frame, Limits, Piece, Program, Run};
 
     /// The program, as it would sit in flash after a download.
     static PROGRAM: &[u8] = include_bytes!(env!("MYTHOS_LOGIC_PROGRAM"));
@@ -26,6 +26,12 @@ mod firmware {
     const SCANS: u32 = 60;
     const CYCLE_NS: i64 = 20_000_000;
     const BUDGET: u32 = 1_000_000;
+    /// Each scan runs in pieces of this many instructions, suspended and resumed between them
+    /// as a scheduler would to let a task of higher priority run (ADR-013 §2.19). Odd, so the
+    /// cuts fall at every kind of instruction; `expected_scans` scans uninterrupted, so equal
+    /// output proves a run in pieces computes what a whole scan computes, on this instruction
+    /// set too.
+    const PIECE: u32 = 97;
     /// What this firmware has for a program. The compiler's `rp2040` and `esp32` profiles
     /// declare the same stack and call depths, so a program compiled for them fits.
     const HOST: Limits = Limits {
@@ -143,14 +149,15 @@ mod firmware {
             machine::exit(false)
         }
         for k in 0..SCANS {
-            match scan(
-                &program,
-                &mut memory[..size],
-                &mut stack,
-                &mut calls,
-                k as i64 * CYCLE_NS,
-                BUDGET,
-            ) {
+            let mut run = Run::begin(&program, k as i64 * CYCLE_NS, BUDGET);
+            let outcome = loop {
+                match run.resume(&program, &mut memory[..size], &mut stack, &mut calls, PIECE) {
+                    Ok(Piece::Suspended) => continue,
+                    Ok(Piece::Ended(report)) => break Ok(report),
+                    Err(fault) => break Err(fault),
+                }
+            };
+            match outcome {
                 Ok(report) => {
                     text("scan ");
                     decimal(k + 1);

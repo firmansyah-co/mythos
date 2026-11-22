@@ -14,12 +14,17 @@
 //! A scan is bounded: the host gives an instruction budget, and a program that does not finish
 //! within it (an endless `WHILE`) stops with [`Fault::BudgetExceeded`] rather than hanging the
 //! controller.
+//!
+//! A scan can also run in pieces: a [`Run`] is suspended after a bounded number of instructions
+//! and resumed later, computing exactly what [`scan`] computes, so that one thread can preempt a
+//! program of low priority with one of higher priority; [`sched`] decides which (ADR-013 §2.19).
 #![no_std]
 #![forbid(unsafe_code)]
 
 pub mod fb;
 pub mod format;
 pub mod math;
+pub mod sched;
 mod strings;
 mod vm;
 
@@ -27,4 +32,6 @@ pub use format::{
     crc32, string_size, ElemType, Limits, LoadError, Program, FORMAT_VERSION, MAGIC,
     OLDEST_FORMAT_VERSION,
 };
-pub use vm::{cold_start, read, read_string, scan, write, Fault, Frame, ScanReport, Value};
+pub use vm::{
+    cold_start, read, read_string, scan, write, Fault, Frame, Piece, Run, ScanReport, Value,
+};
