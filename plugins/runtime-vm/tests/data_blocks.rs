@@ -844,9 +844,17 @@ fn a_runtime_without_data_runs_on_the_same_path() {
         .unwrap()
         .iter()
         .all(|v| v.get("layout").is_none()));
-    // Running, the state has the keys of today.
+    // Running, the state has the keys of today. A scan must have ended in each first: until
+    // one has, a runtime of today reports no `scan_age_us`, and the two engines are asked at
+    // different moments.
     let state = |e: &mut VmEngine| {
-        let s = serde_json::to_value(feed(e).state).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut s = serde_json::to_value(feed(e).state).unwrap();
+        while s["scans"].as_u64() == Some(0) {
+            assert!(Instant::now() < deadline, "no scan ended in 10 s: {s}");
+            std::thread::sleep(Duration::from_millis(5));
+            s = serde_json::to_value(feed(e).state).unwrap();
+        }
         let mut keys: Vec<String> = s.as_object().unwrap().keys().cloned().collect();
         keys.sort();
         keys
