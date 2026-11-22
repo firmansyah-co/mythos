@@ -24,14 +24,13 @@ In addition, faceplates can be authored as **Reusable Nested Sub-Canvases** on b
 - **ANSI/ISA-18.2-2016**: *Management of Alarm Systems for the Process Industries*.
 - **IEC 61131-3:2013**: *Programmable controllers — Part 3: Programming languages (Function Blocks & UDTs)*.
 - **ISO 9241-110:2020**: *Ergonomics of human-system interaction — Principles of interaction*.
-- **W3C Design Tokens Community Group (DTCG)**: *2025.10 Specification (Dual Theme: Dark Obsidian & Light Clean Slate)*.
+- **W3C Design Tokens Community Group (DTCG)**: *2025.10 Specification (one theme: Dark Obsidian)*.
 
-> **Theme status — read before using any "Light Mode" value below.** The token set defines two
-> themes, Dark Obsidian and Light Clean Slate. Only Dark Obsidian is reachable at runtime: no code
-> in this repository applies the `[data-theme='light']` or `.theme-light` selectors defined in
-> `frontend/src/tokens.css`, so the light block never takes effect. Light Mode values in this
-> document are the **intended** palette, defined and not yet selectable — not what an operator
-> sees today. No task in `specs/tasks.md` currently schedules a theme selector.
+> **Theme status.** There is one theme, Dark Obsidian, and it is what an operator sees. A second
+> palette, Light Clean Slate, was defined in the token set and never selectable: nothing applied
+> it. The stylesheet that defined it (`frontend/src/tokens.css`) was removed in #75, and its
+> values were removed from this document and from `design-tokens-dtcg.json` on 2026-11-22, at the
+> owner's instruction to delete what is not used. They are in the history of both files before that date, should a light theme be built.
 
 ---
 
@@ -58,7 +57,7 @@ In accordance with Adrian's architectural mandate, the 4 Faceplate presentation 
 - **Target Context**: Level 1 (Plant Overview) and Level 2 (Unit Overview) SCADA screens.
 - **Visual Design**:
   * Ultra-clean SVG vector iconography adhering strictly to ISA-101 monochrome guidelines.
-  * Vessels, heat exchangers, valves, and centrifugal pumps render with slate neutral outlines (`#64748B` in Dark Mode, `#94A3B8` in Light Mode) and muted structural backgrounds (`#1E293B` dark, `#E2E8F0` light). Dark Mode is what renders today; the Light Mode values are the intended palette for a theme that is defined but not yet selectable (see the theme-status note in §2).
+  * Vessels, heat exchangers, valves, and centrifugal pumps render with slate neutral outlines (`#64748B`) and muted structural backgrounds (`#1E293B`).
   * **Zero Color In Quiescent Nominal State**: An energized motor or open valve does not shine bright saturated green; it displays an elevated neutral tone or subdued cyan (`#0284C7`), preserving bright red (`#DC2626`) and orange (`#EA580C` dark / `#D97706` light) strictly for active alarms.
 - **Alarm Annunciation**:
   * If the bound FB has an active alarm, a prominent 2px pulsing border and an ISA-18.2 priority symbol (Square for Critical, Triangle for Major, Inverted Triangle for Minor) renders adjacent to the symbol.
@@ -67,7 +66,7 @@ In accordance with Adrian's architectural mandate, the 4 Faceplate presentation 
 ### 3.2 Mode 2: Interactive Mimic Widget
 - **Target Context**: Level 2 (Unit Control) and Level 3 (Subsystem Detail) screens.
 - **Visual Design**:
-  * Compact card container (`240px` to `360px` width) with elevated surface (`#161E2E` dark, `#F1F5F9` light) and crisp border (`#334155` dark, `#CBD5E1` light).
+  * Compact card container (`240px` to `360px` width) with elevated surface (`#161E2E`) and crisp border (`#334155`).
   * Header displays Tag ID (`P-101A`), Equipment Description (`Slurry Feed Pump A`), and Operating Mode Badge (`AUTO` / `MANUAL` / `LOCAL`).
   * Live process values: Digital bar graph showing current capacity %, actual RPM, motor current (`A`), and bearing temperature (`°C`).
   * Primary operator action triggers: Quick Start, Stop, and Setpoint adjustment input.

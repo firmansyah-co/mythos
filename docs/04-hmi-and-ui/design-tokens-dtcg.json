@@ -1,18 +1,13 @@
 {
   "$schema": "https://design-tokens.github.io/community-group/format/2025.10/schema.json",
   "name": "MythOS High-Performance SCADA Design Tokens",
-  "description": "W3C DTCG-compliant multi-theme design token suite for MythOS Mission-Critical Edge SCADA. Defines Dark Obsidian Mode (ANSI/ISA-101.01-2015 High-Performance HMI, ANSI/ISA-18.2-2016 Alarm Management, ISO 9241-110 Ergonomics) and Light Clean Slate Mode (High-contrast outdoor sunlight readability for industrial tablets and day shift plant operations). THEME STATUS: the Dark Obsidian palette is the one the workbench renders. Light Clean Slate values are defined here and in frontend/src/tokens.css but are NOT currently selectable — no code in this repository applies the [data-theme='light'] or .theme-light selectors, so the light block never takes effect at runtime. Both palettes are defined; one is reachable.",
+  "description": "W3C DTCG-compliant design token suite for MythOS Mission-Critical Edge SCADA. Defines Dark Obsidian Mode (ANSI/ISA-101.01-2015 High-Performance HMI, ANSI/ISA-18.2-2016 Alarm Management, ISO 9241-110 Ergonomics), the one theme the workbench renders. A second palette, Light Clean Slate, was defined here and never selectable: no code applied it, the stylesheet that defined it (frontend/src/tokens.css) was removed in #75, and its values were removed from this file on 2026-11-22 at the owner's instruction to delete what is not used. They are in this file's history before that date.",
   "version": "2.0.0",
   "$themes": {
     "dark": {
       "id": "dark",
       "name": "SCADA Obsidian (Dark)",
       "description": "ISA-101 compliant muted dark obsidian palette for 24/7 mission-critical control rooms to minimize operator fatigue."
-    },
-    "light": {
-      "id": "light",
-      "name": "Engineering Clean Slate (Light / Day Shift)",
-      "description": "High-contrast day shift and rugged outdoor tablet palette engineered for sunlight legibility and field commissioning."
     }
   },
   "color": {
@@ -23,8 +18,7 @@
         "$value": "{color.theme.dark.background.base}",
         "$extensions": {
           "mode": {
-            "dark": "#0A0D12",
-            "light": "#F8FAFC"
+            "dark": "#0A0D12"
           }
         }
       },
@@ -34,8 +28,7 @@
         "$value": "{color.theme.dark.background.surface}",
         "$extensions": {
           "mode": {
-            "dark": "#0F141C",
-            "light": "#FFFFFF"
+            "dark": "#0F141C"
           }
         }
       },
@@ -45,8 +38,7 @@
         "$value": "{color.theme.dark.background.elevated}",
         "$extensions": {
           "mode": {
-            "dark": "#161E2E",
-            "light": "#F1F5F9"
+            "dark": "#161E2E"
           }
         }
       },
@@ -56,8 +48,7 @@
         "$value": "{color.theme.dark.background.muted}",
         "$extensions": {
           "mode": {
-            "dark": "#1E293B",
-            "light": "#E2E8F0"
+            "dark": "#1E293B"
           }
         }
       },
@@ -67,8 +58,7 @@
         "$value": "{color.theme.dark.background.highlight}",
         "$extensions": {
           "mode": {
-            "dark": "#334155",
-            "light": "#CBD5E1"
+            "dark": "#334155"
           }
         }
       }
@@ -80,8 +70,7 @@
         "$value": "{color.theme.dark.border.subtle}",
         "$extensions": {
           "mode": {
-            "dark": "#1E293B",
-            "light": "#E2E8F0"
+            "dark": "#1E293B"
           }
         }
       },
@@ -91,8 +80,7 @@
         "$value": "{color.theme.dark.border.default}",
         "$extensions": {
           "mode": {
-            "dark": "#334155",
-            "light": "#CBD5E1"
+            "dark": "#334155"
           }
         }
       },
@@ -102,8 +90,7 @@
         "$value": "{color.theme.dark.border.focus}",
         "$extensions": {
           "mode": {
-            "dark": "#38BDF8",
-            "light": "#0284C7"
+            "dark": "#38BDF8"
           }
         }
       }
@@ -115,8 +102,7 @@
         "$value": "{color.theme.dark.text.primary}",
         "$extensions": {
           "mode": {
-            "dark": "#F8FAFC",
-            "light": "#0F172A"
+            "dark": "#F8FAFC"
           }
         }
       },
@@ -126,8 +112,7 @@
         "$value": "{color.theme.dark.text.secondary}",
         "$extensions": {
           "mode": {
-            "dark": "#94A3B8",
-            "light": "#475569"
+            "dark": "#94A3B8"
           }
         }
       },
@@ -137,8 +122,7 @@
         "$value": "{color.theme.dark.text.muted}",
         "$extensions": {
           "mode": {
-            "dark": "#64748B",
-            "light": "#64748B"
+            "dark": "#64748B"
           }
         }
       },
@@ -148,8 +132,7 @@
         "$value": "{color.theme.dark.text.inverse}",
         "$extensions": {
           "mode": {
-            "dark": "#020617",
-            "light": "#FFFFFF"
+            "dark": "#020617"
           }
         }
       }
@@ -162,8 +145,7 @@
           "$value": "{color.theme.dark.isa101.process.vessel}",
           "$extensions": {
             "mode": {
-              "dark": "#334155",
-              "light": "#E2E8F0"
+              "dark": "#334155"
             }
           }
         },
@@ -173,8 +155,7 @@
           "$value": "{color.theme.dark.isa101.process.pipe-inactive}",
           "$extensions": {
             "mode": {
-              "dark": "#475569",
-              "light": "#CBD5E1"
+              "dark": "#475569"
             }
           }
         },
@@ -184,8 +165,7 @@
           "$value": "{color.theme.dark.isa101.process.pipe-active}",
           "$extensions": {
             "mode": {
-              "dark": "#64748B",
-              "light": "#94A3B8"
+              "dark": "#64748B"
             }
           }
         },
@@ -195,8 +175,7 @@
           "$value": "{color.theme.dark.isa101.process.valve-closed}",
           "$extensions": {
             "mode": {
-              "dark": "#475569",
-              "light": "#94A3B8"
+              "dark": "#475569"
             }
           }
         },
@@ -206,8 +185,7 @@
           "$value": "{color.theme.dark.isa101.process.valve-open}",
           "$extensions": {
             "mode": {
-              "dark": "#94A3B8",
-              "light": "#475569"
+              "dark": "#94A3B8"
             }
           }
         },
@@ -217,8 +195,7 @@
           "$value": "{color.theme.dark.isa101.process.pump-running}",
           "$extensions": {
             "mode": {
-              "dark": "#0284C7",
-              "light": "#0284C7"
+              "dark": "#0284C7"
             }
           }
         },
@@ -228,8 +205,7 @@
           "$value": "{color.theme.dark.isa101.process.pump-stopped}",
           "$extensions": {
             "mode": {
-              "dark": "#475569",
-              "light": "#94A3B8"
+              "dark": "#475569"
             }
           }
         }
@@ -241,8 +217,7 @@
           "$value": "{color.theme.dark.isa101.alarm.critical}",
           "$extensions": {
             "mode": {
-              "dark": "#DC2626",
-              "light": "#DC2626"
+              "dark": "#DC2626"
             }
           }
         },
@@ -252,8 +227,7 @@
           "$value": "{color.theme.dark.isa101.alarm.major}",
           "$extensions": {
             "mode": {
-              "dark": "#EA580C",
-              "light": "#D97706"
+              "dark": "#EA580C"
             }
           }
         },
@@ -263,8 +237,7 @@
           "$value": "{color.theme.dark.isa101.alarm.minor}",
           "$extensions": {
             "mode": {
-              "dark": "#CA8A04",
-              "light": "#CA8A04"
+              "dark": "#CA8A04"
             }
           }
         },
@@ -274,8 +247,7 @@
           "$value": "{color.theme.dark.isa101.alarm.diagnostic}",
           "$extensions": {
             "mode": {
-              "dark": "#2563EB",
-              "light": "#2563EB"
+              "dark": "#2563EB"
             }
           }
         },
@@ -285,8 +257,7 @@
           "$value": "{color.theme.dark.isa101.alarm.normal}",
           "$extensions": {
             "mode": {
-              "dark": "#475569",
-              "light": "#64748B"
+              "dark": "#475569"
             }
           }
         },
@@ -296,8 +267,7 @@
           "$value": "{color.theme.dark.isa101.alarm.shelved}",
           "$extensions": {
             "mode": {
-              "dark": "#78716C",
-              "light": "#94A3B8"
+              "dark": "#78716C"
             }
           }
         }
@@ -310,8 +280,7 @@
         "$value": "{color.theme.dark.bus.ethernet}",
         "$extensions": {
           "mode": {
-            "dark": "#16A34A",
-            "light": "#15803D"
+            "dark": "#16A34A"
           }
         }
       },
@@ -321,8 +290,7 @@
         "$value": "{color.theme.dark.bus.serial}",
         "$extensions": {
           "mode": {
-            "dark": "#0284C7",
-            "light": "#0369A1"
+            "dark": "#0284C7"
           }
         }
       },
@@ -332,8 +300,7 @@
         "$value": "{color.theme.dark.bus.can}",
         "$extensions": {
           "mode": {
-            "dark": "#CA8A04",
-            "light": "#B45309"
+            "dark": "#CA8A04"
           }
         }
       },
@@ -343,8 +310,7 @@
         "$value": "{color.theme.dark.bus.safety}",
         "$extensions": {
           "mode": {
-            "dark": "#DC2626",
-            "light": "#DC2626"
+            "dark": "#DC2626"
           }
         }
       },
@@ -354,8 +320,7 @@
         "$value": "{color.theme.dark.bus.io-link}",
         "$extensions": {
           "mode": {
-            "dark": "#9333EA",
-            "light": "#7E22CE"
+            "dark": "#9333EA"
           }
         }
       },
@@ -365,8 +330,7 @@
         "$value": "{color.theme.dark.bus.offline}",
         "$extensions": {
           "mode": {
-            "dark": "#475569",
-            "light": "#64748B"
+            "dark": "#475569"
           }
         }
       }
@@ -520,158 +484,6 @@
           },
           "offline": {
             "$value": "#475569",
-            "$type": "color"
-          }
-        }
-      },
-      "light": {
-        "background": {
-          "base": {
-            "$value": "#F8FAFC",
-            "$type": "color",
-            "$description": "Clean paper daylight canvas background"
-          },
-          "surface": {
-            "$value": "#FFFFFF",
-            "$type": "color",
-            "$description": "Pure white surface for panels and cards"
-          },
-          "elevated": {
-            "$value": "#F1F5F9",
-            "$type": "color",
-            "$description": "Elevated modal and drawer fill"
-          },
-          "muted": {
-            "$value": "#E2E8F0",
-            "$type": "color",
-            "$description": "Subtle vessel fill and inactive module slots"
-          },
-          "highlight": {
-            "$value": "#CBD5E1",
-            "$type": "color",
-            "$description": "Hover state and subtle selection highlight"
-          }
-        },
-        "border": {
-          "subtle": {
-            "$value": "#E2E8F0",
-            "$type": "color",
-            "$description": "Subtle daylight zone separator"
-          },
-          "default": {
-            "$value": "#CBD5E1",
-            "$type": "color",
-            "$description": "Default crisp daylight boundary border"
-          },
-          "focus": {
-            "$value": "#0284C7",
-            "$type": "color",
-            "$description": "High-contrast focus ring for outdoor sunlight"
-          }
-        },
-        "text": {
-          "primary": {
-            "$value": "#0F172A",
-            "$type": "color",
-            "$description": "Deep slate primary text for maximum sunlight contrast"
-          },
-          "secondary": {
-            "$value": "#475569",
-            "$type": "color",
-            "$description": "Slate secondary descriptor text"
-          },
-          "muted": {
-            "$value": "#64748B",
-            "$type": "color",
-            "$description": "Muted timestamps and metadata"
-          },
-          "inverse": {
-            "$value": "#FFFFFF",
-            "$type": "color",
-            "$description": "Text rendered over dark alarm banners"
-          }
-        },
-        "isa101": {
-          "process": {
-            "vessel": {
-              "$value": "#E2E8F0",
-              "$type": "color"
-            },
-            "pipe-inactive": {
-              "$value": "#CBD5E1",
-              "$type": "color"
-            },
-            "pipe-active": {
-              "$value": "#94A3B8",
-              "$type": "color"
-            },
-            "valve-closed": {
-              "$value": "#94A3B8",
-              "$type": "color"
-            },
-            "valve-open": {
-              "$value": "#475569",
-              "$type": "color"
-            },
-            "pump-running": {
-              "$value": "#0284C7",
-              "$type": "color"
-            },
-            "pump-stopped": {
-              "$value": "#94A3B8",
-              "$type": "color"
-            }
-          },
-          "alarm": {
-            "critical": {
-              "$value": "#DC2626",
-              "$type": "color"
-            },
-            "major": {
-              "$value": "#D97706",
-              "$type": "color"
-            },
-            "minor": {
-              "$value": "#CA8A04",
-              "$type": "color"
-            },
-            "diagnostic": {
-              "$value": "#2563EB",
-              "$type": "color"
-            },
-            "normal": {
-              "$value": "#64748B",
-              "$type": "color"
-            },
-            "shelved": {
-              "$value": "#94A3B8",
-              "$type": "color"
-            }
-          }
-        },
-        "bus": {
-          "ethernet": {
-            "$value": "#15803D",
-            "$type": "color"
-          },
-          "serial": {
-            "$value": "#0369A1",
-            "$type": "color"
-          },
-          "can": {
-            "$value": "#B45309",
-            "$type": "color"
-          },
-          "safety": {
-            "$value": "#DC2626",
-            "$type": "color"
-          },
-          "io-link": {
-            "$value": "#7E22CE",
-            "$type": "color"
-          },
-          "offline": {
-            "$value": "#64748B",
             "$type": "color"
           }
         }
