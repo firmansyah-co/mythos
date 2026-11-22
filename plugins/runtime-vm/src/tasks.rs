@@ -17,13 +17,23 @@
 //! When a task begins a run, the inputs of all its programs are taken from the last exchange,
 //! its setpoints and its forces written (the latch); when its run ends, its forces are written
 //! again and each of its programs' working memory is copied to its image.
+//!
+//! A data block (ADR-014) has one **master** copy per runtime, in [`Shared`], and each program
+//! that declares it has its own copy in its memory. When a program begins its run, each member
+//! it does not write is copied into its copy: from the working memory of the member's writer
+//! when that writer is a program of the same task that has already ended its run in this task
+//! run, otherwise from the master. Nothing reaches the master before a task's run has ended:
+//! then, with the images and under the same lock, each program of the task copies the members
+//! it writes into the master. So a task of another priority sees a task's run whole or not at
+//! all, and a task run that faults, or that a change of mode drops, hands nothing over. Every
+//! copy is made by the scheduler thread between two pieces, never while a piece runs.
 
 use crate::{describe, restore, snapshot, to_vm, watchdog_limit, Plan, BUDGET, DEFAULT_WATCHDOG};
 use mythos_logic_vm::sched::{self, Kind, Next};
 use mythos_logic_vm::{cold_start, write, ElemType, Frame, Piece, Program, Run, Value as VmValue};
 use mythos_module::protocol::{
-    CarryReport, ForcedValue, InputOf, ProgramVersion, RetainedValue, RuntimeMode, RuntimeState,
-    TaskConfig, TaskKind, TaskState,
+    CarryReport, DataBlock, ForcedValue, InputOf, ProgramVersion, RetainedValue, RuntimeMode,
+    RuntimeState, TaskConfig, TaskKind, TaskState,
 };
 use mythos_plugin_sdk::PluginError;
 use serde_json::Value;
@@ -52,12 +62,32 @@ pub(crate) struct TaskSpec {
     pub event_tag: Option<String>,
 }
 
+/// One data block of a runtime as loaded: its configuration, who declares it and who writes
+/// each of its members. A program's use of it is `(program, index into its data)`.
+pub(crate) struct BlockSpec {
+    pub config: DataBlock,
+    /// The first program, in configuration order, that declares it: its master's first image
+    /// is that program's copy. `None` for a block no program declares, which has no master.
+    pub first: Option<(usize, usize)>,
+    /// Every program that declares it.
+    pub uses: Vec<(usize, usize)>,
+    /// For each member, in the order of `config.members`, the one program that writes it.
+    pub writer: Vec<Option<(usize, usize)>>,
+}
+
 /// What a runtime runs: its programs and the tasks that run them. Fixed from the start.
 pub(crate) struct Layout {
     pub plans: Vec<Plan>,
     pub tasks: Vec<TaskSpec>,
     /// Given no tasks: one program in its implied task, reported exactly as before tasks.
     pub implied: bool,
+    /// The data blocks; empty for a runtime of today.
+    pub blocks: Vec<BlockSpec>,
+    /// For each program, for each block it declares (in the order of its data), the index of
+    /// that block in `blocks`.
+    block_of: Vec<Vec<usize>>,
+    /// For each program, its task and its place in that task's programs.
+    place: Vec<(usize, usize)>,
     /// The scheduler's tasks, in the order of `tasks`, at a change to RUN.
     sched: Vec<sched::Task>,
     /// The same at the start of an online change: its startup tasks are event tasks never
@@ -75,11 +105,13 @@ fn us_of_ns(ns: i64) -> u64 {
 }
 
 impl Layout {
-    /// `configs` have passed [`mythos_module::protocol::check_tasks`] against `plans`.
+    /// `configs` have passed [`mythos_module::protocol::check_tasks`] against `plans`, and
+    /// `data` [`mythos_module::protocol::check_data`].
     pub fn new(
         plans: Vec<Plan>,
         configs: Vec<TaskConfig>,
         implied: bool,
+        data: Vec<DataBlock>,
     ) -> Result<Layout, String> {
         let mut tasks = Vec::new();
         let mut normal = Vec::new();
@@ -152,13 +184,90 @@ impl Layout {
                 event_tag,
             });
         }
+        let mut place = vec![None; plans.len()];
+        for (k, t) in tasks.iter().enumerate() {
+            for (at, &p) in t.programs.iter().enumerate() {
+                place[p] = Some((k, at));
+            }
+        }
+        let place = place
+            .into_iter()
+            .enumerate()
+            .map(|(p, at)| {
+                at.ok_or_else(|| format!("program '{}' is in no task", plans[p].program.name))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut blocks: Vec<BlockSpec> = data
+            .into_iter()
+            .map(|config| BlockSpec {
+                writer: vec![None; config.members.len()],
+                config,
+                first: None,
+                uses: Vec::new(),
+            })
+            .collect();
+        let mut block_of = Vec::new();
+        for (p, plan) in plans.iter().enumerate() {
+            let mut of = Vec::new();
+            for (j, u) in plan.program.data.iter().enumerate() {
+                let b = blocks
+                    .iter()
+                    .position(|b| b.config.name.eq_ignore_ascii_case(&u.name))
+                    .ok_or_else(|| {
+                        format!("data block '{}' is not in the runtime's data", u.name)
+                    })?;
+                let spec = &mut blocks[b];
+                if u.members.len() != spec.writer.len() {
+                    return Err(format!("data block '{}' has other members", u.name));
+                }
+                spec.first.get_or_insert((p, j));
+                spec.uses.push((p, j));
+                for (i, m) in u.members.iter().enumerate() {
+                    if m.written {
+                        spec.writer[i] = Some((p, j));
+                    }
+                }
+                of.push(b);
+            }
+            block_of.push(of);
+        }
         Ok(Layout {
             plans,
             tasks,
             implied,
+            blocks,
+            block_of,
+            place,
             sched: normal,
             sched_online: online,
         })
+    }
+
+    /// Whether program `p` declares a data block.
+    fn declares(&self, p: usize) -> bool {
+        !self.plans[p].program.data.is_empty()
+    }
+
+    /// Where program `p`'s copy of member `i` of the block of its `j`-th use lies in its
+    /// memory, as a range. Inside it: `plan` refused any copy outside (R14) or any member
+    /// outside its block (R5), and every use's members are its block's (R9).
+    fn member_range(&self, p: usize, j: usize, i: usize) -> std::ops::Range<usize> {
+        let u = &self.plans[p].program.data[j];
+        let m = &u.members[i];
+        let at = u.offset as usize + m.offset as usize;
+        at..at + m.size as usize
+    }
+
+    /// Where member `i` of block `b` lies in its master.
+    fn master_range(&self, b: usize, i: usize) -> std::ops::Range<usize> {
+        let m = &self.blocks[b].config.members[i];
+        m.offset as usize..m.offset as usize + m.size as usize
+    }
+
+    /// Where program `p`'s copy of the block of its `j`-th use lies in its memory.
+    fn copy_range(&self, p: usize, j: usize) -> std::ops::Range<usize> {
+        let u = &self.plans[p].program.data[j];
+        u.offset as usize..u.offset as usize + u.size as usize
     }
 
     /// Whether a variable is named by its program: the runtime has several.
@@ -263,6 +372,16 @@ struct TaskLive {
     missed: u64,
 }
 
+/// One data block's state.
+pub(crate) struct BlockLive {
+    /// Its master copy: what each member's writer left at the end of its task's last completed
+    /// run. `None` until the runtime is first put in RUN, and always for a block no program
+    /// declares: nothing then says what its values are.
+    pub master: Option<Vec<u8>>,
+    /// Until then, the value the host kept for it, for its first warm start.
+    pub pending: Option<RetainedValue>,
+}
+
 /// What the scheduler thread, the exchanges and every other call share, under one lock that is
 /// never held across a piece of a run.
 pub(crate) struct Shared {
@@ -283,8 +402,11 @@ pub(crate) struct Shared {
     started_at: i64,
     tasks: Vec<TaskLive>,
     pub programs: Vec<ProgramLive>,
-    /// RETAIN values the host gave that name no program of this runtime: given back until the
-    /// runtime is first put in RUN, so none is lost to a runtime loaded in STOP.
+    /// The data blocks, in the order of [`Layout::blocks`]. During RUN only the scheduler
+    /// thread writes a master, always between pieces.
+    pub blocks: Vec<BlockLive>,
+    /// RETAIN values the host gave that name no program or data block of this runtime: given
+    /// back until the runtime is first put in RUN, so none is lost to a runtime loaded in STOP.
     pub unclaimed: Vec<RetainedValue>,
     /// What it did with the running values it was started with, if any.
     pub carry: CarryReport,
@@ -334,8 +456,28 @@ impl Shared {
                 completed: false,
             })
             .collect();
+        let mut blocks: Vec<BlockLive> = layout
+            .blocks
+            .iter()
+            .map(|_| BlockLive {
+                master: None,
+                pending: None,
+            })
+            .collect();
         let mut unclaimed = Vec::new();
         for value in retained {
+            if value.layout.is_some() {
+                // A data block's master: to the block of that name, if there is one.
+                let b = layout
+                    .blocks
+                    .iter()
+                    .position(|b| b.config.name.eq_ignore_ascii_case(&value.path));
+                match b {
+                    Some(b) if blocks[b].pending.is_none() => blocks[b].pending = Some(value),
+                    _ => unclaimed.push(value),
+                }
+                continue;
+            }
             match layout.split(&value.path) {
                 Ok((p, path)) => programs[p].pending.push(RetainedValue {
                     path: path.to_string(),
@@ -356,6 +498,7 @@ impl Shared {
             started_at: 0,
             tasks: vec![TaskLive::default(); layout.tasks.len()],
             programs,
+            blocks,
             unclaimed,
             carry: CarryReport::default(),
         }
@@ -406,11 +549,19 @@ impl Shared {
             live.setpoints.clear();
             live.completed = false;
         }
+        self.restart_blocks(layout, cold);
         for value in std::mem::take(&mut self.unclaimed) {
-            tracing::warn!(
-                "a retained value was not taken: {}: the runtime has no program of that name",
-                value.path
-            );
+            if value.layout.is_some() {
+                tracing::warn!(
+                    "a retained value was not taken: {}: the runtime has no data block of that name",
+                    value.path
+                );
+            } else {
+                tracing::warn!(
+                    "a retained value was not taken: {}: the runtime has no program of that name",
+                    value.path
+                );
+            }
         }
         self.mode = RuntimeMode::Run;
         self.fault = None;
@@ -419,6 +570,170 @@ impl Shared {
         self.begin_tasks(layout, false);
         self.changed();
         Ok(())
+    }
+
+    /// Each data block's master at a change to RUN, once every program has its initial and
+    /// RETAIN values: the copy of its first declaring program (the type's initial values); for
+    /// a RETAIN block at a warm restart, the value kept, when it is of the block's layout and
+    /// size. Then every program's copy is set from its master, so every copy agrees with it.
+    fn restart_blocks(&mut self, layout: &Layout, cold: bool) {
+        for (b, spec) in layout.blocks.iter().enumerate() {
+            let live = &mut self.blocks[b];
+            let name = &spec.config.name;
+            let Some((f, j)) = spec.first else {
+                if let Some(v) = live.pending.take() {
+                    tracing::warn!(
+                        "a retained value was not taken: {}: no program of this runtime declares the data block",
+                        v.path
+                    );
+                }
+                continue;
+            };
+            let kept = if cold {
+                None
+            } else {
+                match &live.master {
+                    Some(master) => spec.config.retain.then(|| RetainedValue {
+                        path: name.clone(),
+                        ty: spec.config.ty.clone(),
+                        bytes: hex::encode(master),
+                        layout: Some(spec.config.layout.clone()),
+                    }),
+                    None => live.pending.take(),
+                }
+            };
+            live.pending = None;
+            let mut master = self.programs[f].image[layout.copy_range(f, j)].to_vec();
+            if let Some(v) = kept {
+                let why = if !spec.config.retain {
+                    Some(format!("{name}: the data block is not RETAIN"))
+                } else if v.layout.as_deref() != Some(spec.config.layout.as_str()) {
+                    Some(format!(
+                        "{name}: its layout is {} now, not {}",
+                        spec.config.layout,
+                        v.layout.as_deref().unwrap_or("")
+                    ))
+                } else {
+                    match hex::decode(&v.bytes) {
+                        Ok(bytes) if bytes.len() == master.len() => {
+                            master.copy_from_slice(&bytes);
+                            None
+                        }
+                        _ => Some(format!(
+                            "{name}: the value kept is not {} bytes",
+                            spec.config.size
+                        )),
+                    }
+                };
+                if let Some(why) = why {
+                    tracing::warn!("a retained value was not taken: {why}");
+                }
+            }
+            live.master = Some(master);
+        }
+        self.spread(layout);
+    }
+
+    /// Every program's copy of each data block, in its image, set whole from the block's
+    /// master.
+    pub fn spread(&mut self, layout: &Layout) {
+        for (b, spec) in layout.blocks.iter().enumerate() {
+            let Some(master) = &self.blocks[b].master else {
+                continue;
+            };
+            for &(p, j) in &spec.uses {
+                self.programs[p].image[layout.copy_range(p, j)].copy_from_slice(master);
+            }
+        }
+    }
+
+    /// Each data block's master made again from the images (an online change, after the
+    /// running values were carried into them): each member from its writer's copy, a member no
+    /// program writes from the first declaring program's copy.
+    pub fn compose(&mut self, layout: &Layout) {
+        for (b, spec) in layout.blocks.iter().enumerate() {
+            let (Some(first), Some(master)) = (spec.first, self.blocks[b].master.as_mut()) else {
+                continue;
+            };
+            for (i, writer) in spec.writer.iter().enumerate() {
+                let (p, j) = writer.unwrap_or(first);
+                master[layout.master_range(b, i)]
+                    .copy_from_slice(&self.programs[p].image[layout.member_range(p, j, i)]);
+            }
+        }
+    }
+
+    /// What the host keeps of the data blocks: each RETAIN block's master, or before the first
+    /// RUN the value the host gave for any block, so a runtime loaded in STOP never has a kept
+    /// value replaced or lost.
+    pub fn kept_blocks(&self, layout: &Layout) -> Vec<RetainedValue> {
+        let mut values = Vec::new();
+        for (spec, live) in layout.blocks.iter().zip(&self.blocks) {
+            match (&live.master, &live.pending) {
+                (Some(master), _) if spec.config.retain => values.push(RetainedValue {
+                    path: spec.config.name.clone(),
+                    ty: spec.config.ty.clone(),
+                    bytes: hex::encode(master),
+                    layout: Some(spec.config.layout.clone()),
+                }),
+                (None, Some(pending)) => values.push(pending.clone()),
+                _ => {}
+            }
+        }
+        values
+    }
+
+    /// Program `p` begins its run in a task run: each member of each block it declares that
+    /// it does not write is copied into its working memory, from the working memory of the
+    /// member's writer when that is a program of the same task that has already ended its run
+    /// in this task run, otherwise from the master. Then its forces are held, so a force wins.
+    fn hand_in(&self, layout: &Layout, p: usize, work: &mut [Work]) {
+        if !layout.declares(p) {
+            return;
+        }
+        let (task, at) = layout.place[p];
+        for (j, &b) in layout.block_of[p].iter().enumerate() {
+            let spec = &layout.blocks[b];
+            let Some(master) = &self.blocks[b].master else {
+                continue;
+            };
+            for (i, writer) in spec.writer.iter().enumerate() {
+                let to = layout.member_range(p, j, i);
+                match *writer {
+                    Some((w, _)) if w == p => {}
+                    Some((w, wj)) if layout.place[w].0 == task && layout.place[w].1 < at => {
+                        let from = layout.member_range(w, wj, i);
+                        let (dst, src) = two(work, p, w);
+                        dst.memory[to].copy_from_slice(&src.memory[from]);
+                    }
+                    _ => work[p].memory[to].copy_from_slice(&master[layout.master_range(b, i)]),
+                }
+            }
+        }
+        hold(&self.programs[p].forces, &mut work[p].memory);
+    }
+
+    /// Task `k`'s run has ended: each of its programs, in order, holds its forces and copies
+    /// the members it writes into the master.
+    fn hand_out(&mut self, layout: &Layout, k: usize, work: &mut [Work]) {
+        for &p in &layout.tasks[k].programs {
+            if !layout.declares(p) {
+                continue;
+            }
+            let memory = &mut work[p].memory;
+            hold(&self.programs[p].forces, memory);
+            for (j, &b) in layout.block_of[p].iter().enumerate() {
+                let Some(master) = self.blocks[b].master.as_mut() else {
+                    continue;
+                };
+                for (i, m) in layout.plans[p].program.data[j].members.iter().enumerate() {
+                    if m.written {
+                        master[layout.master_range(b, i)]
+                            .copy_from_slice(&memory[layout.member_range(p, j, i)]);
+                    }
+                }
+            }
+        }
     }
 
     /// Put in STOP: every force released, the run in progress dropped.
@@ -685,6 +1000,9 @@ impl Shared {
     /// The end of a run of task `k` at `now`: its programs' forces written again, their working
     /// memory copied to their images, the setpoints written since put back over them.
     fn finish(&mut self, layout: &Layout, k: usize, work: &mut [Work], now: i64) {
+        // The master and the images change together: a reader of another task sees this
+        // task's run whole or not at all.
+        self.hand_out(layout, k, work);
         for &p in &layout.tasks[k].programs {
             let live = &mut self.programs[p];
             let memory = &mut work[p].memory;
@@ -734,6 +1052,17 @@ fn owed_after(kind: Kind, start: i64, end: i64, last_run: i64, ready: bool) -> O
         }
         Kind::Event if ready => Some(end),
         Kind::Event | Kind::Startup => None,
+    }
+}
+
+/// Program `a`'s working space to write and program `b`'s to read; `a` is not `b`.
+fn two(work: &mut [Work], a: usize, b: usize) -> (&mut Work, &Work) {
+    if a < b {
+        let (left, right) = work.split_at_mut(b);
+        (&mut left[a], &right[0])
+    } else {
+        let (left, right) = work.split_at_mut(a);
+        (&mut right[0], &left[b])
     }
 }
 
@@ -824,6 +1153,7 @@ pub(crate) fn schedule(layout: Arc<Layout>, control: Arc<Control>, quit: Arc<Ato
                             g.latch(&layout.plans[p], p, &mut work[p].memory);
                         }
                         let first = layout.tasks[k].programs[0];
+                        g.hand_in(&layout, first, &mut work);
                         runs[k] = Some(TaskRun {
                             at: 0,
                             run: Run::begin(&programs[first], clock(since), BUDGET),
@@ -865,8 +1195,21 @@ pub(crate) fn schedule(layout: Arc<Layout>, control: Arc<Control>, quit: Arc<Ato
         ) {
             Ok(Piece::Suspended) => {}
             Ok(Piece::Ended(_)) if task_run.at + 1 < spec.programs.len() => {
+                let next = spec.programs[task_run.at + 1];
+                // A runtime of today takes no lock here.
+                if layout.declares(p) || layout.declares(next) {
+                    let g = control.lock();
+                    if Some(g.generation) != seen {
+                        // A change of mode or a fault during the piece: the task run is
+                        // dropped, and nothing is handed over.
+                        runs[k] = None;
+                        continue;
+                    }
+                    // So a forced value is what a later program of the task takes.
+                    hold(&g.programs[p].forces, &mut work[p].memory);
+                    g.hand_in(&layout, next, &mut work);
+                }
                 task_run.at += 1;
-                let next = spec.programs[task_run.at];
                 task_run.run = Run::begin(&programs[next], clock(since), BUDGET);
             }
             Ok(Piece::Ended(_)) => {

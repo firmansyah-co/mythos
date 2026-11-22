@@ -31,9 +31,10 @@ use mythos_logic_vm::{
     read, read_string, string_size, write, ElemType, Fault, Program, Value as VmValue,
 };
 use mythos_module::protocol::{
-    check_tasks, implied_task, CarryReport, ExchangeReply, InputOf, ModuleKind, ModuleManifest,
-    NotCarried, ProgramVariables, RetainedValue, RuntimeMode, RuntimeProgram, RuntimeState,
-    TaskConfig, WatchReply, WatchedValue, WireInput, WireOutput, WireSample, PROTOCOL_VERSION,
+    check_data, check_tasks, implied_task, CarryReport, DataBlock, ExchangeReply, InputOf,
+    ModuleKind, ModuleManifest, NotCarried, ProgramVariables, RetainedValue, RuntimeMode,
+    RuntimeProgram, RuntimeState, TaskConfig, WatchReply, WatchedValue, WireInput, WireOutput,
+    WireSample, PROTOCOL_VERSION,
 };
 use mythos_module::RuntimeEngine;
 use mythos_plugin_sdk::{
@@ -76,7 +77,9 @@ pub fn manifest() -> ModuleManifest {
             "max_memory": 64 * 1024 * 1024,
             "max_code": 64 * 1024 * 1024,
             // ADR-013 §2.19: it runs several programs in tasks of every kind.
-            "tasks": {"kinds": ["cycle", "cyclic", "startup", "event"]}
+            "tasks": {"kinds": ["cycle", "cyclic", "startup", "event"]},
+            // ADR-014: it hands data blocks over between the programs of one runtime.
+            "data": {"tiers": [1]}
         }),
     }
 }
@@ -100,6 +103,9 @@ struct StartConfig {
     /// The tasks that run them; none for one program in its implied task.
     #[serde(default)]
     tasks: Vec<TaskConfig>,
+    /// The data blocks its programs share (ADR-014); none for a runtime of today.
+    #[serde(default)]
+    data: Vec<DataBlock>,
     /// Whether to put it in RUN at once. Otherwise it is loaded and waits in STOP.
     #[serde(default)]
     run: bool,
@@ -303,6 +309,7 @@ fn plan(config: &Value) -> Result<Loaded, PluginError> {
         program,
         programs,
         tasks,
+        data,
         run,
         retained,
         carried,
@@ -314,6 +321,7 @@ fn plan(config: &Value) -> Result<Loaded, PluginError> {
         (None, _) => programs,
     };
     check_tasks(&programs.iter().collect::<Vec<_>>(), &tasks).map_err(invalid)?;
+    check_data(&programs.iter().collect::<Vec<_>>(), &data).map_err(invalid)?;
     let implied = tasks.is_empty();
     if implied && programs[0].interval_ms == 0 {
         return Err(invalid("interval_ms must be at least 1"));
@@ -328,6 +336,11 @@ fn plan(config: &Value) -> Result<Loaded, PluginError> {
             }
             other => other,
         })?);
+    }
+    // Every copy of a data block inside its program's memory, where its symbols put it: the
+    // hand-over copies by these offsets, so none may lead outside a memory.
+    for plan in &plans {
+        check_copies(plan).map_err(invalid)?;
     }
     // Inside one runtime, as inside one program: one variable to a tag.
     let mut outputs = HashSet::new();
@@ -352,11 +365,54 @@ fn plan(config: &Value) -> Result<Loaded, PluginError> {
         tasks
     };
     Ok(Loaded {
-        layout: Layout::new(plans, tasks, implied).map_err(invalid)?,
+        layout: Layout::new(plans, tasks, implied, data).map_err(invalid)?,
         run,
         retained,
         carried,
     })
+}
+
+/// Check that each data block a program declares lies inside its memory (R14), and that its
+/// symbols put each member where its data says (R15): the member's own symbol, or the leaves
+/// under it, starting at the member's offset and none outside it.
+fn check_copies(plan: &Plan) -> Result<(), String> {
+    let p = &plan.program.name;
+    for u in &plan.program.data {
+        let b = &u.name;
+        if u64::from(u.offset) + u64::from(u.size) > plan.memory_size as u64 {
+            return Err(format!(
+                "program '{p}': its copy of data block '{b}' lies outside the program's memory"
+            ));
+        }
+        let misplaced = || {
+            format!("program '{p}': its symbols do not place data block '{b}' where its data says")
+        };
+        for m in &u.members {
+            let at = u64::from(u.offset) + u64::from(m.offset);
+            let end = at + u64::from(m.size);
+            let own = format!("{b}.{}", m.name).to_ascii_lowercase();
+            let under = |path: &str| {
+                path == own
+                    || path
+                        .strip_prefix(own.as_str())
+                        .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+            };
+            let leaves: Vec<&SymbolEntry> = plan
+                .symbols
+                .iter()
+                .filter(|(path, _)| under(path))
+                .map(|(_, s)| s)
+                .collect();
+            let first = leaves.iter().map(|s| u64::from(s.offset)).min();
+            let inside = leaves.iter().all(|s| {
+                u64::from(s.offset) >= at && u64::from(s.offset) + u64::from(s.size) <= end
+            });
+            if first != Some(at) || !inside {
+                return Err(misplaced());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Check one program and work out where its variables are.
@@ -472,6 +528,7 @@ fn snapshot(plan: &Plan, memory: &[u8]) -> Vec<RetainedValue> {
             path: path.clone(),
             ty: ty.clone(),
             bytes: hex::encode(&memory[*offset as usize..(*offset + *size) as usize]),
+            layout: None,
         })
         .collect()
 }
@@ -533,6 +590,7 @@ fn all_values(plan: &Plan, memory: &[u8]) -> Vec<RetainedValue> {
             path: s.path.clone(),
             ty: s.ty.clone(),
             bytes: hex::encode(&memory[s.offset as usize..(s.offset + s.size) as usize]),
+            layout: None,
         })
         .collect()
 }
@@ -933,6 +991,11 @@ impl MythosPlugin for VmEngine {
                         .extend(r.initialized.into_iter().map(full));
                 }
                 shared.carry = report;
+                // Each data block's master from the carried copies of its writers (with every
+                // task run handing over whole, a master's member is its writer's copy), then
+                // every copy from its master.
+                shared.compose(&layout);
+                shared.spread(&layout);
                 let clock = Duration::from_nanos(carried.clock_ns.max(0) as u64);
                 if let Some(since) = Instant::now().checked_sub(clock) {
                     shared.since = since;
@@ -1184,6 +1247,7 @@ impl RuntimeEngine for VmEngine {
 
     /// The values of its RETAIN variables now; for a program that has not run, the values the
     /// host gave, so that a runtime loaded in STOP never has its kept values replaced by zeros.
+    /// Then each RETAIN data block's master, by the block's name and with its layout.
     async fn retained(&mut self, _ctx: &PluginContext) -> Result<Vec<RetainedValue>, PluginError> {
         let running = self.running()?;
         let layout = &running.layout;
@@ -1197,6 +1261,7 @@ impl RuntimeEngine for VmEngine {
             };
             values.extend(named(layout, p, mine));
         }
+        values.extend(g.kept_blocks(layout));
         values.extend(g.unclaimed.iter().cloned());
         Ok(values)
     }
@@ -1422,6 +1487,7 @@ mod tests {
             path: path.into(),
             ty: ty.into(),
             bytes: bytes.into(),
+            layout: None,
         };
         let mut fresh = vec![0u8; plan.memory_size];
         let refused = restore(
@@ -1602,6 +1668,7 @@ mod tests {
             path: path.into(),
             ty: ty.into(),
             bytes: bytes.into(),
+            layout: None,
         }
     }
 
