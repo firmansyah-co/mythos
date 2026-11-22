@@ -43,12 +43,13 @@ shared area, and to have named data blocks built from user types, in a module of
 
 ### 2.1 What a project has
 
-- A **user type** (UDT) is a `TYPE … STRUCT … END_STRUCT END_TYPE` (or an array or enumeration
-  type) of the project, usable by every program of the project. Today a type is visible only in
+- A **user type** (UDT) is a type of the project (`TYPE … END_TYPE`: a structure, or a name
+  for an array type), usable by every program of the project. Today a type is visible only in
   the source that declares it.
-- A **data block** (DB) is a named instance of a type, with initial values, and a setting for
-  whether it is retained. It belongs to the project, not to a program. Its type is a user type
-  or, from slice D5 on, a function block type (§2.6).
+- A **data block** (DB) is a named instance of a structure type, with initial values, and a
+  setting for whether it is retained. It belongs to the project, not to a program. From slice
+  D5 on its type may also be a function block type (§2.6). A data block has members because
+  a member is what has a writer (§2.3).
 - There is **no shared memory area**: no `%M` markers, no variable that is not a member of a
   named data block, no address a program can reach that it did not declare.
 
@@ -276,8 +277,9 @@ OPC UA.
   block declared by programs of two runtimes is refused until T2 is built, with a message that
   says so.
 - Copying only the members a program uses.
-- Enumerations and subrange types as user types depend on what the compiler supports when D1
-  is built; D1's evidence states which are taken.
+- Enumerations and subrange types: the compiler has neither today, and this ADR adds neither.
+- `VAR_EXTERNAL` in a function block or a function. D1 takes it in a `PROGRAM` only; a block
+  is given a member as a parameter.
 
 ## 6. Status
 
