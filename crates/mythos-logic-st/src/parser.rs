@@ -112,8 +112,9 @@ const UNSUPPORTED: [(&str, &str); 9] = [
 /// not a name: the name was left out.
 /// Why a RETAIN or NON_RETAIN qualifier is not allowed on the section `keyword` of a POU of
 /// `kind`; `None` where it may be (IEC 61131-3 ed. 3 §6.5.6.2 and Annex A: the static
-/// VAR, VAR_INPUT and VAR_OUTPUT of programs and function blocks, and VAR_GLOBAL).
-fn no_retention(kind: PouKind, keyword: &str) -> Option<&'static str> {
+/// VAR, VAR_INPUT and VAR_OUTPUT of programs and function blocks, and VAR_GLOBAL). Public so
+/// that the TC6 reader refuses a qualified `externalVars` with the same words.
+pub fn no_retention(kind: PouKind, keyword: &str) -> Option<&'static str> {
     Some(match keyword {
         "VAR_IN_OUT" => {
             "on VAR_IN_OUT: the variable is the caller's, and has no storage of its own to retain (IEC 61131-3 ed. 3 §6.5.6.2)"

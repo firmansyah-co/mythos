@@ -3,11 +3,14 @@
 //! declares in `VAR_EXTERNAL`; what `Compiled.data` says of each, and the layout hash.
 
 mod support;
+#[path = "../../mythos-logic-graphic/tests/support/tc6.rs"]
+mod tc6;
 use support::*;
+use tc6::{project, Act, Coil, Contact, In, Pou};
 
 use mythos_logic_compiler::{
-    check_project, compile, compile_sources, Compiled, DataBlock, DataUse, Diagnostic, Sources,
-    TargetProfile,
+    check_project, compile, compile_in, compile_sources, Compiled, DataBlock, DataUse, Diagnostic,
+    Sources, TargetProfile,
 };
 use mythos_logic_ir::{Section, Ty};
 
@@ -765,4 +768,270 @@ fn a_target_that_refuses_string_refuses_a_block_with_one_and_not_an_unused_type(
         .unwrap_or_else(|d| panic!("{d:?}"));
     assert_eq!(c.data.len(), 1);
     assert_eq!(c.data[0].name, "C");
+}
+
+// TC6 programs (Ladder, FBD, SFC): `externalVars` is VAR_EXTERNAL, and the rest is the shared
+// checker's and the IR's.
+
+const LINE: (&str, &str) = (
+    "line.st",
+    "TYPE LineState : STRUCT run : BOOL; lamp : BOOL; count : INT; total : INT; steps : INT; END_STRUCT; END_TYPE",
+);
+const L: DataBlock = DataBlock {
+    name: "Line",
+    ty: "LineState",
+};
+
+/// Compile one TC6 document of `pous` with the library [`LINE`] and the block [`L`].
+fn with_tc6(pous: &[Pou], data: &[DataBlock]) -> Result<Compiled, Vec<Diagnostic>> {
+    let doc = project(pous);
+    compile_sources(
+        &Sources {
+            tc6: &[("main.xml", doc.as_str())],
+            library: &[LINE],
+            data,
+            ..Default::default()
+        },
+        &TargetProfile::pc(),
+    )
+}
+
+fn tc6_refused(pous: &[Pou], data: &[DataBlock]) -> Vec<Diagnostic> {
+    match with_tc6(pous, data) {
+        Ok(_) => panic!("compiled"),
+        Err(d) => d,
+    }
+}
+
+/// A program's interface with `Line` in `externalVars` (with `attrs` on the section).
+fn uses_line(p: Pou, attrs: &str) -> Pou {
+    p.section(
+        &format!("externalVars{attrs}"),
+        &[("Line", "LineState", None)],
+    )
+}
+
+/// A Ladder program: one rung, `Line.lamp := Line.run`.
+fn ladder_lamp(attrs: &str) -> Pou {
+    uses_line(Pou::program("Main"), attrs)
+        .left(1, 0)
+        .contact(2, 100, 20, Contact::No, "Line.run", &["1"])
+        .coil(3, 200, 20, Coil::Plain, "Line.lamp", &["2"])
+        .right(4, 0, &["3"])
+}
+
+#[test]
+fn a_ladder_program_reads_and_writes_members_of_a_block_as_the_same_program_in_st() {
+    let c = with_tc6(&[ladder_lamp("")], &[L]).unwrap_or_else(|d| panic!("{d:?}"));
+    assert_eq!(c.data.len(), 1);
+    assert_eq!(
+        (c.data[0].name.as_str(), c.data[0].ty.as_str()),
+        ("Line", "LineState")
+    );
+    assert!(!c.data[0].constant);
+    assert_eq!(written(&c.data[0]), ["lamp"]);
+    let st = compiled(
+        "PROGRAM Main VAR_EXTERNAL Line : LineState; END_VAR Line.lamp := Line.run; END_PROGRAM",
+        &[LINE],
+        &[L],
+    );
+    assert_eq!(c.data[0].layout, st.data[0].layout);
+    assert_eq!(c.data[0].members, st.data[0].members);
+    let s = c.symbol("Line.lamp").expect("a symbol of the member");
+    assert_eq!(s.section, Section::External);
+
+    let mut r = Run::of(Ok(c));
+    r.scan().unwrap();
+    assert!(!r.bool("Line.lamp"));
+    r.set("Line.run", mythos_logic_vm::Value::Bool(true));
+    r.scan().unwrap();
+    assert!(r.bool("Line.lamp"));
+}
+
+#[test]
+fn an_fbd_program_reads_and_writes_members_of_a_block_as_the_same_program_in_st() {
+    let main = uses_line(Pou::program("Main").fbd(), "")
+        .invar(1, 0, 0, "Line.count")
+        .block(
+            2,
+            120,
+            0,
+            "ADD",
+            None,
+            &[("IN1", In::From(&["1"])), ("IN2", In::Expr("1"))],
+            &["OUT"],
+        )
+        .outvar(3, 240, 0, "Line.total", &["2"]);
+    let c = with_tc6(&[main], &[L]).unwrap_or_else(|d| panic!("{d:?}"));
+    assert_eq!(written(&c.data[0]), ["total"]);
+    let st = compiled(
+        "PROGRAM Main VAR_EXTERNAL Line : LineState; END_VAR Line.total := Line.count + 1; END_PROGRAM",
+        &[LINE],
+        &[L],
+    );
+    assert_eq!(c.data[0].layout, st.data[0].layout);
+    assert_eq!(c.data[0].members, st.data[0].members);
+
+    let mut r = Run::of(Ok(c));
+    r.set("Line.count", mythos_logic_vm::Value::Int(41));
+    r.scan().unwrap();
+    assert_eq!(r.int("Line.total"), 42);
+    assert_eq!(r.int("Line.count"), 41);
+}
+
+/// S1 --run--> S2 --NOT run--> S1; S2 counts `steps` in an ST action and lights `lamp` in a
+/// Ladder action; the transitions only read. Its variables are `{p}run`, `{p}lamp`, `{p}steps`.
+fn chart(main: Pou, p: &str) -> Pou {
+    let lamp = Pou::program("A")
+        .left(1, 0)
+        .contact(2, 100, 20, Contact::No, &format!("{p}run"), &["1"])
+        .coil(3, 200, 20, Coil::Plain, &format!("{p}lamp"), &["2"])
+        .right(4, 0, &["3"]);
+    main.sfc()
+        .step(1, 100, 0, "S1", true, &["4"])
+        .trans(2, 100, 50, &format!("{p}run"), &["1"])
+        .step(3, 100, 100, "S2", false, &["2"])
+        .trans(4, 100, 150, &format!("NOT {p}run"), &["3"])
+        .action("Count", &format!("{p}steps := {p}steps + 1;"))
+        .action_body("Light", &lamp)
+        .actions_of(
+            5,
+            200,
+            100,
+            "3",
+            &[
+                (6, "N", None, Act::Name("Count")),
+                (7, "N", None, Act::Name("Light")),
+            ],
+        )
+}
+
+#[test]
+fn an_sfc_program_whose_actions_write_members_reports_them_written() {
+    let main = chart(uses_line(Pou::program("Main"), ""), "Line.");
+    let c = with_tc6(&[main], &[L]).unwrap_or_else(|d| panic!("{d:?}"));
+    assert_eq!(written(&c.data[0]), ["lamp", "steps"]);
+
+    // It runs as the same chart over variables of its own does.
+    let own = chart(
+        Pou::program("Main").vars(&[("run", "BOOL"), ("lamp", "BOOL"), ("steps", "INT")]),
+        "",
+    );
+    let mut own = Run::of(compile_in(
+        &project(&[own]),
+        mythos_logic_compiler::Language::Sfc,
+        &TargetProfile::pc(),
+    ));
+    let mut r = Run::of(Ok(c));
+    for (k, run) in [false, true, true, true, false, false, true]
+        .into_iter()
+        .enumerate()
+    {
+        r.set("Line.run", mythos_logic_vm::Value::Bool(run));
+        own.set("run", mythos_logic_vm::Value::Bool(run));
+        r.scan_at(k as i64 * 10);
+        own.scan_at(k as i64 * 10);
+        assert_eq!(r.bool("S2.X"), own.bool("S2.X"), "scan {k}");
+        assert_eq!(r.int("Line.steps"), own.int("steps"), "scan {k}");
+        assert_eq!(r.bool("Line.lamp"), own.bool("lamp"), "scan {k}");
+    }
+    // The chart went to S2 twice and counted there.
+    assert!(r.int("Line.steps") >= 2, "{}", r.int("Line.steps"));
+}
+
+#[test]
+fn external_vars_in_tc6_are_refused_as_var_external_is_in_st() {
+    let first = |d: Vec<Diagnostic>| {
+        assert_eq!(d[0].source.as_deref(), Some("main.xml"), "{d:?}");
+        messages(&d)
+    };
+    // In a function block, with its program.
+    let fb = uses_line(Pou::function_block("F"), "")
+        .left(1, 0)
+        .contact(2, 100, 20, Contact::No, "Line.run", &["1"])
+        .right(3, 0, &["2"]);
+    let main = || {
+        Pou::program("Main")
+            .vars(&[("q", "BOOL")])
+            .left(1, 0)
+            .coil(2, 100, 20, Coil::Plain, "q", &["1"])
+            .right(3, 0, &["2"])
+    };
+    assert_eq!(
+        first(tc6_refused(&[fb, main()], &[L])),
+        ["VAR_EXTERNAL in a function block or function is not supported yet: give the block the member as a parameter"]
+    );
+    // globalVars as before.
+    let global = main().section("globalVars", &[("g", "INT", None)]);
+    assert_eq!(
+        first(tc6_refused(&[global], &[L])),
+        ["globalVars (VAR_EXTERNAL, VAR_GLOBAL) is not supported yet"]
+    );
+    // No such block; no data at all; the wrong type; an initial value; RETAIN.
+    assert_eq!(
+        first(tc6_refused(&[ladder_lamp("")], &[])),
+        ["there is no data block Line in the project"]
+    );
+    let doc = project(&[ladder_lamp("")]);
+    let d = compile_in(
+        &doc,
+        mythos_logic_compiler::Language::Ld,
+        &TargetProfile::pc(),
+    )
+    .err()
+    .expect("refused");
+    assert_eq!(messages(&d), ["there is no data block Line in the project"]);
+    let point = main().section("externalVars", &[("Line", "INT", None)]);
+    assert_eq!(
+        first(tc6_refused(&[point], &[L])),
+        ["data block Line is a LineState, not a INT"]
+    );
+    let init = Pou::program("Main")
+        .section("externalVars", &[("Line", "LineState", Some("1"))])
+        .left(1, 0)
+        .right(2, 0, &["1"]);
+    assert_eq!(
+        first(tc6_refused(&[init], &[L])),
+        ["a VAR_EXTERNAL takes no initial value: the data block has it"]
+    );
+    assert_eq!(
+        first(tc6_refused(&[ladder_lamp(" retain=\"true\"")], &[L])),
+        ["RETAIN is not allowed on VAR_EXTERNAL: the variable is retained or not where VAR_GLOBAL declares it (IEC 61131-3 ed. 3 Annex A, External_Var_Decls)"]
+    );
+    assert_eq!(
+        first(tc6_refused(
+            &[ladder_lamp(" constant=\"true\" retain=\"true\"")],
+            &[L]
+        )),
+        ["CONSTANT does not combine with RETAIN or NON_RETAIN: a section takes one of the three (IEC 61131-3 ed. 3 Annex A)"]
+    );
+    // CONSTANT stays refused on any other section.
+    let local_constant = Pou::program("Main")
+        .section("localVars constant=\"true\"", &[("k", "INT", None)])
+        .left(1, 0)
+        .right(2, 0, &["1"]);
+    assert_eq!(
+        first(tc6_refused(&[local_constant], &[L])),
+        ["CONSTANT is not supported yet"]
+    );
+}
+
+#[test]
+fn external_vars_constant_in_tc6_reads_and_refuses_a_store() {
+    let reads = uses_line(Pou::program("Main"), " constant=\"true\"")
+        .vars(&[("q", "BOOL")])
+        .left(1, 0)
+        .contact(2, 100, 20, Contact::No, "Line.run", &["1"])
+        .coil(3, 200, 20, Coil::Plain, "q", &["2"])
+        .right(4, 0, &["3"]);
+    let c = with_tc6(&[reads], &[L]).unwrap_or_else(|d| panic!("{d:?}"));
+    assert!(c.data[0].constant);
+    assert!(written(&c.data[0]).is_empty());
+
+    let d = tc6_refused(&[ladder_lamp(" constant=\"true\"")], &[L]);
+    assert_eq!(
+        messages(&d),
+        ["Line is declared VAR_EXTERNAL CONSTANT: the program reads it and does not write it"]
+    );
+    assert_eq!(d[0].source.as_deref(), Some("main.xml"));
 }

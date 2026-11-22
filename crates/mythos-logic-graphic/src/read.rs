@@ -9,9 +9,11 @@
 //! - `types/pous/pou`: `name`, `pouType` (`program`, `functionBlock`, `function`), and
 //!   - `interface`: `returnType` (a function's), `inputVars`, `outputVars`, `localVars`, each
 //!     a `varList` with `retain` or `nonretain` where ST takes RETAIN and NON_RETAIN; each
-//!     `variable` with `name`, `type` and `initialValue`. `tempVars`, `inOutVars`,
-//!     `externalVars`, `globalVars`, `accessVars`, `constant`, `persistent` and `address` are
-//!     refused, as ST refuses VAR_TEMP, VAR_IN_OUT, VAR_EXTERNAL, VAR_GLOBAL, CONSTANT and AT.
+//!     `variable` with `name`, `type` and `initialValue`. `externalVars` (with `constant`) is
+//!     ST's VAR_EXTERNAL (CONSTANT): a data block of the project (ADR-014, slice D1), which the
+//!     ST checker takes in a PROGRAM only. `tempVars`, `inOutVars`, `globalVars`,
+//!     `accessVars`, `constant` on another section, `persistent` and `address` are refused, as
+//!     ST refuses VAR_TEMP, VAR_IN_OUT, VAR_GLOBAL, CONSTANT and AT.
 //!   - `type`: the elementary types by name (`BOOL` … `TIME`; the others reach the ST checker,
 //!     which refuses them as it does in ST), `string` with its `length`, `array` with its
 //!     `dimension`s and `baseType`, `derived` (a structure, a named array, a function block
@@ -453,7 +455,8 @@ fn interface_of(
                 diags.push(places.diag(at, "inOutVars (VAR_IN_OUT) is not supported yet"));
                 continue;
             }
-            "externalVars" | "globalVars" => {
+            "externalVars" => Section::External,
+            "globalVars" => {
                 diags.push(places.diag(
                     at,
                     format!(
@@ -475,7 +478,18 @@ fn interface_of(
         };
         let retain = flag(section, "retain", places, at, diags);
         let nonretain = flag(section, "nonretain", places, at, diags);
-        if flag(section, "constant", places, at, diags) {
+        let constant = flag(section, "constant", places, at, diags);
+        if kind == Section::External && (retain || nonretain) && !constant {
+            // As ST refuses `VAR_EXTERNAL RETAIN`, with its words.
+            let written = if retain { "RETAIN" } else { "NON_RETAIN" };
+            if let Some(why) = mythos_logic_st::parser::no_retention(pou.kind, "VAR_EXTERNAL") {
+                diags.push(places.diag(at, format!("{written} is not allowed {why}")));
+            }
+            continue;
+        }
+        // VAR_EXTERNAL CONSTANT: the program reads the block and does not write it.
+        let external_constant = constant && kind == Section::External && !retain && !nonretain;
+        if constant && !external_constant {
             if retain || nonretain {
                 diags.push(places.diag(
                     at,
@@ -508,7 +522,8 @@ fn interface_of(
             continue;
         }
         for v in section.children_named("variable") {
-            if let Some(d) = variable(v, kind, retention, pou, doc, places, diags) {
+            if let Some(mut d) = variable(v, kind, retention, pou, doc, places, diags) {
+                d.constant = external_constant;
                 pou.vars.push(d);
             }
         }
