@@ -546,7 +546,7 @@ describe('the structure keeps steps and transitions alternating, every branch cl
     expect(r.chart()).toBe('Idle -FALSE- Step1* -FALSE- ->Step1');
   });
 
-  it('writes a step’s actions: qualifiers, durations, a variable, statements; refuses SD, SL and P0', () => {
+  it('writes a step’s actions: qualifiers, durations, a variable, statements; refuses a qualifier Table 59 does not have', () => {
     const r = new Run(TEMPLATE('Main'));
     r.step((m, ids) => addAction(m, ids, 0, el(1)));
     const a = r.row;
@@ -559,10 +559,17 @@ describe('the structure keeps steps and transitions alternating, every branch cl
     r.step((m) => setAction(m, 0, c, { kind: 'st', text: 'n := n + 1;' }));
     r.step((m) => setAction(m, 0, c, { qualifier: 'P1' }));
     expect(r.chart()).toBe('Start*[N lamp; L T#50ms horn; P1 n := n + 1;]');
-    for (const q of ['SD', 'SL', 'P0']) {
-      const refused = setAction(r.model, 0, a, { qualifier: q });
-      expect(refused.ok ? 'taken' : refused.error).toBe(`${q} is not offered: SD, SL and P0 are refused until the owner decides (ADR-013 §2.17).`);
-    }
+    const refused = setAction(r.model, 0, a, { qualifier: 'DL' });
+    expect(refused.ok ? 'taken' : refused.error).toBe('DL is not an action qualifier of IEC 61131-3 (Table 59).');
+    // SD and SL take a duration (one second until one is written), P0 takes none (ADR-013 §2.17).
+    r.step((m) => setAction(m, 0, a, { qualifier: 'SD' }));
+    expect(r.chart()).toBe('Start*[SD T#1s lamp; L T#50ms horn; P1 n := n + 1;]');
+    r.step((m) => setAction(m, 0, a, { qualifier: 'SL' }));
+    r.step((m) => setAction(m, 0, a, { duration: 'T#3s' }));
+    expect(r.chart()).toBe('Start*[SL T#3s lamp; L T#50ms horn; P1 n := n + 1;]');
+    r.step((m) => setAction(m, 0, a, { qualifier: 'P0' }));
+    expect(r.chart()).toBe('Start*[P0 lamp; L T#50ms horn; P1 n := n + 1;]');
+    r.step((m) => setAction(m, 0, a, { qualifier: 'N' }));
     // A qualifier that takes no duration drops it.
     r.step((m) => setAction(m, 0, b, { qualifier: 'S' }));
     expect(r.chart()).toBe('Start*[N lamp; S horn; P1 n := n + 1;]');
@@ -704,6 +711,38 @@ function renamed(): Run {
   r.step((m) => setCondition(m, 0, ts()[1] as number, 'st', 'Step1.T >= T#50ms'));
   r.step((m) => renameStep(m, 0, s1, 'Fill', []));
   r.step((m, ids) => insertPair(m, ids, 0, el(ts()[1] as number), []));
+  return r;
+}
+
+/**
+ * Start (R purge) until go; Work stores purge for 30 ms later (SD) and horn for 30 ms (SL), and
+ * pulses left when it is left (P0); Rest until back.
+ */
+function qualifiers(): Run {
+  const bools = (names: string[]) => names.map((n) => `<variable name="${n}"><type><BOOL/></type></variable>`).join('');
+  const r = new Run(
+    TEMPLATE('Qualifiers').replace(
+      '<interface/>',
+      `<interface><inputVars>${bools(['go', 'stop', 'back'])}</inputVars><localVars>${bools(['purge', 'horn', 'left'])}</localVars></interface>`
+    )
+  );
+  r.step((m, ids) => insertPair(m, ids, 0, el(1), []));
+  const work = r.id;
+  r.step((m) => renameStep(m, 0, work, 'Work', []));
+  r.step((m, ids) => insertPair(m, ids, 0, el(work), []));
+  const rest = r.id;
+  r.step((m) => renameStep(m, 0, rest, 'Rest', []));
+  r.step((m, ids) => addJump(m, ids, 0, el(rest)));
+  const ts = () => (r.pou().charts[0]?.items ?? []).flatMap((i) => (i.t === 'trans' ? [i.trans.id] : []));
+  for (const [i, condition] of ['go', 'stop', 'back'].entries()) r.step((m) => setCondition(m, 0, ts()[i] as number, 'st', condition));
+  r.step((m, ids) => addAction(m, ids, 0, el(1), 'R'));
+  r.step((m) => setAction(m, 0, r.row, { text: 'purge' }));
+  r.step((m, ids) => addAction(m, ids, 0, el(work), 'SD'));
+  r.step((m) => setAction(m, 0, r.row, { duration: 'T#30ms', text: 'purge' }));
+  r.step((m, ids) => addAction(m, ids, 0, el(work), 'SL'));
+  r.step((m) => setAction(m, 0, r.row, { duration: 'T#30ms', text: 'horn' }));
+  r.step((m, ids) => addAction(m, ids, 0, el(work), 'P0'));
+  r.step((m) => setAction(m, 0, r.row, { text: 'left' }));
   return r;
 }
 
@@ -957,6 +996,13 @@ describe('documents the compiler runs', () => {
     const r = renamed();
     expect(r.chart()).toBe('Start* -go- Fill -Fill.T >= T#50ms- Step1 -FALSE- ->Start');
     fixture('editor_renamed.xml', r.text);
+  });
+
+  it('writes actions of SD, SL and P0, which the compiler runs as ADR-013 §2.17 says (editor_qualifiers.xml)', () => {
+    const r = qualifiers();
+    expect(r.chart()).toBe('Start*[R purge] -go- Work[SD T#30ms purge; SL T#30ms horn; P0 left] -stop- Rest -back- ->Start');
+    expect(check(r.pou(), [...vars(r), ...r.pou().declared]).elements.size).toBe(0);
+    fixture('editor_qualifiers.xml', r.text);
   });
 
   it('adds a sequence of its own beside the first', () => {

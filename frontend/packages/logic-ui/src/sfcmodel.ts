@@ -52,8 +52,8 @@ import { attr, child, childrenNamed, escapeAttr, escapeText, num, openTag, parse
 
 const XHTML = 'http://www.w3.org/1999/xhtml';
 
-/** The qualifiers the editor offers (Table 59 without SD, SL and P0, which the front-end refuses until the owner decides, ADR-013 §2.17). */
-export const QUALIFIERS = ['N', 'R', 'S', 'L', 'D', 'P', 'P1', 'DS'] as const;
+/** The qualifiers the editor offers: Table 59's, in its order, each taken by the front-end (SD, SL and P0 as ADR-013 §2.17 says). */
+export const QUALIFIERS = ['N', 'R', 'S', 'L', 'D', 'P', 'SD', 'DS', 'SL', 'P1', 'P0'] as const;
 /** The qualifiers that take a duration. */
 export const TIMED = new Set(['L', 'D', 'DS', 'SD', 'SL']);
 
