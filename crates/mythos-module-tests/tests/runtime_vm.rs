@@ -11,8 +11,12 @@ use mythos_core::runtimes::{
     BusTags, ForceAsk, RuntimeEnv, RuntimeStates, RuntimeStatus, RuntimesConfig, TagSource,
 };
 use mythos_core::tag::TagCatalog;
-use mythos_logic_compiler::{compile, TargetProfile};
-use mythos_module::protocol::{RuntimeMode, WatchReply, WatchedValue};
+use mythos_logic_compiler::{
+    check_project, compile, compile_sources, DataBlock, Sources, TargetProfile,
+};
+use mythos_module::protocol::{
+    ProgramVariables, RetainedValue, RuntimeMode, WatchReply, WatchedValue,
+};
 use mythos_pal::DefaultShm;
 use mythos_shm::ShmWriterHandle;
 use serde_json::{json, Value};
@@ -1503,6 +1507,216 @@ async fn an_older_module_runs_one_written_out_cyclic_task() {
     assert!(
         tank.tasks.is_empty() && tank.programs.is_empty(),
         "a module that says nothing of tasks reports none: {tank:?}"
+    );
+    p.runtime.shutdown().await;
+}
+
+// -----------------------------------------------------------------------------
+// Data blocks shared by the programs of one runtime (ADR-014, D2)
+// -----------------------------------------------------------------------------
+
+#[test]
+fn a_retain_file_and_variables_of_today_read_and_write_back_without_a_data_key() {
+    // A retain file of today: no `layout` key in, none out.
+    let kept = r#"[{"path":"total","type":"DINT","bytes":"2a000000"}]"#;
+    let values: Vec<RetainedValue> = serde_json::from_str(kept).unwrap();
+    assert_eq!(values[0].layout, None);
+    assert_eq!(serde_json::to_string(&values).unwrap(), kept);
+    // The variables of a running build, as an online change carries them: unchanged.
+    let carried = r#"{"clock_ns":5,"values":[{"path":"n","type":"DINT","bytes":"01000000"}]}"#;
+    let variables: ProgramVariables = serde_json::from_str(carried).unwrap();
+    assert_eq!(serde_json::to_string(&variables).unwrap(), carried);
+    // The configuration a module of today is started with has no `data` key, at the instance
+    // or at its program.
+    let config: RuntimesConfig = serde_json::from_str(FILE_OF_TODAY).unwrap();
+    let sent = &config.connections()[0].config;
+    assert!(sent.get("data").is_none(), "{sent}");
+    assert!(sent["program"].get("data").is_none(), "{sent}");
+}
+
+/// The project's types: the block `S` of type `Shared`.
+const SHARED_TYPES: &str =
+    "TYPE Shared : STRUCT level : INT; seen : INT; spare : INT := 5; END_STRUCT; END_TYPE";
+const SHARED_BLOCK: DataBlock = DataBlock {
+    name: "S",
+    ty: "Shared",
+};
+
+/// Writes `S.level` from the level tag; reads nothing of S.
+const LEVEL_WRITER: &str = "PROGRAM Writer
+VAR_INPUT level : INT; level_ok : BOOL; END_VAR
+VAR_EXTERNAL S : Shared; END_VAR
+VAR runs : DINT; END_VAR
+  runs := runs + 1;
+  IF level_ok THEN S.level := level; END_IF;
+END_PROGRAM";
+
+/// Drives the speed from `S.level` and `S.spare`, which no program writes, and writes
+/// `S.seen` back.
+const LEVEL_READER: &str = "PROGRAM Reader
+VAR_OUTPUT speed : INT; END_VAR
+VAR_EXTERNAL S : Shared; END_VAR
+  speed := S.level * 10 + S.spare;
+  S.seen := S.level;
+END_PROGRAM";
+
+/// A program of the project compiled with its types and the block S, as JSON with its `data`.
+fn shared_program(source: &str, extra: Value) -> Value {
+    let c = compile_sources(
+        &Sources {
+            st: Some(("main.st", source)),
+            library: &[("types.st", SHARED_TYPES)],
+            data: &[SHARED_BLOCK],
+            ..Default::default()
+        },
+        &TargetProfile::pc(),
+    )
+    .unwrap_or_else(|d| panic!("{d:?}"));
+    let mut program = json!({
+        "name": c.name, "version": "d-1", "interval_ms": 20,
+        "code": hex::encode(&c.bytecode), "symbols": c.symbols, "data": c.data,
+    });
+    if let (Value::Object(p), Value::Object(e)) = (&mut program, extra) {
+        p.extend(e);
+    }
+    program
+}
+
+/// The runtime's `data`: the block S as the project lays it out.
+fn shared_data() -> Value {
+    let layouts = check_project(&Sources {
+        library: &[("types.st", SHARED_TYPES)],
+        data: &[SHARED_BLOCK],
+        ..Default::default()
+    })
+    .unwrap_or_else(|d| panic!("{d:?}"));
+    Value::Array(
+        layouts
+            .into_iter()
+            .map(|l| {
+                json!({
+                    "name": l.name, "type": l.ty, "layout": l.layout, "size": l.size,
+                    "members": l.members.iter().map(|m| json!({
+                        "name": m.name, "type": m.ty, "offset": m.offset, "size": m.size,
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The runtime `tank`: Writer every 50 ms at priority 5, Reader every 20 ms at priority 1,
+/// sharing S.
+fn sharing_tank() -> RuntimesConfig {
+    serde_json::from_value(json!({"instances": [{
+        "id": "tank", "module": "vm", "run": true,
+        "programs": [
+            shared_program(LEVEL_WRITER, json!({"inputs": [
+                {"variable": "level", "tag": LEVEL},
+                {"variable": "level_ok", "tag": LEVEL, "of": "good"}
+            ]})),
+            shared_program(LEVEL_READER, json!({
+                "outputs": [{"variable": "speed", "tag": SPEED, "safe": SAFE_SPEED}]
+            }))
+        ],
+        "tasks": [
+            {"name": "slow", "kind": {"type": "cyclic", "interval_ms": 50}, "priority": 5, "programs": ["Writer"]},
+            {"name": "fast", "kind": {"type": "cyclic", "interval_ms": 20}, "priority": 1, "programs": ["Reader"]}
+        ],
+        "data": shared_data()
+    }]}))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_block_written_by_one_program_drives_an_output_of_another() {
+    let p = plant_running(sharing_tank(), 20).await;
+    // The level reaches Reader only through S: 20 * 10 + the unwritten spare's 5.
+    p.until("Reader drives 205 from what Writer handed over", |s| {
+        s.speed == Some(205)
+    })
+    .await;
+    p.sensors.set_input(0, 31).await;
+    p.until("the speed follows the level, through the block", |s| {
+        s.speed == Some(315)
+    })
+    .await;
+    let reply = p
+        .watched_until(
+            "each copy holds the other's member",
+            &["Writer.S.seen", "Reader.S.level", "Reader.S.spare"],
+            |r| value(r, "Writer.S.seen").value == Some(json!(31)),
+        )
+        .await;
+    assert_eq!(value(&reply, "Reader.S.level").value, Some(json!(31)));
+    assert_eq!(value(&reply, "Reader.S.spare").value, Some(json!(5)));
+    assert_eq!(p.tank().mode, "run");
+    p.runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_status_names_each_members_writer() {
+    let p = plant_running(sharing_tank(), 20).await;
+    p.until("it runs", |s| s.mode() == "run").await;
+    let status = serde_json::to_value(p.tank()).unwrap();
+    let layout = shared_data()[0]["layout"].clone();
+    assert_eq!(
+        status["data"],
+        json!([{"name": "S", "type": "Shared", "layout": layout, "retain": false, "members": [
+            {"name": "level", "type": "INT", "writer": "Writer"},
+            {"name": "seen", "type": "INT", "writer": "Reader"},
+            {"name": "spare", "type": "INT", "writer": null}
+        ]}]),
+        "{status}"
+    );
+    p.runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_older_module_is_refused_data_blocks_and_says_why() {
+    let mut p = plant(TANK, 20, true).await;
+    p.drive_is("the pump runs at 300", 1, 300).await;
+    // One program in its implied task runs as today for tasks; with data it is refused.
+    let mut v = serde_json::to_value(stubborn_with(
+        json!([stubborn_program("stubborn", SPEED)]),
+        json!([]),
+    ))
+    .unwrap();
+    v["instances"][0]["data"] = shared_data();
+    let with_data: RuntimesConfig = serde_json::from_value(v).unwrap();
+    with_data.validate().unwrap();
+    assert!(with_data.instances[0].runs_as_today());
+    let refusal = "runtime 'tank' has data blocks (S); the runtime module 'stubborn' (version 0.0.0) does not say it hands data blocks over: install a newer build of it";
+    let connection = &with_data.connections()[0];
+    let driver = p
+        .registry
+        .create(&connection.driver)
+        .expect("stubborn is a runtime");
+    let said = driver
+        .describe_config(&connection.config)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains(refusal), "{said}");
+    // Loaded all the same, it is not started: the start says the same.
+    let report = p
+        .runtime
+        .apply(
+            config((p.sensors.port(), p.drive.port()), &with_data),
+            None,
+            &p.registry,
+        )
+        .await;
+    let failed = report
+        .failed
+        .iter()
+        .find(|(id, _)| id == "runtime:tank")
+        .map(|(_, why)| why.clone())
+        .unwrap_or_default();
+    assert!(failed.contains(refusal), "{report:?}");
+    assert!(
+        p.states.snapshot().iter().all(|s| s.module != "stubborn"),
+        "no stubborn runtime runs"
     );
     p.runtime.shutdown().await;
 }

@@ -25,9 +25,10 @@ use crate::io::{ConnectionConfig, IoStatusHandle, WriteError};
 use crate::storage::ControllerStorage;
 use crate::tag::TagCatalog;
 use mythos_module::protocol::{
-    check_tasks, implied_task, Call, CarryReport, ExchangeReply, ForcedValue, NotCarried,
-    OutputBinding, ProgramVariables, ProgramVersion, RetainedValue, RuntimeMode, RuntimeProgram,
-    RuntimeState, TaskConfig, TaskKind, TaskState, TaskSupport, WatchReply, WireInput,
+    check_data, check_tasks, implied_task, Call, CarryReport, DataBlock, DataSupport,
+    ExchangeReply, ForcedValue, NotCarried, OutputBinding, ProgramVariables, ProgramVersion,
+    RetainedValue, RuntimeMode, RuntimeProgram, RuntimeState, TaskConfig, TaskKind, TaskState,
+    TaskSupport, WatchReply, WireInput,
 };
 use mythos_module::{ModuleBinary, ProcessDriver};
 use mythos_pal::PlatformShm;
@@ -100,6 +101,11 @@ pub struct RuntimeInstance {
     /// are given, a program's `interval_ms` is not used.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<TaskConfig>,
+    /// The data blocks its programs share (ADR-014): one master copy of each per runtime, each
+    /// member written by one program at most. Left out, and absent from the file, when it has
+    /// none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data: Vec<DataBlock>,
 }
 
 impl RuntimeInstance {
@@ -228,6 +234,39 @@ impl RuntimeInstance {
         interval.unwrap_or(200).clamp(20, 200)
     }
 
+    /// Each of its data blocks, with each member's writer, from the configuration alone: the
+    /// program that declares the block and writes the member, or `None` when no program does.
+    /// The same whether or not its module answers.
+    pub fn data_status(&self) -> Vec<DataBlockStatus> {
+        let programs = self.all_programs();
+        self.data
+            .iter()
+            .map(|b| DataBlockStatus {
+                name: b.name.clone(),
+                ty: b.ty.clone(),
+                layout: b.layout.clone(),
+                retain: b.retain,
+                members: b
+                    .members
+                    .iter()
+                    .map(|m| DataMemberStatus {
+                        name: m.name.clone(),
+                        ty: m.ty.clone(),
+                        writer: programs
+                            .iter()
+                            .find(|p| {
+                                p.data.iter().any(|u| {
+                                    u.name.eq_ignore_ascii_case(&b.name)
+                                        && u.members.iter().any(|w| w.name == m.name && w.written)
+                                })
+                            })
+                            .map(|p| p.name.clone()),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
     /// What can be checked of this runtime alone, without asking a runtime module. Each
     /// message starts `runtime '<id>'`.
     fn check(&self) -> Result<(), String> {
@@ -239,6 +278,7 @@ impl RuntimeInstance {
         }
         let programs = self.all_programs();
         check_tasks(&programs, &self.tasks).map_err(|e| format!("runtime '{id}': {e}"))?;
+        check_data(&programs, &self.data).map_err(|e| format!("runtime '{id}': {e}"))?;
         if self.tasks.is_empty() && programs.iter().any(|p| p.interval_ms == 0) {
             return Err(format!("runtime '{id}': interval_ms must be at least 1"));
         }
@@ -313,6 +353,8 @@ impl RuntimesConfig {
         let mut ids = HashSet::new();
         let mut outputs: HashMap<&str, String> = HashMap::new();
         let mut published: HashMap<&str, String> = HashMap::new();
+        // A data block's name, in lower case, and the runtime it is in.
+        let mut blocks: HashMap<String, &str> = HashMap::new();
         for i in &self.instances {
             if !valid_id(&i.id) {
                 return Err(format!(
@@ -327,6 +369,16 @@ impl RuntimesConfig {
                 return Err(format!("runtime '{}' names no module", i.id));
             }
             i.check()?;
+            // A data block is handed over inside one runtime; between runtimes is not built
+            // yet (ADR-014 §5), and two independent copies of one name would mislead.
+            for b in &i.data {
+                if let Some(other) = blocks.insert(b.name.to_ascii_lowercase(), &i.id) {
+                    return Err(format!(
+                        "data block '{}' is in runtimes '{other}' and '{}'; a data block shared between runtimes is not built yet",
+                        b.name, i.id
+                    ));
+                }
+            }
             // One tag has one writer, and one publisher: across runtimes, and across the
             // programs of one runtime.
             for p in i.all_programs() {
@@ -503,6 +555,33 @@ pub struct RuntimeStatus {
     pub programs: Vec<ProgramVersion>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<TaskState>,
+    /// Its data blocks and each member's writer, from its configuration: known whether or not
+    /// its module answers. Left out for a runtime that has none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub data: Vec<DataBlockStatus>,
+}
+
+/// One data block of a runtime, as its configuration says (ADR-014).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DataBlockStatus {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    pub layout: String,
+    /// Whether its value is kept across a warm restart.
+    pub retain: bool,
+    pub members: Vec<DataMemberStatus>,
+}
+
+/// One top-level member of a data block, and the program that writes it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DataMemberStatus {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// The program that writes it; `None` (null, never left out) when no program writes it,
+    /// so it keeps its initial or kept value.
+    pub writer: Option<String>,
 }
 
 /// A force or a release an engineer asked of an instance.
@@ -973,6 +1052,9 @@ pub struct RuntimeDriver {
     /// module that runs one program in one cyclic task.
     module_version: String,
     support: Option<TaskSupport>,
+    /// The data blocks it says it hands over (`profile.data`): `None` for a module that hands
+    /// none over.
+    data_support: Option<DataSupport>,
     env: RuntimeEnv,
     generation: u64,
     instance: Option<RuntimeInstance>,
@@ -1002,6 +1084,7 @@ impl RuntimeDriver {
             module: module.manifest.provides.clone(),
             module_version: module.manifest.version.clone(),
             support: TaskSupport::of(&module.manifest.profile),
+            data_support: DataSupport::of(&module.manifest.profile),
             process: ProcessDriver::new(module),
             env,
             generation: GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1,
@@ -1349,6 +1432,7 @@ impl RuntimeDriver {
                     .unwrap_or_default(),
                 programs: state.map(|s| s.programs.clone()).unwrap_or_default(),
                 tasks: state.map(|s| s.tasks.clone()).unwrap_or_default(),
+                data: instance.data_status(),
             },
         );
     }
@@ -1365,16 +1449,47 @@ impl RuntimeDriver {
 
     /// Whether its module runs `instance` as written: see [`support_problem`].
     fn check_support(&self, instance: &RuntimeInstance) -> Result<(), PluginError> {
-        match support_problem(
+        let problem = data_problem(
             &self.module,
             &self.module_version,
-            self.support.as_ref(),
+            self.data_support.as_ref(),
             instance,
-        ) {
+        )
+        .or_else(|| {
+            support_problem(
+                &self.module,
+                &self.module_version,
+                self.support.as_ref(),
+                instance,
+            )
+        });
+        match problem {
             Some(problem) => Err(PluginError::InvalidConfiguration(problem)),
             None => Ok(()),
         }
     }
+}
+
+/// Why the runtime module `module` (version `version`), which says it hands over the data
+/// blocks `support`, would not run `instance` as written (ADR-014); `None` when it would.
+/// Checked before [`support_problem`]: a runtime that otherwise runs as today still is not run
+/// by a module that does not say it hands data blocks over, because such a module ignores
+/// `data` and every program would run on its own copy, never handed anything.
+fn data_problem(
+    module: &str,
+    version: &str,
+    support: Option<&DataSupport>,
+    instance: &RuntimeInstance,
+) -> Option<String> {
+    if instance.data.is_empty() || support.is_some_and(|s| s.tiers.contains(&1)) {
+        return None;
+    }
+    let names: Vec<&str> = instance.data.iter().map(|b| b.name.as_str()).collect();
+    Some(format!(
+        "runtime '{}' has data blocks ({}); the runtime module '{module}' (version {version}) does not say it hands data blocks over: install a newer build of it",
+        instance.id,
+        names.join(", ")
+    ))
 }
 
 /// Why the runtime module `module` (version `version`), which says it runs the tasks
@@ -1944,6 +2059,7 @@ mod tests {
                 forced_tags: Vec::new(),
                 programs: Vec::new(),
                 tasks: Vec::new(),
+                data: Vec::new(),
             },
         );
     }
@@ -2448,6 +2564,223 @@ mod tests {
             refused(task),
             format!("runtime 't' has task 'main' of kind cyclic with interval_ms 50, not its program's 20 and phase_ms 5 and watchdog_ms 500{older}")
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Data blocks (ADR-014, D2)
+    // -------------------------------------------------------------------------
+
+    const LAYOUT: &str = "0123456789abcdef";
+
+    /// The runtime's block `name` of type T: x and y, two DINTs.
+    fn block(name: &str) -> Value {
+        json!({"name": name, "type": "T", "layout": LAYOUT, "size": 8, "members": [
+            {"name": "x", "type": "DINT", "offset": 0, "size": 4},
+            {"name": "y", "type": "DINT", "offset": 4, "size": 4}
+        ]})
+    }
+
+    /// A program's use of block `name`, writing x and y as `writes` says.
+    fn use_of(name: &str, writes: [bool; 2]) -> Value {
+        json!({"name": name, "type": "T", "layout": LAYOUT, "offset": 16, "size": 8,
+               "constant": false, "members": [
+            {"name": "x", "type": "DINT", "offset": 0, "size": 4, "written": writes[0]},
+            {"name": "y", "type": "DINT", "offset": 4, "size": 4, "written": writes[1]}
+        ]})
+    }
+
+    /// The runtime `t` of programs a and b in two tasks, sharing block S: a writes x, b
+    /// writes nothing.
+    fn sharing() -> Value {
+        let mut i = several(
+            &["a", "b"],
+            json!([cyclic("f", 10, &["a"]), cyclic("s", 50, &["b"])]),
+        );
+        i["programs"][0]["data"] = json!([use_of("S", [true, false])]);
+        i["programs"][1]["data"] = json!([use_of("S", [false, false])]);
+        i["data"] = json!([block("S")]);
+        i
+    }
+
+    #[test]
+    fn validate_refuses_each_data_mistake_with_its_message() {
+        assert_eq!(check(vec![sharing()]), Ok(()));
+        let with = |change: &dyn Fn(&mut Value)| {
+            let mut i = sharing();
+            change(&mut i);
+            check(vec![i]).unwrap_err()
+        };
+        type Change = dyn Fn(&mut Value);
+        let cases: Vec<(&Change, &str)> = vec![
+            (&|i| i["data"][0]["name"] = json!("1S"),
+             "runtime 't': '1S' is not a data block name: use a letter or '_' first, then letters, digits or '_'"),
+            (&|i| i["data"] = json!([block("S"), block("s")]),
+             "runtime 't': two data blocks are named 's'"),
+            (&|i| i["data"] = json!([block("S"), block("A")]),
+             "runtime 't': data block 'A' has the name of a program of this runtime"),
+            (&|i| i["data"][0]["layout"] = json!("0123456789ABCDEF"),
+             "runtime 't': data block 'S': its layout '0123456789ABCDEF' is not 16 lowercase hex digits"),
+            (&|i| i["data"][0]["members"][1]["offset"] = json!(6),
+             "runtime 't': data block 'S': member 'y' lies outside its 8 bytes"),
+            (&|i| i["programs"][0]["data"] = json!([use_of("S", [true, false]), use_of("s", [false, false])]),
+             "runtime 't': program 'a' declares data block 's' twice"),
+            (&|i| i["data"][0]["name"] = json!("Q"),
+             "runtime 't': program 'a' uses data block 'S', which is not in the runtime's data (it has: Q)"),
+            (&|i| i["data"] = json!([]),
+             "runtime 't': program 'a' uses data block 'S', which is not in the runtime's data (it has none)"),
+            (&|i| i["programs"][0]["data"][0]["layout"] = json!("fedcba9876543210"),
+             "runtime 't': program 'a' was built with data block 'S' laid out as fedcba9876543210 (8 bytes), and the runtime's 'S' is laid out as 0123456789abcdef (8 bytes): build 'a' again"),
+            (&|i| i["programs"][0]["data"][0]["type"] = json!("U"),
+             "runtime 't': program 'a' was built with data block 'S' of type U with other members than the runtime's T: build 'a' again"),
+            (&|i| i["programs"][1]["data"][0]["members"][1]["type"] = json!("REAL"),
+             "runtime 't': program 'b' was built with data block 'S' of type T with other members than the runtime's T: build 'b' again"),
+            (&|i| i["programs"][0]["data"][0]["constant"] = json!(true),
+             "runtime 't': program 'a' declares data block 'S' CONSTANT and writes its member 'x'"),
+            (&|i| i["programs"][1]["data"][0]["members"][0]["written"] = json!(true),
+             "runtime 't': data block 'S': member 'x' is written by programs 'a' and 'b'; a member has one writer"),
+            (&|i| i["programs"][1]["inputs"] = json!([{"variable": "s.x", "tag": "external.A.B.c"}]),
+             "runtime 't': program 'b': s.x is a member of data block 'S', which only a program writes: a tag cannot be read into it"),
+            (&|i| i["programs"][1]["published"] = json!([{"variable": "S.y", "tag": "internal.A.b.q", "writable": true}]),
+             "runtime 't': program 'b': S.y is a member of data block 'S', which only a program writes: it cannot be a setpoint"),
+        ];
+        for (change, message) in cases {
+            assert_eq!(with(change), message);
+        }
+        // A member is published read-only, and output, as any variable (ADR-014 §2.8).
+        let mut read_only = sharing();
+        read_only["programs"][1]["published"] =
+            json!([{"variable": "S.y", "tag": "internal.A.b.q"}]);
+        read_only["programs"][1]["outputs"] =
+            json!([{"variable": "S.x", "tag": "external.A.b.o", "safe": 0}]);
+        assert_eq!(check(vec![read_only]), Ok(()));
+        // A required field left out is no configuration: a missing `written` would hide a
+        // writer from the one-writer check.
+        assert!(with(&|i| {
+            i["programs"][1]["data"][0]["members"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("written");
+        })
+        .contains("missing field `written`"));
+        assert!(with(&|i| {
+            i["programs"][0]["data"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("constant");
+        })
+        .contains("missing field `constant`"));
+        assert!(with(&|i| i["data"][0]["kept"] = json!(true)).contains("unknown field `kept`"));
+
+        // A block no program declares is accepted (it has no master).
+        let mut unused = sharing();
+        unused["data"] = json!([block("S"), block("Spare")]);
+        assert_eq!(check(vec![unused]), Ok(()));
+
+        // R16: one block, in any case, in two runtimes.
+        let mut other = several(&["c"], json!([cyclic("f", 10, &["c"])]));
+        other["id"] = json!("u");
+        other["data"] = json!([block("s")]);
+        assert_eq!(
+            check(vec![sharing(), other.clone()]).unwrap_err(),
+            "data block 's' is in runtimes 't' and 'u'; a data block shared between runtimes is not built yet"
+        );
+        other["data"] = json!([block("Other")]);
+        assert_eq!(check(vec![sharing(), other]), Ok(()));
+    }
+
+    #[test]
+    fn a_data_mistake_in_a_saved_file_is_refused_at_load_in_the_same_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(RUNTIMES_FILE);
+        let mut i = sharing();
+        i["programs"][1]["data"][0]["members"][0]["written"] = json!(true);
+        std::fs::write(&path, json!({"instances": [i]}).to_string()).unwrap();
+        assert_eq!(
+            RuntimesConfig::load(&path).unwrap_err(),
+            "runtime 't': data block 'S': member 'x' is written by programs 'a' and 'b'; a member has one writer"
+        );
+        std::fs::write(&path, json!({"instances": [sharing()]}).to_string()).unwrap();
+        assert!(RuntimesConfig::load(&path).unwrap().is_some());
+    }
+
+    #[test]
+    fn the_status_names_each_members_writer_from_the_configuration() {
+        let i = parsed(sharing());
+        let status = serde_json::to_value(i.data_status()).unwrap();
+        assert_eq!(
+            status,
+            json!([{"name": "S", "type": "T", "layout": LAYOUT, "retain": false, "members": [
+                {"name": "x", "type": "DINT", "writer": "a"},
+                {"name": "y", "type": "DINT", "writer": null}
+            ]}]),
+            "null, not left out, for a member no program writes"
+        );
+        // Each member's own writer, not the first program that writes any member.
+        let mut both = sharing();
+        both["programs"][1]["data"][0]["members"][1]["written"] = json!(true);
+        both["data"][0]["retain"] = json!(true);
+        let both = parsed(both);
+        assert_eq!(both.check(), Ok(()));
+        let writers: Vec<Option<String>> = both.data_status()[0]
+            .members
+            .iter()
+            .map(|m| m.writer.clone())
+            .collect();
+        assert_eq!(writers, vec![Some("a".into()), Some("b".into())]);
+        assert!(both.data_status()[0].retain);
+        // A block no program declares: every member unwritten.
+        let mut unused = sharing();
+        unused["data"] = json!([block("S"), block("Spare")]);
+        let unused = parsed(unused).data_status();
+        assert!(unused[1].members.iter().all(|m| m.writer.is_none()));
+        // A runtime of today has none, and writes no `data` key.
+        let today = parsed(instance("t"));
+        assert!(today.data_status().is_empty());
+        assert!(serde_json::to_value(&today).unwrap().get("data").is_none());
+    }
+
+    #[test]
+    fn a_module_that_does_not_say_it_hands_data_blocks_over_is_given_none() {
+        let refusal = "runtime 't' has data blocks (S); the runtime module 'vm' (version 0.5.0) does not say it hands data blocks over: install a newer build of it";
+        let i = parsed(sharing());
+        // It says it runs tasks, and the runtime's tasks are of its kinds: the data refuses.
+        let tasks = TaskSupport {
+            kinds: vec!["cyclic".into()],
+        };
+        assert_eq!(support_problem("vm", "0.5.0", Some(&tasks), &i), None);
+        assert_eq!(
+            data_problem("vm", "0.5.0", None, &i).as_deref(),
+            Some(refusal)
+        );
+        let tier_two = DataSupport { tiers: vec![2] };
+        assert_eq!(
+            data_problem("vm", "0.5.0", Some(&tier_two), &i).as_deref(),
+            Some(refusal)
+        );
+        let tier_one = DataSupport { tiers: vec![1] };
+        assert_eq!(data_problem("vm", "0.6.0", Some(&tier_one), &i), None);
+        // One program in its implied task runs as today for tasks, not for data.
+        let mut one = instance("t");
+        one["program"]["data"] = json!([use_of("S", [true, true])]);
+        one["data"] = json!([block("S"), block("Spare")]);
+        let one = parsed(one);
+        assert_eq!(one.check(), Ok(()));
+        assert!(one.runs_as_today());
+        assert_eq!(
+            data_problem("vm", "0.4.0", None, &one).as_deref(),
+            Some("runtime 't' has data blocks (S, Spare); the runtime module 'vm' (version 0.4.0) does not say it hands data blocks over: install a newer build of it")
+        );
+        // A runtime of today needs nothing of a module.
+        assert_eq!(
+            data_problem("vm", "0.4.0", None, &parsed(instance("t"))),
+            None
+        );
+        // The module's profile says it.
+        assert_eq!(
+            DataSupport::of(&json!({"data": {"tiers": [1]}})),
+            Some(tier_one)
+        );
+        assert_eq!(DataSupport::of(&Value::Null), None);
     }
 
     #[test]

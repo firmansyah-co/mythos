@@ -494,7 +494,58 @@ fn task_kind() -> Value {
     })
 }
 
+/// A data block as a program uses it (`program.data[]`), and as a runtime holds it
+/// (`data[]`): the compiler's JSON, with no field the route does not take.
+fn data_schemas() -> (Value, Value) {
+    let member = |written: bool| {
+        let mut properties = json!({
+            "name": { "type": "string" },
+            "type": { "type": "string" },
+            "offset": { "type": "integer", "minimum": 0, "description": "Inside the block, in bytes" },
+            "size": { "type": "integer", "minimum": 0 }
+        });
+        let mut required = vec!["name", "type", "offset", "size"];
+        if written {
+            properties["written"] = json!({ "type": "boolean", "description": "Whether the program writes it; a member has one writer in a runtime" });
+            required.push("written");
+        }
+        json!({ "type": "object", "required": required, "additionalProperties": false, "properties": properties })
+    };
+    let layout = json!({ "type": "string", "pattern": "^[0-9a-f]{16}$", "description": "The layout hash the compiler gives: 16 lowercase hex digits" });
+    let used = json!({
+        "type": "object",
+        "required": ["name", "type", "layout", "offset", "size", "constant", "members"],
+        "additionalProperties": false,
+        "description": "A data block the program declares in VAR_EXTERNAL, as the compiler gives it in its data",
+        "properties": {
+            "name": { "type": "string", "description": "A block of the runtime's data" },
+            "type": { "type": "string" },
+            "layout": layout.clone(),
+            "offset": { "type": "integer", "minimum": 0, "description": "Of the program's copy, in its memory" },
+            "size": { "type": "integer", "minimum": 0 },
+            "constant": { "type": "boolean", "description": "Declared VAR_EXTERNAL CONSTANT: it writes no member" },
+            "members": { "type": "array", "items": member(true) }
+        }
+    });
+    let held = json!({
+        "type": "object",
+        "required": ["name", "type", "layout", "size", "members"],
+        "additionalProperties": false,
+        "description": "A data block the runtime's programs share: one master copy, each member handed from its one writer to the programs that read it",
+        "properties": {
+            "name": { "type": "string", "description": "A letter or _ first, then letters, digits or _; not a program's name; in one runtime only" },
+            "type": { "type": "string" },
+            "layout": layout,
+            "size": { "type": "integer", "minimum": 0 },
+            "members": { "type": "array", "items": member(false), "description": "Its top-level members, as each program that declares it was built with" },
+            "retain": { "type": "boolean", "description": "Whether its value is kept across a warm restart; left out, it is not" }
+        }
+    });
+    (used, held)
+}
+
 fn runtimes_config_body() -> Value {
+    let (used, held) = data_schemas();
     let program = json!({
         "type": "object",
         "required": ["name", "version", "interval_ms", "code"],
@@ -512,7 +563,8 @@ fn runtimes_config_body() -> Value {
                 "safe": { "type": ["number", "boolean"], "description": "What the tag is written whenever the program is not running" } } } },
             "published": { "type": "array", "items": { "type": "object", "required": ["variable", "tag"], "properties": {
                 "variable": { "type": "string" }, "tag": { "type": "string", "description": "Starts with internal." },
-                "writable": { "type": "boolean" } } } }
+                "writable": { "type": "boolean" } } } },
+            "data": { "type": "array", "items": used, "description": "The data blocks it declares in VAR_EXTERNAL; left out, none" }
         }
     });
     let task = json!({
@@ -537,14 +589,15 @@ fn runtimes_config_body() -> Value {
                 "items": {
                     "type": "object",
                     "required": ["id", "module", "run"],
-                    "description": "One runtime: program, or programs with tasks; never both.",
+                    "description": "One runtime: program, or programs with tasks; never both; data: the data blocks its programs share.",
                     "properties": {
                         "id": { "type": "string", "description": "Letters, digits, - and _" },
                         "module": { "type": "string", "description": "A runtime module's 'provides', for example vm" },
                         "run": { "type": "boolean", "description": "Whether it is put in RUN when loaded" },
                         "program": program,
                         "programs": { "type": "array", "items": program, "description": "Several programs in one runtime module process" },
-                        "tasks": { "type": "array", "items": task, "description": "The tasks that run the programs; left out, one program runs cyclic at its interval_ms" }
+                        "tasks": { "type": "array", "items": task, "description": "The tasks that run the programs; left out, one program runs cyclic at its interval_ms" },
+                        "data": { "type": "array", "items": held, "description": "The data blocks its programs share; left out, none" }
                     }
                 }
             }
@@ -1883,6 +1936,88 @@ mod tests {
         }]}))
         .unwrap();
         assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_mcp_schema_describes_data() {
+        use crate::runtimes::RuntimesConfig;
+        let schema = runtimes_config_body();
+        let instance = &schema["properties"]["instances"]["items"];
+        assert!(instance["description"]
+            .as_str()
+            .unwrap()
+            .ends_with("data: the data blocks its programs share."));
+        let held = &instance["properties"]["data"]["items"];
+        let used = &instance["properties"]["programs"]["items"]["properties"]["data"]["items"];
+        assert_eq!(
+            used, &instance["properties"]["program"]["properties"]["data"]["items"],
+            "the same for program and programs"
+        );
+        let names = |v: &Value| -> Vec<String> {
+            let mut n: Vec<String> = v
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r.as_str().unwrap().to_string())
+                .collect();
+            n.sort_unstable();
+            n
+        };
+        let keys = |v: &Value| -> Vec<String> {
+            let mut n: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+            n.sort_unstable();
+            n
+        };
+        for v in [
+            held,
+            used,
+            &held["properties"]["members"]["items"],
+            &used["properties"]["members"]["items"],
+        ] {
+            assert_eq!(v["additionalProperties"], json!(false), "{v}");
+        }
+        // Required as the route requires: `constant` and `written` have no default; `retain` has.
+        assert_eq!(
+            names(&used["required"]),
+            ["constant", "layout", "members", "name", "offset", "size", "type"]
+        );
+        assert_eq!(
+            names(&used["properties"]["members"]["items"]["required"]),
+            ["name", "offset", "size", "type", "written"]
+        );
+        assert_eq!(
+            names(&held["required"]),
+            ["layout", "members", "name", "size", "type"]
+        );
+        assert_eq!(
+            keys(&held["properties"]),
+            ["layout", "members", "name", "retain", "size", "type"]
+        );
+        assert_eq!(
+            names(&held["properties"]["members"]["items"]["required"]),
+            keys(&held["properties"]["members"]["items"]["properties"])
+        );
+
+        // A body written as the schema says validates; one field more, the route refuses.
+        let member = json!({"name": "x", "type": "DINT", "offset": 0, "size": 4});
+        let mut written = member.clone();
+        written["written"] = json!(true);
+        let body = json!({"instances": [{
+            "id": "t", "module": "vm", "run": true,
+            "program": {"name": "a", "version": "1", "interval_ms": 20, "code": "00",
+                "data": [{"name": "S", "type": "T", "layout": "0123456789abcdef", "offset": 0,
+                          "size": 4, "constant": false, "members": [written]}]},
+            "data": [{"name": "S", "type": "T", "layout": "0123456789abcdef", "size": 4,
+                      "retain": true, "members": [member]}]
+        }]});
+        let config: RuntimesConfig = serde_json::from_value(body.clone()).unwrap();
+        assert_eq!(config.validate(), Ok(()));
+        let mut extra = body;
+        extra["instances"][0]["data"][0]["members"][0]["written"] = json!(false);
+        assert!(serde_json::from_value::<RuntimesConfig>(extra)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown field `written`"));
     }
 
     #[test]
