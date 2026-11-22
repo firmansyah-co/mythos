@@ -252,7 +252,7 @@ therefore runs only where field I/O runs.
 The protocol is not specific to logic or to our VM: it is "compute continuously from tags;
 publish tags; request writes; report state". The logic VM runner on a PC
 (`mythos-module-runtime-vm`) is the first. A board family (ESP32, RP2040) is another: a module
-that carries the same calls to firmware over serial, USB or TCP. A different engine can be a
+that carries the same calls to firmware over the network (§2.18: TCP, on WiFi or Ethernet). A different engine can be a
 third without a core change. Server-side functions that also execute continuously (an alarm
 engine, a historian's logger) are candidates for the same kind when they are built.
 
@@ -1169,7 +1169,8 @@ stopped at the first error and recorded only where a construct starts. The ST fr
 
 ### 2.9 Microcontrollers, and simulators before boards
 
-Firmware for a board family is the VM plus a host for that board. Before a real board:
+Firmware for a board family is the VM plus a host for that board. What that firmware is to be,
+and Espressif's Xtensa chips, are §2.18 (planned). Before a real board:
 
 - **Run in an emulator, in CI.** `scripts/logic-vm-on-emulators.sh` builds firmware around each
   program's bytecode and runs it in QEMU on a Cortex-M0 (machine `microbit`; thumbv6m, the
@@ -2026,6 +2027,85 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
   transition, so an id reused for another action or transition would carry one body's values,
   an edge's memory among them, into an unrelated one at the next online change.
 
+### 2.18 Firmware for microcontrollers (planned: nothing of it is built)
+
+The owner's decisions of 2026-11-22 ("siapkan di ADR untuk Xtensa itu. fitur OTA ga perlu tapi
+kita pakai fitur WiFi / ETH untuk update isi VM dan debug kita ya untuk semua platform"), and
+what follows from them. §2.9 is what exists today: the VM built for two instruction sets and run
+in emulators. No board has run it, and none of what this section describes is written.
+
+- **A controller runs its program itself.** The firmware is the VM (§2.3) and a host for the
+  board. The program is kept on the board and scanned there: a board that is powered runs what
+  it holds with nothing attached. A PC is needed to compile a program and send it, to watch it,
+  and for the tags it shares with the rest of a plant, never to execute it.
+- **The link is the network, on every platform: WiFi or Ethernet.** Two things go over it. The
+  **program** (what the VM runs: the bytecode with what it needs to start, §2.4's
+  `RuntimeProgram`) is replaced over it. And **debugging** goes over it: the state, the watch
+  and the force of §2.4 and §2.5, as for a program on a PC. They are the calls of the `runtime` module
+  kind (§2.4), carried over TCP by a module on the server's side that speaks to the board, so
+  the core, the logic module and the editors see a board as they see any runtime. A cable
+  (USB or serial) is how the firmware gets onto the board and how a board is first brought up;
+  it is not a second way to run one.
+- **The firmware is not updated over the network (no OTA).** Only the program is. New firmware
+  goes onto a board by its cable. What follows: a board keeps the bytecode format of the
+  firmware it was given, and the compiler refuses a program of another format for it, naming
+  both (§2.2: the board's profile says its format). A compiler that makes a newer format than a
+  board runs is the case to settle when the first format change after a board exists comes:
+  the compiler makes the newest format only today.
+- **The platforms.** RP2040 (thumbv6m) and ESP32-C3 (riscv32imc), the two instruction sets of
+  §2.9, and Espressif's Xtensa chips: ESP32, ESP32-S2, ESP32-S3.
+- **Xtensa is built with Espressif's toolchain.** Rust's own releases do not yet make Xtensa
+  code that can be relied on: Espressif's documentation (The Rust on ESP Book, read 2026-11-22)
+  says ESP32, S2 and S3 need its fork of the compiler with its fork of LLVM, installed by
+  `espup`; rustc lists the targets at tier 3. Nothing of ours is developed for it: the VM is
+  `core` alone, with no assembly and no allocator, so it is expected to compile as it is. That
+  is an expectation until it is built. A job in CI builds it for `xtensa-esp32-none-elf` and
+  `xtensa-esp32s3-none-elf`, prints what it costs, and runs the programs of §2.9 in an emulator
+  of those chips against this machine's results, as the two instruction sets of today. It is
+  not a required check while its toolchain is outside Rust's releases, and the toolchain's
+  version is pinned. Which emulator loads our image, and how, is found out by that work.
+- **One interface between the VM and a board.** What the VM needs from a board is small: its
+  inputs and outputs, a clock that only goes forward, where the program and the RETAIN
+  variables are kept, the link, a watchdog, and the safe values of its outputs. It is one
+  interface of ours, implemented once per family of boards, so another family is an
+  implementation and no change to the VM. For Espressif's chips the implementation is to stand
+  on `esp-hal`, without an operating system; that it serves both the RISC-V and the Xtensa
+  chips with one interface, WiFi included, is to be checked before it is relied on. ESP-IDF
+  (FreeRTOS, with WiFi, TLS and firmware update ready) is not taken: its largest gain is the
+  update over the network that is not wanted, and it puts an operating system under the scan.
+- **Cores.** ESP32, ESP32-S3 and RP2040 have two cores, ESP32-C3 and ESP32-S2 one. With two,
+  the scan has one and the network the other; with one they share it, and what that does to a
+  scan is not measured.
+- **Network hardware differs by board** (from the makers' descriptions, to be checked against
+  the boards chosen): every ESP32 has WiFi; a Pico has none and a Pico W has; the ESP32 has an
+  Ethernet MAC that needs a PHY beside it; the others reach Ethernet through a module on SPI.
+
+**Open, and the owner's to decide** (safety and security, not technique). Each has to be
+settled before the step that needs it:
+
+1. **What a board does when its link is lost.** Proposed: it goes on scanning with its own
+   inputs and outputs, as a PLC does when its SCADA is gone; every tag it took from the server
+   is bad from then on, and the program sees that; and the server treats the board as it
+   treats a runtime that is silent (§2.4, §2.5: its outputs elsewhere get their safe values,
+   its tags are bad and say why).
+2. **Who may send a program or force a variable over the network.** A board that takes a
+   program from a network without knowing who sent it must not leave a bench. This belongs to
+   the foundation for IEC 62443 (`specs/tasks.md`, "Long-term horizons"); until it is decided,
+   the network step below is for a bench network only.
+3. **Online change on a board** (§2.5), or a cold start at every new program.
+4. **RETAIN variables in flash**: how often they are written, against the wear of the flash.
+
+**Order, when the owner schedules it** (it is after the order of §3 unless he moves it):
+
+- F0. **Xtensa in CI**, in an emulator, not required. Leaves ESP32 and S3 at "runs in an
+  emulator" where they are "not built".
+- F1. **The interface and a first board**: the board's inputs and outputs, a program put on it
+  by cable, and the scan time measured on it for the first time.
+- F2. **Standalone**: the program in flash, started at power-up, RETAIN kept, the watchdog, safe
+  values.
+- F3. **The network link**: the program replaced and the program watched over WiFi or
+  Ethernet, as a `runtime` module. Needs the decisions 1 and 2 above.
+
 ## 3. Order of work
 
 Two tracks. The core path comes first because Adrian asked for logic that runs end to end
@@ -2062,6 +2142,15 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
 - C7. **Hardening**: watchdog (done, §5), RETAIN variables across restarts (done: the compiler
   reads RETAIN and NON_RETAIN and each symbol says whether it is retained, §2.13, C7b-1; the
   runtime and the core keep them across a warm restart, §2.5, C7b-2).
+
+- C8. **Task configuration** (next; decided by the owner, not built): a runtime's programs run
+  in tasks. The kinds of task are those a Siemens controller has; a runtime's tasks are set as
+  CODESYS sets them, per runtime; priorities are IEC 61131-3's, 0 the highest; a task of higher
+  priority preempts one of lower in the VM; each task has its process image. Its section of §2
+  is written when the work starts, before its first slice.
+
+**After L3 and C8** (the owner, 2026-11-18; `specs/tasks.md`, "Long-term horizons"): alarms and
+the historian, then the foundation for IEC 62443, then an OPC UA server, each as modules.
 
 **Track L, the language, beside it:**
 
@@ -2120,7 +2209,8 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   Structured Text, with intrinsics for what ST cannot say (the scan clock, bytecode format 4);
   their state retained like any variable's. Next: OSCAT, once its license is checked.
 
-**Later:** ESP32 and RP2040 firmware as runtime modules on real boards; a C backend; a Linux
+**Later:** firmware for RP2040 and Espressif's chips, Xtensa among them, as runtime modules on
+real boards (§2.18: its decisions, what is open, and its order F0 to F3); a C backend; a Linux
 real-time mode. Medium term (owner, 2026-11-18): a CFC mode for the FBD editor (free placement,
 explicit execution order, feedback), stored as FBD in TC6 XML, after standard FBD; see
 `specs/tasks.md`, "Long-term horizons".
@@ -2160,6 +2250,7 @@ Each step leaves `dev` working.
 | 2.15 Ladder Diagram (L3a) | `crates/mythos-logic-ld` (`crates/mythos-logic-graphic` since L3c-1, §2.16): PLCopen TC6 XML v2.01 read with `quick-xml` (MIT); the subset of §2.15; the graph checked and lowered to the ST front-end's syntax tree; edges, values used twice and jumps in hidden private variables (`Var::hidden`, `IR_VERSION` 6); diagnostics naming the element (`element`) and the source (`source`); `compile_sources` and `Language::Ld` in the compiler; `layers.rs` gives LD its layer (the IR and the ST front-end) and feeds the guard an LD crate reaching the VM and an ST crate reaching LD. Proven by `ladder_runs_on_the_vm.rs` (26: every element, its table's behaviour scan by scan, EN and ENO, a function of ST and the standard functions as blocks, LD function blocks and functions, jumps both ways, a return, RETAIN and the edge memory of a RETAIN instance, 300 contacts in series and in parallel, the emulator's program), `refusals.rs` (28: every refusal of §2.15 with its message and its element, the JSON of a place, the sources named), `ladder_equals_st.rs` (4 LD programs and their ST twins, 200 random sequences of 100 scans each, every shared variable equal after every scan: 51 variables, 1,020,000 values compared) and `damaged_ladder_never_panics.rs` (3,000 damaged documents, each compiled or refused with a place). Mutation-checked in a copy of the tree (`git archive`, its own target directory; the clean copy passed before and after the restores): parallel branches made AND turned `series_is_and_and_parallel_is_or`, `a_long_series_and_a_wide_parallel_compile_and_run`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program` and `contacts_and_coils_equal_their_st_twin` red; a negated contact's negation dropped turned `a_normally_closed_contact_passes_power_when_its_variable_is_off`, `an_ld_function_block_and_an_ld_function_are_called_from_an_ld_program`, `the_oscillator_the_emulators_run_does_what_its_rungs_say` and `contacts_and_coils_equal_their_st_twin` red; an edge contact never writing its memory turned `a_rising_contact_is_on_for_one_scan_after_its_variable_goes_on`, `a_rising_contact_senses_its_variable_while_its_input_is_off`, `a_falling_contact_is_on_for_one_scan_after_its_variable_goes_off` and `contacts_and_coils_equal_their_st_twin` red; a dangling connection let through turned `a_dangling_connection_is_refused_naming_its_element_and_the_missing_id` and `a_damaged_ladder_document_is_compiled_or_refused_with_places_never_a_panic` red. Since L3b-1 the logic module stores, checks and builds LD programs (2.6). Since L3b-2a every element's output, every junction and every network's flag is kept in a hidden private variable in every build (`Compiled::probes`, §2.15, power for monitoring), proven by `ladder_power_probes.rs` (9) and `a_long_series_of_functions_compiles_and_runs`. Not built: editing LD in the workbench (L3b-2b) |
 | 2.16 Function Block Diagram (L3c-1) | `crates/mythos-logic-graphic`: `fbd.rs`, with `graph.rs` shared with LD; the subset and the semantics of §2.16 and §2.13; every output's value kept in a hidden private variable typed by its value (`ast::TypeSpecKind::OfValue` in the ST front-end), every network's flag; `Holds::Guarded` for a function's result; `Language::Fbd`; `Sources::tc6`. Proven by `fbd_runs_on_the_vm.rs` (13), `fbd_refusals.rs` (15), `fbd_equals_st.rs` (5 FBD programs and their ST twins, 200 random sequences of 100 scans each: every shared variable and every kept value, by the element and output it is about, equal to its twin's after every scan, 3,560,000 values), `damaged_ladder_never_panics.rs` (3,000 damaged FBD documents besides the LD ones), the logic module's own tests (3) and `logic_module.rs` through the real module processes; the emulators (2.9). The workbench: `fbd.test.tsx` (11; 12 since L3d-2, a viewer's diagram following a source saved elsewhere). The editor (L3c-2, §2.8): `fbdmodel.test.ts` (11), `fbd-editor.test.tsx` (10), `fbd_from_the_editor.rs` (4). Not built: a CFC mode (§3) |
 | 2.17 Sequential Function Chart (L3d-1) | `crates/mythos-logic-graphic`: `sfc.rs`; the subset and the semantics of §2.17 and §2.13 (§6.7: steps, transitions, Table 61's divergences and convergences, jumps, action blocks, the action control without final scan, unsafe and unreachable charts refused); every step's flag and time, every transition's condition and enable flag and every action's state kept in private variables (`At::Step`, `At::StepTime`, `At::Transition`, `At::Action`); the scan clock as `ast::ExprKind::Intrinsic`; `Element::action`, `Element::transition`, `TextRange::line`; `Language::Sfc`. Since L3d-1b actions and conditions in LD and FBD (of the POU, in the action block or the transition, or a network drawn in the chart), lowered by `ld::lower` and `fbd::lower` in a namespace of their own, `Probe::body`, `Element::inline`, `bodies` in `check`. Proven by `sfc_runs_on_the_vm.rs` (29: a rule of §6.7 each, the action qualifiers scan by scan, a chart in a function block, a restart, an online change of the same chart and of another, the two charts of the emulators), `sfc_refusals.rs` (38 since L3d-1b: every refusal with its message and its element, a place in a text of several lines as JSON), `sfc_corpus.rs` (1), `sfc_equals_st.rs` (4 charts and their ST twins, the fourth with actions and conditions in LD and FBD, 200 random sequences of 100 scans each: every variable, step flag, step time while active, action flag, transition condition where evaluated and enable flag equal after every scan, 2,270,452 values), `sfc_graphic_bodies.rs` (14: a rule of L3d-1b each, scan by scan, and the mixer of the emulators), `damaged_ladder_never_panics.rs` (3,000 damaged charts: 2,718 refused, 282 compiled; 3,000 damaged mixers with LD and FBD bodies: 2,686 refused, 314 compiled), the logic module's own tests (4), `logic_module.rs` through the real module processes and over MCP; the emulators (2.9). The workbench: `sfc.test.tsx` (3 in L3d-1; 23 since the view, L3d-2, §2.8). The editor (L3d-3, §2.8): `sfcmodel.test.ts` (31), `sfc-editor.test.tsx` (9), `sfc_from_the_editor.rs` (6). Not built: drawing the LD and FBD bodies of actions and conditions with their views (the view names their language); an action that is a chart, IL, a connection from a step's flag (§2.17); the qualifiers SD, SL, P0 (the owner's decision, §2.17) |
+| 2.18 Firmware for microcontrollers | Planned, nothing built. What exists is 2.9's: the VM built for thumbv6m and riscv32imc and run in emulators. Xtensa: not built. A real board: none has run it. |
 
 Evidence of the spike (2026-11-17):
 
