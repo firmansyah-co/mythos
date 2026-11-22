@@ -142,8 +142,8 @@ module and verifying a change.
 | :--- | :--- |
 | Field I/O | Configure Modbus TCP connections in a form drawn from the driver's own schema. Read registers as typed, scaled values with quality, and write a value to a writable tag. |
 | Control logic | Write, check, bind, build and load programs in Structured Text, Ladder Diagram, Function Block Diagram and Sequential Function Chart, each with its editor and its live view. Then run, stop, watch and force them, with RETAIN, a watchdog and online change. Keep functions and function blocks that programs share in a project's library (over the API and MCP). |
-| Tasks | Run several programs in one runtime, in tasks of four kinds (cycle, cyclic, startup, event) with priorities and preemption, each task with its own process image and watchdog. Configured over the API and MCP: the workbench has no task editor yet. |
-| Data | Declare your own types and data blocks, and share a block between the programs of a runtime. Every change is checked with the compiler before it is saved. Made over the API and MCP: the workbench has no editor for them yet. |
+| Tasks | Run several programs in one runtime, in tasks of four kinds (cycle, cyclic, startup, event) with priorities and preemption, each task with its own process image and watchdog. Configured and built into one runtime by the logic module over the API and MCP: the workbench has no task editor yet. |
+| Data | Declare your own types and data blocks, and share a block between the programs of a runtime. Every change is checked with the compiler before it is saved. Made over the API and MCP: the workbench has no editor for them yet. Programs that share a block are built into one runtime by the logic module. |
 | HMI | Draw screens with text and I/O fields bound to tags, release them, and open the full-window operator runtime. |
 | Modules | Install, disable, enable, remove and hot-swap drivers, service modules and runtimes. |
 | Nodes and plants | Run a node as a workstation, edge or server, discover and pair nodes, download and compare a plant's devices, and read tags across them. |
@@ -156,8 +156,7 @@ where it lives in the tree.
 
 - Drivers other than Modbus TCP (Modbus RTU, OPC UA, MQTT, …) and a device catalog for every protocol.
 - Editors in the workbench for tasks, user types, data blocks and the library. Building several
-  programs into one runtime from the workbench: two programs that share a data block run in a
-  runtime composed over the API today.
+  programs into one runtime from the workbench: the logic module builds them over the API and MCP.
 - Drawing and editing a chart's actions and conditions written in LD or FBD, and a CFC mode for FBD.
   Instruction List is not planned.
 - Data blocks shared between runtimes and between devices.
