@@ -239,7 +239,7 @@ describe('building a sequence', () => {
     click(byTestId(container, 'sfc-add-action'));
     field('horn');
     const qualifier = byTestId(container, 'sfc-action-qualifier') as HTMLSelectElement;
-    expect([...qualifier.options].map((o) => o.value)).toEqual(['N', 'R', 'S', 'L', 'D', 'P', 'P1', 'DS']);
+    expect([...qualifier.options].map((o) => o.value)).toEqual(['N', 'R', 'S', 'L', 'D', 'P', 'SD', 'DS', 'SL', 'P1', 'P0']);
     act(() => {
       qualifier.value = 'L';
       qualifier.dispatchEvent(new Event('change', { bubbles: true }));

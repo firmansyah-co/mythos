@@ -15,9 +15,8 @@
 //! or output variable of the transition's name takes the condition, Table 55 features 10, 11).
 //! Everything else is refused by its name, with the element: an action or a condition in IL, an
 //! action that is a chart (Table 56 feature 2s: what becomes of its steps when the action stops
-//! is not said), a `macroStep` (not in ed. 3), the qualifiers SD, SL and P0 (below) and DL (not
-//! in Table 59), an action block's indicator variable (deprecated, §6.7.4.4), a negated step or
-//! action block.
+//! is not said), a `macroStep` (not in ed. 3), the qualifier DL (not in Table 59), an action
+//! block's indicator variable (deprecated, §6.7.4.4), a negated step or action block.
 //!
 //! **Bodies in LD and FBD** (ADR-013 §2.17, L3d-1b) are lowered by the LD and FBD front-ends
 //! (`ld::lower`, `fbd::lower`) into the chart's POU, each in a namespace of its own
@@ -60,11 +59,26 @@
 //! there, A is the OR of Q and an F_TRIG of Q, and an F_TRIG is TRUE at its first execution
 //! after a cold start when its input is FALSE (Table 44 and its note), so every action given as
 //! statements would run once at a cold start, whatever its step. The T input is the duration of
-//! the active time-related association, `T#0s` when there is none (rule c). SD, SL and P0 are
-//! refused for the owner to decide (ADR-013 §2.17): by rule c an SD action whose step is left
-//! before its delay starts at once, an SL action ends at once; P0's F_TRIG makes it run at a
-//! cold start. Two time-related associations of one action whose steps can be active together
-//! are refused (rule d).
+//! the active time-related association, `T#0s` when there is none (rule c). Two time-related
+//! associations of one action whose steps can be active together are refused (rule d).
+//!
+//! **SD, SL and P0 do what Table 59 names, not what Figure 23 does at three edges** (ADR-013
+//! §2.17, the owner's decision of 2026-11-22). By rule c the T of SD_TMR and SL_TMR is `T#0s`
+//! once the step is left, so an SD action whose step is left before its delay would start at
+//! once and an SL action would end at once; and P0's F_TRIG is TRUE at a cold start, so a P0
+//! action would run whatever its step. Here each SD and each SL association is stored and
+//! timed by itself, with its own duration kept once its step is left, so the delay and the
+//! limit run in full. Where two associations of one action, or a step entered again, leave two
+//! readings, the one with the action off is taken: an SD action starts when no association
+//! that stored it is still in its delay (each counted from the last time its step was
+//! entered), and stays started until R; an SL action ends at the first limit that is over
+//! (each counted from when its step first stored it), and stays ended until R. "Entered" is
+//! the step's flag rising: a step that loops to itself is not entered again for its action
+//! control, whose input never falls, for these as for every qualifier. P0's edge
+//! remembers FALSE at a start, so it pulses only in the scan after a step that was active is
+//! left; several P0 associations are one input, their OR, as Figure 23 has P and P1. R ends
+//! each at any time, and nothing is retained across a cold start: a delay that was running is
+//! dropped.
 //!
 //! **What is kept** (ADR-013 §2.17, the owner's decision for monitoring): each step is a
 //! variable of the POU by the step's name, a structure of `X` (its flag) and `T` (its elapsed
@@ -150,11 +164,19 @@ enum Qual {
     P,
     P1,
     Ds,
+    Sd,
+    Sl,
+    P0,
 }
 
 impl Qual {
     /// A time-related qualifier, which has a duration (§6.7.4.5).
     fn timed(self) -> bool {
+        matches!(self, Qual::L | Qual::D | Qual::Ds | Qual::Sd | Qual::Sl)
+    }
+    /// A time-related qualifier whose timer runs only while its step is active, so the T of
+    /// rule c is its duration. SD and SL run on after their step and keep their own.
+    fn timed_while_active(self) -> bool {
         matches!(self, Qual::L | Qual::D | Qual::Ds)
     }
     fn name(self) -> &'static str {
@@ -167,6 +189,9 @@ impl Qual {
             Qual::P => "P",
             Qual::P1 => "P1",
             Qual::Ds => "DS",
+            Qual::Sd => "SD",
+            Qual::Sl => "SL",
+            Qual::P0 => "P0",
         }
     }
 }
@@ -1181,24 +1206,9 @@ fn associations(
             "P" => Qual::P,
             "P1" => Qual::P1,
             "DS" => Qual::Ds,
-            "SD" => {
-                diags.push(places.diag(line, format!(
-                    "action {id}: the qualifier SD is not taken yet: by the action control of IEC 61131-3 ed. 3 §6.7.4.6 rule c its delay is T#0s once its step is no longer active, so an SD action whose step is left before the delay starts at once (ADR-013 §2.17)"
-                )));
-                continue;
-            }
-            "SL" => {
-                diags.push(places.diag(line, format!(
-                    "action {id}: the qualifier SL is not taken yet: by the action control of IEC 61131-3 ed. 3 §6.7.4.6 rule c its limit is T#0s once its step is no longer active, so an SL action whose step is left before the limit ends at once (ADR-013 §2.17)"
-                )));
-                continue;
-            }
-            "P0" => {
-                diags.push(places.diag(line, format!(
-                    "action {id}: the qualifier P0 is not taken yet: its pulse is an F_TRIG (§6.7.4.6, Figure 23), which is TRUE at its first execution after a cold start when its input is FALSE (Table 44), so a P0 action would run at a cold start whatever its step (ADR-013 §2.17)"
-                )));
-                continue;
-            }
+            "SD" => Qual::Sd,
+            "SL" => Qual::Sl,
+            "P0" => Qual::P0,
             other => {
                 diags.push(places.diag(
                     line,
@@ -2261,10 +2271,10 @@ impl Chart {
             };
             let r = input(Qual::R).unwrap_or_else(|| bool_expr(false, span));
             // T: the duration of the active time-related association, T#0s if none (rule c).
-            let timer_pt = if a.assocs.iter().any(|x| x.1.timed()) {
+            let timer_pt = if a.assocs.iter().any(|x| x.1.timed_while_active()) {
                 let t = hidden.var(format!("__SFC_{key}_T"), time_ty(), span);
                 control.push(Stmt::Assign(t.clone(), time0(span)));
-                for x in a.assocs.iter().filter(|x| x.1.timed()) {
+                for x in a.assocs.iter().filter(|x| x.1.timed_while_active()) {
                     control.push(Stmt::If(
                         vec![(
                             var(member(&self.steps[x.0].0, "X", span)),
@@ -2351,6 +2361,124 @@ impl Chart {
                 control.push(call(&trig, vec![("CLK", input(Qual::P1).unwrap())]));
                 reset.push(call(&trig, vec![("CLK", bool_expr(false, span))]));
                 terms.push(var(sel(&trig, "Q", span)));
+            }
+            for (qual, limited) in [(Qual::Sd, false), (Qual::Sl, true)] {
+                if !has(qual) {
+                    continue;
+                }
+                // Each SD or SL association is stored and timed by itself (ADR-013 §2.17): a
+                // flip-flop set by its step and reset by R, and a timer of its own duration,
+                // kept once its step is left. Where two associations or a step entered again
+                // leave two readings, the one with the action off is taken: an SD action
+                // starts when no association that stored it is still in its delay, each
+                // counted from the last time its step was entered; an SL action ends when the
+                // first limit is over, each counted from when its step first stored it. Once
+                // started (SD) or ended (SL) it stays so until R.
+                let name = qual.name();
+                let mut stored: Vec<Expr> = Vec::new();
+                let mut timed_out: Vec<Expr> = Vec::new();
+                let mut waiting: Vec<Expr> = Vec::new();
+                for x in a.assocs.iter().filter(|x| x.1 == qual) {
+                    let id = x.3;
+                    let step = || var(member(&self.steps[x.0].0, "X", span));
+                    let t = hidden.var(format!("__SFC_{key}_{name}_{id}_KEPT"), time_ty(), span);
+                    let ff =
+                        hidden.var(format!("__SFC_{key}_{name}_{id}_FF"), named_ty("RS"), span);
+                    let tmr = hidden.var(
+                        format!("__SFC_{key}_{name}_{id}_TMR"),
+                        named_ty("TON"),
+                        span,
+                    );
+                    // The duration is read each scan the step is active, and kept after.
+                    control.push(Stmt::If(
+                        vec![(
+                            step(),
+                            vec![Stmt::Assign(
+                                t.clone(),
+                                x.2.clone().unwrap_or_else(|| time0(span)),
+                            )],
+                        )],
+                        None,
+                    ));
+                    if !limited {
+                        // A step entered again while its delay runs starts the delay again.
+                        let was =
+                            hidden.var(format!("__SFC_{key}_{name}_{id}_WAS"), bool_ty(span), span);
+                        control.push(Stmt::If(
+                            vec![(
+                                and(
+                                    and(step(), not(var(was.clone()), span), span),
+                                    var(sel(&ff, "Q1", span)),
+                                    span,
+                                ),
+                                vec![call(
+                                    &tmr,
+                                    vec![("IN", bool_expr(false, span)), ("PT", var(t.clone()))],
+                                )],
+                            )],
+                            None,
+                        ));
+                        control.push(Stmt::Assign(was.clone(), step()));
+                        reset.push(Stmt::Assign(was, bool_expr(false, span)));
+                    }
+                    control.push(call(&ff, vec![("S", step()), ("R1", r.clone())]));
+                    control.push(call(
+                        &tmr,
+                        vec![("IN", var(sel(&ff, "Q1", span))), ("PT", var(t))],
+                    ));
+                    reset.push(call(
+                        &ff,
+                        vec![("S", bool_expr(false, span)), ("R1", bool_expr(true, span))],
+                    ));
+                    reset.push(call(
+                        &tmr,
+                        vec![("IN", bool_expr(false, span)), ("PT", time0(span))],
+                    ));
+                    stored.push(var(sel(&ff, "Q1", span)));
+                    timed_out.push(var(sel(&tmr, "Q", span)));
+                    waiting.push(and(
+                        var(sel(&ff, "Q1", span)),
+                        not(var(sel(&tmr, "Q", span)), span),
+                        span,
+                    ));
+                }
+                let stored = or_all(stored, span);
+                let latch = part(
+                    &mut hidden,
+                    &format!("{name}_{}", if limited { "END" } else { "START" }),
+                    "RS",
+                );
+                let set = if limited {
+                    or_all(timed_out, span)
+                } else {
+                    and(stored.clone(), not(or_all(waiting, span), span), span)
+                };
+                control.push(call(&latch, vec![("S", set), ("R1", r.clone())]));
+                reset.push(call(
+                    &latch,
+                    vec![("S", bool_expr(false, span)), ("R1", bool_expr(true, span))],
+                ));
+                terms.push(if limited {
+                    and(stored, not(var(sel(&latch, "Q1", span)), span), span)
+                } else {
+                    var(sel(&latch, "Q1", span))
+                });
+            }
+            if has(Qual::P0) {
+                // The falling edge of P0, with what it remembers FALSE at a start: no step
+                // was active before it, so none was left (Figure 23's F_TRIG is TRUE at its
+                // first execution, Table 44; ADR-013 §2.17).
+                let was = hidden.var(format!("__SFC_{key}_P0_WAS"), bool_ty(span), span);
+                let pulse = hidden.var(format!("__SFC_{key}_P0_PULSE"), bool_ty(span), span);
+                let p0 = input(Qual::P0).unwrap();
+                control.push(Stmt::Assign(
+                    pulse.clone(),
+                    and(not(p0.clone(), span), var(was.clone()), span),
+                ));
+                control.push(Stmt::Assign(was.clone(), p0));
+                reset.push(Stmt::Assign(was, bool_expr(false, span)));
+                reset.push(Stmt::Assign(pulse.clone(), bool_expr(false, span)));
+                terms.push(var(pulse));
             }
             let mut qx = or_all(terms, span);
             if let Some(r) = input(Qual::R) {
