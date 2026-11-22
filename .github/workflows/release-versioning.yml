@@ -37,7 +37,8 @@ permissions:
 jobs:
   version-and-changelog:
     name: Compute SemVer & Generate Changelog
-    runs-on: arc-runner-org
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout Code Repository
         uses: actions/checkout@v4

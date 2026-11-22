@@ -13,7 +13,8 @@ permissions:
 jobs:
   validate-branch-flow:
     name: Verify Source and Target Branch Policy
-    runs-on: arc-runner-org
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Evaluate Branch Flow Constraints
         run: |

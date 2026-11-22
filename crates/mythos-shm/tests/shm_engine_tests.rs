@@ -205,6 +205,13 @@ fn test_concurrent_writer_and_readers() {
 /// (`#[cfg(not(debug_assertions))]`), and CI runs it through the
 /// `cargo test --release -p mythos-shm` step in `.github/workflows/ci.yml`.
 ///
+/// **CI reports this bound; since 2026-11-22 it does not hold it.** That step ran in the
+/// required Linux job on the self-hosted runner, the machine the measurements below describe.
+/// The owner moved CI to GitHub's hosted runners and made this step a job of its own
+/// (`shm-latency-report`) whose failure is a warning on the run and holds no branch. A hosted
+/// runner is a shared VM, so a miss there is not a verdict either way. To certify the bound, run
+/// this test in release on the hardware in question.
+///
 /// The reason is **headroom and variance under load, not that debug cannot meet the bound.** At a
 /// genuinely idle load average of 1.2 on 16 cores, an unoptimised debug build measures 26.4-32.5 ns
 /// and *does* pass 50 ns. What changes the choice is the margin: release is ~17-20 ns at the same
@@ -362,7 +369,8 @@ const READ_ROUNDS: usize = 5;
 /// (the state-word exchange) on every call: the costlier of the two read paths, so the bound
 /// covers [`ShmReaderHandle::read_tag`]'s plain read as well. All 32,768 slots are filled and
 /// read in turn, so the reads do not sit in one cache line. Measured on an optimised build only;
-/// CI runs it in the `cargo test --release -p mythos-shm` step.
+/// CI runs it in the `cargo test --release -p mythos-shm` step, reported and not enforced since
+/// 2026-11-22 (see the swap test's header).
 #[cfg(not(debug_assertions))]
 #[test]
 fn test_tag_read_latency_under_300ns() {
