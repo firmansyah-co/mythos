@@ -12,6 +12,7 @@ use mythos_plugin_sdk::{MythosPlugin, PluginContext, ProtocolDriver};
 use mythos_runtime_vm::VmEngine;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,40 @@ use std::time::{Duration, Instant};
 fn one_at_a_time() -> MutexGuard<'static, ()> {
     static ONE: Mutex<()> = Mutex::new(());
     ONE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// How the machine itself keeps time while a test runs: a thread that does nothing but sleep
+/// 1 ms over and over, and the longest it was away between two of its wakings. A due time
+/// missed by a task with nothing above it says something of the scheduler only on a machine
+/// whose own sleeping thread was not away that long.
+struct Timekeeper {
+    stop: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<Duration>,
+}
+
+impl Timekeeper {
+    fn start() -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let seen = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let mut longest = Duration::ZERO;
+            let mut last = Instant::now();
+            while !seen.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+                let now = Instant::now();
+                longest = longest.max(now - last);
+                last = now;
+            }
+            longest
+        });
+        Timekeeper { stop, thread }
+    }
+
+    /// The longest the thread was away.
+    fn longest(self) -> Duration {
+        self.stop.store(true, Ordering::SeqCst);
+        self.thread.join().expect("the timekeeper does not panic")
+    }
 }
 
 /// Drive a future of the engine to its end: its calls never wait on anything.
@@ -305,6 +340,7 @@ fn a_higher_priority_task_preempts_a_long_lower_one() {
             program(&quick_source("quick"), 10, json!({})),
         ],
         "tasks": [cyclic("low", 1000, 10, &["slow"]), cyclic("high", high_ms, 1, &["quick"])]}));
+    let keeper = Timekeeper::start();
     let r = exchange_for(
         &mut engine,
         Duration::from_millis(2_000),
@@ -312,6 +348,7 @@ fn a_higher_priority_task_preempts_a_long_lower_one() {
         |_| Vec::new(),
         |_| {},
     );
+    let away = keeper.longest();
     let (low, high) = (task(&r.state, "low"), task(&r.state, "high"));
     assert_eq!(r.state.mode, RuntimeMode::Run, "{:?}", r.state.fault);
     assert!(low.runs > 0, "{low:?}");
@@ -320,7 +357,25 @@ fn a_higher_priority_task_preempts_a_long_lower_one() {
         "a low run outlasts the high interval of {high_ms} ms (alone: {alone:?}): {low:?}"
     );
     assert!(low.preemptions > 0, "{low:?}");
-    assert_eq!(high.overruns, 0, "{high:?}");
+    // The high task misses a due time when the scheduler is away for one of its intervals.
+    // That it is never away so long is claimed only where a thread that merely sleeps was not
+    // away half an interval either; elsewhere the figures are printed and nothing is claimed.
+    if away < Duration::from_millis(high_ms / 2) {
+        assert_eq!(
+            high.overruns, 0,
+            "a sleeping thread was away at most {away:?}: {high:?}"
+        );
+    } else {
+        // Written past the capture of a passing test's output: a claim not made is to be seen
+        // in the log of the run that did not make it.
+        let said = format!(
+            "NOT SHOWN on this machine: that the high task misses no due time. A thread \
+             sleeping 1 ms was away {away:?}, the high interval is {high_ms} ms, and the high \
+             task counted {} overruns in {} runs.\n",
+            high.overruns, high.runs
+        );
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), said.as_bytes());
+    }
     assert!(high.runs > 5, "{high:?}");
     assert_eq!(high.preemptions, 0, "nothing is above it: {high:?}");
     // Several tasks: sums, and no one age.
