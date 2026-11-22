@@ -455,6 +455,272 @@ pub struct RuntimeState {
     /// The variables held at a value by [`Call::Force`]. Empty from a module that cannot force.
     #[serde(default)]
     pub forced: Vec<ForcedValue>,
+    /// Each task's state, from a runtime started with tasks written out (ADR-013 §2.19). Empty
+    /// for a runtime of one program in its implied task, and from a module that runs no tasks:
+    /// the fields above then say all there is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<TaskState>,
+    /// Each program and the version of it that runs, in the order the runtime was given them;
+    /// empty when `tasks` is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub programs: Vec<ProgramVersion>,
+}
+
+// -----------------------------------------------------------------------------
+// Tasks (ADR-013 §2.19)
+// -----------------------------------------------------------------------------
+
+/// One task of a runtime: when it runs, at which priority, and the programs it runs, in order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskConfig {
+    /// 1 to 64 letters, digits, `-` or `_`.
+    pub name: String,
+    pub kind: TaskKind,
+    /// 0 is the highest, 31 the lowest (IEC 61131-3). Required: no priority is right for every
+    /// task.
+    pub priority: u8,
+    /// How long the task may owe a run before the runtime is stopped. `None`: ten intervals and
+    /// never less than 2 s for a cyclic or cycle task, 2 s for the others.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watchdog_ms: Option<u64>,
+    /// Names of the runtime's programs ([`RuntimeProgram::name`]), in the order they run.
+    pub programs: Vec<String>,
+}
+
+/// When a task runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaskKind {
+    /// Again as soon as its run has ended, no sooner than `min_cycle_ms` after the last began;
+    /// below every priority.
+    Cycle {
+        #[serde(default)]
+        min_cycle_ms: u64,
+    },
+    /// Every `interval_ms`, the first time `phase_ms` after the change to RUN.
+    Cyclic {
+        interval_ms: u64,
+        #[serde(default)]
+        phase_ms: u64,
+    },
+    /// Once at every change to RUN, before any other task. Written with braces, as a variant
+    /// with fields, so that serde refuses a field it does not know here too: a unit variant of
+    /// an internally tagged enum ignores them, `deny_unknown_fields` or not.
+    Startup {},
+    /// At each rising edge of the BOOL tag `tag`, as the exchanges see it.
+    Event { tag: String },
+}
+
+impl TaskKind {
+    /// The name of the kind, as [`TaskSupport::kinds`] lists it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            TaskKind::Cycle { .. } => "cycle",
+            TaskKind::Cyclic { .. } => "cyclic",
+            TaskKind::Startup {} => "startup",
+            TaskKind::Event { .. } => "event",
+        }
+    }
+}
+
+/// What a runtime module says, in its manifest's `profile.tasks`, about the tasks it runs. A
+/// module that says nothing runs one program in one cyclic task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSupport {
+    /// The kinds of task it runs: `cycle`, `cyclic`, `startup`, `event`.
+    pub kinds: Vec<String>,
+}
+
+impl TaskSupport {
+    /// The task support a runtime module's profile declares; `None` when it declares none, or
+    /// declares it in a form this crate cannot read.
+    pub fn of(profile: &Value) -> Option<TaskSupport> {
+        serde_json::from_value(profile.get("tasks")?.clone()).ok()
+    }
+}
+
+/// A program of a runtime and the version of it that runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgramVersion {
+    pub name: String,
+    pub version: String,
+}
+
+/// What one task of a runtime is doing. A time not measured is `None`, never 0.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskState {
+    pub name: String,
+    pub kind: TaskKind,
+    pub priority: u8,
+    pub programs: Vec<String>,
+    /// The watchdog's limit in force, in ms: the one set, or the default.
+    pub watchdog_ms: u64,
+    /// Runs ended since the runtime was last put in RUN.
+    pub runs: u64,
+    /// Runs not made because the task was due or triggered again before its last run ended.
+    pub overruns: u64,
+    /// Times a task of higher priority began while this one was in progress.
+    pub preemptions: u64,
+    /// From the beginning to the end of its last run, preemptions included.
+    pub last_run_us: Option<u64>,
+    pub longest_run_us: Option<u64>,
+    /// How long before this answer its last run ended; `None` before one has.
+    pub run_age_us: Option<u64>,
+}
+
+/// The task a runtime given no tasks runs its one program in: cyclic at the program's
+/// interval, from the change to RUN, at the lowest priority, with the default watchdog.
+pub fn implied_task(program: &RuntimeProgram) -> TaskConfig {
+    TaskConfig {
+        name: program.name.clone(),
+        kind: TaskKind::Cyclic {
+            interval_ms: program.interval_ms,
+            phase_ms: 0,
+        },
+        priority: LOWEST_TASK_PRIORITY,
+        watchdog_ms: None,
+        programs: vec![program.name.clone()],
+    }
+}
+
+/// The lowest priority a task can have; 0 is the highest.
+pub const LOWEST_TASK_PRIORITY: u8 = 31;
+
+/// A task's name: 1 to 64 letters, digits, `-` or `_`.
+fn valid_task_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// A program's name in a runtime of several programs, where a variable is named
+/// `<program>.<path>`: none of `.`, `[`, `]` or white space, and not empty.
+fn valid_program_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name
+            .chars()
+            .any(|c| c == '.' || c == '[' || c == ']' || c.is_whitespace())
+}
+
+/// Check the programs and tasks of one runtime (ADR-013 §2.19): each program in exactly one
+/// task, every name valid and every time representable. The same check, word for word, in the
+/// core and in a runtime module. Program names are compared without regard to case, as a
+/// variable's program is named; task names exactly. With no tasks, the runtime must have one
+/// program, which runs in its [`implied_task`].
+pub fn check_tasks(programs: &[&RuntimeProgram], tasks: &[TaskConfig]) -> Result<(), String> {
+    if programs.is_empty() {
+        return Err("it runs no program".to_string());
+    }
+    if programs.len() > 1 && tasks.is_empty() {
+        return Err(
+            "it runs several programs and names no task: each program needs a task".to_string(),
+        );
+    }
+    for (i, p) in programs.iter().enumerate() {
+        if programs[..i]
+            .iter()
+            .any(|q| q.name.eq_ignore_ascii_case(&p.name))
+        {
+            return Err(format!("two programs are named '{}'", p.name));
+        }
+        if programs.len() > 1 && !valid_program_name(&p.name) {
+            return Err(format!(
+                "'{}' is not a program name: no '.', '[', ']' or spaces",
+                p.name
+            ));
+        }
+    }
+    let names = programs
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    // For each program, the task it is in.
+    let mut owner: Vec<Option<&str>> = vec![None; programs.len()];
+    for (i, t) in tasks.iter().enumerate() {
+        let name = &t.name;
+        if !valid_task_name(name) {
+            return Err(format!(
+                "'{name}' is not a task name: use 1 to 64 letters, digits, '-' or '_'"
+            ));
+        }
+        if tasks[..i].iter().any(|u| u.name == *name) {
+            return Err(format!("task name '{name}' is used more than once"));
+        }
+        if t.priority > LOWEST_TASK_PRIORITY {
+            return Err(format!(
+                "task '{name}' has priority {}; priorities are 0 (highest) to {LOWEST_TASK_PRIORITY}",
+                t.priority
+            ));
+        }
+        let mut times: Vec<(&str, u64)> = Vec::new();
+        match &t.kind {
+            TaskKind::Cyclic {
+                interval_ms,
+                phase_ms,
+            } => {
+                if *interval_ms == 0 {
+                    return Err(format!(
+                        "task '{name}' has interval_ms 0; it must be at least 1"
+                    ));
+                }
+                times.push(("interval_ms", *interval_ms));
+                times.push(("phase_ms", *phase_ms));
+            }
+            TaskKind::Cycle { min_cycle_ms } => times.push(("min_cycle_ms", *min_cycle_ms)),
+            TaskKind::Event { tag } if tag.trim().is_empty() => {
+                return Err(format!("event task '{name}' names no tag"));
+            }
+            TaskKind::Event { .. } | TaskKind::Startup {} => {}
+        }
+        if let Some(w) = t.watchdog_ms {
+            if w == 0 {
+                return Err(format!("task '{name}': watchdog_ms must be at least 1"));
+            }
+            times.push(("watchdog_ms", w));
+        }
+        for (field, ms) in times {
+            // The scheduler counts in nanoseconds of an i64.
+            if ms
+                .checked_mul(1_000_000)
+                .is_none_or(|ns| ns > i64::MAX as u64)
+            {
+                return Err(format!("task '{name}': {field} is too long"));
+            }
+        }
+        if t.programs.is_empty() {
+            return Err(format!("task '{name}' runs no program"));
+        }
+        for (j, p) in t.programs.iter().enumerate() {
+            let Some(k) = programs.iter().position(|q| q.name.eq_ignore_ascii_case(p)) else {
+                return Err(format!(
+                    "task '{name}' runs '{p}', which is not a program of this runtime (it has {names})"
+                ));
+            };
+            if t.programs[..j].iter().any(|q| q.eq_ignore_ascii_case(p)) {
+                return Err(format!("task '{name}' names '{p}' twice"));
+            }
+            if let Some(other) = owner[k] {
+                return Err(format!(
+                    "program '{}' is in tasks '{other}' and '{name}'; a program is in one task",
+                    programs[k].name
+                ));
+            }
+            owner[k] = Some(name);
+        }
+    }
+    if !tasks.is_empty() {
+        if let Some(k) = owner.iter().position(Option::is_none) {
+            return Err(format!(
+                "program '{}' is in no task, so it would never run",
+                programs[k].name
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A variable held at a value by [`Call::Force`].
@@ -822,6 +1088,302 @@ mod tests {
             fault: Some(WireFault::Comm("x".into())),
         };
         assert!(TagSample::from(both).reading.is_err());
+    }
+
+    fn program(name: &str) -> RuntimeProgram {
+        RuntimeProgram {
+            name: name.into(),
+            version: "1".into(),
+            interval_ms: 100,
+            code: String::new(),
+            symbols: Value::Null,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            published: Vec::new(),
+        }
+    }
+
+    fn task(name: &str, kind: TaskKind, programs: &[&str]) -> TaskConfig {
+        TaskConfig {
+            name: name.into(),
+            kind,
+            priority: 5,
+            watchdog_ms: None,
+            programs: programs.iter().map(|p| p.to_string()).collect(),
+        }
+    }
+
+    fn cyclic(ms: u64) -> TaskKind {
+        TaskKind::Cyclic {
+            interval_ms: ms,
+            phase_ms: 0,
+        }
+    }
+
+    #[test]
+    fn check_tasks_refuses_each_thing_it_can_get_wrong() {
+        let (a, b, c) = (program("a"), program("b"), program("c"));
+        let two = [&a, &b];
+        let check = |programs: &[&RuntimeProgram], tasks: &[TaskConfig]| {
+            check_tasks(programs, tasks).err().unwrap_or_default()
+        };
+        // What is right.
+        assert_eq!(check_tasks(&[&a], &[]), Ok(()), "one program, implied task");
+        assert_eq!(
+            check_tasks(
+                &two,
+                &[
+                    task("fast", cyclic(10), &["a"]),
+                    task("boot", TaskKind::Startup {}, &["B"]),
+                ]
+            ),
+            Ok(()),
+            "a program is named without regard to case"
+        );
+        assert_eq!(
+            check_tasks(
+                &[&a, &b, &c],
+                &[
+                    task("s1", TaskKind::Startup {}, &["a"]),
+                    task("s2", TaskKind::Startup {}, &["b"]),
+                    task("free", TaskKind::Cycle { min_cycle_ms: 0 }, &["c"]),
+                ]
+            ),
+            Ok(()),
+            "several startup tasks are allowed"
+        );
+
+        assert_eq!(check(&[], &[]), "it runs no program");
+        assert_eq!(
+            check(&two, &[]),
+            "it runs several programs and names no task: each program needs a task"
+        );
+        let a2 = program("A");
+        assert_eq!(
+            check(&[&a, &a2], &[task("t", cyclic(1), &["a"])]),
+            "two programs are named 'A'"
+        );
+        let dotted = program("x.y");
+        assert_eq!(
+            check(&[&a, &dotted], &[task("t", cyclic(1), &["a", "x.y"])]),
+            "'x.y' is not a program name: no '.', '[', ']' or spaces"
+        );
+        for bad in ["", "p q", "p[1]", "p]"] {
+            let p = program(bad);
+            assert!(
+                check(&[&a, &p], &[task("t", cyclic(1), &["a"])]).contains("is not a program name"),
+                "{bad:?}"
+            );
+        }
+        // One program keeps whatever name it had: no variable is prefixed with it.
+        assert_eq!(
+            check_tasks(&[&dotted], &[task("t", cyclic(1), &["x.y"])]),
+            Ok(())
+        );
+        for bad in ["", "a b", "a.b", &"x".repeat(65)] {
+            assert_eq!(
+                check(&[&a], &[task(bad, cyclic(1), &["a"])]),
+                format!("'{bad}' is not a task name: use 1 to 64 letters, digits, '-' or '_'")
+            );
+        }
+        assert_eq!(
+            check(
+                &two,
+                &[task("t", cyclic(1), &["a"]), task("t", cyclic(1), &["b"])]
+            ),
+            "task name 't' is used more than once"
+        );
+        let mut high = task("t", cyclic(1), &["a"]);
+        high.priority = 32;
+        assert_eq!(
+            check(&[&a], &[high]),
+            "task 't' has priority 32; priorities are 0 (highest) to 31"
+        );
+        assert_eq!(
+            check(&[&a], &[task("t", cyclic(0), &["a"])]),
+            "task 't' has interval_ms 0; it must be at least 1"
+        );
+        let longest = (i64::MAX as u64) / 1_000_000;
+        assert_eq!(
+            check_tasks(&[&a], &[task("t", cyclic(longest), &["a"])]),
+            Ok(())
+        );
+        for (kind, field) in [
+            (cyclic(longest + 1), "interval_ms"),
+            (
+                TaskKind::Cyclic {
+                    interval_ms: 1,
+                    phase_ms: u64::MAX,
+                },
+                "phase_ms",
+            ),
+            (
+                TaskKind::Cycle {
+                    min_cycle_ms: longest + 1,
+                },
+                "min_cycle_ms",
+            ),
+        ] {
+            assert_eq!(
+                check(&[&a], &[task("t", kind, &["a"])]),
+                format!("task 't': {field} is too long")
+            );
+        }
+        let mut watched = task("t", TaskKind::Startup {}, &["a"]);
+        watched.watchdog_ms = Some(longest + 1);
+        assert_eq!(
+            check(&[&a], std::slice::from_ref(&watched)),
+            "task 't': watchdog_ms is too long"
+        );
+        watched.watchdog_ms = Some(0);
+        assert_eq!(
+            check(&[&a], &[watched]),
+            "task 't': watchdog_ms must be at least 1"
+        );
+        assert_eq!(
+            check(
+                &[&a],
+                &[task("t", TaskKind::Event { tag: " ".into() }, &["a"])]
+            ),
+            "event task 't' names no tag"
+        );
+        assert_eq!(
+            check(&[&a], &[task("t", cyclic(1), &[])]),
+            "task 't' runs no program"
+        );
+        assert_eq!(
+            check(&two, &[task("t", cyclic(1), &["a", "z"])]),
+            "task 't' runs 'z', which is not a program of this runtime (it has a, b)"
+        );
+        assert_eq!(
+            check(&[&a], &[task("t", cyclic(1), &["a", "A"])]),
+            "task 't' names 'A' twice"
+        );
+        assert_eq!(
+            check(
+                &two,
+                &[
+                    task("t", cyclic(1), &["a", "b"]),
+                    task("u", cyclic(1), &["b"])
+                ]
+            ),
+            "program 'b' is in tasks 't' and 'u'; a program is in one task"
+        );
+        assert_eq!(
+            check(&two, &[task("t", cyclic(1), &["a"])]),
+            "program 'b' is in no task, so it would never run"
+        );
+    }
+
+    #[test]
+    fn a_task_has_a_fixed_shape_and_refuses_a_field_it_does_not_know() {
+        let t = TaskConfig {
+            name: "fast".into(),
+            kind: cyclic(10),
+            priority: 0,
+            watchdog_ms: None,
+            programs: vec!["a".into()],
+        };
+        assert_eq!(
+            serde_json::to_value(&t).unwrap(),
+            json!({"name": "fast", "kind": {"type": "cyclic", "interval_ms": 10, "phase_ms": 0},
+                   "priority": 0, "programs": ["a"]})
+        );
+        let parsed: TaskConfig = serde_json::from_value(json!({
+            "name": "e", "kind": {"type": "event", "tag": "external.A.B.c"},
+            "priority": 3, "watchdog_ms": 50, "programs": ["a"]
+        }))
+        .unwrap();
+        assert_eq!(
+            parsed.kind,
+            TaskKind::Event {
+                tag: "external.A.B.c".into()
+            }
+        );
+        assert_eq!(parsed.watchdog_ms, Some(50));
+        assert_eq!(
+            serde_json::to_value(TaskKind::Startup {}).unwrap(),
+            json!({"type": "startup"})
+        );
+        assert_eq!(
+            serde_json::from_value::<TaskKind>(json!({"type": "startup"})).unwrap(),
+            TaskKind::Startup {}
+        );
+        let cycle: TaskKind = serde_json::from_value(json!({"type": "cycle"})).unwrap();
+        assert_eq!(cycle, TaskKind::Cycle { min_cycle_ms: 0 });
+
+        // A misspelt field is refused, not ignored: in the task, and in each kind.
+        for wrong in [
+            json!({"name": "t", "kind": {"type": "startup"}, "priority": 1, "programs": [],
+                   "watchdog": 5}),
+            json!({"name": "t", "kind": {"type": "cyclic", "interval_ms": 1, "phase": 5},
+                   "priority": 1, "programs": []}),
+            json!({"name": "t", "kind": {"type": "cycle", "min_cycle": 5},
+                   "priority": 1, "programs": []}),
+            json!({"name": "t", "kind": {"type": "event", "tag": "x", "edge": "falling"},
+                   "priority": 1, "programs": []}),
+            json!({"name": "t", "kind": {"type": "startup", "cold": true},
+                   "priority": 1, "programs": []}),
+            json!({"name": "t", "kind": {"type": "cyclic", "interval_ms": 1}, "programs": []}),
+        ] {
+            assert!(
+                serde_json::from_value::<TaskConfig>(wrong.clone()).is_err(),
+                "{wrong}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_runtime_state_of_today_has_exactly_todays_keys() {
+        let state = RuntimeState {
+            mode: RuntimeMode::Run,
+            fault: None,
+            program: "p".into(),
+            version: "1".into(),
+            scans: 1,
+            last_scan_us: 2,
+            max_scan_us: 3,
+            overruns: 0,
+            scan_age_us: Some(4),
+            forced: Vec::new(),
+            tasks: Vec::new(),
+            programs: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_value(&state).unwrap(),
+            json!({"mode": "run", "fault": null, "program": "p", "version": "1", "scans": 1,
+                   "last_scan_us": 2, "max_scan_us": 3, "overruns": 0, "scan_age_us": 4,
+                   "forced": []})
+        );
+        // What a module of today sends reads with no tasks.
+        let old: RuntimeState = serde_json::from_value(json!({"mode": "stop", "program": "p",
+            "version": "1", "scans": 0, "last_scan_us": 0, "max_scan_us": 0, "overruns": 0}))
+        .unwrap();
+        assert!(old.tasks.is_empty() && old.programs.is_empty());
+    }
+
+    #[test]
+    fn a_module_says_it_runs_tasks_in_its_profile_or_does_not() {
+        assert_eq!(
+            TaskSupport::of(&json!({"name": "pc", "tasks": {"kinds": ["cyclic", "event"]}})),
+            Some(TaskSupport {
+                kinds: vec!["cyclic".into(), "event".into()]
+            })
+        );
+        assert_eq!(TaskSupport::of(&json!({"name": "pc"})), None);
+        assert_eq!(TaskSupport::of(&Value::Null), None);
+        assert_eq!(TaskSupport::of(&json!({"tasks": "all"})), None);
+        let p = program("p");
+        assert_eq!(
+            implied_task(&p),
+            TaskConfig {
+                name: "p".into(),
+                kind: cyclic(100),
+                priority: 31,
+                watchdog_ms: None,
+                programs: vec!["p".into()],
+            }
+        );
     }
 
     #[test]

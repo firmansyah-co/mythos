@@ -1,14 +1,18 @@
 //! The MythOS logic runtime for a PC (ADR-013 §2.4): a runtime module that runs a program
 //! compiled to logic VM bytecode.
 //!
-//! One process runs one program. It scans on its own clock, in its own thread, whatever the
-//! server is doing; the server exchanges with it (`exchange`): the tags the program reads go
-//! in, what it publishes and what it wants written come out.
+//! One process is one runtime: one program, or several programs in tasks (ADR-013 §2.19). It
+//! runs them on its own clock, in its own thread, whatever the server is doing; the server
+//! exchanges with it (`exchange`): the tags the programs read go in, what they publish and what
+//! they want written come out. A runtime given one program and no tasks runs it in one cyclic
+//! task at its interval, and says exactly what it said before there were tasks.
 //!
 //! What it promises:
 //!
-//! - **A scan sees one set of inputs.** Inputs are taken at the start of a scan from the last
-//!   exchange and do not change during it.
+//! - **A run sees one set of inputs.** The inputs of a task's programs are taken when the task
+//!   begins a run, from the last exchange, and do not change during it.
+//! - **An exchange never sees a program half-way.** What is reported is each program's image:
+//!   its memory as its last completed run left it ([`tasks`]).
 //! - **No scan before the first inputs.** After RUN nothing is scanned until one exchange has
 //!   delivered the tags, and no output or published value is reported until one scan has
 //!   completed: nothing computed from initial values alone reaches the plant.
@@ -20,15 +24,16 @@
 //! - **Stopped means it says nothing.** In STOP or FAULT every published tag is a fault with
 //!   the reason and no output is reported; the server then writes the outputs' safe values.
 
+mod tasks;
+
 use async_trait::async_trait;
 use mythos_logic_vm::{
-    cold_start, read, read_string, scan, string_size, write, ElemType, Fault, Frame, Program,
-    Value as VmValue,
+    read, read_string, string_size, write, ElemType, Fault, Program, Value as VmValue,
 };
 use mythos_module::protocol::{
-    CarryReport, ExchangeReply, ForcedValue, InputOf, ModuleKind, ModuleManifest, NotCarried,
-    ProgramVariables, RetainedValue, RuntimeMode, RuntimeProgram, RuntimeState, WatchReply,
-    WatchedValue, WireInput, WireOutput, WireSample, PROTOCOL_VERSION,
+    check_tasks, implied_task, CarryReport, ExchangeReply, InputOf, ModuleKind, ModuleManifest,
+    NotCarried, ProgramVariables, RetainedValue, RuntimeMode, RuntimeProgram, RuntimeState,
+    TaskConfig, WatchReply, WatchedValue, WireInput, WireOutput, WireSample, PROTOCOL_VERSION,
 };
 use mythos_module::RuntimeEngine;
 use mythos_plugin_sdk::{
@@ -40,15 +45,16 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use tasks::{Control, Forced, Layout, Shared};
 
 pub const MODULE_ID: &str = "org.mythos.runtime.vm";
 /// The name a runtime instance's `module` field uses.
 pub const RUNTIME_NAME: &str = "vm";
-/// Instructions one scan may execute. A scan that needs more is taken for a loop that never
-/// ends and stops the program.
+/// Instructions one run of a program may execute. A run that needs more is taken for a loop
+/// that never ends and stops the runtime.
 const BUDGET: u32 = 5_000_000;
 
 pub fn manifest() -> ModuleManifest {
@@ -68,7 +74,9 @@ pub fn manifest() -> ModuleManifest {
             "name": "pc",
             "format_version": mythos_logic_vm::FORMAT_VERSION,
             "max_memory": 64 * 1024 * 1024,
-            "max_code": 64 * 1024 * 1024
+            "max_code": 64 * 1024 * 1024,
+            // ADR-013 §2.19: it runs several programs in tasks of every kind.
+            "tasks": {"kinds": ["cycle", "cyclic", "startup", "event"]}
         }),
     }
 }
@@ -84,7 +92,14 @@ pub fn main() -> ExitCode {
 
 #[derive(Deserialize)]
 struct StartConfig {
-    program: RuntimeProgram,
+    /// The one program of a runtime of today; or `programs`, never both.
+    #[serde(default)]
+    program: Option<RuntimeProgram>,
+    #[serde(default)]
+    programs: Vec<RuntimeProgram>,
+    /// The tasks that run them; none for one program in its implied task.
+    #[serde(default)]
+    tasks: Vec<TaskConfig>,
     /// Whether to put it in RUN at once. Otherwise it is loaded and waits in STOP.
     #[serde(default)]
     run: bool,
@@ -100,7 +115,7 @@ struct StartConfig {
 
 /// A checked configuration: what to load, and how to start it.
 struct Loaded {
-    plan: Plan,
+    layout: Layout,
     run: bool,
     retained: Vec<RetainedValue>,
     carried: Option<ProgramVariables>,
@@ -286,14 +301,66 @@ fn locate(plan: &Plan, variable: &str) -> Result<(u32, Shape, String), String> {
 fn plan(config: &Value) -> Result<Loaded, PluginError> {
     let StartConfig {
         program,
+        programs,
+        tasks,
         run,
         retained,
         carried,
     } = serde_json::from_value(config.clone())
         .map_err(|e| invalid(format!("not a runtime program: {e}")))?;
-    if program.interval_ms == 0 {
+    let programs = match (program, programs.is_empty()) {
+        (Some(_), false) => return Err(invalid("give program or programs, not both")),
+        (Some(program), true) => vec![program],
+        (None, _) => programs,
+    };
+    check_tasks(&programs.iter().collect::<Vec<_>>(), &tasks).map_err(invalid)?;
+    let implied = tasks.is_empty();
+    if implied && programs[0].interval_ms == 0 {
         return Err(invalid("interval_ms must be at least 1"));
     }
+    let several = programs.len() > 1;
+    let mut plans = Vec::new();
+    for program in programs {
+        let name = program.name.clone();
+        plans.push(plan_program(program).map_err(|e| match e {
+            PluginError::InvalidConfiguration(m) if several => {
+                invalid(format!("program '{name}': {m}"))
+            }
+            other => other,
+        })?);
+    }
+    // Inside one runtime, as inside one program: one variable to a tag.
+    let mut outputs = HashSet::new();
+    let mut published = HashSet::new();
+    for plan in &plans {
+        for (_, tag) in &plan.outputs {
+            if !outputs.insert(tag.as_str()) {
+                return Err(invalid(format!(
+                    "two variables are bound to the output {tag}"
+                )));
+            }
+        }
+        for (_, tag, _) in &plan.published {
+            if !published.insert(tag.as_str()) {
+                return Err(invalid(format!("two variables are published as {tag}")));
+            }
+        }
+    }
+    let tasks = if implied {
+        vec![implied_task(&plans[0].program)]
+    } else {
+        tasks
+    };
+    Ok(Loaded {
+        layout: Layout::new(plans, tasks, implied).map_err(invalid)?,
+        run,
+        retained,
+        carried,
+    })
+}
+
+/// Check one program and work out where its variables are.
+fn plan_program(program: RuntimeProgram) -> Result<Plan, PluginError> {
     let bytes = hex::decode(&program.code)
         .map_err(|e| invalid(format!("the program's code is not hex: {e}")))?;
     let memory_size = Program::load(&bytes)
@@ -382,23 +449,18 @@ fn plan(config: &Value) -> Result<Loaded, PluginError> {
         }
         retain.push((s.path.clone(), s.ty.clone(), s.offset, s.size));
     }
-    Ok(Loaded {
-        plan: Plan {
-            program,
-            bytes,
-            memory_size,
-            inputs,
-            outputs,
-            published,
-            symbols: entries
-                .iter()
-                .map(|s| (s.path.to_ascii_lowercase(), s.clone()))
-                .collect(),
-            retain,
-        },
-        run,
-        retained,
-        carried,
+    Ok(Plan {
+        program,
+        bytes,
+        memory_size,
+        inputs,
+        outputs,
+        published,
+        symbols: entries
+            .iter()
+            .map(|s| (s.path.to_ascii_lowercase(), s.clone()))
+            .collect(),
+        retain,
     })
 }
 
@@ -568,14 +630,16 @@ fn carry(plan: &Plan, memory: &mut [u8], values: &[RetainedValue]) -> CarryRepor
     report
 }
 
-fn declarations(plan: &Plan) -> Vec<TagDeclaration> {
-    plan.program
-        .published
+fn declarations(layout: &Layout) -> Vec<TagDeclaration> {
+    layout
+        .plans
         .iter()
-        .map(|b| TagDeclaration {
-            uri: b.tag.clone(),
-            description: format!("variable {} of program {}", b.variable, plan.program.name),
-            writable: b.writable,
+        .flat_map(|plan| {
+            plan.program.published.iter().map(|b| TagDeclaration {
+                uri: b.tag.clone(),
+                description: format!("variable {} of program {}", b.variable, plan.program.name),
+                writable: b.writable,
+            })
         })
         .collect()
 }
@@ -727,259 +791,30 @@ fn describe(fault: Fault) -> String {
 }
 
 // -----------------------------------------------------------------------------
-// The running program
+// The running runtime
 // -----------------------------------------------------------------------------
 
-/// How long a running program may go without completing a scan before the watchdog stops it:
-/// ten intervals, and never less than two seconds, so that a host busy for a moment (a CI runner
-/// shares its cores with builds) does not fault a healthy program. A scan is bounded by [`BUDGET`] instructions, so a program that runs at
-/// all completes one well inside this; what the watchdog catches is a scan thread that has
-/// ended or stopped scanning.
+/// The watchdog's limit for a task that has no interval to scale it by, and its least for
+/// every task.
+const DEFAULT_WATCHDOG: Duration = Duration::from_secs(2);
+
+/// How long a cyclic task may owe a run before the watchdog stops the runtime: ten intervals,
+/// and never less than two seconds, so that a host busy for a moment (a CI runner shares its
+/// cores with builds) does not fault a healthy program. A run is bounded by [`BUDGET`]
+/// instructions, so a program that runs at all completes one well inside this; what the
+/// watchdog catches is a task that no longer ends runs, or a scheduler thread that has ended.
 fn watchdog_limit(interval_ms: u64) -> Duration {
-    Duration::from_millis(interval_ms.saturating_mul(10)).max(Duration::from_secs(2))
+    Duration::from_millis(interval_ms.saturating_mul(10)).max(DEFAULT_WATCHDOG)
 }
 
 /// The most variables one program may have forced at once.
 const FORCE_LIMIT: usize = 64;
 
-/// A variable held at a value: written before each scan, so the program reads it, and after,
-/// so what the program wrote does not stand.
-struct Forced {
-    /// The name as it was forced.
-    variable: String,
-    offset: u32,
-    value: VmValue,
-}
-
-struct Live {
-    memory: Vec<u8>,
-    mode: RuntimeMode,
-    fault: Option<String>,
-    scans: u64,
-    last_scan_us: u64,
-    max_scan_us: u64,
-    overruns: u64,
-    /// The tags of the last exchange, by URI.
-    inputs: HashMap<String, (Option<Value>, bool)>,
-    /// Whether an exchange has delivered the tags since the program was put in RUN.
-    fed: bool,
-    /// When the program was put in RUN: the zero of its clock.
-    since: Instant,
-    /// The variables held at a value. Only while in RUN: leaving it releases every one.
-    forces: Vec<Forced>,
-    /// When the program last showed it is being scanned: its first inputs after it was put in
-    /// RUN, then each scan it completed. `None` until it is fed. What the watchdog measures.
-    beat: Option<Instant>,
-    /// Whether it has been put in RUN since it was loaded: its memory then holds its values.
-    ran: bool,
-    /// Until then, the RETAIN values the host gave with the program, for its first warm start.
-    pending: Vec<RetainedValue>,
-    /// What it did with the running program's values it was started with, if any.
-    carry: CarryReport,
-}
-
-impl Live {
-    fn state(&self, plan: &Plan) -> RuntimeState {
-        RuntimeState {
-            mode: self.mode,
-            fault: self.fault.clone(),
-            program: plan.program.name.clone(),
-            version: plan.program.version.clone(),
-            scans: self.scans,
-            last_scan_us: self.last_scan_us,
-            max_scan_us: self.max_scan_us,
-            overruns: self.overruns,
-            // `beat` is set when a scan completes; before the first scan it is when the program
-            // was fed, which is not the age of anything a scan left.
-            scan_age_us: self
-                .beat
-                .filter(|_| self.scans > 0)
-                .map(|beat| beat.elapsed().as_micros().min(u64::MAX as u128) as u64),
-            forced: self
-                .forces
-                .iter()
-                .map(|f| ForcedValue {
-                    variable: f.variable.clone(),
-                    value: to_json(f.value),
-                })
-                .collect(),
-        }
-    }
-
-    /// Write every forced variable its value.
-    fn hold(&mut self) {
-        for f in &self.forces {
-            write(&mut self.memory, f.offset, f.value);
-        }
-    }
-
-    fn is_forced(&self, offset: u32) -> bool {
-        self.forces.iter().any(|f| f.offset == offset)
-    }
-
-    /// From its initial values, clock at zero, waiting for its first inputs. With `retained`
-    /// it is a warm restart: those values are put into its RETAIN variables over the initial
-    /// ones (IEC 61131-3 §6.5.6); without, a cold restart.
-    fn cold_run(
-        &mut self,
-        plan: &Plan,
-        retained: Option<Vec<RetainedValue>>,
-    ) -> Result<(), PluginError> {
-        let program = Program::load(&plan.bytes)
-            .map_err(|e| PluginError::RuntimeError(format!("the program does not load: {e:?}")))?;
-        cold_start(&program, &mut self.memory)
-            .map_err(|e| PluginError::RuntimeError(describe(e)))?;
-        if let Some(values) = retained {
-            for why in restore(plan, &mut self.memory, &values) {
-                tracing::warn!("a retained value was not taken: {why}");
-            }
-        }
-        self.ran = true;
-        self.pending.clear();
-        self.mode = RuntimeMode::Run;
-        self.fault = None;
-        self.forces.clear();
-        self.scans = 0;
-        self.last_scan_us = 0;
-        self.max_scan_us = 0;
-        self.overruns = 0;
-        self.fed = false;
-        self.beat = None;
-        self.since = Instant::now();
-        Ok(())
-    }
-
-    /// Stop the program for the watchdog, when it is due: a program in RUN, fed, that has
-    /// completed no scan within `limit`, or whose scan thread has ended. It then faults like a
-    /// program whose scan failed: every force is released, and the core writes the safe values.
-    fn watchdog(&mut self, limit: Duration, thread_ended: bool, now: Instant) {
-        if self.mode != RuntimeMode::Run || !self.fed {
-            return;
-        }
-        let why = if thread_ended {
-            "the scan thread has ended; load the program again".to_string()
-        } else {
-            let quiet = now.saturating_duration_since(self.beat.unwrap_or(now));
-            if quiet <= limit {
-                return;
-            }
-            format!(
-                "no scan completed for {} ms, past the watchdog's {} ms",
-                quiet.as_millis(),
-                limit.as_millis()
-            )
-        };
-        self.mode = RuntimeMode::Fault;
-        self.forces.clear();
-        self.fault = Some(format!("watchdog: {why}"));
-        tracing::error!("{}", self.fault.as_deref().unwrap_or_default());
-    }
-
-    /// Why nothing is reported, when nothing is.
-    fn silent_because(&self) -> Option<String> {
-        match self.mode {
-            RuntimeMode::Stop => Some("the program is stopped".to_string()),
-            RuntimeMode::Fault => Some(format!(
-                "the program faulted: {}",
-                self.fault.as_deref().unwrap_or("no reason recorded")
-            )),
-            RuntimeMode::Run if self.scans == 0 => {
-                Some("the program has not completed a scan yet".to_string())
-            }
-            RuntimeMode::Run => None,
-        }
-    }
-}
-
 struct Running {
-    plan: Arc<Plan>,
-    live: Arc<Mutex<Live>>,
+    layout: Arc<Layout>,
+    control: Arc<Control>,
     quit: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
-}
-
-fn lock(live: &Mutex<Live>) -> std::sync::MutexGuard<'_, Live> {
-    live.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// The scan thread: one scan every interval while the program is in RUN and has been fed.
-fn scan_loop(plan: Arc<Plan>, live: Arc<Mutex<Live>>, quit: Arc<AtomicBool>) {
-    let Ok(program) = Program::load(&plan.bytes) else {
-        let mut l = lock(&live);
-        l.mode = RuntimeMode::Fault;
-        l.fault = Some("the program does not load".to_string());
-        return;
-    };
-    let mut stack = vec![0u64; program.stack_depth().max(1)];
-    let mut calls = vec![Frame::default(); program.call_depth()];
-    let interval = Duration::from_millis(plan.program.interval_ms);
-    let mut next = Instant::now();
-    while !quit.load(Ordering::SeqCst) {
-        let now = Instant::now();
-        if now < next {
-            // Short sleeps, so the thread ends promptly when asked to.
-            std::thread::sleep((next - now).min(Duration::from_millis(20)));
-            continue;
-        }
-        let late = now.duration_since(next) >= interval;
-        next = if late {
-            now + interval
-        } else {
-            next + interval
-        };
-
-        let mut guard = lock(&live);
-        let l = &mut *guard;
-        if l.mode != RuntimeMode::Run || !l.fed {
-            continue;
-        }
-        if late {
-            l.overruns += 1;
-        }
-        // The inputs of this scan: what the last exchange delivered.
-        for (var, tag, of) in &plan.inputs {
-            let Some((value, good)) = l.inputs.get(tag) else {
-                continue;
-            };
-            match of {
-                InputOf::Good => {
-                    write(&mut l.memory, var.offset, VmValue::Bool(*good));
-                }
-                InputOf::Value => {
-                    if let (true, Some(v)) = (*good, value.as_ref().and_then(|v| to_vm(var.ty, v)))
-                    {
-                        write(&mut l.memory, var.offset, v);
-                    }
-                }
-            }
-        }
-        l.hold();
-        let started = Instant::now();
-        let now_ns = l.since.elapsed().as_nanos().min(i64::MAX as u128) as i64;
-        match scan(
-            &program,
-            &mut l.memory,
-            &mut stack,
-            &mut calls,
-            now_ns,
-            BUDGET,
-        ) {
-            Ok(_) => {
-                l.hold();
-                l.beat = Some(Instant::now());
-                let us = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
-                l.scans += 1;
-                l.last_scan_us = us;
-                l.max_scan_us = l.max_scan_us.max(us);
-            }
-            Err(fault) => {
-                l.mode = RuntimeMode::Fault;
-                l.forces.clear();
-                l.fault = Some(format!("scan {} stopped: {}", l.scans + 1, describe(fault)));
-                tracing::error!("{}", l.fault.as_deref().unwrap_or_default());
-            }
-        }
-    }
 }
 
 /// The engine of the runtime module.
@@ -998,6 +833,7 @@ impl VmEngine {
     fn halt(&mut self) {
         if let Some(mut running) = self.running.take() {
             running.quit.store(true, Ordering::SeqCst);
+            running.control.notify();
             if let Some(thread) = running.thread.take() {
                 let _ = thread.join();
             }
@@ -1009,6 +845,40 @@ impl Drop for VmEngine {
     fn drop(&mut self) {
         self.halt();
     }
+}
+
+/// The running values of an online change, each for the program its path names, and what was
+/// not taken because it names no program of this runtime.
+fn split_carried(
+    layout: &Layout,
+    values: &[RetainedValue],
+) -> (Vec<Vec<RetainedValue>>, Vec<NotCarried>) {
+    let mut each = vec![Vec::new(); layout.plans.len()];
+    let mut dropped = Vec::new();
+    for value in values {
+        match layout.split(&value.path) {
+            Ok((p, path)) => each[p].push(RetainedValue {
+                path: path.to_string(),
+                ..value.clone()
+            }),
+            Err(why) => dropped.push(NotCarried {
+                variable: value.path.clone(),
+                why,
+            }),
+        }
+    }
+    (each, dropped)
+}
+
+/// A path of program `p` named as the runtime names it, in a list of values.
+fn named(layout: &Layout, p: usize, values: Vec<RetainedValue>) -> Vec<RetainedValue> {
+    values
+        .into_iter()
+        .map(|v| RetainedValue {
+            path: layout.full_name(p, &v.path),
+            ..v
+        })
+        .collect()
 }
 
 #[async_trait]
@@ -1029,48 +899,50 @@ impl MythosPlugin for VmEngine {
         Ok(())
     }
 
-    /// Load the program, and put it in RUN if the configuration says so.
+    /// Load the programs, and put the runtime in RUN if the configuration says so.
     async fn start(&mut self, _ctx: &PluginContext, config: &Value) -> Result<(), PluginError> {
         self.halt();
         let Loaded {
-            plan,
+            layout,
             run,
             retained,
             carried,
         } = plan(config)?;
-        let mut live = Live {
-            memory: vec![0u8; plan.memory_size],
-            mode: RuntimeMode::Stop,
-            fault: None,
-            scans: 0,
-            last_scan_us: 0,
-            max_scan_us: 0,
-            overruns: 0,
-            inputs: HashMap::new(),
-            fed: false,
-            since: Instant::now(),
-            forces: Vec::new(),
-            beat: None,
-            ran: false,
-            pending: retained,
-            carry: CarryReport::default(),
-        };
+        let mut shared = Shared::new(&layout, retained);
         if run {
-            let retained = std::mem::take(&mut live.pending);
-            live.cold_run(&plan, Some(retained))?;
-            // An online change: the running program's values over the initial and RETAIN ones,
-            // and its clock going on from where it was, before the first scan.
+            shared.restart(&layout, false)?;
+            // An online change: the running programs' values over the initial and RETAIN ones,
+            // the clock going on from where it was, before the first run; no startup task runs.
             if let Some(carried) = &carried {
-                live.carry = carry(&plan, &mut live.memory, &carried.values);
+                let (each, dropped) = split_carried(&layout, &carried.values);
+                let mut report = CarryReport {
+                    given: true,
+                    dropped,
+                    ..CarryReport::default()
+                };
+                for (p, values) in each.iter().enumerate() {
+                    let r = carry(&layout.plans[p], &mut shared.programs[p].image, values);
+                    report.carried += r.carried;
+                    let full = |n: NotCarried| NotCarried {
+                        variable: layout.full_name(p, &n.variable),
+                        why: n.why,
+                    };
+                    report.dropped.extend(r.dropped.into_iter().map(full));
+                    report
+                        .initialized
+                        .extend(r.initialized.into_iter().map(full));
+                }
+                shared.carry = report;
                 let clock = Duration::from_nanos(carried.clock_ns.max(0) as u64);
                 if let Some(since) = Instant::now().checked_sub(clock) {
-                    live.since = since;
+                    shared.since = since;
                 }
+                shared.begin_tasks(&layout, true);
             }
         } else if let Some(carried) = &carried {
-            // A program loaded in STOP is not changed online: it starts when it is put in RUN,
+            // A runtime loaded in STOP is not changed online: it starts when it is put in RUN,
             // from its initial values and its RETAIN ones.
-            live.carry = CarryReport {
+            shared.carry = CarryReport {
                 given: true,
                 carried: 0,
                 dropped: carried
@@ -1084,19 +956,20 @@ impl MythosPlugin for VmEngine {
                 initialized: Vec::new(),
             };
         }
-        let plan = Arc::new(plan);
-        let live = Arc::new(Mutex::new(live));
+        let layout = Arc::new(layout);
+        let control = Arc::new(Control::new(shared));
         let quit = Arc::new(AtomicBool::new(false));
         let thread = std::thread::Builder::new()
             .name("logic-scan".to_string())
             .spawn({
-                let (plan, live, quit) = (Arc::clone(&plan), Arc::clone(&live), Arc::clone(&quit));
-                move || scan_loop(plan, live, quit)
+                let (layout, control, quit) =
+                    (Arc::clone(&layout), Arc::clone(&control), Arc::clone(&quit));
+                move || tasks::schedule(layout, control, quit)
             })
             .map_err(|e| PluginError::StartFailed(format!("the scan thread did not start: {e}")))?;
         self.running = Some(Running {
-            plan,
-            live,
+            layout,
+            control,
             quit,
             thread: Some(thread),
         });
@@ -1110,7 +983,7 @@ impl MythosPlugin for VmEngine {
 
     async fn health_check(&self) -> Result<PluginHealthReport, PluginError> {
         Ok(PluginHealthReport::healthy(match &self.running {
-            Some(r) => format!("{:?}", lock(&r.live).mode),
+            Some(r) => format!("{:?}", r.control.lock().mode),
             None => "no program is loaded".to_string(),
         }))
     }
@@ -1119,13 +992,13 @@ impl MythosPlugin for VmEngine {
 #[async_trait]
 impl ProtocolDriver for VmEngine {
     async fn describe_config(&self, config: &Value) -> Result<Vec<TagDeclaration>, PluginError> {
-        Ok(declarations(&plan(config)?.plan))
+        Ok(declarations(&plan(config)?.layout))
     }
 
     fn declared_tags(&self) -> Vec<TagDeclaration> {
         self.running
             .as_ref()
-            .map(|r| declarations(&r.plan))
+            .map(|r| declarations(&r.layout))
             .unwrap_or_default()
     }
 
@@ -1135,8 +1008,8 @@ impl ProtocolDriver for VmEngine {
         ))
     }
 
-    /// An operator writes a setpoint: a published variable marked writable. It takes effect
-    /// at the next scan.
+    /// An operator writes a setpoint: a published variable marked writable. It is in the
+    /// program's image at once, and its program takes it when its task next begins a run.
     async fn write_tag(
         &mut self,
         _ctx: &PluginContext,
@@ -1144,11 +1017,17 @@ impl ProtocolDriver for VmEngine {
         value: &Value,
     ) -> Result<(), PluginError> {
         let running = self.running()?;
-        let (var, _, writable) = running
-            .plan
-            .published
+        let (p, (var, _, writable)) = running
+            .layout
+            .plans
             .iter()
-            .find(|(_, tag, _)| tag == tag_uri)
+            .enumerate()
+            .find_map(|(p, plan)| {
+                plan.published
+                    .iter()
+                    .find(|(_, tag, _)| tag == tag_uri)
+                    .map(|b| (p, b))
+            })
             .ok_or_else(|| {
                 PluginError::InvalidTag(format!("the program publishes no tag {tag_uri}"))
             })?;
@@ -1162,18 +1041,21 @@ impl ProtocolDriver for VmEngine {
                 "{value} does not fit the variable behind {tag_uri}"
             ))
         })?;
-        let mut l = lock(&running.live);
-        if l.mode != RuntimeMode::Run {
+        let mut g = running.control.lock();
+        if g.mode != RuntimeMode::Run {
             return Err(PluginError::InvalidTag(
                 "the program is not running, so the setpoint was not taken".to_string(),
             ));
         }
-        if l.is_forced(var.offset) {
+        let live = &mut g.programs[p];
+        if live.is_forced(var.offset) {
             return Err(PluginError::InvalidTag(format!(
                 "{tag_uri} is forced by an engineer, so the setpoint was not taken"
             )));
         }
-        write(&mut l.memory, var.offset, v);
+        live.setpoints.retain(|(offset, _)| *offset != var.offset);
+        live.setpoints.push((var.offset, v));
+        write(&mut live.image, var.offset, v);
         Ok(())
     }
 }
@@ -1186,30 +1068,28 @@ impl RuntimeEngine for VmEngine {
         inputs: Vec<WireInput>,
     ) -> Result<ExchangeReply, PluginError> {
         let running = self.running()?;
-        let plan = &running.plan;
-        let mut l = lock(&running.live);
-        for input in inputs {
-            l.inputs.insert(input.tag, (input.value, input.good));
-        }
-        l.fed = true;
-        if l.beat.is_none() {
-            l.beat = Some(Instant::now());
-        }
-        // Checked before anything is reported: a program the watchdog stops reports no value
+        let layout = &running.layout;
+        let mut g = running.control.lock();
+        g.feed(
+            layout,
+            inputs
+                .into_iter()
+                .map(|i| (i.tag, i.value, i.good))
+                .collect(),
+        );
+        // Checked before anything is reported: a runtime the watchdog stops reports no value
         // and asks for no write in this very exchange.
         let ended = running.thread.as_ref().is_none_or(JoinHandle::is_finished);
-        l.watchdog(
-            watchdog_limit(plan.program.interval_ms),
-            ended,
-            Instant::now(),
-        );
+        g.watchdog(layout, ended, Instant::now());
+        running.control.notify();
 
-        let silent = l.silent_because();
-        let samples = plan
-            .published
-            .iter()
-            .map(
-                |(var, tag, _)| match (&silent, read(&l.memory, var.offset, var.ty)) {
+        let mut samples = Vec::new();
+        let mut outputs = Vec::new();
+        for (p, plan) in layout.plans.iter().enumerate() {
+            let silent = g.silent_because(layout, p);
+            let image = &g.programs[p].image;
+            samples.extend(plan.published.iter().map(|(var, tag, _)| {
+                let sample = match (&silent, read(image, var.offset, var.ty)) {
                     (None, Some(v)) => TagSample::value(tag.clone(), to_sample(v)),
                     (Some(why), _) => {
                         TagSample::fault(tag.clone(), SampleFault::DeviceFailure(why.clone()))
@@ -1220,25 +1100,20 @@ impl RuntimeEngine for VmEngine {
                             "the variable lies outside the program's memory".into(),
                         ),
                     ),
-                },
-            )
-            .map(|s| WireSample::from(&s))
-            .collect();
-        let outputs = match silent {
-            Some(_) => Vec::new(),
-            None => plan
-                .outputs
-                .iter()
-                .filter_map(|(var, tag)| {
-                    read(&l.memory, var.offset, var.ty).map(|v| WireOutput {
+                };
+                WireSample::from(&sample)
+            }));
+            if silent.is_none() {
+                outputs.extend(plan.outputs.iter().filter_map(|(var, tag)| {
+                    read(image, var.offset, var.ty).map(|v| WireOutput {
                         tag: tag.clone(),
                         value: to_json(v),
                     })
-                })
-                .collect(),
-        };
+                }));
+            }
+        }
         Ok(ExchangeReply {
-            state: l.state(plan),
+            state: g.state(layout),
             samples,
             outputs,
         })
@@ -1251,28 +1126,14 @@ impl RuntimeEngine for VmEngine {
         cold: bool,
     ) -> Result<RuntimeState, PluginError> {
         let running = self.running()?;
-        let mut l = lock(&running.live);
-        match (run, l.mode) {
+        let mut g = running.control.lock();
+        match (run, g.mode) {
             (true, RuntimeMode::Run) if !cold => {}
-            (true, _) => {
-                // A warm restart takes what its RETAIN variables held when it stopped, or what
-                // the host gave if it has not run since it was loaded.
-                let retained = if cold {
-                    None
-                } else if l.ran {
-                    Some(snapshot(&running.plan, &l.memory))
-                } else {
-                    Some(std::mem::take(&mut l.pending))
-                };
-                l.cold_run(&running.plan, retained)?;
-            }
-            (false, _) => {
-                l.mode = RuntimeMode::Stop;
-                l.fault = None;
-                l.forces.clear();
-            }
+            (true, _) => g.restart(&running.layout, cold)?,
+            (false, _) => g.stop(),
         }
-        Ok(l.state(&running.plan))
+        running.control.notify();
+        Ok(g.state(&running.layout))
     }
 
     async fn watch(
@@ -1281,74 +1142,93 @@ impl RuntimeEngine for VmEngine {
         variables: Vec<String>,
     ) -> Result<WatchReply, PluginError> {
         let running = self.running()?;
-        let plan = &running.plan;
-        // Under the lock the scan thread takes for a whole scan: every value is of one scan.
-        let l = lock(&running.live);
+        let layout = &running.layout;
+        // Images, under one lock: every value as its program's last completed run left it.
+        let g = running.control.lock();
         let values = variables
             .into_iter()
-            .map(|variable| match locate(plan, &variable) {
-                Err(why) => WatchedValue {
-                    variable,
-                    ty: None,
-                    value: None,
-                    error: Some(why),
-                    forced: false,
-                },
-                Ok((offset, shape, ty)) => {
-                    let (value, error) = match shape {
-                        Shape::Value(elem) => watched(read(&l.memory, offset, elem)),
-                        Shape::Text(n) => watched_text(&l.memory, offset, n),
-                    };
-                    WatchedValue {
+            .map(|variable| {
+                let found = layout.split(&variable).and_then(|(p, path)| {
+                    locate(&layout.plans[p], path).map(|(offset, shape, ty)| (p, offset, shape, ty))
+                });
+                match found {
+                    Err(why) => WatchedValue {
                         variable,
-                        ty: Some(ty),
-                        value,
-                        error,
-                        forced: matches!(shape, Shape::Value(_)) && l.is_forced(offset),
+                        ty: None,
+                        value: None,
+                        error: Some(why),
+                        forced: false,
+                    },
+                    Ok((p, offset, shape, ty)) => {
+                        let live = &g.programs[p];
+                        let (value, error) = match shape {
+                            Shape::Value(elem) => watched(read(&live.image, offset, elem)),
+                            Shape::Text(n) => watched_text(&live.image, offset, n),
+                        };
+                        WatchedValue {
+                            variable,
+                            ty: Some(ty),
+                            value,
+                            error,
+                            forced: matches!(shape, Shape::Value(_)) && live.is_forced(offset),
+                        }
                     }
                 }
             })
             .collect();
         Ok(WatchReply {
-            state: l.state(plan),
+            state: g.state(layout),
             values,
         })
     }
 
-    /// The values of its RETAIN variables now; before it has run, the values the host gave, so
-    /// that a program loaded in STOP never has its kept values replaced by zeros.
+    /// The values of its RETAIN variables now; for a program that has not run, the values the
+    /// host gave, so that a runtime loaded in STOP never has its kept values replaced by zeros.
     async fn retained(&mut self, _ctx: &PluginContext) -> Result<Vec<RetainedValue>, PluginError> {
         let running = self.running()?;
-        let l = lock(&running.live);
-        Ok(if l.ran {
-            snapshot(&running.plan, &l.memory)
-        } else {
-            l.pending.clone()
-        })
+        let layout = &running.layout;
+        let g = running.control.lock();
+        let mut values = Vec::new();
+        for (p, live) in g.programs.iter().enumerate() {
+            let mine = if live.ran {
+                snapshot(&layout.plans[p], &live.image)
+            } else {
+                live.pending.clone()
+            };
+            values.extend(named(layout, p, mine));
+        }
+        values.extend(g.unclaimed.iter().cloned());
+        Ok(values)
     }
 
-    /// Every variable's value now, and the clock, under the lock a scan holds: all of one scan.
-    /// Only in RUN: a program that is not running has no running state to carry on.
+    /// Every variable's value now, and the clock, from the images: each program as its last
+    /// completed run left it. Only in RUN: a runtime that is not running has no running state
+    /// to carry on.
     async fn variables(&mut self, _ctx: &PluginContext) -> Result<ProgramVariables, PluginError> {
         let running = self.running()?;
-        let l = lock(&running.live);
-        if l.mode != RuntimeMode::Run {
+        let layout = &running.layout;
+        let g = running.control.lock();
+        if g.mode != RuntimeMode::Run {
             return Err(PluginError::RuntimeError(
                 "the program is not in RUN, so it has no running values to carry on".to_string(),
             ));
         }
+        let mut values = Vec::new();
+        for (p, live) in g.programs.iter().enumerate() {
+            values.extend(named(layout, p, all_values(&layout.plans[p], &live.image)));
+        }
         Ok(ProgramVariables {
-            clock_ns: l.since.elapsed().as_nanos().min(i64::MAX as u128) as i64,
-            values: all_values(&running.plan, &l.memory),
+            clock_ns: g.since.elapsed().as_nanos().min(i64::MAX as u128) as i64,
+            values,
         })
     }
 
-    /// What it did with the running program's values it was started with.
+    /// What it did with the running values it was started with.
     async fn carried(&mut self, _ctx: &PluginContext) -> Result<CarryReport, PluginError> {
-        Ok(lock(&self.running()?.live).carry.clone())
+        Ok(self.running()?.control.lock().carry.clone())
     }
 
-    /// Hold a variable at a value. Only in RUN: a program that is not running has nothing to
+    /// Hold a variable at a value. Only in RUN: a runtime that is not running has nothing to
     /// hold, and leaving RUN releases every force, so none outlives the run it was set in.
     async fn force(
         &mut self,
@@ -1357,16 +1237,18 @@ impl RuntimeEngine for VmEngine {
         value: Value,
     ) -> Result<RuntimeState, PluginError> {
         let running = self.running()?;
-        let plan = &running.plan;
-        let mut l = lock(&running.live);
-        if l.mode != RuntimeMode::Run {
+        let layout = &running.layout;
+        let mut g = running.control.lock();
+        if g.mode != RuntimeMode::Run {
             return Err(PluginError::RuntimeError(
                 "the program is not running: a variable is forced only while it runs, and \
                  stopping it releases every force"
                     .to_string(),
             ));
         }
-        let (offset, shape, ty) = locate(plan, &variable).map_err(PluginError::InvalidTag)?;
+        let (p, path) = layout.split(&variable).map_err(PluginError::InvalidTag)?;
+        let (offset, shape, ty) =
+            locate(&layout.plans[p], path).map_err(PluginError::InvalidTag)?;
         let elem = match shape {
             Shape::Value(ElemType::Time) | Shape::Text(_) => {
                 return Err(PluginError::InvalidTag(format!(
@@ -1380,8 +1262,9 @@ impl RuntimeEngine for VmEngine {
                 "{value} is not a value of {variable}, a {ty}: nothing was forced"
             ))
         })?;
-        let count = l.forces.len();
-        match l.forces.iter_mut().find(|f| f.offset == offset) {
+        let live = &mut g.programs[p];
+        let count = live.forces.len();
+        match live.forces.iter_mut().find(|f| f.offset == offset) {
             Some(f) => {
                 f.variable = variable;
                 f.value = held;
@@ -1391,39 +1274,43 @@ impl RuntimeEngine for VmEngine {
                     "{FORCE_LIMIT} variables are forced already, the most one program may have"
                 )))
             }
-            None => l.forces.push(Forced {
+            None => live.forces.push(Forced {
                 variable,
                 offset,
                 value: held,
             }),
         }
-        // At once, so an exchange before the next scan already gives the forced value.
-        write(&mut l.memory, offset, held);
-        Ok(l.state(plan))
+        // Into the image at once, so an exchange before the next run already gives it; the
+        // program's working memory takes it when its task next begins a run.
+        write(&mut live.image, offset, held);
+        Ok(g.state(layout))
     }
 
     /// Release one forced variable, or every one. The program decides its value again from its
-    /// next scan.
+    /// next run.
     async fn unforce(
         &mut self,
         _ctx: &PluginContext,
         variable: Option<String>,
     ) -> Result<RuntimeState, PluginError> {
         let running = self.running()?;
-        let plan = &running.plan;
-        let mut l = lock(&running.live);
+        let layout = &running.layout;
+        let mut g = running.control.lock();
         match variable {
-            None => l.forces.clear(),
+            None => g.programs.iter_mut().for_each(|p| p.forces.clear()),
             Some(variable) => {
-                let (offset, _, _) = locate(plan, &variable).map_err(PluginError::InvalidTag)?;
-                let before = l.forces.len();
-                l.forces.retain(|f| f.offset != offset);
-                if l.forces.len() == before {
+                let (p, path) = layout.split(&variable).map_err(PluginError::InvalidTag)?;
+                let (offset, _, _) =
+                    locate(&layout.plans[p], path).map_err(PluginError::InvalidTag)?;
+                let forces = &mut g.programs[p].forces;
+                let before = forces.len();
+                forces.retain(|f| f.offset != offset);
+                if forces.len() == before {
                     return Err(PluginError::InvalidTag(format!("{variable} is not forced")));
                 }
             }
         }
-        Ok(l.state(plan))
+        Ok(g.state(layout))
     }
 }
 
@@ -1448,30 +1335,6 @@ mod tests {
         }
     }
 
-    fn live(mode: RuntimeMode, fed: bool, beat: Option<Instant>) -> Live {
-        Live {
-            memory: vec![0; 8],
-            mode,
-            fault: None,
-            scans: 3,
-            last_scan_us: 1,
-            max_scan_us: 1,
-            overruns: 0,
-            inputs: HashMap::new(),
-            fed,
-            since: Instant::now(),
-            forces: vec![Forced {
-                variable: "x".into(),
-                offset: 0,
-                value: VmValue::Int(1),
-            }],
-            beat,
-            ran: true,
-            pending: Vec::new(),
-            carry: CarryReport::default(),
-        }
-    }
-
     fn retaining(symbols: Value) -> Result<Plan, PluginError> {
         let bytes = include_bytes!(
             "../../../crates/mythos-logic-compiler/tests/fixtures/format1/integers_and_control.mlbc"
@@ -1480,7 +1343,7 @@ mod tests {
             "name": "P", "version": "1", "interval_ms": 10,
             "code": hex::encode(bytes), "symbols": symbols,
         }}))
-        .map(|loaded| loaded.plan)
+        .map(|loaded| loaded.layout.plans.into_iter().next().unwrap())
     }
 
     #[test]
@@ -1600,73 +1463,6 @@ mod tests {
         assert_eq!(watchdog_limit(200), Duration::from_secs(2));
         assert_eq!(watchdog_limit(500), Duration::from_secs(5));
         assert_eq!(watchdog_limit(u64::MAX), Duration::from_millis(u64::MAX));
-    }
-
-    #[test]
-    fn the_watchdog_faults_a_running_program_that_completes_no_scan_and_only_that() {
-        let now = Instant::now();
-        let limit = Duration::from_secs(1);
-        let long_ago = now - Duration::from_millis(1_500);
-
-        let mut quiet = live(RuntimeMode::Run, true, Some(long_ago));
-        quiet.watchdog(limit, false, now);
-        assert_eq!(quiet.mode, RuntimeMode::Fault);
-        assert!(
-            quiet
-                .fault
-                .as_deref()
-                .is_some_and(|f| f.starts_with("watchdog: no scan completed for 1500 ms")),
-            "{:?}",
-            quiet.fault
-        );
-        assert!(quiet.forces.is_empty(), "a fault releases every force");
-
-        let mut ended = live(RuntimeMode::Run, true, Some(now));
-        ended.watchdog(limit, true, now);
-        assert_eq!(ended.mode, RuntimeMode::Fault);
-        assert_eq!(
-            ended.fault.as_deref(),
-            Some("watchdog: the scan thread has ended; load the program again")
-        );
-
-        // Scanning, not yet fed, or not running: left as it is.
-        for (mode, fed, beat, thread_ended) in [
-            (
-                RuntimeMode::Run,
-                true,
-                Some(now - Duration::from_millis(900)),
-                false,
-            ),
-            (RuntimeMode::Run, false, None, true),
-            (RuntimeMode::Stop, true, Some(long_ago), true),
-            (RuntimeMode::Fault, true, Some(long_ago), true),
-        ] {
-            let mut l = live(mode, fed, beat);
-            l.watchdog(limit, thread_ended, now);
-            assert_eq!(l.mode, mode);
-            assert_eq!(l.forces.len(), 1);
-        }
-    }
-
-    #[test]
-    fn the_state_says_how_long_ago_a_scan_completed_and_nothing_before_the_first() {
-        let plan = retaining(json!([])).unwrap();
-        let ago = Duration::from_millis(1_500);
-        let stalled = live(RuntimeMode::Run, true, Some(Instant::now() - ago));
-        let age = stalled
-            .state(&plan)
-            .scan_age_us
-            .expect("a scan has completed");
-        assert!(age >= ago.as_micros() as u64, "{age} µs");
-
-        // Fed, no scan completed yet: `beat` is when it was fed, which is not a scan's age.
-        let mut fed = live(RuntimeMode::Run, true, Some(Instant::now()));
-        fed.scans = 0;
-        assert_eq!(fed.state(&plan).scan_age_us, None);
-        assert_eq!(
-            live(RuntimeMode::Run, false, None).state(&plan).scan_age_us,
-            None
-        );
     }
 
     #[test]
@@ -2003,6 +1799,13 @@ mod tests {
         assert_eq!(
             m.profile["format_version"],
             json!(mythos_logic_vm::FORMAT_VERSION)
+        );
+        // It says it runs tasks, of every kind, in the form the core reads.
+        assert_eq!(
+            mythos_module::protocol::TaskSupport::of(&m.profile)
+                .expect("the profile says it runs tasks")
+                .kinds,
+            ["cycle", "cyclic", "startup", "event"]
         );
     }
 
