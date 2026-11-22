@@ -509,11 +509,23 @@ pub fn check_data(programs: &[&RuntimeProgram], data: &[DataBlock]) -> Result<()
                 b.layout
             ));
         }
-        for m in &b.members {
-            if u64::from(m.offset) + u64::from(m.size) > u64::from(b.size) {
+        for (j, m) in b.members.iter().enumerate() {
+            let end = u64::from(m.offset) + u64::from(m.size);
+            if end > u64::from(b.size) {
                 return Err(format!(
                     "data block '{name}': member '{}' lies outside its {} bytes",
                     m.name, b.size
+                ));
+            }
+            // The hand-over copies each written member whole: two members that share a byte
+            // would let two programs write it.
+            if let Some(o) = b.members[..j].iter().find(|o| {
+                u64::from(o.offset) < end
+                    && u64::from(m.offset) < u64::from(o.offset) + u64::from(o.size)
+            }) {
+                return Err(format!(
+                    "data block '{name}': members '{}' and '{}' overlap",
+                    o.name, m.name
                 ));
             }
         }
@@ -1464,6 +1476,29 @@ mod tests {
             check(&[&w], &[b]),
             "data block 'S': member 'b' lies outside its 8 bytes"
         );
+        // R5a, members that overlap: `a` widened over `b`, either way round, and checked before
+        // any program's use (whose members must equal the runtime's anyway).
+        let mut b = block("S");
+        b.members[0].size = 8;
+        assert_eq!(
+            check(&[&w], &[b.clone()]),
+            "data block 'S': members 'a' and 'b' overlap"
+        );
+        b.members.swap(0, 1);
+        assert_eq!(
+            check(&[&w], &[b]),
+            "data block 'S': members 'b' and 'a' overlap"
+        );
+        // Touching is not overlapping; a member of no bytes overlaps none.
+        let mut b = block("S");
+        b.members[0].size = 4;
+        b.members.push(DataBlockMember {
+            name: "empty".into(),
+            ty: "T0".into(),
+            offset: 4,
+            size: 0,
+        });
+        assert_eq!(check_data(&[], &[b]), Ok(()));
         // R6.
         let mut twice = user("w", "S", &[]);
         let mut again = twice.data[0].clone();

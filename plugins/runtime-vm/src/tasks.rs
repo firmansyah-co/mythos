@@ -551,17 +551,10 @@ impl Shared {
         }
         self.restart_blocks(layout, cold);
         for value in std::mem::take(&mut self.unclaimed) {
-            if value.layout.is_some() {
-                tracing::warn!(
-                    "a retained value was not taken: {}: the runtime has no data block of that name",
-                    value.path
-                );
-            } else {
-                tracing::warn!(
-                    "a retained value was not taken: {}: the runtime has no program of that name",
-                    value.path
-                );
-            }
+            tracing::warn!(
+                "a retained value was not taken: {}",
+                unclaimed_why(layout, &value)
+            );
         }
         self.mode = RuntimeMode::Run;
         self.fault = None;
@@ -710,7 +703,45 @@ impl Shared {
                 }
             }
         }
-        hold(&self.programs[p].forces, &mut work[p].memory);
+        let w = &mut work[p];
+        hold(&self.programs[p].forces, &mut w.memory);
+        for j in 0..layout.block_of[p].len() {
+            let copy = layout.copy_range(p, j);
+            w.handed[copy.clone()].copy_from_slice(&w.memory[copy]);
+        }
+    }
+
+    /// Task `k`'s run has ended: each of its programs has left alone every member it does not
+    /// write, as its data says. A program whose code writes a member its data says it does not
+    /// write runs on a configuration that is not the one its code was built with: its writes
+    /// would never be handed over, and its copy would show a value no other program sees.
+    /// Forces are held in what it was handed too, so a force set or released during the run
+    /// is not taken for a write.
+    fn check_reads(&self, layout: &Layout, k: usize, work: &mut [Work]) -> Result<(), String> {
+        for &p in &layout.tasks[k].programs {
+            if !layout.declares(p) {
+                continue;
+            }
+            let w = &mut work[p];
+            let forces = &self.programs[p].forces;
+            hold(forces, &mut w.memory);
+            hold(forces, &mut w.handed);
+            for (j, u) in layout.plans[p].program.data.iter().enumerate() {
+                for (i, m) in u.members.iter().enumerate() {
+                    let r = layout.member_range(p, j, i);
+                    if !m.written && w.memory[r.clone()] != w.handed[r] {
+                        return Err(format!(
+                            "task '{}' program '{}' wrote member '{}' of data block '{}', which its data says it does not write: its data is not the one its code was built with",
+                            layout.tasks[k].config.name,
+                            layout.plans[p].program.name,
+                            m.name,
+                            u.name
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Task `k`'s run has ended: each of its programs, in order, holds its forces and copies
@@ -1000,6 +1031,11 @@ impl Shared {
     /// The end of a run of task `k` at `now`: its programs' forces written again, their working
     /// memory copied to their images, the setpoints written since put back over them.
     fn finish(&mut self, layout: &Layout, k: usize, work: &mut [Work], now: i64) {
+        // A program that wrote what its data says it does not: the run hands nothing over.
+        if let Err(why) = self.check_reads(layout, k, work) {
+            self.fail(why);
+            return;
+        }
         // The master and the images change together: a reader of another task sees this
         // task's run whole or not at all.
         self.hand_out(layout, k, work);
@@ -1026,6 +1062,24 @@ impl Shared {
         );
         self.tasks[k].owed_since =
             owed.map(|ns| self.since + Duration::from_nanos(ns.max(0) as u64));
+    }
+}
+
+/// Why a RETAIN value the host gave was not taken by any program or data block of this
+/// runtime ([`Shared::unclaimed`]), as the module's log says it at the first RUN.
+fn unclaimed_why(layout: &Layout, value: &RetainedValue) -> String {
+    let path = &value.path;
+    if value.layout.is_none() {
+        return format!("{path}: the runtime has no program of that name");
+    }
+    if layout
+        .blocks
+        .iter()
+        .any(|b| b.config.name.eq_ignore_ascii_case(path))
+    {
+        format!("{path}: a value for this data block was given before it, and only the first can be taken")
+    } else {
+        format!("{path}: the runtime has no data block of that name")
     }
 }
 
@@ -1071,6 +1125,10 @@ struct Work {
     memory: Vec<u8>,
     stack: Vec<u64>,
     calls: Vec<Frame>,
+    /// What the program was handed in at the start of its run, at the place of its copies of
+    /// data blocks in `memory`: the members it does not write must be the same at its end.
+    /// Empty for a program that declares no block.
+    handed: Vec<u8>,
 }
 
 /// A task's run in progress: which of its programs runs, and how far it is.
@@ -1105,10 +1163,16 @@ pub(crate) fn schedule(layout: Arc<Layout>, control: Arc<Control>, quit: Arc<Ato
     };
     let mut work: Vec<Work> = programs
         .iter()
-        .map(|p| Work {
+        .enumerate()
+        .map(|(i, p)| Work {
             memory: vec![0u8; p.memory_size()],
             stack: vec![0u64; p.stack_depth().max(1)],
             calls: vec![Frame::default(); p.call_depth()],
+            handed: if layout.declares(i) {
+                vec![0u8; p.memory_size()]
+            } else {
+                Vec::new()
+            },
         })
         .collect();
     let mut runs: Vec<Option<TaskRun>> = vec![None; layout.tasks.len()];
@@ -1365,6 +1429,7 @@ mod tests {
                 memory: vec![0u8; p.memory_size],
                 stack: Vec::new(),
                 calls: Vec::new(),
+                handed: vec![0u8; p.memory_size],
             })
             .collect();
         (layout, work)
@@ -1497,6 +1562,7 @@ mod tests {
                 memory: vec![0u8; p.memory_size],
                 stack: Vec::new(),
                 calls: Vec::new(),
+                handed: vec![0u8; p.memory_size],
             })
             .collect();
         (layout, work)
@@ -1554,6 +1620,73 @@ mod tests {
         assert_eq!(
             g.blocks[0].master.as_deref().unwrap(),
             &[100i32.to_le_bytes(), 201i32.to_le_bytes()].concat()[..]
+        );
+    }
+
+    #[test]
+    fn a_program_that_writes_a_member_its_data_says_it_does_not_write_is_caught_at_its_tasks_end() {
+        let (layout, mut work) = three_sharing();
+        let (a, b) = (0, 1);
+        let mut g = Shared::new(&layout, Vec::new());
+        g.restart(&layout, true).unwrap();
+        let set = |work: &mut [Work], p: usize, i: usize, v: i32| {
+            work[p].memory[layout.member_range(p, 0, i)].copy_from_slice(&v.to_le_bytes());
+        };
+        g.hand_in(&layout, a, &mut work);
+        g.hand_in(&layout, b, &mut work);
+        // Each writes its own member, and only that: the task run is whole.
+        set(&mut work, a, 0, 7);
+        set(&mut work, b, 1, 8);
+        assert_eq!(g.check_reads(&layout, 0, &mut work), Ok(()));
+        // A force set during the run on a member A does not write is not A's write.
+        let at = layout.member_range(a, 0, 1).start as u32;
+        g.programs[a].forces.push(Forced {
+            variable: "S.m".into(),
+            offset: at,
+            value: VmValue::Dint(55),
+        });
+        assert_eq!(g.check_reads(&layout, 0, &mut work), Ok(()));
+        g.programs[a].forces.clear();
+        // A's code writes m, which its data says only B writes.
+        set(&mut work, a, 1, 9);
+        assert_eq!(
+            g.check_reads(&layout, 0, &mut work),
+            Err("task 't' program 'A' wrote member 'm' of data block 'S', which its data says it does not write: its data is not the one its code was built with".to_string())
+        );
+    }
+
+    #[test]
+    fn a_second_kept_value_for_a_data_block_is_said_to_be_a_second_one() {
+        let (layout, _) = three_sharing();
+        let value = |path: &str, layout: Option<&str>| RetainedValue {
+            path: path.into(),
+            ty: "T".into(),
+            bytes: "00".into(),
+            layout: layout.map(str::to_string),
+        };
+        let h = layout.blocks[0].config.layout.clone();
+        let g = Shared::new(
+            &layout,
+            vec![
+                value("S", Some(&h)),
+                value("s", Some(&h)),
+                value("Q", Some(&h)),
+                value("Nobody.x", None),
+            ],
+        );
+        assert!(g.blocks[0].pending.is_some(), "the first is the block's");
+        let why: Vec<String> = g
+            .unclaimed
+            .iter()
+            .map(|v| unclaimed_why(&layout, v))
+            .collect();
+        assert_eq!(
+            why,
+            [
+                "s: a value for this data block was given before it, and only the first can be taken",
+                "Q: the runtime has no data block of that name",
+                "Nobody.x: the runtime has no program of that name",
+            ]
         );
     }
 

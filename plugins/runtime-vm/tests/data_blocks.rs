@@ -518,6 +518,33 @@ fn a_force_on_a_member_wins_over_the_hand_over() {
     }
 }
 
+const TAKES_X: &str = "PROGRAM B
+  VAR r : DINT; END_VAR
+  VAR_EXTERNAL S : T; END_VAR
+  r := S.x;
+END_PROGRAM";
+
+#[test]
+fn a_force_on_a_writer_is_what_a_later_program_of_its_task_takes() {
+    let _one = one_at_a_time();
+    // Writer and reader in one task: B takes A's member from A's working memory, at A's end,
+    // where A's force is held first (decision A). The master is not on this path at all.
+    let mut engine = start(json!({"run": true, "data": data(X, false),
+        "programs": [program(X, SETS_X), program(X, TAKES_X)],
+        "tasks": [cyclic("t", 2, 3, &["A", "B"])]}));
+    until(&mut engine, &["B.r"], 10, |v| v == [5]);
+    force(&mut engine, "A.S.x", 9);
+    // Without the hold at A's end, B would take the 5 A's code wrote, run after run.
+    until(&mut engine, &["B.r", "B.S.x", "A.S.x"], 10, |v| {
+        v == [9, 9, 9]
+    });
+    for _ in 0..10 {
+        feed(&mut engine);
+        assert_eq!(ints(&mut engine, &["B.r", "B.S.x", "A.S.x"]), [9, 9, 9]);
+        std::thread::sleep(Duration::from_millis(3));
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Initial values, RETAIN, a runtime loaded in STOP
 // -----------------------------------------------------------------------------
@@ -933,6 +960,168 @@ fn the_module_refuses_a_copy_outside_its_memory() {
     // The control: as compiled, it is taken.
     let mut engine = VmEngine::default();
     finish(engine.start(&ctx(), &config(&|_| {}))).unwrap_or_else(|e| panic!("{e}"));
+}
+
+const BUMPS_B: &str = "PROGRAM B
+  VAR_EXTERNAL S : T; END_VAR
+  S.b := S.b + 1;
+END_PROGRAM";
+
+const WATCHES_B: &str = "PROGRAM C
+  VAR got : DINT; END_VAR
+  VAR_EXTERNAL S : T; END_VAR
+  got := S.b;
+END_PROGRAM";
+
+/// Block `S` of [`PAIR`] in the runtime's data and in every program's, each changed alike by
+/// `change`, with B (writes `b`) and C (reads it) in two tasks.
+fn pair_changed(change: &dyn Fn(&mut Value)) -> Value {
+    let mut programs = [program(PAIR, BUMPS_B), program(PAIR, WATCHES_B)];
+    let mut data = data(PAIR, false);
+    change(&mut data[0]);
+    for p in &mut programs {
+        change(&mut p["data"][0]);
+    }
+    json!({"run": true, "data": data, "programs": programs,
+           "tasks": [cyclic("b", 2, 0, &["B"]), cyclic("c", 2, 1, &["C"])]})
+}
+
+#[test]
+fn members_that_overlap_are_refused() {
+    // `a` widened over `b`, alike everywhere: the hand-over copies a written member whole, so
+    // a program writing `a` would also write `b`'s bytes.
+    let e = refused(pair_changed(&|d| d["members"][0]["size"] = json!(8)));
+    assert!(
+        e.contains("data block 'S': members 'a' and 'b' overlap"),
+        "{e}"
+    );
+    // The control: as laid out, it is taken.
+    start(pair_changed(&|_| {}));
+}
+
+#[test]
+fn a_member_left_out_of_the_data_is_refused() {
+    // `b` left out alike everywhere: B's writes of it would never be handed over.
+    let e = refused(pair_changed(&|d| {
+        d["members"].as_array_mut().unwrap().remove(1);
+    }));
+    assert!(
+        e.contains(
+            "program 'B': its code has S.b in data block 'S', and its data lists no member 'b' of it"
+        ),
+        "{e}"
+    );
+}
+
+#[test]
+fn a_program_whose_code_declares_a_block_its_data_does_not_is_refused() {
+    // C sent with code and symbols only: its copy of S would never be handed anything.
+    let mut config = pair_changed(&|_| {});
+    config["programs"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("data");
+    let e = refused(config.clone());
+    assert!(
+        e.contains("program 'C': its code declares data block 'S' (S"),
+        "{e}"
+    );
+    assert!(e.contains("), and its data does not"), "{e}");
+    // So also when the runtime has no data at all.
+    config["programs"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("data");
+    config["data"] = json!([]);
+    let e = refused(config);
+    assert!(e.contains("its code declares data block 'S'"), "{e}");
+}
+
+const SETS_B_TOO: &str = "PROGRAM D
+  VAR_EXTERNAL S : T; END_VAR
+  S.b := 1000;
+END_PROGRAM";
+
+#[test]
+fn a_program_that_writes_a_member_its_data_says_it_does_not_write_faults() {
+    let _one = one_at_a_time();
+    // D's code writes `b`; its data, edited by hand, says it does not. Nothing in the
+    // configuration shows it, so it starts; its first task run faults, and hands nothing over.
+    let mut d = program(PAIR, SETS_B_TOO);
+    assert_eq!(d["data"][0]["members"][1]["written"], json!(true));
+    d["data"][0]["members"][1]["written"] = json!(false);
+    let mut engine = start(json!({"run": true, "data": data(PAIR, true),
+        "programs": [program(PAIR, BUMPS_B), d, program(PAIR, WATCHES_B)],
+        "tasks": [cyclic("b", 5, 1, &["B"]), cyclic("d", 5, 2, &["D"]),
+                  cyclic("c", 5, 3, &["C"])]}));
+    let fault = until_fault(&mut engine);
+    assert_eq!(
+        fault,
+        "task 'd' program 'D' wrote member 'b' of data block 'S', which its data says it does not write: its data is not the one its code was built with"
+    );
+    let kept = kept_block(&mut engine);
+    assert_ne!(
+        kept.bytes[8..],
+        dint_hex(1000),
+        "D's 1000 reached the master"
+    );
+    assert!(ints(&mut engine, &["C.got"])[0] < 1000);
+}
+
+const COUNTS_FROM_5: &str = "TYPE T : STRUCT n : DINT := 5; END_STRUCT; END_TYPE";
+
+const A_COUNTS: &str = "PROGRAM A
+  VAR_EXTERNAL S : T; END_VAR
+  S.n := S.n + 1;
+END_PROGRAM";
+
+const B_SEES: &str = "PROGRAM B
+  VAR seen : DINT; END_VAR
+  VAR_EXTERNAL S : T; END_VAR
+  seen := S.n;
+END_PROGRAM";
+
+const C_COUNTS: &str = "PROGRAM C
+  VAR_EXTERNAL S : T; END_VAR
+  S.n := S.n + 1;
+END_PROGRAM";
+
+#[test]
+fn an_online_change_to_a_new_writer_says_which_copies_did_not_carry() {
+    let _one = one_at_a_time();
+    let mut old = start(json!({"run": true, "data": data(COUNTS_FROM_5, false),
+        "programs": [program(COUNTS_FROM_5, A_COUNTS), program(COUNTS_FROM_5, B_SEES)],
+        "tasks": [cyclic("a", 2, 3, &["A"]), cyclic("b", 2, 4, &["B"])]}));
+    until(&mut old, &["B.S.n"], 10, |v| v[0] >= 40);
+    let carried = finish(old.variables(&ctx())).unwrap();
+    drop(old);
+    // A is replaced by C, a program new to the configuration, which now writes S.n; B goes on
+    // reading it. C's copy took no running value, and every copy is set from it.
+    let mut config = json!({"run": true, "data": data(COUNTS_FROM_5, false),
+        "programs": [program(COUNTS_FROM_5, B_SEES), program(COUNTS_FROM_5, C_COUNTS)],
+        "tasks": [cyclic("b", 2, 4, &["B"]), cyclic("c", 2, 3, &["C"])]});
+    config["carried"] = serde_json::to_value(&carried).unwrap();
+    let mut new = start(config);
+    assert_eq!(ints(&mut new, &["B.S.n", "C.S.n"]), [5, 5]);
+    let r = report(&mut new);
+    let initialized: Vec<(&str, &str)> = r
+        .initialized
+        .iter()
+        .map(|i| (i.variable.as_str(), i.why.as_str()))
+        .collect();
+    assert!(
+        initialized.contains(&(
+            "B.S.n",
+            "every copy of data block 'S' is set from C.S.n, which took no running value"
+        )),
+        "{initialized:?}"
+    );
+    assert!(
+        initialized.iter().any(|(v, _)| *v == "C.S.n"),
+        "{initialized:?}"
+    );
+    // B.seen carried, and nothing of the block did.
+    assert_eq!(r.carried, 1, "{r:?}");
 }
 
 #[test]

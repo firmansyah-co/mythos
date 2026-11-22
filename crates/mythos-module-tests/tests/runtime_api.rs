@@ -1989,6 +1989,41 @@ async fn a_save_with_a_data_mistake_is_refused_with_its_message_and_nothing_is_s
 }
 
 #[tokio::test]
+async fn a_save_of_a_program_sent_without_the_data_its_code_declares_is_refused() {
+    let rig = rig().await;
+    // Taker sent with its code and symbols only. The core does not read symbols (they are the
+    // module's own); the save asks the module, which loads the program and refuses it.
+    let mut config = sharing("v1", false);
+    config["instances"][0]["programs"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("data");
+    let (status, body) = rig.save(config).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"], "the runtimes configuration has problems and was not saved",
+        "{body}"
+    );
+    let message = body["problems"][0]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("program 'Taker': its code declares data block 'S' (S")
+            && message.contains("), and its data does not"),
+        "{body}"
+    );
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "GET",
+            "/api/v1/projects/plant/runtimes",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["config"], Value::Null, "{body}");
+    rig.io.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_save_with_data_blocks_for_an_older_runtime_module_is_refused_and_says_why() {
     let rig = rig_with(&[(STUBBORN, "mythos-module-stubborn")]).await;
     let mut config = grouped(&[COUNT], "v1");

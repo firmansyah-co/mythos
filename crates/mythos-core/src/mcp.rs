@@ -506,7 +506,7 @@ fn data_schemas() -> (Value, Value) {
         });
         let mut required = vec!["name", "type", "offset", "size"];
         if written {
-            properties["written"] = json!({ "type": "boolean", "description": "Whether the program writes it; a member has one writer in a runtime" });
+            properties["written"] = json!({ "type": "boolean", "description": "Whether the program's code writes it, as the compiler says; a member has one writer in a runtime. Never change it: a program whose code writes a member its data says it does not write is faulted at the end of its first task run" });
             required.push("written");
         }
         json!({ "type": "object", "required": required, "additionalProperties": false, "properties": properties })
@@ -516,7 +516,7 @@ fn data_schemas() -> (Value, Value) {
         "type": "object",
         "required": ["name", "type", "layout", "offset", "size", "constant", "members"],
         "additionalProperties": false,
-        "description": "A data block the program declares in VAR_EXTERNAL, as the compiler gives it in its data",
+        "description": "A data block the program declares in VAR_EXTERNAL, exactly as the logic compiler gives it in the compiled program's data; no route of this server returns it. Required for every block the code declares: the runtime module refuses a program whose symbols have a data block, or a member of one, that its data leaves out",
         "properties": {
             "name": { "type": "string", "description": "A block of the runtime's data" },
             "type": { "type": "string" },
@@ -537,7 +537,7 @@ fn data_schemas() -> (Value, Value) {
             "type": { "type": "string" },
             "layout": layout,
             "size": { "type": "integer", "minimum": 0 },
-            "members": { "type": "array", "items": member(false), "description": "Its top-level members, as each program that declares it was built with" },
+            "members": { "type": "array", "items": member(false), "description": "Its top-level members: the members of each program's data for this block without their written, which this list does not take; no two may share a byte" },
             "retain": { "type": "boolean", "description": "Whether its value is kept across a warm restart; left out, it is not" }
         }
     });
@@ -1250,7 +1250,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "list_runtimes",
         title: "List the runtimes of this node",
-        description: "Every program this node executes: its mode (run, stop, fault, or unreachable when its module does not answer) and why, scan count and times (null when nothing is known: the module does not answer, or no scan has run; never 0 in their place), and each output with what the device last confirmed and whether it is at its safe value. A runtime with tasks written out also lists its programs with their versions and each task with its runs, overruns, preemptions and run times; its interval_ms is that of its fastest cyclic task, null when it has none. Also the runtime modules found, each with the target profile a program is compiled for.",
+        description: "Every program this node executes: its mode (run, stop, fault, or unreachable when its module does not answer) and why, scan count and times (null when nothing is known: the module does not answer, or no scan has run; never 0 in their place), and each output with what the device last confirmed and whether it is at its safe value. A runtime with tasks written out also lists its programs with their versions and each task with its runs, overruns, preemptions and run times; its interval_ms is that of its fastest cyclic task, null when it has none. A runtime with data blocks lists them in data, each member with its writer: the program that writes it, null when none does. Also the runtime modules found, each with the target profile a program is compiled for.",
         method: "GET",
         path: "/api/v1/runtimes",
         query: &[],
@@ -1338,7 +1338,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "save_runtimes_config",
         title: "Save a project's runtimes",
-        description: "Check and save the programs a project runs. Each instance names a runtime module (list_runtimes shows them), whether to run at once, and a program: its code and symbols as the logic compiler made them, the tags read into variables (inputs), the variables written to field tags with the safe value each tag takes whenever the program is not running (outputs), and the variables published as tags starting with internal. (published; writable makes one a setpoint an operator may write). A runtime of several programs gives them in programs instead of program, and tasks that say which task runs each (cyclic, cycle, startup or event, at a priority from 0, the highest, to 31); its variables are then named program.variable. A runtime module that does not say it runs tasks is refused such a runtime. The module loads each program to check it; anything that does not load is refused and nothing is saved. For the active project the runtimes are then made to match: 'applied' true says the configuration was put in force, not that every program started. 'changes.failed' lists each instance that did not start, with why; read list_runtimes for what runs. A new build of a program in run replaces it online: it takes over every variable of the same name, type and size (RETAIN or not) and scans on, its outputs never going to their safe values; start=cold starts every program it starts or replaces from its initial values instead, RETAIN ones included. 'changes.runtimes' says for each how it started: start online (with carried, the count, and dropped and initialized, the variables that did not carry over and why), warm (RETAIN values kept, the rest initial; why says why not online) or cold. Forces are released by a load either way.",
+        description: "Check and save the programs a project runs. Each instance names a runtime module (list_runtimes shows them), whether to run at once, and a program: its code and symbols as the logic compiler made them, its data (each data block its code declares in VAR_EXTERNAL, as the compiler gave it; required when it declares any), the tags read into variables (inputs), the variables written to field tags with the safe value each tag takes whenever the program is not running (outputs), and the variables published as tags starting with internal. (published; writable makes one a setpoint an operator may write). A runtime of several programs gives them in programs instead of program, and tasks that say which task runs each (cyclic, cycle, startup or event, at a priority from 0, the highest, to 31); its variables are then named program.variable. A runtime module that does not say it runs tasks is refused such a runtime. An instance's data lists the data blocks its programs share: each block in one runtime only, each member written by one program at most, no tag read into a member and no member made a setpoint; a runtime module that does not say it hands data blocks over is refused a runtime with data. The layout hash, offsets and written flags of a block come only from the logic compiler: no route of this server returns them. The module loads each program to check it; anything that does not load is refused and nothing is saved. For the active project the runtimes are then made to match: 'applied' true says the configuration was put in force, not that every program started. 'changes.failed' lists each instance that did not start, with why; read list_runtimes for what runs. A new build of a program in run replaces it online: it takes over every variable of the same name, type and size (RETAIN or not) and scans on, its outputs never going to their safe values; start=cold starts every program it starts or replaces from its initial values instead, RETAIN ones included. 'changes.runtimes' says for each how it started: start online (with carried, the count, and dropped and initialized, the variables that did not carry over and why), warm (RETAIN values kept, the rest initial; why says why not online) or cold. Forces are released by a load either way.",
         method: "PUT",
         path: "/api/v1/projects/:id/runtimes",
         query: &[(
@@ -2018,6 +2018,43 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unknown field `written`"));
+    }
+
+    #[test]
+    fn the_runtime_tools_say_what_they_take_and_report_of_data_blocks() {
+        let tool = |name: &str| {
+            TOOLS
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("no tool {name}"))
+                .description
+        };
+        let save = tool("save_runtimes_config");
+        for said in [
+            "its data (each data block its code declares in VAR_EXTERNAL, as the compiler gave it; required when it declares any)",
+            "a runtime module that does not say it hands data blocks over is refused a runtime with data",
+            "each block in one runtime only",
+            "no route of this server returns them",
+        ] {
+            assert!(save.contains(said), "save_runtimes_config: {said}");
+        }
+        assert!(tool("list_runtimes")
+            .contains("lists them in data, each member with its writer: the program that writes it, null when none does"));
+        let (used, held) = data_schemas();
+        assert!(used["description"]
+            .as_str()
+            .unwrap()
+            .contains("Required for every block the code declares"));
+        assert!(held["properties"]["members"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("without their written, which this list does not take"));
+        assert!(
+            used["properties"]["members"]["items"]["properties"]["written"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("Never change it")
+        );
     }
 
     #[test]

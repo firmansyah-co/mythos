@@ -145,6 +145,10 @@ struct SymbolEntry {
     /// Inside a function block instance and not one of its inputs: only the block writes it.
     #[serde(default)]
     private: bool,
+    /// How it is declared: `external` for a program's copy of a data block (ADR-014), or a
+    /// part of one. Absent from symbols made before data blocks.
+    #[serde(default)]
+    section: Option<String>,
 }
 
 /// What an array symbol holds: enough to find one element.
@@ -412,7 +416,53 @@ fn check_copies(plan: &Plan) -> Result<(), String> {
             }
         }
     }
+    // The other way round: every part of a data block's copy the code has (a symbol declared
+    // `external`) is of a block the program's data declares, and inside a member it lists. A
+    // block left out of the data, or a member left out of a block, would never be handed over,
+    // and the program would run on a copy nothing updates.
+    let mut externals: Vec<&SymbolEntry> = plan
+        .symbols
+        .values()
+        .filter(|s| s.section.as_deref() == Some("external"))
+        .collect();
+    externals.sort_by(|a, b| a.path.cmp(&b.path));
+    for s in externals {
+        let block = first_segment(&s.path);
+        let Some(u) = plan
+            .program
+            .data
+            .iter()
+            .find(|u| u.name.eq_ignore_ascii_case(block))
+        else {
+            return Err(format!(
+                "program '{p}': its code declares data block '{block}' ({}), and its data does not",
+                s.path
+            ));
+        };
+        let Some(rest) = s.path.get(block.len()..).filter(|r| !r.is_empty()) else {
+            continue;
+        };
+        let member = rest
+            .strip_prefix('.')
+            .map(first_segment)
+            .unwrap_or_default();
+        if !u
+            .members
+            .iter()
+            .any(|m| m.name.eq_ignore_ascii_case(member))
+        {
+            return Err(format!(
+                "program '{p}': its code has {} in data block '{}', and its data lists no member '{member}' of it",
+                s.path, u.name
+            ));
+        }
+    }
     Ok(())
+}
+
+/// The first segment of a path: before its first `.` or `[`.
+fn first_segment(path: &str) -> &str {
+    &path[..path.find(['.', '[']).unwrap_or(path.len())]
 }
 
 /// Check one program and work out where its variables are.
@@ -686,6 +736,73 @@ fn carry(plan: &Plan, memory: &mut [u8], values: &[RetainedValue]) -> CarryRepor
         });
     }
     report
+}
+
+/// After an online change's carry, the leaves of block copies that took a running value and
+/// lose it: each member of a master is set from one copy (its writer's, or the first declaring
+/// program's for a member no program writes) and then spread into every copy, so a copy's leaf
+/// keeps its carried value only when that copy's leaf carried too. `initialized[p]` is the
+/// paths, in lower case, of program `p`'s variables that took no running value. Gives
+/// `(program, path, why)` for each leaf that carried and is set back.
+fn set_from_another_copy(
+    layout: &Layout,
+    initialized: &[HashSet<String>],
+) -> Vec<(usize, String, String)> {
+    let mut out = Vec::new();
+    for spec in &layout.blocks {
+        let Some(first) = spec.first else {
+            continue;
+        };
+        for (i, writer) in spec.writer.iter().enumerate() {
+            let (s, sj) = writer.unwrap_or(first);
+            let source = &layout.plans[s];
+            let src_prefix = format!(
+                "{}.{}",
+                source.program.data[sj].name, source.program.data[sj].members[i].name
+            )
+            .to_ascii_lowercase();
+            for &(p, j) in &spec.uses {
+                if p == s {
+                    continue;
+                }
+                let plan = &layout.plans[p];
+                let u = &plan.program.data[j];
+                let prefix = format!("{}.{}", u.name, u.members[i].name).to_ascii_lowercase();
+                for entry in variables_in_memory(plan) {
+                    let key = entry.path.to_ascii_lowercase();
+                    let Some(rest) = key.strip_prefix(prefix.as_str()) else {
+                        continue;
+                    };
+                    if !(rest.is_empty() || rest.starts_with('.') || rest.starts_with('[')) {
+                        continue;
+                    }
+                    if initialized[p].contains(&key) {
+                        continue;
+                    }
+                    let from = format!("{src_prefix}{rest}");
+                    let carried_there =
+                        source.symbols.contains_key(&from) && !initialized[s].contains(&from);
+                    if !carried_there {
+                        let shown = source
+                            .symbols
+                            .get(&from)
+                            .map(|e| e.path.clone())
+                            .unwrap_or(from);
+                        out.push((
+                            p,
+                            entry.path.clone(),
+                            format!(
+                                "every copy of data block '{}' is set from {}, which took no running value",
+                                spec.config.name,
+                                layout.full_name(s, &shown)
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 fn declarations(layout: &Layout) -> Vec<TagDeclaration> {
@@ -978,8 +1095,15 @@ impl MythosPlugin for VmEngine {
                     dropped,
                     ..CarryReport::default()
                 };
+                let mut initialized = Vec::new();
                 for (p, values) in each.iter().enumerate() {
                     let r = carry(&layout.plans[p], &mut shared.programs[p].image, values);
+                    initialized.push(
+                        r.initialized
+                            .iter()
+                            .map(|n| n.variable.to_ascii_lowercase())
+                            .collect::<HashSet<String>>(),
+                    );
                     report.carried += r.carried;
                     let full = |n: NotCarried| NotCarried {
                         variable: layout.full_name(p, &n.variable),
@@ -989,6 +1113,15 @@ impl MythosPlugin for VmEngine {
                     report
                         .initialized
                         .extend(r.initialized.into_iter().map(full));
+                }
+                // A copy that carried a member whose master is set from a copy that did not:
+                // spread below gives it that copy's value, so it did not carry.
+                for (p, path, why) in set_from_another_copy(&layout, &initialized) {
+                    report.carried = report.carried.saturating_sub(1);
+                    report.initialized.push(NotCarried {
+                        variable: layout.full_name(p, &path),
+                        why,
+                    });
                 }
                 shared.carry = report;
                 // Each data block's master from the carried copies of its writers (with every
