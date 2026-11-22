@@ -24,35 +24,34 @@ fn one_at_a_time() -> MutexGuard<'static, ()> {
 }
 
 /// How the machine itself keeps time while a test runs: a thread that does nothing but sleep
-/// 1 ms over and over, and the longest it was away between two of its wakings. A due time
-/// missed by a task with nothing above it says something of the scheduler only on a machine
-/// whose own sleeping thread was not away that long.
+/// `wait` over and over, and the latest it came back from one of those sleeps. A machine may
+/// return a thread late by more the longer it asked to sleep (GitHub's macOS runner returned a
+/// sleep of 10 ms up to 80 ms late while one of 1 ms was at most 20 ms late), so `wait` is the
+/// wait of what is being judged: for the scheduler, how long it waits for a due time.
 struct Timekeeper {
     stop: Arc<AtomicBool>,
     thread: std::thread::JoinHandle<(Duration, u32)>,
 }
 
 impl Timekeeper {
-    fn start() -> Self {
+    fn start(wait: Duration) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let seen = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
-            let (mut longest, mut wakings) = (Duration::ZERO, 0u32);
-            let mut last = Instant::now();
+            let (mut latest, mut sleeps) = (Duration::ZERO, 0u32);
             while !seen.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(1));
-                let now = Instant::now();
-                longest = longest.max(now - last);
-                wakings += 1;
-                last = now;
+                let before = Instant::now();
+                std::thread::sleep(wait);
+                latest = latest.max(before.elapsed().saturating_sub(wait));
+                sleeps += 1;
             }
-            (longest, wakings)
+            (latest, sleeps)
         });
         Timekeeper { stop, thread }
     }
 
-    /// The longest the thread was away, and how many times it woke.
-    fn longest(self) -> (Duration, u32) {
+    /// The latest the thread came back from a sleep, and how many sleeps it made.
+    fn latest(self) -> (Duration, u32) {
         self.stop.store(true, Ordering::SeqCst);
         self.thread.join().expect("the timekeeper does not panic")
     }
@@ -341,7 +340,9 @@ fn a_higher_priority_task_preempts_a_long_lower_one() {
             program(&quick_source("quick"), 10, json!({})),
         ],
         "tasks": [cyclic("low", 1000, 10, &["slow"]), cyclic("high", high_ms, 1, &["quick"])]}));
-    let keeper = Timekeeper::start();
+    // With nothing to run the scheduler waits for the next due time, 20 ms at most.
+    let wait = Duration::from_millis(high_ms.min(20));
+    let keeper = Timekeeper::start(wait);
     // What each exchange saw, for the message of a failure: when, then the runs, preemptions
     // and age of the last run of the low task, then the runs, overruns and age of the high.
     let began = Instant::now();
@@ -369,7 +370,7 @@ fn a_higher_priority_task_preempts_a_long_lower_one() {
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    let (away, wakings) = keeper.longest();
+    let (late, sleeps) = keeper.latest();
     let (low, high) = (task(&r.state, "low"), task(&r.state, "high"));
     assert_eq!(r.state.mode, RuntimeMode::Run, "{:?}", r.state.fault);
     assert!(low.runs > 0, "{low:?}");
@@ -378,13 +379,14 @@ fn a_higher_priority_task_preempts_a_long_lower_one() {
         "a low run outlasts the high interval of {high_ms} ms (alone: {alone:?}): {low:?}"
     );
     assert!(low.preemptions > 0, "{low:?}");
-    // The high task misses a due time when the scheduler is away for one of its intervals.
-    // That it is never away so long is claimed only where a thread that merely sleeps was not
-    // away half an interval either; elsewhere the figures are printed and nothing is claimed.
-    if away < Duration::from_millis(high_ms / 2) {
+    // The high task misses a due time when the scheduler comes back from a wait one of its
+    // intervals late. That it never does is claimed only where a thread that merely sleeps as
+    // long as the scheduler waits came back less than half an interval late; elsewhere the
+    // figures are written and nothing is claimed.
+    if late < Duration::from_millis(high_ms / 2) {
         assert_eq!(
             high.overruns, 0,
-            "a sleeping thread was away at most {away:?} and woke {wakings} times, a low run \
+            "a thread sleeping {wait:?} was at most {late:?} late in {sleeps} sleeps, a low run \
              alone took {alone:?}: {high:?}\n{low:?}\n{trace}"
         );
     } else {
@@ -392,9 +394,8 @@ fn a_higher_priority_task_preempts_a_long_lower_one() {
         // in the log of the run that did not make it.
         let said = format!(
             "NOT SHOWN on this machine: that the high task misses no due time. A thread \
-             sleeping 1 ms was away {away:?} and woke {wakings} times, the high interval is \
-             {high_ms} ms, a low run alone took {alone:?}, and the high task counted {} \
-             overruns in {} runs.\n{high:?}\n{low:?}\n{trace}",
+             sleeping {wait:?} came back up to {late:?} late in {sleeps} sleeps, the high \
+             interval is {high_ms} ms, and the high task counted {} overruns in {} runs.\n",
             high.overruns, high.runs
         );
         let _ = std::io::Write::write_all(&mut std::io::stderr(), said.as_bytes());
