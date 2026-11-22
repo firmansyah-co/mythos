@@ -56,11 +56,72 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/ci-already-verified.sh "$GITHUB_REPOSITORY" "$GITHUB_SHA" ci.yml
 
+  # THE LINUX SUITE RUNS ON GITHUB'S HOSTED RUNNER (the owner's decision, 2026-11-22).
+  #
+  # It ran on the self-hosted runner, a machine it shares with the builds of whoever is working
+  # on it. On 2026-11-22 that machine's load average was 40 to 80 while pull requests were
+  # built, this job took 17 and 24 minutes in two runs where the same lints and tests took 7.5
+  # to 9 minutes on macos-latest and 10 to 12 on windows-latest, and four runs went red on tests
+  # that passed alone (a module swap that timed out, a watch read too early, twice a 5 s test
+  # timeout). A hosted runner is a machine of its own for each job, several pull requests run at
+  # once instead of queueing for two runners, and the repository is public, so it costs nothing.
+  #
+  # What describes the self-hosted machine stays on it: the release latency gates and the
+  # benchmark, in `shm-latency-gates` below. `cargo test` here runs only the debug smoke check of
+  # the SHM hot path, as on Windows and macOS.
+  #
+  # The name is a required status check of dev, rc and release: it must not change.
   core-engine-tests:
     name: Rust Workspace Test Suite & Lints
     needs: already-verified
     if: ${{ !cancelled() && needs.already-verified.outputs.verified != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # The list the self-hosted runner's image is built from (ci/runner/packages.txt): what the
+      # desktop host links against.
+      - name: Install Build Tools & Linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends $(tr '\n' ' ' < ci/runner/packages.txt)
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo Build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo Format Check
+        run: cargo fmt --all -- --check
+
+      - name: Cargo Clippy Audit
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # --no-fail-fast: a failure in one test binary must not hide what the others say.
+      - name: Run All Workspace Tests
+        run: cargo test --workspace --no-fail-fast
+
+  # THE ONE JOB LEFT ON THE SELF-HOSTED RUNNER: what measures that machine.
+  #
+  # The swap and read bounds are nanoseconds on real cores; a shared hosted VM says nothing
+  # about them (the header of crates/mythos-shm/tests/shm_engine_tests.rs has the regime). It
+  # builds one crate in release, so it no longer competes with a whole workspace build for the
+  # machine it measures.
+  #
+  # NOT FOR A PULL REQUEST FROM A FORK: this runner is a machine on the owner's network, and a
+  # fork's pull request runs the fork's code. Such a pull request skips this job; the gates run
+  # when it is merged, on the push.
+  shm-latency-gates:
+    name: SHM Latency Gates & Benchmark (self-hosted)
+    needs: already-verified
+    if: ${{ !cancelled() && needs.already-verified.outputs.verified != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: arc-runner-org
+    timeout-minutes: 30
     env:
       RUSTUP_HOME: /opt/hostedtoolcache/rustup
       CARGO_HOME: /opt/hostedtoolcache/cargo
@@ -205,37 +266,14 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Cargo Format Check
-        run: |
-          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
-          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
-            source /opt/hostedtoolcache/cargo/env
-          fi
-          cargo fmt --all -- --check
-
-      - name: Cargo Clippy Audit
-        run: |
-          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
-          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
-            source /opt/hostedtoolcache/cargo/env
-          fi
-          cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Run All Workspace Tests
-        run: |
-          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
-          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
-            source /opt/hostedtoolcache/cargo/env
-          fi
-          cargo test --workspace --verbose
-
       # TSK-002's "< 300 ns atomic swap" target (50 ns until the owner raised it on 2026-11-17)
       # is asserted here on the release build, because
       # release has ~3x headroom rather than ~1.6x and degrades much less when the runner is
       # loaded. Debug is not incapable of meeting the bound (it measures 26-32 ns at true idle),
       # but this runner shares its cores with the agent fleet and its load swings from 1.2 to
-      # 200+, so the larger margin is what makes the gate stable. The debug run above therefore
-      # only smoke-checks the hot path; the acceptance assertion is gated on this release run.
+      # 200+, so the larger margin is what makes the gate stable. The debug run in the suites
+      # therefore only smoke-checks the hot path; the acceptance assertion is gated on this
+      # release run.
       # The same release run asserts the 300 ns tag read bound of NFR-001 and SYS-REQ-002 (the
       # owner extended the swap's bound to reads on 2026-11-18): the best of five rounds of
       # 1,000,000 reads, with zero corruption (test_tag_read_latency_under_300ns).
@@ -341,8 +379,8 @@ jobs:
   # whole test suite run here, on GitHub's hosted runners (the self-hosted runner is Linux only).
   # The repository is public, so these runners cost nothing.
   #
-  # The release latency gate and the p99 report stay on the Linux job: they describe that runner,
-  # and a shared hosted VM says nothing about it. `cargo test` here runs only the debug smoke check
+  # The release latency gate and the p99 report stay on the self-hosted runner
+  # (`shm-latency-gates`): they describe that machine, and a shared hosted VM says nothing about it. `cargo test` here runs only the debug smoke check
   # (a 250 ns best-batch backstop against a lock or syscall on the hot path).
   cross-platform-tests:
     name: Rust Workspace on ${{ matrix.os }}
@@ -432,18 +470,18 @@ jobs:
         shell: bash
         run: scripts/logic-vm-on-emulators.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # On GitHub's hosted runner since 2026-11-22, with the Linux suite above and for its reasons.
+  # The name is a required status check of dev and rc: it must not change.
   frontend-tests:
     name: Frontend Web Workbench Test Suite & Lints
     needs: already-verified
     if: ${{ !cancelled() && needs.already-verified.outputs.verified != 'true' }}
-    runs-on: arc-runner-org
+    runs-on: ubuntu-latest
     # Clean-tree build measured ~8.5 min (ui-logic-editor alone is ~6.5 min).
     # Without this, a hang would run to GitHub's 6h default.
     timeout-minutes: 30
     env:
       PNPM_VERSION: "12.14.0"
-      PNPM_PREFIX: /opt/hostedtoolcache/pnpm/12.14.0
-      PNPM_STORE: /opt/hostedtoolcache/pnpm-store
     defaults:
       run:
         # frontend/ is the pnpm workspace root (pnpm-workspace.yaml + pnpm-lock.yaml live here).
@@ -453,59 +491,21 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # npm's own cache goes to a job-local directory; it is unrelated to pnpm's store below.
-      - name: Configure npm cache directory
-        shell: bash
-        run: echo "npm_config_cache=$RUNNER_TEMP/npm-cache" >> "$GITHUB_ENV"
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           # Pinned: no .nvmrc and no engines field. Vite 6 needs >=18; @types/node is ^22.
-          # MUST run before pnpm is installed: arc-runner-org is self-hosted and has no
-          # node on PATH, so pnpm/action-setup's self-installer dies with
-          # "sh: 1: node: not found". For the same reason `cache: pnpm` cannot be used
-          # here (setup-node shells out to a pnpm that does not exist yet).
           node-version: '22'
 
-      # PNPM AND ITS STORE STAY ON THE RUNNER, IN THE HOST-BACKED TOOL CACHE.
-      #
-      # Measured over 38 green runs of this job on 2026-11-16 (median 3.6 min): 56 s restoring the
-      # store through actions/cache (324 MB fetched from GitHub on every run, 125 s at worst) and
-      # 18 s installing pnpm with npm, every time. /opt/hostedtoolcache is a host directory that
-      # outlives the runner pod: it is where the Rust job keeps rustup and sccache.
-      #
-      # WHY THE STORE WAS NOT ALREADY THERE: pnpm keeps its store on the file system of the
-      # project unless told otherwise, so in the pod it used /home/runner/.pnpm-store, which dies
-      # with the pod. `--store-dir` on the install is what places it; an environment variable does
-      # not (measured earlier in this file's history).
-      #
-      # Nothing here can let a wrong dependency in: `--frozen-lockfile` still fails the install
-      # when pnpm-lock.yaml disagrees with package.json, and pnpm verifies the content of what it
-      # takes from the store (verify-store-integrity, on by default). An empty store only means a
-      # slower run. The store is as trusted as the rest of this tool cache: the Rust job already
-      # runs the sccache and the toolchain kept beside it.
       - name: Install pnpm
         run: |
           # Pinned: frontend/package.json has no packageManager field, so nothing would
           # otherwise select a version. This matches the version that generated pnpm-lock.yaml.
-          START=$(date +%s)
-          sudo mkdir -p "$PNPM_PREFIX" "$PNPM_STORE"
-          sudo chown "$(id -u):$(id -g)" "$PNPM_PREFIX" "$PNPM_STORE"
-          # Two jobs may get here at once the first time; one installs, the other waits.
-          exec 9>"$PNPM_PREFIX/.install.lock"
-          flock 9
-          if [ "$("$PNPM_PREFIX/bin/pnpm" --version 2>/dev/null)" = "$PNPM_VERSION" ]; then
-            MODE="already in the tool cache"
-          else
-            MODE="installed by npm in this run"
-            npm install --global --prefix "$PNPM_PREFIX" "pnpm@$PNPM_VERSION"
-          fi
-          flock -u 9
-          echo "$PNPM_PREFIX/bin" >> "$GITHUB_PATH"
-          "$PNPM_PREFIX/bin/pnpm" --version
-          echo "pnpm $PNPM_VERSION: $MODE"
-          { echo "| pnpm ($MODE) | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
+          npm install --global "pnpm@$PNPM_VERSION"
+          # The store goes beside the workspace, on its file system, where the cache step below
+          # finds it. `--store-dir` on the install is what places it; an environment variable
+          # does not.
+          echo "PNPM_STORE=$RUNNER_TEMP/pnpm-store" >> "$GITHUB_ENV"
 
       - name: Verify Toolchain Versions
         run: |
@@ -513,20 +513,36 @@ jobs:
           node --version
           pnpm --version
 
+      # The store is kept between runs by GitHub's cache, keyed by the lockfile: an exact hit
+      # when the lockfile did not change, otherwise the newest store to start from. Nothing here
+      # can let a wrong dependency in: `--frozen-lockfile` fails the install when pnpm-lock.yaml
+      # disagrees with package.json, and pnpm verifies the content of what it takes from the
+      # store. An empty store only means a slower run.
+      - name: Cache the pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/pnpm-store
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
       # REQ 2 — SUPPLY-CHAIN VERIFICATION STAYS ON, IN THE REQUIRED JOB.
       # `--frozen-lockfile` is not negotiable and is not cached away: it is what makes the install
       # fail closed when pnpm-lock.yaml disagrees with package.json, and it runs in this job, which
-      # is a required context on dev. The store moving to host storage changes only where
-      # content-addressed tarballs live; the lockfile check itself still executes on every run.
+      # is a required context on dev. The cached store changes only where content-addressed
+      # tarballs come from; the lockfile check itself still executes on every run.
       - name: Install Dependencies
         run: |
           START=$(date +%s)
           STATUS=0
-          BEFORE=$(find "$PNPM_STORE" -type f 2>/dev/null | wc -l | tr -d ' ')
           pnpm install --frozen-lockfile --store-dir "$PNPM_STORE" || STATUS=$?
-          AFTER=$(find "$PNPM_STORE" -type f 2>/dev/null | wc -l | tr -d ' ')
-          echo "pnpm store $PNPM_STORE: $BEFORE files before the install, $AFTER after"
-          { echo "| install dependencies (--frozen-lockfile; store files $BEFORE -> $AFTER) | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
+          {
+            echo "### Frontend job timing"
+            echo ""
+            echo "| phase | seconds |"
+            echo "|---|---|"
+            echo "| install dependencies (--frozen-lockfile) | $(( $(date +%s) - START )) |"
+          } >> "$GITHUB_STEP_SUMMARY" || true
           exit $STATUS
 
       - name: Resolve Build Channel
