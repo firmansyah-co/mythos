@@ -416,7 +416,7 @@ As built (C3):
 - A program is its source and an entry in `programs.json`: its language, its interval, the
   runtime module and the target profile it is built for, whether it runs when loaded, and its
   bindings (inputs, outputs with their safe values, published variables). One program is one
-  cyclic task; a task that runs several programs is not built.
+  cyclic task; a task that runs several programs is not built (§2.19 is its design).
 - **Its language** (L3b-1; `fbd` since L3c-1, `sfc` since L3d-1) is `st`, `ld`, `fbd` or
   `sfc`, chosen when it is created (`create_logic_program` takes `language`, `st` by default) and
   not changed after. Structured Text is `programs/<name>.st`; a Ladder Diagram, a Function Block
@@ -2106,6 +2106,87 @@ settled before the step that needs it:
 - F3. **The network link**: the program replaced and the program watched over WiFi or
   Ethernet, as a `runtime` module. Needs the decisions 1 and 2 above.
 
+### 2.19 Task configuration (C8; designed, nothing of it is built)
+
+The owner's decisions (2026-11-18: "program bisa di bind ke runtime tertentu (cyclic / timed /
+event)"; "kita ikut bahasa dan fitur siemens, tapi jangan dipisah per OB tapi dibuat settingan
+di runtime manager seperti pada codesys"; then: IEC 61131-3's priorities, 0 the highest; a
+higher priority preempts a lower one in the VM; a process image per task) and the design that
+follows from them. Today a runtime runs one program on one interval (§2.6, "As built").
+
+- **A runtime has tasks, and a task runs programs.** A runtime (one module process, one
+  controller) has a list of tasks; each task has a name, a kind, a priority and the programs it
+  runs, in the order written. A program is in one task of one runtime. A project made before
+  C8 reads as it runs today: each program a runtime of its own with one cyclic task at its
+  interval, so nothing has to be migrated by hand.
+- **The kinds are Siemens' organisation blocks, set as CODESYS sets tasks.** They are a
+  property of the task, chosen in a list, not a block of their own kind that a program is
+  written in:
+  - `cycle` (Siemens' program cycle; CODESYS' freewheeling): runs again as soon as it has
+    finished, no sooner than its minimum cycle time. It is below every priority.
+  - `cyclic` (a cyclic interrupt; IEC's INTERVAL): every `interval`, from an optional `phase`.
+  - `startup` (OB100): once at every change to RUN, cold or warm, before any other task.
+  - `event` (a hardware interrupt; IEC's SINGLE): at the rising edge of a BOOL tag. An edge is
+    seen when the core hands the tag over (§2.4's exchange), not when the wire changes: it is
+    as fast as an exchange, and the task says so where it is set.
+  Time-of-day and time-delay tasks, and tasks that run on an error (time error, programming
+  error), are not in C8: a fault puts the runtime in FAULT, as today.
+- **Priorities are IEC 61131-3's: 0 is the highest**, 0 to 31 as CODESYS has them. A task that
+  becomes ready while a task of lower priority runs preempts it. Tasks of one priority do not
+  preempt each other: they run in the order they became ready, then in the order of the list.
+- **Preemption is the VM's own, not the operating system's.** One thread schedules every task
+  of a runtime. A program's run can be suspended and resumed: what `scan` keeps today in its
+  local variables (where it is in the code, its stack, its calls, the instructions counted)
+  becomes a value the caller holds, one per task, and the VM runs a bounded number of
+  instructions at a time. Between two such pieces the scheduler looks at the clock: if a task
+  of higher priority is due, the running one waits where it is. So the order of tasks and what
+  a preempted program computes are the same on a PC and on a microcontroller (§2.18), with no
+  thread priority asked of any operating system. What it does not give is real time: on a
+  general-purpose OS the whole process can still be made to wait (§2.4: intervals of 10 ms and
+  above). How long a task of the highest priority waits for a piece to end is to be measured
+  when it is built, and is NOT MEASURED until then.
+- **A preempted program computes what it would have computed alone.** Programs do not share
+  memory: there are no global variables (§2.1: VAR_GLOBAL is refused), each program has its own
+  memory, and a task's inputs are fixed for its run (below). So a run that was suspended any
+  number of times leaves its memory byte for byte as an uninterrupted run from the same
+  inputs and clock. That is the test of the VM's part: every program of the corpus, suspended
+  at every piece's end and at random ones, against its uninterrupted run, here and on the
+  emulated microcontrollers (§2.9).
+- **A process image per task.** When a task starts a run, the inputs of all its programs are
+  taken once from the last exchange, so the programs of one task read the same inputs and a
+  suspended one does not see them change. When the run ends, the outputs and the published
+  variables of its programs are copied to the task's image, and an exchange reads images: it
+  never sees a program half-way, which today the lock of the single scan ensures.
+- **Time.** A cyclic task's runs are due at fixed times from the change to RUN (no drift). A run
+  due while the last one of the same task has not ended is not run: it is counted as an
+  overrun, as today. Each task has a watchdog (the time a run may take, ten intervals and never
+  less than 2 s unless set), and each run of a program its instruction budget, as today.
+  Whichever is exceeded puts the runtime in FAULT.
+- **A fault is the runtime's.** A fault in any program stops every task of the runtime and its
+  outputs get their safe values (§2.4). A task of its own for an error is not built.
+- **What a runtime reports** grows a list of tasks: for each its kind, priority and interval,
+  its runs, the last and the longest run time, its overruns, how long ago a run ended, and how
+  often it was preempted. A variable is named by its program in a runtime that has several.
+- **Where it is set.** The task configuration is part of the project, in the logic module, as
+  CODESYS has it in the device tree: a runtime with its module, its target and its tasks, and
+  the programs assigned to them, with a route and an MCP tool for each change (ADR-010).
+  Settings → Runtimes goes on showing what runs, now with its tasks.
+- **Not in C8, by name:** CONFIGURATION, RESOURCE, TASK and `PROGRAM … WITH` written as text
+  (the configuration is data of the project; reading and writing the standard's text for it
+  can come with an importer); VAR_GLOBAL and data shared between programs, which is what makes
+  preemption a question of consistency, and gets its own decision; an event from a variable;
+  a real-time mode of the operating system (§3, Later).
+
+**Slices**, each leaving `dev` working:
+
+- C8a (done). **The VM**: a run that can be suspended and resumed, and the scheduler as a part of the
+  VM's crate that needs `core` alone, with the test of equality above. No runtime uses it yet.
+- C8b. **The runtime module and the core**: several programs and tasks in one runtime, the
+  images, the state per task, the watchdog per task; a project of today runs unchanged.
+- C8c. **The logic module**: runtimes and their task configuration as data of the project,
+  with routes and MCP tools; build and load of a runtime with several programs.
+- C8d. **The workbench**: the task configuration edited, and each task's state shown.
+
 ## 3. Order of work
 
 Two tracks. The core path comes first because Adrian asked for logic that runs end to end
@@ -2143,11 +2224,12 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   reads RETAIN and NON_RETAIN and each symbol says whether it is retained, §2.13, C7b-1; the
   runtime and the core keep them across a warm restart, §2.5, C7b-2).
 
-- C8. **Task configuration** (next; decided by the owner, not built): a runtime's programs run
-  in tasks. The kinds of task are those a Siemens controller has; a runtime's tasks are set as
-  CODESYS sets them, per runtime; priorities are IEC 61131-3's, 0 the highest; a task of higher
-  priority preempts one of lower in the VM; each task has its process image. Its section of §2
-  is written when the work starts, before its first slice.
+- C8. **Task configuration** (next; decided by the owner, designed in §2.19, not built): a
+  runtime's programs run in tasks. The kinds of task are those a Siemens controller has; a
+  runtime's tasks are set as CODESYS sets them, per runtime; priorities are IEC 61131-3's, 0
+  the highest; a task of higher priority preempts one of lower in the VM; each task has its
+  process image. In four slices: **C8a** (done) the VM (a run suspended and resumed, the scheduler),
+  **C8b** the runtime module and the core, **C8c** the logic module, **C8d** the workbench.
 
 **After L3 and C8** (the owner, 2026-11-18; `specs/tasks.md`, "Long-term horizons"): alarms and
 the historian, then the foundation for IEC 62443, then an OPC UA server, each as modules.
@@ -2221,7 +2303,8 @@ Each step leaves `dev` working.
 
 - No toolchain is installed with MythOS or on a controller to compile logic: the compiler is Rust
   and part of the logic module.
-- A controller runs bytecode, not native code: slower than STruC++'s native output (§5), and the
+- A controller runs bytecode, not native code: slower than native code such as STruC++'s
+  output (the two were never timed against each other here), and the
   price of memory safety, one format for every target, and variables enumerable by name.
 - The language coverage is ours to build. STruC++ covers far more today (OOP, pointers, WSTRING,
   80+ functions). Until §3 step 8 is far along, a program using those is refused by name.
@@ -2251,6 +2334,7 @@ Each step leaves `dev` working.
 | 2.16 Function Block Diagram (L3c-1) | `crates/mythos-logic-graphic`: `fbd.rs`, with `graph.rs` shared with LD; the subset and the semantics of §2.16 and §2.13; every output's value kept in a hidden private variable typed by its value (`ast::TypeSpecKind::OfValue` in the ST front-end), every network's flag; `Holds::Guarded` for a function's result; `Language::Fbd`; `Sources::tc6`. Proven by `fbd_runs_on_the_vm.rs` (13), `fbd_refusals.rs` (15), `fbd_equals_st.rs` (5 FBD programs and their ST twins, 200 random sequences of 100 scans each: every shared variable and every kept value, by the element and output it is about, equal to its twin's after every scan, 3,560,000 values), `damaged_ladder_never_panics.rs` (3,000 damaged FBD documents besides the LD ones), the logic module's own tests (3) and `logic_module.rs` through the real module processes; the emulators (2.9). The workbench: `fbd.test.tsx` (11; 12 since L3d-2, a viewer's diagram following a source saved elsewhere). The editor (L3c-2, §2.8): `fbdmodel.test.ts` (11), `fbd-editor.test.tsx` (10), `fbd_from_the_editor.rs` (4). Not built: a CFC mode (§3) |
 | 2.17 Sequential Function Chart (L3d-1) | `crates/mythos-logic-graphic`: `sfc.rs`; the subset and the semantics of §2.17 and §2.13 (§6.7: steps, transitions, Table 61's divergences and convergences, jumps, action blocks, the action control without final scan, unsafe and unreachable charts refused); every step's flag and time, every transition's condition and enable flag and every action's state kept in private variables (`At::Step`, `At::StepTime`, `At::Transition`, `At::Action`); the scan clock as `ast::ExprKind::Intrinsic`; `Element::action`, `Element::transition`, `TextRange::line`; `Language::Sfc`. Since L3d-1b actions and conditions in LD and FBD (of the POU, in the action block or the transition, or a network drawn in the chart), lowered by `ld::lower` and `fbd::lower` in a namespace of their own, `Probe::body`, `Element::inline`, `bodies` in `check`. Proven by `sfc_runs_on_the_vm.rs` (29: a rule of §6.7 each, the action qualifiers scan by scan, a chart in a function block, a restart, an online change of the same chart and of another, the two charts of the emulators), `sfc_refusals.rs` (38 since L3d-1b: every refusal with its message and its element, a place in a text of several lines as JSON), `sfc_corpus.rs` (1), `sfc_equals_st.rs` (4 charts and their ST twins, the fourth with actions and conditions in LD and FBD, 200 random sequences of 100 scans each: every variable, step flag, step time while active, action flag, transition condition where evaluated and enable flag equal after every scan, 2,270,452 values), `sfc_graphic_bodies.rs` (14: a rule of L3d-1b each, scan by scan, and the mixer of the emulators), `damaged_ladder_never_panics.rs` (3,000 damaged charts: 2,718 refused, 282 compiled; 3,000 damaged mixers with LD and FBD bodies: 2,686 refused, 314 compiled), the logic module's own tests (4), `logic_module.rs` through the real module processes and over MCP; the emulators (2.9). The workbench: `sfc.test.tsx` (3 in L3d-1; 23 since the view, L3d-2, §2.8). The editor (L3d-3, §2.8): `sfcmodel.test.ts` (31), `sfc-editor.test.tsx` (9), `sfc_from_the_editor.rs` (6). Not built: drawing the LD and FBD bodies of actions and conditions with their views (the view names their language); an action that is a chart, IL, a connection from a step's flag (§2.17); the qualifiers SD, SL, P0 (the owner's decision, §2.17) |
 | 2.18 Firmware for microcontrollers | Planned, nothing built. What exists is 2.9's: the VM built for thumbv6m and riscv32imc and run in emulators. Xtensa: not built. A real board: none has run it. |
+| 2.19 Task configuration (C8) | C8a built: `mythos_logic_vm::Run` (a scan in pieces, suspended and resumed) and `mythos_logic_vm::sched` (which task runs next); no runtime uses them yet. C8b to C8d not built: a runtime still runs one program on one interval. |
 
 The evidence of the spike (2026-11-17) and of each slice after it, with its tests, measurements and mutation checks, is in its own file in
 [`ADR-013-evidence/`](ADR-013-evidence/). A new slice adds a file there and one line here, so two slices open at once do not
@@ -2278,3 +2362,4 @@ edit the same lines. `scripts/check-adr-evidence.sh` fails if a file is not list
 - **L3d-3** (the Sequential Function Chart editor, 2026-11-22): [`20-l3d-3.md`](ADR-013-evidence/20-l3d-3.md)
 - **Stale watch** (only current values drawn live, found in review of L3d-2, 2026-11-22): [`21-stale-watch.md`](ADR-013-evidence/21-stale-watch.md)
 - **SD, SL and P0** (the three qualifiers refused until the owner decided, 2026-11-22: taken as Table 59 names them, §2.17): [`22-sd-sl-and-p0.md`](ADR-013-evidence/22-sd-sl-and-p0.md)
+- **C8a** (the VM's part of task configuration: a run suspended and resumed, the scheduler core, 2026-11-22): [`23-c8a.md`](ADR-013-evidence/23-c8a.md)
