@@ -341,12 +341,30 @@ fn a_higher_priority_task_preempts_a_long_lower_one() {
         ],
         "tasks": [cyclic("low", 1000, 10, &["slow"]), cyclic("high", high_ms, 1, &["quick"])]}));
     let keeper = Timekeeper::start();
+    // What each exchange saw, for the message of a failure: when, then the runs, preemptions
+    // and age of the last run of the low task, then the runs, overruns and age of the high.
+    let began = Instant::now();
+    let mut trace = String::new();
     let r = exchange_for(
         &mut engine,
         Duration::from_millis(2_000),
         Duration::from_millis(10),
         |_| Vec::new(),
-        |_| {},
+        |r| {
+            use std::fmt::Write;
+            let (l, h) = (task(&r.state, "low"), task(&r.state, "high"));
+            let _ = writeln!(
+                trace,
+                "{:>7.1} ms  low {} runs {} preempted age {:?} us  high {} runs {} overruns age {:?} us",
+                began.elapsed().as_secs_f64() * 1e3,
+                l.runs,
+                l.preemptions,
+                l.run_age_us,
+                h.runs,
+                h.overruns,
+                h.run_age_us
+            );
+        },
     );
     let away = keeper.longest();
     let (low, high) = (task(&r.state, "low"), task(&r.state, "high"));
@@ -363,7 +381,8 @@ fn a_higher_priority_task_preempts_a_long_lower_one() {
     if away < Duration::from_millis(high_ms / 2) {
         assert_eq!(
             high.overruns, 0,
-            "a sleeping thread was away at most {away:?}: {high:?}"
+            "a sleeping thread was away at most {away:?}, a low run alone took {alone:?}: \
+             {high:?}\n{low:?}\n{trace}"
         );
     } else {
         // Written past the capture of a passing test's output: a claim not made is to be seen
