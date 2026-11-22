@@ -223,6 +223,7 @@ fn sfc_run(pous: Vec<Pou>, st: Option<&'static str>) -> impl Fn() -> Run {
             &Sources {
                 st: st.map(|s| ("main.st", s)),
                 tc6: &[("chart.xml", doc.as_str())],
+                ..Default::default()
             },
             &TargetProfile::pc(),
         ))

@@ -112,8 +112,9 @@ const UNSUPPORTED: [(&str, &str); 9] = [
 /// not a name: the name was left out.
 /// Why a RETAIN or NON_RETAIN qualifier is not allowed on the section `keyword` of a POU of
 /// `kind`; `None` where it may be (IEC 61131-3 ed. 3 §6.5.6.2 and Annex A: the static
-/// VAR, VAR_INPUT and VAR_OUTPUT of programs and function blocks, and VAR_GLOBAL).
-fn no_retention(kind: PouKind, keyword: &str) -> Option<&'static str> {
+/// VAR, VAR_INPUT and VAR_OUTPUT of programs and function blocks, and VAR_GLOBAL). Public so
+/// that the TC6 reader refuses a qualified `externalVars` with the same words.
+pub fn no_retention(kind: PouKind, keyword: &str) -> Option<&'static str> {
     Some(match keyword {
         "VAR_IN_OUT" => {
             "on VAR_IN_OUT: the variable is the caller's, and has no storage of its own to retain (IEC 61131-3 ed. 3 §6.5.6.2)"
@@ -759,6 +760,9 @@ impl Parser {
                     continue;
                 }
                 "VAR_OUTPUT" => Section::Output,
+                // A data block of the project (ADR-014, slice D1). Read in any POU; the
+                // checker takes it in a PROGRAM only, and only of a block the project has.
+                "VAR_EXTERNAL" => Section::External,
                 _ => {
                     let _ = self.not_yet::<()>(written);
                     self.skip_section();
@@ -788,6 +792,11 @@ impl Parser {
                 self.skip_section();
                 continue;
             }
+            // VAR_EXTERNAL CONSTANT: the program reads the block and does not write it.
+            let constant = section == Section::External && self.is_kw("CONSTANT");
+            if constant {
+                self.bump();
+            }
             let qualifier = [
                 "CONSTANT",
                 "RETAIN",
@@ -810,6 +819,7 @@ impl Parser {
             let _ = self.decls("END_VAR", section, &mut pou.vars);
             for d in &mut pou.vars[from..] {
                 d.retention = retention;
+                d.constant = constant;
             }
         }
         pou.partial_vars = self.failures != before;
@@ -1043,6 +1053,7 @@ impl Parser {
                 ty: ty.clone(),
                 init: init.clone(),
                 hidden: false,
+                constant: false,
             });
         }
         Ok(())

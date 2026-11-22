@@ -1267,6 +1267,7 @@ fn a_chart_and_an_st_function_block_compile_together() {
         &Sources {
             st: Some(("lib.st", st)),
             tc6: &[("main.xml", &doc)],
+            ..Default::default()
         },
         &TargetProfile::pc(),
     ));

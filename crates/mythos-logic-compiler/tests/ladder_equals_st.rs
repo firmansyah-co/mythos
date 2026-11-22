@@ -122,6 +122,7 @@ fn ld_run(pous: Vec<Pou>, st: Option<&'static str>) -> impl Fn() -> Run {
             &Sources {
                 st: st.map(|t| ("pous.st", t)),
                 tc6: &ld,
+                ..Default::default()
             },
             &TargetProfile::pc(),
         ))

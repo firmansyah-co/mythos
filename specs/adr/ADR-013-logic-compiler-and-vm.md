@@ -2368,3 +2368,4 @@ edit the same lines. `scripts/check-adr-evidence.sh` fails if a file is not list
 - **SD, SL and P0** (the three qualifiers refused until the owner decided, 2026-11-22: taken as Table 59 names them, §2.17): [`22-sd-sl-and-p0.md`](ADR-013-evidence/22-sd-sl-and-p0.md)
 - **C8a** (the VM's part of task configuration: a run suspended and resumed, the scheduler core, 2026-11-22): [`23-c8a.md`](ADR-013-evidence/23-c8a.md)
 - **C8b** (several programs in several tasks in one runtime: the module protocol, the VM runner and the core, 2026-11-22): [`24-c8b.md`](ADR-013-evidence/24-c8b.md)
+- **D1** (data blocks in the compiler, the first slice of ADR-014: library sources, VAR_EXTERNAL, the members a program writes, the layout hash, 2026-11-22): [`25-d1.md`](ADR-013-evidence/25-d1.md)

@@ -205,6 +205,7 @@ fn fbd_run(pous: Vec<Pou>) -> impl Fn() -> Run {
             &Sources {
                 st: None,
                 tc6: &[("main.xml", doc.as_str())],
+                ..Default::default()
             },
             &TargetProfile::pc(),
         ))

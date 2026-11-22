@@ -88,11 +88,45 @@ pub struct Output {
     pub bytes: Vec<u8>,
     pub symbols: Vec<Symbol>,
     pub types: Vec<TypeLayout>,
+    /// The program's copy of each data block it declares ([`Section::External`]), in the
+    /// order of its variables.
+    pub externals: Vec<ExternalLayout>,
     pub memory_size: u32,
     pub code_size: u32,
     pub stack_depth: u16,
     /// How deep calls nest at most; the VM is given that many call frames.
     pub call_depth: u16,
+}
+
+/// Where a program's copy of a data block is (a variable of [`Section::External`], ADR-014
+/// slice D1), and how it is laid out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalLayout {
+    /// The variable: an index into the program's `vars`.
+    pub var: usize,
+    pub name: String,
+    /// Its structure type's name.
+    pub ty: String,
+    /// In the program's memory.
+    pub offset: u32,
+    pub size: u32,
+    /// Its top-level members, in the order declared, each from the start of the block.
+    pub members: Vec<MemberLayout>,
+    /// Its layout hash ([`layout_hash`]).
+    pub layout: String,
+}
+
+/// The layout hash of a data block whose canonical description is `canonical`: FNV-1a, 64
+/// bits, over its bytes, as 16 lowercase hex digits.
+pub fn layout_hash(canonical: &str) -> String {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = OFFSET_BASIS;
+    for b in canonical.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(PRIME);
+    }
+    format!("{h:016x}")
 }
 
 /// How a value of a type sits on the VM stack.
@@ -331,6 +365,21 @@ struct Plan<'u> {
 /// that with the place; this is the backstop for a unit that came from elsewhere), or is
 /// larger than the format can describe.
 fn plan(u: &Unit) -> Result<Plan<'_>, Diagnostic> {
+    plan_as(u, Program::Whole)
+}
+
+/// How [`plan_as`] takes the program's variables.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Program {
+    /// Together, in one memory: a program to be emitted.
+    Whole,
+    /// Each on its own: each a data block of a project that no one program holds all of
+    /// ([`data_layouts`]).
+    EachVariable,
+}
+
+/// [`plan`], with the program's variables taken as `program` says.
+fn plan_as(u: &Unit, program: Program) -> Result<Plan<'_>, Diagnostic> {
     if u.ir_version != IR_VERSION {
         return Err(Diagnostic::whole(format!(
             "the unit is IR version {}; this backend reads version {IR_VERSION}",
@@ -372,14 +421,18 @@ fn plan(u: &Unit) -> Result<Plan<'_>, Diagnostic> {
             memory = memory.saturating_add(lay.pous[p].size);
         }
     }
+    let together = program == Program::Whole;
     let largest = lay
         .pous
         .iter()
+        .enumerate()
+        .filter(|(p, _)| together || *p != u.entry)
+        .map(|(_, l)| l)
         .chain(lay.structs.iter())
         .map(|l| l.size)
         .max()
         .unwrap_or(0)
-        .max(memory);
+        .max(if together { memory } else { 0 });
     // Scratch is a few bytes per CASE and per call of an instance in an array; leaving room
     // for it here means no address computed below can pass 32 bits.
     if largest > (u32::MAX / 2) as u64 {
@@ -398,6 +451,18 @@ fn plan(u: &Unit) -> Result<Plan<'_>, Diagnostic> {
 /// bytes per CASE) is not in it; `Output::memory_size` is the whole.
 pub fn variable_memory(u: &Unit) -> Result<u64, Diagnostic> {
     plan(u).map(|p| p.memory)
+}
+
+/// The layout of each data block the program of `u` declares, with no code emitted: for
+/// laying out the data blocks of a project with no program of its own (ADR-014, slice D1),
+/// declared as the variables of a program that does nothing.
+///
+/// Refused as [`emit`] refuses `u` for what is in it, every type and POU whether the program
+/// uses it or not, except that the program's variables are not taken together: no program
+/// holds every block of a project, and a block is refused only for what it is alone. Each
+/// layout's `offset` is where it would be in that program, which is no program's.
+pub fn data_layouts(u: &Unit) -> Result<Vec<ExternalLayout>, Diagnostic> {
+    plan_as(u, Program::EachVariable).map(|p| p.lay.externals())
 }
 
 /// Lay `u` out and emit its bytecode. `Err` as [`variable_memory`].
@@ -479,6 +544,7 @@ pub fn emit(u: &Unit) -> Result<Output, Diagnostic> {
         );
     }
     let types = e.lay.types();
+    let externals = e.lay.externals();
     for (text, at) in &e.literals {
         let at = *at as usize;
         init[at..at + 2].copy_from_slice(&(text.len() as u16).to_le_bytes());
@@ -513,6 +579,7 @@ pub fn emit(u: &Unit) -> Result<Output, Diagnostic> {
         bytes,
         symbols,
         types,
+        externals,
     })
 }
 
@@ -665,6 +732,113 @@ impl Layouts<'_> {
                 private,
             }),
         }
+    }
+
+    /// The canonical description of the layout of a value of `ty`, which a data block's
+    /// layout hash is computed over (ADR-014, slice D1). Two blocks have the same description
+    /// exactly when a program may copy the bytes of one into the other member by member:
+    ///
+    /// ```text
+    /// BOOL SINT INT DINT LINT REAL LREAL TIME   an elementary type, by its name
+    /// STRING[n]                                 a STRING of length n
+    /// ARRAY[lo..hi,lo..hi]OF(<element>)         an array: its bounds, then its element
+    /// STRUCT(<member>;<member>;…)               a structure: each member in order, as
+    ///   NAME:<type>@<offset>+<size>             its name in upper case, its type, where it
+    ///                                           starts in the structure and its size
+    /// ```
+    ///
+    /// The name of a structure type is not in it, at any depth: two types of the same
+    /// members laid out alike describe alike. Offsets and sizes are in bytes, in decimal.
+    /// A function block instance cannot be in a structure (the front-end refuses it); were
+    /// one there, it would be described as `INSTANCE(…)` of its members, as a structure.
+    fn canonical(&self, ty: Ty, out: &mut String) {
+        use std::fmt::Write;
+        let members = |out: &mut String, list: Vec<(&str, Ty, u64)>| {
+            for (name, ty, offset) in list {
+                let _ = write!(out, "{}:", name.to_ascii_uppercase());
+                self.canonical(ty, out);
+                let _ = write!(out, "@{offset}+{};", self.size(ty));
+            }
+        };
+        match ty {
+            Ty::String(n) => {
+                let _ = write!(out, "STRING[{n}]");
+            }
+            Ty::Array(a) => {
+                let a = &self.u.arrays[a];
+                let dims: Vec<String> = a
+                    .dims
+                    .iter()
+                    .map(|(lo, hi)| format!("{lo}..{hi}"))
+                    .collect();
+                let _ = write!(out, "ARRAY[{}]OF(", dims.join(","));
+                self.canonical(a.elem, out);
+                out.push(')');
+            }
+            Ty::Struct(i) => {
+                out.push_str("STRUCT(");
+                let list = self.u.structs[i]
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(k, f)| (f.name.as_str(), f.ty, self.structs[i].offsets[k]))
+                    .collect();
+                members(out, list);
+                out.push(')');
+            }
+            Ty::Instance(p) => {
+                out.push_str("INSTANCE(");
+                let list = self.u.pous[p]
+                    .vars
+                    .iter()
+                    .enumerate()
+                    .map(|(k, v)| (v.name.as_str(), v.ty, self.pous[p].offsets[k]))
+                    .collect();
+                members(out, list);
+                out.push(')');
+            }
+            elementary => out.push_str(elementary.builtin_name().unwrap_or("?")),
+        }
+    }
+
+    /// The program's copy of each data block it declares.
+    fn externals(&self) -> Vec<ExternalLayout> {
+        let u = self.u;
+        let mut out = Vec::new();
+        for (i, v) in u.program().vars.iter().enumerate() {
+            if v.section != Section::External {
+                continue;
+            }
+            let members = match v.ty {
+                Ty::Struct(s) => u.structs[s]
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(k, f)| MemberLayout {
+                        name: f.name.clone(),
+                        ty: u.ty_name(f.ty),
+                        offset: self.structs[s].offsets[k] as u32,
+                        size: self.size(f.ty) as u32,
+                        array: self.array_info(f.ty),
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            // The size of the whole first, then its shape: a version of the description is
+            // a change of this line.
+            let mut canonical = format!("D1;{};", self.size(v.ty));
+            self.canonical(v.ty, &mut canonical);
+            out.push(ExternalLayout {
+                var: i,
+                name: v.name.clone(),
+                ty: u.ty_name(v.ty),
+                offset: self.pous[u.entry].offsets[i] as u32,
+                size: self.size(v.ty) as u32,
+                members,
+                layout: layout_hash(&canonical),
+            });
+        }
+        out
     }
 
     /// The layout of every structure and function block type.
@@ -1733,6 +1907,7 @@ mod tests {
                 retention: Retention::Unqualified,
                 init: None,
                 hidden: false,
+                constant: false,
             }],
             body: vec![Stmt::Assign(
                 Place::var(0),
@@ -1778,6 +1953,7 @@ mod tests {
             retention,
             init: None,
             hidden: false,
+            constant: false,
         };
         let block = Pou {
             name: "cell".into(),

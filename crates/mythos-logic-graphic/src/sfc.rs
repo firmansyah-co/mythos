@@ -131,6 +131,7 @@ pub(crate) fn types(span: Span) -> Vec<TypeDecl> {
         },
         init: init.map(|b| Init::Value(bool_expr(b, span))),
         hidden: true,
+        constant: false,
     };
     let step = |name: &str, initial: bool| TypeDecl {
         name: name.into(),
@@ -2168,6 +2169,7 @@ impl Chart {
                 }),
                 init: None,
                 hidden: true,
+                constant: false,
             });
             let id = self.elems[*el].id;
             probes.push(Probe {
@@ -2227,6 +2229,7 @@ impl Chart {
                         ty: named_ty(ACTION_TYPE),
                         init: None,
                         hidden: true,
+                        constant: false,
                     });
                     (n.to_ascii_uppercase(), member(n, "Q", span))
                 }

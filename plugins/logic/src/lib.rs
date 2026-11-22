@@ -446,6 +446,7 @@ fn compile_entry(
             &Sources {
                 st: None,
                 tc6: &[(name.as_str(), source)],
+                ..Default::default()
             },
             target,
         )
@@ -455,6 +456,7 @@ fn compile_entry(
             &Sources {
                 st: Some((name.as_str(), source)),
                 tc6: &[],
+                ..Default::default()
             },
             target,
         )

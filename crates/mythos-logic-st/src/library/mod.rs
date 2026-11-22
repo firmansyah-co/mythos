@@ -118,6 +118,7 @@ pub fn read(k: usize) -> (Source, Vec<Diagnostic>) {
 pub fn add_used(src: &mut Source, diags: &mut Vec<Diagnostic>) {
     let mut wanted: Vec<String> = Vec::new();
     names_used(src, &mut wanted);
+    wanted.retain(|n| declares(n));
     let mut files: Vec<Option<Source>> = (0..FILES.len()).map(|_| None).collect();
     let mut taken: Vec<String> = Vec::new();
     while let Some(name) = wanted.pop() {
@@ -141,13 +142,15 @@ pub fn add_used(src: &mut Source, diags: &mut Vec<Diagnostic>) {
         };
         let mut more = Vec::new();
         pou_names_used(&pou, &mut more);
+        more.retain(|n| declares(n));
         wanted.extend(more);
         src.pous.push(pou);
     }
 }
 
-/// Every name `src` uses that could be a POU of the library, in upper case: each type named
-/// in a declaration, and each function called in an expression.
+/// Every name `src` uses that could be a POU or a type, in upper case, each once, in the
+/// order first met: each type named in a declaration, and each function called in an
+/// expression. [`add_used`] keeps those of the standard library.
 fn names_used(src: &Source, out: &mut Vec<String>) {
     for t in &src.types {
         match &t.kind {
@@ -163,7 +166,26 @@ fn names_used(src: &Source, out: &mut Vec<String>) {
     }
 }
 
-fn pou_names_used(p: &ast::Pou, out: &mut Vec<String>) {
+/// [`names_used`] of one type declaration: the types its members or elements are of, and
+/// what a member's initial value names.
+pub(crate) fn type_names_used(t: &ast::TypeDecl, out: &mut Vec<String>) {
+    match &t.kind {
+        ast::TypeDeclKind::Struct(fields) => {
+            for f in fields {
+                spec_names(&f.ty, out);
+                if let Some(init) = &f.init {
+                    init_names(init, out);
+                }
+            }
+        }
+        ast::TypeDeclKind::Alias(spec) => spec_names(spec, out),
+        ast::TypeDeclKind::Unknown => {}
+    }
+}
+
+/// [`names_used`] of one POU: the types of its result and variables, and the functions its
+/// initial values and statements call.
+pub(crate) fn pou_names_used(p: &ast::Pou, out: &mut Vec<String>) {
     if let Some(spec) = &p.result {
         spec_names(spec, out);
     }
@@ -178,7 +200,7 @@ fn pou_names_used(p: &ast::Pou, out: &mut Vec<String>) {
 
 fn add(name: &str, out: &mut Vec<String>) {
     let upper = name.to_ascii_uppercase();
-    if declares(&upper) && !out.contains(&upper) {
+    if !out.contains(&upper) {
         out.push(upper);
     }
 }

@@ -610,6 +610,7 @@ fn an_fbd_program_is_compiled_with_the_st_pous_of_its_project() {
         &Sources {
             st: Some(("pous.st", st)),
             tc6: &[("main.xml", doc.as_str())],
+            ..Default::default()
         },
         &TargetProfile::pc(),
     ));

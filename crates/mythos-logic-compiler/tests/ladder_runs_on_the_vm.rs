@@ -25,6 +25,7 @@ fn with_st(pous: &[Pou], st: &str) -> Run {
         &Sources {
             st: Some(("pous.st", st)),
             tc6: &ld,
+            ..Default::default()
         },
         &TargetProfile::pc(),
     ))

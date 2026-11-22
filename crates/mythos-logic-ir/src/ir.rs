@@ -170,6 +170,22 @@ pub struct Var {
     /// never bind a tag to write it.
     #[serde(default)]
     pub hidden: bool,
+    /// Declared in a CONSTANT section: no statement stores into it (the front-end refuses
+    /// one that would). Only a [`Section::External`] variable is one today.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub constant: bool,
+}
+
+/// A statement of a POU that stores into a variable of it ([`Unit::stores`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Store {
+    /// The variable: an index into the POU's `vars`.
+    pub var: usize,
+    /// The member of the variable the store is within, when the place's first step is a
+    /// member ([`Sel::Member`]): the store changes that member or a part of it, and no other.
+    /// `None` when the store may change any part of the variable: the variable as a whole,
+    /// or an element of it.
+    pub member: Option<usize>,
 }
 
 /// A structure type.
@@ -811,6 +827,63 @@ impl Unit {
         out
     }
 
+    /// Every store the body of `pou` makes into a variable of its own, in the order of the
+    /// body, one for each place written: the place of an assignment, the control variable of
+    /// a FOR loop, the instance of a function block call (the call sets its inputs and runs
+    /// its body, which changes its state) and each place an output of the call is copied to.
+    ///
+    /// These are every statement of the IR that writes memory of the POU: an expression
+    /// writes nothing (a function's variables are its own, and its arguments are copied into
+    /// them). The match below names every kind of statement, so a kind added to the IR does
+    /// not compile until it says what it stores. This is what tells which members of a data
+    /// block a program writes (ADR-014, slice D1), for every language alike.
+    pub fn stores(&self, pou: usize) -> Vec<Store> {
+        fn store(p: &Place, out: &mut Vec<Store>) {
+            let member = match p.path.first() {
+                Some(Sel::Member(m)) => Some(*m),
+                // An element of the variable, or the whole of it: any part may change.
+                Some(Sel::Index(_)) | None => None,
+            };
+            out.push(Store { var: p.var, member });
+        }
+        fn walk(stmts: &[Stmt], out: &mut Vec<Store>) {
+            for st in stmts {
+                match st {
+                    Stmt::Assign(p, _) => store(p, out),
+                    Stmt::Call {
+                        instance,
+                        inputs: _,
+                        outputs,
+                    } => {
+                        store(instance, out);
+                        outputs.iter().for_each(|(_, p)| store(p, out));
+                    }
+                    Stmt::For { var, body, .. } => {
+                        store(var, out);
+                        walk(body, out);
+                    }
+                    Stmt::If(branches, otherwise) => {
+                        for (_, b) in branches {
+                            walk(b, out);
+                        }
+                        walk(otherwise, out);
+                    }
+                    Stmt::Case(_, arms, otherwise) => {
+                        for (_, b) in arms {
+                            walk(b, out);
+                        }
+                        walk(otherwise, out);
+                    }
+                    Stmt::While(_, b) | Stmt::Repeat(b, _) => walk(b, out),
+                    Stmt::Exit | Stmt::Return => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.pous[pou].body, &mut out);
+        out
+    }
+
     /// Every POU, each after all those it [`uses`](Unit::uses), the program included. `Err`
     /// is a cycle: POUs each using the next, and the last the first. Structures that contain
     /// themselves are a cycle too, reported by [`Unit::struct_cycle`].
@@ -1008,6 +1081,7 @@ mod tests {
             retention: Retention::Unqualified,
             init: None,
             hidden: false,
+            constant: false,
         }
     }
     fn call(pou: usize) -> Stmt {
@@ -1110,5 +1184,67 @@ mod tests {
         assert_eq!(u.ty_name(c), "ARRAY [0..2] OF INT");
         let m = u.array(vec![(1, 2), (-1, 1)], Ty::Real);
         assert_eq!(u.ty_name(m), "ARRAY [1..2, -1..1] OF REAL");
+    }
+
+    #[test]
+    fn stores_names_every_place_a_body_writes_by_its_first_member() {
+        let int = |v: i64| Expr {
+            ty: Ty::Int,
+            kind: ExprKind::Const(Const::Int(v)),
+        };
+        let at = |var: usize, path: Vec<Sel>| Place { var, path };
+        let body = vec![
+            Stmt::Assign(at(0, vec![Sel::Member(2), Sel::Member(0)]), int(1)),
+            Stmt::If(
+                vec![(
+                    int(1),
+                    vec![Stmt::Assign(at(0, vec![Sel::Index(vec![int(0)])]), int(1))],
+                )],
+                vec![Stmt::Assign(at(1, Vec::new()), int(1))],
+            ),
+            Stmt::Case(
+                int(1),
+                vec![(
+                    vec![(1, 1)],
+                    vec![Stmt::Assign(at(0, vec![Sel::Member(1)]), int(1))],
+                )],
+                vec![Stmt::Assign(at(0, vec![Sel::Member(3)]), int(1))],
+            ),
+            Stmt::While(
+                int(1),
+                vec![Stmt::Repeat(
+                    vec![Stmt::For {
+                        var: at(0, vec![Sel::Member(4)]),
+                        from: int(1),
+                        to: int(2),
+                        by: 1,
+                        body: vec![Stmt::Exit],
+                    }],
+                    int(1),
+                )],
+            ),
+            Stmt::Call {
+                instance: at(2, Vec::new()),
+                inputs: vec![(0, int(1))],
+                outputs: vec![(1, at(0, vec![Sel::Member(5), Sel::Index(vec![int(0)])]))],
+            },
+            Stmt::Return,
+        ];
+        let mut u = Unit::new();
+        u.pous = vec![pou("main", PouKind::Program, Vec::new(), body)];
+        let s = |var: usize, member: Option<usize>| Store { var, member };
+        assert_eq!(
+            u.stores(0),
+            [
+                s(0, Some(2)),
+                s(0, None),
+                s(1, None),
+                s(0, Some(1)),
+                s(0, Some(3)),
+                s(0, Some(4)),
+                s(2, None),
+                s(0, Some(5)),
+            ]
+        );
     }
 }

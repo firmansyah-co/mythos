@@ -419,6 +419,7 @@ fn structured_text_alone_publishes_nothing_and_an_st_function_block_is_not_probe
                 "FUNCTION_BLOCK Twice VAR_INPUT x : BOOL; END_VAR VAR_OUTPUT y : BOOL; END_VAR y := x; END_FUNCTION_BLOCK",
             )),
             tc6: &ld,
+            ..Default::default()
         },
         &TargetProfile::pc(),
     )
