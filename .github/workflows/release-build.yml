@@ -49,144 +49,32 @@ permissions:
 jobs:
   release-build:
     name: Release Build & Packaging Sanity
-    runs-on: arc-runner-org
+    # GitHub's hosted runner since 2026-11-22, as every job of ci.yml.
+    runs-on: ubuntu-latest
     # A release build of the Tauri host is heavier than the test suite. Without a bound a hang
     # would run to GitHub's 6h default (same reasoning as frontend-tests' 30 minutes).
     timeout-minutes: 45
-    # Identical to core-engine-tests: the runner image is shared and these point at the
-    # persistent toolcache. Copied rather than invented so both Rust jobs behave the same way.
-    env:
-      RUSTUP_HOME: /opt/hostedtoolcache/rustup
-      CARGO_HOME: /opt/hostedtoolcache/cargo
-      CARGO_HTTP_IP_RESOLVE: "ipv4"
-      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
-      RUSTC_WRAPPER: "/opt/hostedtoolcache/cargo/bin/sccache"
-      SCCACHE_DIR: "/opt/hostedtoolcache/sccache"
-      SCCACHE_CACHE_SIZE: "10G"
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # The list the self-hosted runner's image is built from: what the desktop host links against.
       - name: Install Build Tools & Linker
         run: |
-          START=$(date +%s)
-          # Serialize every apt run. All jobs on this self-hosted runner share the
-          # persistent cache at /opt/hostedtoolcache/apt, and concurrent runs raced it:
-          # one left a stale archives/lock and every later run died with
-          # "E: Could not get lock ... It is held by process 0" (exit 100).
-          sudo mkdir -p /opt/hostedtoolcache/apt
-          exec 9>/opt/hostedtoolcache/apt/.mythos-apt.lock
-          flock 9
-
-          # Only now that we hold the serialization lock is it safe to clear stale
-          # locks: removing them outside it could corrupt an apt run that holds one.
-          sudo rm -f /opt/hostedtoolcache/apt/archives/lock /opt/hostedtoolcache/apt/lists/lock
-
-          # Disable docker-clean so downloaded .deb packages are preserved
-          sudo rm -f /etc/apt/apt.conf.d/docker-clean 2>/dev/null || true
-
-          # Create persistent cache directories on host-backed toolcache
-          sudo mkdir -p /opt/hostedtoolcache/apt/archives/partial
-          sudo mkdir -p /opt/hostedtoolcache/apt/lists/partial
-          sudo chmod -R 777 /opt/hostedtoolcache/apt 2>/dev/null || true
-
-          # Configure APT via /etc/apt/apt.conf.d/99custom-cache
-          cat << 'EOF' | sudo tee /etc/apt/apt.conf.d/99custom-cache >/dev/null
-          Dir::Cache::Archives "/opt/hostedtoolcache/apt/archives";
-          Dir::State::Lists "/opt/hostedtoolcache/apt/lists";
-          Binary::apt::APT::Keep-Downloaded-Packages "true";
-          APT::Keep-Downloaded-Packages "true";
-          EOF
-
-          PKGS="build-essential gcc libc6-dev pkg-config libdbus-1-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev"
-
-          if dpkg -s $PKGS >/dev/null 2>&1; then
-            echo "All required build tools and linker packages are already installed, skipping."
-            MODE="already present (image bakes the toolchain)"
-          else
-            MODE="installed by apt in this run (dpkg configure only; 0 downloads from cache)"
-            # Check if package lists need update (if lists are missing or older than 24 hours)
-            if [ -z "$(find /opt/hostedtoolcache/apt/lists -maxdepth 1 -type f -name '*_Packages' -mtime -1 2>/dev/null)" ]; then
-              echo "Package lists missing or older than 24h. Updating package lists..."
-              sudo apt-get update -y
-            else
-              echo "Reusing cached package lists."
-            fi
-            echo "Installing required packages..."
-            sudo apt-get install -y --no-install-recommends $PKGS
-          fi
-
-          SECS=$(( $(date +%s) - START ))
-          echo "build tools: $MODE in ${SECS}s"
-          {
-            echo "### Rust job timing"
-            echo ""
-            echo "| phase | seconds |"
-            echo "|---|---|"
-            echo "| build tools / linker | $SECS |"
-            echo ""
-            echo "- build tool mode: $MODE"
-          } >> "$GITHUB_STEP_SUMMARY" || true
-
-      - name: Setup Cache Symlinks and Directories
-        run: |
-          sudo mkdir -p /opt/hostedtoolcache/rustup /opt/hostedtoolcache/cargo/bin /opt/hostedtoolcache/sccache
-          sudo chown -R $(id -u):$(id -g) /opt/hostedtoolcache/rustup /opt/hostedtoolcache/cargo /opt/hostedtoolcache/sccache 2>/dev/null || true
-          sudo chmod -R 777 /opt/hostedtoolcache/sccache 2>/dev/null || true
-          if [ -d "/home/runner/.cargo/registry" ]; then
-            ln -s /home/runner/.cargo/registry /opt/hostedtoolcache/cargo/registry 2>/dev/null || true
-          fi
-          if [ -d "/home/runner/.cargo/git" ]; then
-            ln -s /home/runner/.cargo/git /opt/hostedtoolcache/cargo/git 2>/dev/null || true
-          fi
-          echo "/opt/hostedtoolcache/cargo/bin" >> $GITHUB_PATH
-
-      - name: Install & Start sccache Server
-        run: |
-          if [ ! -x "/opt/hostedtoolcache/cargo/bin/sccache" ]; then
-            echo "Installing sccache v0.8.2..."
-            curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.8.2/sccache-v0.8.2-x86_64-unknown-linux-musl.tar.gz -o /tmp/sccache.tar.gz
-            tar -xzf /tmp/sccache.tar.gz -C /tmp
-            mv /tmp/sccache-v0.8.2-x86_64-unknown-linux-musl/sccache /opt/hostedtoolcache/cargo/bin/sccache
-            chmod +x /opt/hostedtoolcache/cargo/bin/sccache
-            rm -rf /tmp/sccache*
-          else
-            echo "sccache already present in toolcache, skipping download."
-          fi
-          /opt/hostedtoolcache/cargo/bin/sccache --version
-          /opt/hostedtoolcache/cargo/bin/sccache --start-server || true
-          /opt/hostedtoolcache/cargo/bin/sccache --zero-stats || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends $(tr '\n' ' ' < ci/runner/packages.txt)
 
       - name: Install Rust Toolchain
-        run: |
-          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
-          export RUSTC_WRAPPER="/opt/hostedtoolcache/cargo/bin/sccache"
-          if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1 && rustup component list | grep -q "rustfmt.*(installed)" && rustup component list | grep -q "clippy.*(installed)"; then
-            echo "Rust toolchain already present in cache, skipping re-download."
-          else
-            echo "Installing or updating Rust toolchain via rustup..."
-            for i in 1 2 3 4 5; do
-              echo "Attempt $i to install rustup..."
-              curl --proto '=https' --tlsv1.2 --retry 5 --retry-delay 2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --component rustfmt,clippy && break || sleep 5
-            done
-          fi
-          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
-            source /opt/hostedtoolcache/cargo/env
-          fi
-          rustc --version
-          cargo --version
+        uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Cargo Build
+        uses: Swatinem/rust-cache@v2
 
       # THE ACCEPTANCE CRITERION, direction 1: this step is what must go red on a compile
       # break in src-tauri. --release specifically, because a debug build can succeed while a
       # release build fails (different lints, optimization passes, and cfg gates).
       - name: Build Desktop Host (release)
         run: |
-          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
-          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
-            source /opt/hostedtoolcache/cargo/env
-          fi
           START=$(date +%s)
           cargo build -p mythos-desktop --release
           SECS=$(( $(date +%s) - START ))

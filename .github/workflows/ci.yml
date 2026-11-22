@@ -56,240 +56,111 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/ci-already-verified.sh "$GITHUB_REPOSITORY" "$GITHUB_SHA" ci.yml
 
+  # THE LINUX SUITE RUNS ON GITHUB'S HOSTED RUNNER (the owner's decision, 2026-11-22).
+  #
+  # It ran on the self-hosted runner, a machine it shares with the builds of whoever is working
+  # on it. On 2026-11-22 that machine's load average was 40 to 80 while pull requests were
+  # built, this job took 17 and 24 minutes in two runs where the same lints and tests took 7.5
+  # to 9 minutes on macos-latest and 10 to 12 on windows-latest, and four runs went red on tests
+  # that passed alone (a module swap that timed out, a watch read too early, twice a 5 s test
+  # timeout). A hosted runner is a machine of its own for each job, several pull requests run at
+  # once instead of queueing for two runners, and the repository is public, so it costs nothing.
+  #
+  # The release latency tests and the benchmark of the shared memory engine are a job of their
+  # own, `shm-latency-report` below, which reports and holds nothing. `cargo test` here runs only
+  # the debug smoke check of the SHM hot path, as on Windows and macOS.
+  #
+  # The name is a required status check of dev, rc and release: it must not change.
   core-engine-tests:
     name: Rust Workspace Test Suite & Lints
     needs: already-verified
     if: ${{ !cancelled() && needs.already-verified.outputs.verified != 'true' }}
-    runs-on: arc-runner-org
-    env:
-      RUSTUP_HOME: /opt/hostedtoolcache/rustup
-      CARGO_HOME: /opt/hostedtoolcache/cargo
-      CARGO_HTTP_IP_RESOLVE: "ipv4"
-      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
-      RUSTC_WRAPPER: "/opt/hostedtoolcache/cargo/bin/sccache"
-      SCCACHE_DIR: "/opt/hostedtoolcache/sccache"
-      SCCACHE_CACHE_SIZE: "10G"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # THE RUNNER IMAGE CARRIES THESE PACKAGES; THIS STEP IS THE FALLBACK.
-      #
-      # On the stock runner image this step installed 348 packages on every run (a median 86 s of
-      # this job over 36 runs on 2026-11-16; nothing was downloaded, the time is dpkg). The scale
-      # set now starts from the image built in ci/runner, which has them, so the check below finds
-      # them and installs nothing.
-      #
-      # The list is ci/runner/packages.txt, read both here and by the image's Dockerfile. A package
-      # added there is installed by apt in each run until the image is next rebuilt (weekly, or by
-      # hand: ci/runner/README.md), so a run is never wrong, only slower. The step's own line in the
-      # job summary says which of the two happened.
+      # The list the self-hosted runner's image is built from (ci/runner/packages.txt): what the
+      # desktop host links against.
       - name: Install Build Tools & Linker
         run: |
-          START=$(date +%s)
-          # Serialize every apt run. All jobs on this self-hosted runner share the
-          # persistent cache at /opt/hostedtoolcache/apt, and concurrent runs raced it:
-          # one left a stale archives/lock and every later run died with
-          # "E: Could not get lock ... It is held by process 0" (exit 100).
-          sudo mkdir -p /opt/hostedtoolcache/apt
-          exec 9>/opt/hostedtoolcache/apt/.mythos-apt.lock
-          flock 9
-
-          # Only now that we hold the serialization lock is it safe to clear stale
-          # locks: removing them outside it could corrupt an apt run that holds one.
-          sudo rm -f /opt/hostedtoolcache/apt/archives/lock /opt/hostedtoolcache/apt/lists/lock
-
-          # Disable docker-clean so downloaded .deb packages are preserved
-          sudo rm -f /etc/apt/apt.conf.d/docker-clean 2>/dev/null || true
-
-          # Create persistent cache directories on host-backed toolcache
-          sudo mkdir -p /opt/hostedtoolcache/apt/archives/partial
-          sudo mkdir -p /opt/hostedtoolcache/apt/lists/partial
-          sudo chmod -R 777 /opt/hostedtoolcache/apt 2>/dev/null || true
-
-          # Configure APT via /etc/apt/apt.conf.d/99custom-cache
-          cat << 'EOF' | sudo tee /etc/apt/apt.conf.d/99custom-cache >/dev/null
-          Dir::Cache::Archives "/opt/hostedtoolcache/apt/archives";
-          Dir::State::Lists "/opt/hostedtoolcache/apt/lists";
-          Binary::apt::APT::Keep-Downloaded-Packages "true";
-          APT::Keep-Downloaded-Packages "true";
-          EOF
-
-          PKGS="$(tr '\n' ' ' < ci/runner/packages.txt)"
-
-          if dpkg -s $PKGS >/dev/null 2>&1; then
-            echo "All required build tools and linker packages are already installed, skipping."
-            MODE="already present in the runner image"
-          else
-            MODE="installed by apt in this run (dpkg configure only; 0 downloads from cache)"
-            # Check if package lists need update (if lists are missing or older than 24 hours)
-            if [ -z "$(find /opt/hostedtoolcache/apt/lists -maxdepth 1 -type f -name '*_Packages' -mtime -1 2>/dev/null)" ]; then
-              echo "Package lists missing or older than 24h. Updating package lists..."
-              sudo apt-get update -y
-            else
-              echo "Reusing cached package lists."
-            fi
-            echo "Installing required packages..."
-            sudo apt-get install -y --no-install-recommends $PKGS
-          fi
-
-          SECS=$(( $(date +%s) - START ))
-          echo "build tools: $MODE in ${SECS}s"
-          {
-            echo "### Rust job timing"
-            echo ""
-            echo "| phase | seconds |"
-            echo "|---|---|"
-            echo "| build tools / linker | $SECS |"
-            echo ""
-            echo "- build tool mode: $MODE"
-          } >> "$GITHUB_STEP_SUMMARY" || true
-
-      - name: Setup Cache Symlinks and Directories
-        run: |
-          sudo mkdir -p /opt/hostedtoolcache/rustup /opt/hostedtoolcache/cargo/bin /opt/hostedtoolcache/sccache
-          sudo chown -R $(id -u):$(id -g) /opt/hostedtoolcache/rustup /opt/hostedtoolcache/cargo /opt/hostedtoolcache/sccache 2>/dev/null || true
-          sudo chmod -R 777 /opt/hostedtoolcache/sccache 2>/dev/null || true
-          if [ -d "/home/runner/.cargo/registry" ]; then
-            ln -s /home/runner/.cargo/registry /opt/hostedtoolcache/cargo/registry 2>/dev/null || true
-          fi
-          if [ -d "/home/runner/.cargo/git" ]; then
-            ln -s /home/runner/.cargo/git /opt/hostedtoolcache/cargo/git 2>/dev/null || true
-          fi
-          echo "/opt/hostedtoolcache/cargo/bin" >> $GITHUB_PATH
-
-      - name: Install & Start sccache Server
-        run: |
-          if [ ! -x "/opt/hostedtoolcache/cargo/bin/sccache" ]; then
-            echo "Installing sccache v0.8.2..."
-            curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.8.2/sccache-v0.8.2-x86_64-unknown-linux-musl.tar.gz -o /tmp/sccache.tar.gz
-            tar -xzf /tmp/sccache.tar.gz -C /tmp
-            mv /tmp/sccache-v0.8.2-x86_64-unknown-linux-musl/sccache /opt/hostedtoolcache/cargo/bin/sccache
-            chmod +x /opt/hostedtoolcache/cargo/bin/sccache
-            rm -rf /tmp/sccache*
-          else
-            echo "sccache already present in toolcache, skipping download."
-          fi
-          /opt/hostedtoolcache/cargo/bin/sccache --version
-          /opt/hostedtoolcache/cargo/bin/sccache --start-server || true
-          /opt/hostedtoolcache/cargo/bin/sccache --zero-stats || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends $(tr '\n' ' ' < ci/runner/packages.txt)
 
       - name: Install Rust Toolchain
-        run: |
-          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
-          export RUSTC_WRAPPER="/opt/hostedtoolcache/cargo/bin/sccache"
-          if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1 && rustup component list | grep -q "rustfmt.*(installed)" && rustup component list | grep -q "clippy.*(installed)"; then
-            # The cache outlives the runner pod. Without an update it kept the stable of the day
-            # it was filled (1.99.1 while Windows and macOS, on dtolnay/rust-toolchain@stable,
-            # had 1.100.0), so a lint could pass here and fail there. Up to date, this is one
-            # manifest check.
-            echo "Rust toolchain present in cache; bringing it to the current stable."
-            updated=no
-            for i in 1 2 3; do
-              rustup update stable --no-self-update && { updated=yes; break; } || sleep 5
-            done
-            if [ "$updated" = no ]; then
-              echo "::warning title=Rust toolchain not updated::rustup could not reach the release server; this job runs on the cached toolchain."
-            fi
-          else
-            echo "Installing or updating Rust toolchain via rustup..."
-            for i in 1 2 3 4 5; do
-              echo "Attempt $i to install rustup..."
-              curl --proto '=https' --tlsv1.2 --retry 5 --retry-delay 2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --component rustfmt,clippy && break || sleep 5
-            done
-          fi
-          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
-            source /opt/hostedtoolcache/cargo/env
-          fi
-          rustc --version
-          cargo --version
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo Build
+        uses: Swatinem/rust-cache@v2
 
       - name: Cargo Format Check
-        run: |
-          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
-          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
-            source /opt/hostedtoolcache/cargo/env
-          fi
-          cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
 
       - name: Cargo Clippy Audit
-        run: |
-          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
-          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
-            source /opt/hostedtoolcache/cargo/env
-          fi
-          cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # --no-fail-fast: a failure in one test binary must not hide what the others say.
       - name: Run All Workspace Tests
-        run: |
-          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
-          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
-            source /opt/hostedtoolcache/cargo/env
-          fi
-          cargo test --workspace --verbose
+        run: cargo test --workspace --no-fail-fast
 
-      # TSK-002's "< 300 ns atomic swap" target (50 ns until the owner raised it on 2026-11-17)
-      # is asserted here on the release build, because
-      # release has ~3x headroom rather than ~1.6x and degrades much less when the runner is
-      # loaded. Debug is not incapable of meeting the bound (it measures 26-32 ns at true idle),
-      # but this runner shares its cores with the agent fleet and its load swings from 1.2 to
-      # 200+, so the larger margin is what makes the gate stable. The debug run above therefore
-      # only smoke-checks the hot path; the acceptance assertion is gated on this release run.
-      # The same release run asserts the 300 ns tag read bound of NFR-001 and SYS-REQ-002 (the
-      # owner extended the swap's bound to reads on 2026-11-18): the best of five rounds of
-      # 1,000,000 reads, with zero corruption (test_tag_read_latency_under_300ns).
-      # See the header of crates/mythos-shm/tests/shm_engine_tests.rs for the measurement regime,
-      # the recorded distributions with their load conditions, and the local-runner fact.
-      - name: Run SHM Swap and Read Latency Gates (release)
-        run: |
-          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
-          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
-            source /opt/hostedtoolcache/cargo/env
-          fi
-          cargo test --release -p mythos-shm --test shm_engine_tests -- --nocapture
+  # THE SHM LATENCY NUMBERS ARE REPORTED HERE, NOT ENFORCED (the owner's decision, 2026-11-22).
+  #
+  # Until then the release run of shm_engine_tests asserted the 300 ns swap bound of TSK-002 and
+  # the 300 ns read bound of NFR-001 and SYS-REQ-002 inside the required Linux job, on the
+  # self-hosted runner. This job runs the same tests on a hosted runner, and a miss is a warning
+  # on the run, never a red check: no branch waits for this job, and it is not a required status
+  # check. So nothing in CI holds those bounds any more. A regression of the hot path shows as a
+  # warning here, and somebody has to read it.
+  #
+  # A hosted runner is a shared VM: its timing says little about a controller's hardware (the
+  # header of crates/mythos-shm/tests/shm_engine_tests.rs has the regime and the distributions
+  # measured on the self-hosted machine), which is the other reason a miss here cannot be a
+  # verdict. The debug smoke check of the hot path (a 250 ns best-batch backstop against a lock
+  # or a syscall) still runs in every suite and still fails it.
+  shm-latency-report:
+    name: SHM Latency Report (not enforced)
+    needs: already-verified
+    if: ${{ !cancelled() && needs.already-verified.outputs.verified != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-      # TSK-010's criterion is "< 100 ns p99 read/write under 16 concurrent threads" (a read is now
-      # compared against the owner's 300 ns of NFR-001; a write still against 100 ns). Nothing
-      # computed a p99 until shm_p99_report.rs; the criterion suite below was only ever compiled
-      # (--no-run), so TSK-010 had never actually been measured. Both now run:
-      #   - shm_p99_report: real per-operation p99, 1 writer + 15 readers on a live SHM segment.
-      #   - the criterion suite: executed with reduced sampling so it fits the job budget, and
-      #     archived so the numbers are inspectable rather than guessed.
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Build
+        uses: Swatinem/rust-cache@v2
+
+      # TSK-002's "< 300 ns atomic swap" (50 ns until the owner raised it on 2026-11-17) and the
+      # 300 ns tag read of NFR-001 and SYS-REQ-002 (the best of five rounds of 1,000,000 reads,
+      # with zero corruption), on the release build: the acceptance assertions are compiled only
+      # there. `continue-on-error`: the outcome is read by the last step and said as a warning.
+      - name: Run SHM Swap and Read Latency Tests (release)
+        id: latency
+        continue-on-error: true
+        run: cargo test --release -p mythos-shm --test shm_engine_tests -- --nocapture
+
+      # TSK-010's criterion is "< 100 ns p99 read/write under 16 concurrent threads" (a read is
+      # compared against the owner's 300 ns of NFR-001; a write still against 100 ns). This was
+      # always a report: it asserts only a gross-breakage backstop and that its population was
+      # not starved, and prints the measured p99 with its verdict against the criterion.
       #
-      # REPORT, NOT A GATE. This step previously read "Run SHM p99 Concurrency Gate", which was
-      # green while its own log printed "TSK-010 VERDICT: ... NOT MET" (measured p99 ~1.2-1.3 us
-      # against a 100 ns target). It asserts only a gross-breakage backstop (p50 at 10x the p50 of
-      # the runs that bound was derived from), so its name must not claim the criterion passed.
-      # Whether `p99 < 100 ns` should be enforced is a board scope decision, not a CI threshold;
-      # the number is reported and logged on every run.
-      #
-      # MYTHOS_TSK010_OUT makes the retained-distribution path explicit here rather than leaving CI
-      # to rely on the test's own workspace-root derivation.
+      # MYTHOS_TSK010_OUT makes the retained-distribution path explicit here rather than leaving
+      # CI to rely on the test's own workspace-root derivation.
       - name: Report SHM p99 under 16 threads (TSK-010 report + breakage backstop)
+        id: p99
+        continue-on-error: true
         env:
           MYTHOS_TSK010_OUT: ${{ github.workspace }}/target/tsk010-p99
-        run: |
-          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
-          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
-            source /opt/hostedtoolcache/cargo/env
-          fi
-          cargo test --release -p mythos-shm --test shm_p99_report -- --nocapture
+        run: cargo test --release -p mythos-shm --test shm_p99_report -- --nocapture
 
-      # NOTE ON THE STEP NAME: it reads "report + breakage backstop", not "non-gating". The CRITERION
-      # is not gated (p99 < 100 ns is reported, never asserted), but the step CAN fail the job — on a
-      # gross-breakage backstop or on a starved population (a harness failure). The earlier
-      # "non-gating" wording was written before this step could fail and would understate it.
-      #
-      # RETAIN EACH RUN'S DISTRIBUTION. The board's decision is to write no bound until five or more
-      # runs exist; that is only possible if the runs are kept from now on. The three runs the
-      # current backstops were derived from had to be read out of CI logs by hand, and hand-read
-      # numbers are not a baseline. This artifact is what makes the fifth run a series rather than
-      # another log line.
-      #
-      # NON-BLOCKING for the same reason as the benchmark archive below: retaining numbers cannot
-      # tell anyone whether the code is correct, so it must not be able to fail the job (#35).
-      # `if: always()` so a run that failed its backstop still retains the numbers that show why.
+      # Each run's distribution is kept: a series can only be read if the runs exist. Advisory,
+      # as the benchmark archive below: retaining numbers cannot say whether the code is correct.
       - name: Archive TSK-010 p99 distributions
         if: always()
         continue-on-error: true
@@ -301,25 +172,12 @@ jobs:
           if-no-files-found: warn
 
       - name: Run SHM Micro-Benchmark (criterion, executed)
+        id: bench
+        continue-on-error: true
         run: |
-          export PATH="/opt/hostedtoolcache/cargo/bin:$PATH"
-          if [ -f "/opt/hostedtoolcache/cargo/env" ]; then
-            source /opt/hostedtoolcache/cargo/env
-          fi
           cargo bench -p mythos-shm --bench shm_bench -- \
             --sample-size 10 --measurement-time 1 --warm-up-time 1 --noplot
 
-      # NON-BLOCKING, deliberately. Archival preserves the criterion numbers for later
-      # inspection; it cannot tell anyone whether the code is correct, so it must not be able to
-      # fail the job. It did: on PR #20 (run 40271532287) the upload succeeded — "Uploaded bytes
-      # 6146", "Finished uploading artifact content to blob storage" — and the step then failed at
-      # finalize after 5 attempts, `getaddrinfo EAI_AGAIN results-receiver.actions.githubusercontent.com`,
-      # which reddened the required check for a build whose tests and benchmark had all passed.
-      #
-      # `if: always()` is kept so the step still runs and still archives whenever the upload path
-      # is healthy; `continue-on-error` makes its outcome advisory. This matches `Display sccache
-      # Statistics` below, which was already written defensively with `|| true` — the asymmetry
-      # between the two is what let this through.
       - name: Archive SHM Benchmark Results
         if: always()
         continue-on-error: true
@@ -330,10 +188,36 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      - name: Display sccache Statistics
+      # What the job is for: a miss is said where it is seen (an annotation on the run and a row
+      # in its summary), and the job stays green, because it holds nothing.
+      - name: Say what missed, as a warning
         if: always()
+        shell: bash
+        env:
+          LATENCY: ${{ steps.latency.outcome }}
+          P99: ${{ steps.p99.outcome }}
+          BENCH: ${{ steps.bench.outcome }}
         run: |
-          /opt/hostedtoolcache/cargo/bin/sccache --show-stats || true
+          {
+            echo "### SHM latency on a hosted runner (reported, not enforced)"
+            echo ""
+            echo "| step | outcome |"
+            echo "|---|---|"
+            echo "| swap and read latency tests (release; TSK-002, NFR-001, SYS-REQ-002) | $LATENCY |"
+            echo "| p99 under 16 threads (TSK-010 report + breakage backstop) | $P99 |"
+            echo "| criterion micro-benchmark | $BENCH |"
+            echo ""
+            echo "A failure here does not fail the run and holds no branch. The numbers are in each step's log."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$LATENCY" != "success" ]; then
+            echo "::warning title=SHM latency tests: $LATENCY (not enforced)::The release run of shm_engine_tests did not pass on this hosted runner. It asserts the 300 ns swap and read bounds (TSK-002, NFR-001, SYS-REQ-002). Read the step's log: a shared VM can miss them under load, and so can a regression of the hot path."
+          fi
+          if [ "$P99" != "success" ]; then
+            echo "::warning title=SHM p99 report: $P99 (not enforced)::shm_p99_report did not pass on this hosted runner (its breakage backstop, or a starved population). Read the step's log."
+          fi
+          if [ "$BENCH" != "success" ]; then
+            echo "::warning title=SHM benchmark: $BENCH (not enforced)::The criterion benchmark did not run to its end on this hosted runner."
+          fi
 
   # MythOS must run on Windows and macOS as well as Linux. Until this job existed nothing had ever
   # compiled it there, and it did not compile: the Windows shared memory called a windows-sys API
@@ -341,8 +225,8 @@ jobs:
   # whole test suite run here, on GitHub's hosted runners (the self-hosted runner is Linux only).
   # The repository is public, so these runners cost nothing.
   #
-  # The release latency gate and the p99 report stay on the Linux job: they describe that runner,
-  # and a shared hosted VM says nothing about it. `cargo test` here runs only the debug smoke check
+  # The release latency tests and the p99 report are `shm-latency-report` above, reported and not
+  # enforced. `cargo test` here runs only the debug smoke check
   # (a 250 ns best-batch backstop against a lock or syscall on the hot path).
   cross-platform-tests:
     name: Rust Workspace on ${{ matrix.os }}
@@ -432,18 +316,18 @@ jobs:
         shell: bash
         run: scripts/logic-vm-on-emulators.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # On GitHub's hosted runner since 2026-11-22, with the Linux suite above and for its reasons.
+  # The name is a required status check of dev and rc: it must not change.
   frontend-tests:
     name: Frontend Web Workbench Test Suite & Lints
     needs: already-verified
     if: ${{ !cancelled() && needs.already-verified.outputs.verified != 'true' }}
-    runs-on: arc-runner-org
+    runs-on: ubuntu-latest
     # Clean-tree build measured ~8.5 min (ui-logic-editor alone is ~6.5 min).
     # Without this, a hang would run to GitHub's 6h default.
     timeout-minutes: 30
     env:
       PNPM_VERSION: "12.14.0"
-      PNPM_PREFIX: /opt/hostedtoolcache/pnpm/12.14.0
-      PNPM_STORE: /opt/hostedtoolcache/pnpm-store
     defaults:
       run:
         # frontend/ is the pnpm workspace root (pnpm-workspace.yaml + pnpm-lock.yaml live here).
@@ -453,59 +337,21 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # npm's own cache goes to a job-local directory; it is unrelated to pnpm's store below.
-      - name: Configure npm cache directory
-        shell: bash
-        run: echo "npm_config_cache=$RUNNER_TEMP/npm-cache" >> "$GITHUB_ENV"
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           # Pinned: no .nvmrc and no engines field. Vite 6 needs >=18; @types/node is ^22.
-          # MUST run before pnpm is installed: arc-runner-org is self-hosted and has no
-          # node on PATH, so pnpm/action-setup's self-installer dies with
-          # "sh: 1: node: not found". For the same reason `cache: pnpm` cannot be used
-          # here (setup-node shells out to a pnpm that does not exist yet).
           node-version: '22'
 
-      # PNPM AND ITS STORE STAY ON THE RUNNER, IN THE HOST-BACKED TOOL CACHE.
-      #
-      # Measured over 38 green runs of this job on 2026-11-16 (median 3.6 min): 56 s restoring the
-      # store through actions/cache (324 MB fetched from GitHub on every run, 125 s at worst) and
-      # 18 s installing pnpm with npm, every time. /opt/hostedtoolcache is a host directory that
-      # outlives the runner pod: it is where the Rust job keeps rustup and sccache.
-      #
-      # WHY THE STORE WAS NOT ALREADY THERE: pnpm keeps its store on the file system of the
-      # project unless told otherwise, so in the pod it used /home/runner/.pnpm-store, which dies
-      # with the pod. `--store-dir` on the install is what places it; an environment variable does
-      # not (measured earlier in this file's history).
-      #
-      # Nothing here can let a wrong dependency in: `--frozen-lockfile` still fails the install
-      # when pnpm-lock.yaml disagrees with package.json, and pnpm verifies the content of what it
-      # takes from the store (verify-store-integrity, on by default). An empty store only means a
-      # slower run. The store is as trusted as the rest of this tool cache: the Rust job already
-      # runs the sccache and the toolchain kept beside it.
       - name: Install pnpm
         run: |
           # Pinned: frontend/package.json has no packageManager field, so nothing would
           # otherwise select a version. This matches the version that generated pnpm-lock.yaml.
-          START=$(date +%s)
-          sudo mkdir -p "$PNPM_PREFIX" "$PNPM_STORE"
-          sudo chown "$(id -u):$(id -g)" "$PNPM_PREFIX" "$PNPM_STORE"
-          # Two jobs may get here at once the first time; one installs, the other waits.
-          exec 9>"$PNPM_PREFIX/.install.lock"
-          flock 9
-          if [ "$("$PNPM_PREFIX/bin/pnpm" --version 2>/dev/null)" = "$PNPM_VERSION" ]; then
-            MODE="already in the tool cache"
-          else
-            MODE="installed by npm in this run"
-            npm install --global --prefix "$PNPM_PREFIX" "pnpm@$PNPM_VERSION"
-          fi
-          flock -u 9
-          echo "$PNPM_PREFIX/bin" >> "$GITHUB_PATH"
-          "$PNPM_PREFIX/bin/pnpm" --version
-          echo "pnpm $PNPM_VERSION: $MODE"
-          { echo "| pnpm ($MODE) | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
+          npm install --global "pnpm@$PNPM_VERSION"
+          # The store goes beside the workspace, on its file system, where the cache step below
+          # finds it. `--store-dir` on the install is what places it; an environment variable
+          # does not.
+          echo "PNPM_STORE=$RUNNER_TEMP/pnpm-store" >> "$GITHUB_ENV"
 
       - name: Verify Toolchain Versions
         run: |
@@ -513,20 +359,36 @@ jobs:
           node --version
           pnpm --version
 
+      # The store is kept between runs by GitHub's cache, keyed by the lockfile: an exact hit
+      # when the lockfile did not change, otherwise the newest store to start from. Nothing here
+      # can let a wrong dependency in: `--frozen-lockfile` fails the install when pnpm-lock.yaml
+      # disagrees with package.json, and pnpm verifies the content of what it takes from the
+      # store. An empty store only means a slower run.
+      - name: Cache the pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/pnpm-store
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
       # REQ 2 — SUPPLY-CHAIN VERIFICATION STAYS ON, IN THE REQUIRED JOB.
       # `--frozen-lockfile` is not negotiable and is not cached away: it is what makes the install
       # fail closed when pnpm-lock.yaml disagrees with package.json, and it runs in this job, which
-      # is a required context on dev. The store moving to host storage changes only where
-      # content-addressed tarballs live; the lockfile check itself still executes on every run.
+      # is a required context on dev. The cached store changes only where content-addressed
+      # tarballs come from; the lockfile check itself still executes on every run.
       - name: Install Dependencies
         run: |
           START=$(date +%s)
           STATUS=0
-          BEFORE=$(find "$PNPM_STORE" -type f 2>/dev/null | wc -l | tr -d ' ')
           pnpm install --frozen-lockfile --store-dir "$PNPM_STORE" || STATUS=$?
-          AFTER=$(find "$PNPM_STORE" -type f 2>/dev/null | wc -l | tr -d ' ')
-          echo "pnpm store $PNPM_STORE: $BEFORE files before the install, $AFTER after"
-          { echo "| install dependencies (--frozen-lockfile; store files $BEFORE -> $AFTER) | $(( $(date +%s) - START )) |"; } >> "$GITHUB_STEP_SUMMARY" || true
+          {
+            echo "### Frontend job timing"
+            echo ""
+            echo "| phase | seconds |"
+            echo "|---|---|"
+            echo "| install dependencies (--frozen-lockfile) | $(( $(date +%s) - START )) |"
+          } >> "$GITHUB_STEP_SUMMARY" || true
           exit $STATUS
 
       - name: Resolve Build Channel

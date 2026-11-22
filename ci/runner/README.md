@@ -1,11 +1,21 @@
 # The self-hosted runner image
 
-The Linux jobs of CI run on `arc-runner-org`, a runner scale set (Actions Runner Controller) in
-the k3s cluster on the development machine. This directory is what its runners start from.
+**No job runs on this runner since 2026-11-22.** `arc-runner-org` is a runner scale set (Actions
+Runner Controller) in the k3s cluster on the development machine. Every job of CI and of the
+release workflows now runs on GitHub's hosted runners (the repository is public, so they cost
+nothing): the self-hosted machine is shared with the builds of whoever works on it, and a suite
+that competes with them is slow and goes red on tests that pass alone. The latency tests of the
+shared memory engine, which measured this machine, are a hosted job that reports and holds
+nothing (`shm-latency-report` in `.github/workflows/ci.yml`).
+
+The scale set, its image and the weekly rebuild below are still installed; whether to keep them
+for a job that needs this machine, or to remove them, is the owner's to decide.
+
+This directory is what the runners of that scale set start from.
 
 | File | What it is |
 |---|---|
-| `packages.txt` | The system packages the Rust job needs. Read by the Dockerfile and by the job's install step, so there is one list. |
+| `packages.txt` | The system packages the Rust jobs need. Read by the Dockerfile and by the install step of the jobs here and on the hosted runners, so there is one list. |
 | `Dockerfile` | GitHub's runner image plus those packages. |
 | `build.sh` | Builds the image with podman, checks it, and pushes it to the local registry. |
 | `registry.yaml` | The registry the cluster pulls it from, on `127.0.0.1:5000` of the host only. |
