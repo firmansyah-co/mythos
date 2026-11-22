@@ -1010,9 +1010,17 @@ END_PROGRAM
     );
     assert!(finish(engine.force(&ctx(), "x".into(), json!(7))).is_err());
     finish(engine.unforce(&ctx(), Some("B.x".into()))).unwrap();
-    until(&mut engine, "b writes its x again", |_| true);
-    std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(watch_one(&mut engine, "b.x"), json!(2));
+    // b writes its x again at its next run, whenever the machine lets that be: wait for the
+    // value and do not count on 50 ms (a macOS runner read 7 here once).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while watch_one(&mut engine, "b.x") != json!(2) {
+        assert!(
+            Instant::now() < deadline,
+            "b never wrote its x again after the force was released"
+        );
+        exchange(&mut engine, Vec::new());
+        std::thread::sleep(Duration::from_millis(5));
+    }
 
     let kept = finish(engine.retained(&ctx())).unwrap();
     assert_eq!(kept.len(), 1);
