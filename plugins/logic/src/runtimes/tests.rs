@@ -1218,6 +1218,8 @@ async fn a_configured_runtime_of_one_program_gives_it_in_program_with_its_tasks(
     emitted["programs"] = json!(["Other"]);
     assert_eq!(instance["tasks"], json!([emitted]));
     assert_eq!(b["replaces"], json!(["A"]));
+    // Its version is its one program's, which is what the core reports of the instance.
+    assert_eq!(b["version"], instance["program"]["version"], "{b}");
 }
 
 #[tokio::test]
@@ -1565,11 +1567,18 @@ async fn the_runtimes_version_ignores_run_and_retain_and_follows_its_tasks() {
     ok(&put(&logic, &p, "Line", slower).await);
     let b = built(&logic, &p, "Line").await;
     assert_ne!(b["version"], first["version"]);
-    // The module and the target are in it.
-    let mut other = line();
-    other["module"] = json!("vm2");
-    ok(&put(&logic, &p, "Line", other).await);
-    assert_ne!(built(&logic, &p, "Line").await["version"], first["version"]);
+    // It is the version the core reports of the instance once loaded (`RuntimeStatus.version`,
+    // its programs' versions joined by ", " in the instance's order), so a caller comparing the
+    // two finds them equal: never a hash the core does not report.
+    for b in [&first, &b] {
+        let reported: Vec<&str> = b["instance"]["programs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["version"].as_str().unwrap())
+            .collect();
+        assert_eq!(b["version"], json!(reported.join(", ")), "{b}");
+    }
     // And a check that is ok gives the build's version.
     ok(&put(&logic, &p, "Line", line()).await);
     let checked = check_of(&logic, &p, "Line", None).await;
@@ -1749,7 +1758,7 @@ async fn a_runtime_build_names_what_it_replaces_and_warns_of_retained_values_not
     assert_eq!(
         b["warnings"],
         json!([
-            "program 'Keeper': values kept for it while it ran alone as runtime 'Keeper' are not taken into runtime 'Line'; its RETAIN variables start from their initial values at the first load",
+            "program 'Keeper': RETAIN values are kept per runtime id, not per program: a warm load of runtime 'Line' puts into each RETAIN variable of 'Keeper' the value kept under runtime 'Line' for a variable of the same name, type and size, whichever program ran in runtime 'Line' before, and none of the values kept while 'Keeper' ran alone as runtime 'Keeper'; a cold load starts every RETAIN variable from its initial value",
             format!("program 'Reader': output {SPEED} is not a tag of this controller now: writes to it will fail"),
         ])
     );
@@ -1858,4 +1867,235 @@ async fn a_task_configuration_that_cannot_be_read_refuses_the_program_check_and_
         );
     }
     assert_eq!(p.files(), before);
+}
+
+// -----------------------------------------------------------------------------
+// Review findings of C8c, each a test of its own
+// -----------------------------------------------------------------------------
+
+/// A hand edit can store a runtime under an id that is not a runtime id ("Line 1"). Its
+/// programs are then built only with it, and it cannot be built: the program's build says to
+/// delete it, and the delete takes it, by that id. An id stored under none is still refused.
+#[tokio::test]
+async fn a_runtime_stored_under_an_id_that_is_not_one_can_be_deleted_by_it() {
+    let (logic, p) = (Logic::default(), project());
+    program(&logic, &p, "A", 20).await;
+    let mut stored = one_task(&["A"]);
+    stored["id"] = json!("Line 1");
+    std::fs::write(p.tasks_file(), json!({ "runtimes": [stored] }).to_string()).unwrap();
+    let words = "'Line 1' is not a runtime id: use 1 to 64 letters, digits, '-' or '_'";
+    assert_eq!(list(&logic, &p).await["problems"], json!([words]));
+    let a = [("program", "A")];
+    let built = send(&logic, &p, "POST", "/programs/:program/build", &a, None).await;
+    assert_eq!(built.status, 409, "{}", built.body);
+    assert_eq!(
+        built.body,
+        json!({
+            "error": format!("program 'A' is in task 't' of runtime 'Line 1', which cannot be built: {words}; take it out with delete_logic_runtime"),
+            "runtime": "Line 1",
+        })
+    );
+    // Building it, or saving under that id, stays refused.
+    refused(&build_of(&logic, &p, "Line 1", None).await, 400, words);
+    refused(
+        &put(&logic, &p, "Line 1", one_task(&["A"])).await,
+        400,
+        words,
+    );
+    // A 65-character id, never stored, is refused by the delete too.
+    let long = "L".repeat(65);
+    refused(
+        &delete(&logic, &p, &long).await,
+        400,
+        &format!("'{long}' is not a runtime id: use 1 to 64 letters, digits, '-' or '_'"),
+    );
+    let gone = delete(&logic, &p, "Line 1").await;
+    assert_eq!(ok(&gone), &json!({ "deleted": "Line 1" }));
+    let (name, data) = gone.event.unwrap();
+    assert_eq!(name, RUNTIMES_CHANGED_EVENT);
+    assert_eq!(
+        data,
+        json!({ "project": "plant", "runtime": "Line 1", "what": "deleted" })
+    );
+    assert_eq!(
+        std::fs::read_to_string(p.tasks_file()).unwrap(),
+        "{\n  \"runtimes\": []\n}\n"
+    );
+    // A is free again: built alone, and it can be put in a runtime.
+    ok(&send(&logic, &p, "POST", "/programs/:program/build", &a, None).await);
+    ok(&put(&logic, &p, "Line1", one_task(&["A"])).await);
+}
+
+/// The implied runtime listed for a program running alone is the one the core derives for the
+/// instance its build answers ([`implied_task`] of that instance's program), whose program is
+/// named by the PROGRAM its source declares, not by the program's name in the project.
+#[tokio::test]
+async fn the_implied_task_listed_is_the_one_the_core_derives_from_the_programs_build() {
+    let (logic, p) = (Logic::default(), project());
+    written(
+        &logic,
+        &p,
+        "Tank",
+        &counter("Other"),
+        json!({ "interval_ms": 20 }),
+    )
+    .await;
+    let a = [("program", "Tank")];
+    let built = ok(&send(&logic, &p, "POST", "/programs/:program/build", &a, None).await).clone();
+    let program: RuntimeProgram =
+        serde_json::from_value(built["instance"]["program"].clone()).unwrap();
+    assert_eq!(program.name, "Other");
+    let derived = serde_json::to_value(implied_task(&program)).unwrap();
+    let listed = list(&logic, &p).await;
+    assert_eq!(listed["implied"][0]["id"], "Tank", "{listed}");
+    assert_eq!(listed["implied"][0]["tasks"], json!([derived]), "{listed}");
+    let one = ok(&get(&logic, &p, "Tank").await).clone();
+    assert_eq!(one["runtime"], listed["implied"][0]);
+    // A program whose saved source does not compile has no build to derive a task from: its
+    // task is named by its name in the project, as the tool's summary says.
+    written(
+        &logic,
+        &p,
+        "Broken",
+        "PROGRAM Elsewhere\n  x := ;\nEND_PROGRAM",
+        json!({}),
+    )
+    .await;
+    let listed = list(&logic, &p).await;
+    assert_eq!(
+        listed["implied"][1],
+        implied_of("Broken", 20, "vm", "pc", true)
+    );
+}
+
+/// A project with no module directory: a write route that is refused makes nothing, as before
+/// the lock between processes. One that writes makes the directory, its file and the lock.
+#[tokio::test]
+async fn a_refused_write_in_a_project_without_the_modules_directory_makes_no_file() {
+    let logic = Logic::default();
+    let root = tempfile::tempdir().unwrap();
+    let p = Project {
+        logic: root.path().join("logic"),
+        root,
+    };
+    let refusals = [
+        (delete(&logic, &p, "R").await, 404),
+        (
+            send(
+                &logic,
+                &p,
+                "PUT",
+                "/programs/:program/source",
+                &[("program", "Ghost")],
+                Some(json!({ "source": "x" })),
+            )
+            .await,
+            404,
+        ),
+        (put(&logic, &p, "R", json!({ "module": "vm" })).await, 400),
+        (put(&logic, &p, "R", one_task(&["Ghost"])).await, 400),
+        (
+            send(
+                &logic,
+                &p,
+                "POST",
+                "/programs",
+                &[],
+                Some(json!({ "name": "9x" })),
+            )
+            .await,
+            400,
+        ),
+        (
+            send(
+                &logic,
+                &p,
+                "DELETE",
+                "/library/:name",
+                &[("name", "Lib")],
+                None,
+            )
+            .await,
+            404,
+        ),
+    ];
+    for (a, status) in &refusals {
+        assert_eq!(a.status, *status, "{}", a.body);
+        assert!(a.event.is_none(), "{}", a.body);
+    }
+    assert!(!p.logic.exists(), "a refused write made {:?}", p.files());
+    // The answers are the ones a project with the directory gets, word for word.
+    assert_eq!(
+        refusals[0].0.body,
+        json!({ "error": "the project has no runtime 'R'" })
+    );
+    assert_eq!(
+        refusals[1].0.body,
+        json!({ "error": "the project has no program 'Ghost'" })
+    );
+    // A write that is made: once, with its event, under the lock.
+    let made = send(
+        &logic,
+        &p,
+        "POST",
+        "/programs",
+        &[],
+        Some(json!({ "name": "A" })),
+    )
+    .await;
+    assert_eq!(made.status, 201, "{}", made.body);
+    let (name, data) = made.event.unwrap();
+    assert_eq!(name, PROGRAMS_CHANGED_EVENT);
+    assert_eq!(data["what"], "created");
+    assert!(p.logic.join(LOCK_FILE).is_file());
+    let listed = ok(&send(&logic, &p, "GET", "/programs", &[], None).await).clone();
+    assert_eq!(listed["programs"].as_array().unwrap().len(), 1, "{listed}");
+}
+
+/// What this module cannot know (which instances the core runs) its tools say to the caller:
+/// `replaces` names only the ids its programs run under alone, so a configured runtime a program
+/// left still runs it until it is taken out or rebuilt; a deleted runtime runs on until its
+/// instance is taken out; and the core does not refuse one program in two runtimes.
+#[test]
+fn the_tools_say_that_a_runtime_a_program_left_still_runs_it_until_it_is_taken_out() {
+    let manifest = crate::manifest();
+    let summary = |tool: &str| {
+        manifest
+            .routes
+            .iter()
+            .find(|r| r.tool == tool)
+            .unwrap()
+            .summary
+            .clone()
+    };
+    let build = summary("build_logic_runtime");
+    for said in [
+        "'replaces' does not name another configured runtime a program of this one was in before",
+        "or the program runs in both",
+        "its programs' versions joined by ', '",
+        "a warm load gives a program the values kept under this runtime's id",
+    ] {
+        assert!(build.contains(said), "{said}: {build}");
+    }
+    let delete = summary("delete_logic_runtime");
+    assert!(
+        delete.contains("its instance (the runtime's id) runs on, with all its programs, until it is taken out with save_runtimes_config"),
+        "{delete}"
+    );
+    assert!(!delete.contains("its programs run alone again"), "{delete}");
+    let alone = summary("build_logic_program");
+    assert!(
+        alone.contains("take out any instance of a configured runtime the program was in before"),
+        "{alone}"
+    );
+    let save = summary("save_logic_runtime");
+    assert!(
+        save.contains("a program taken out of it included, until it is built again"),
+        "{save}"
+    );
+    let list = summary("list_logic_runtimes");
+    assert!(
+        list.contains("named by the PROGRAM the saved source declares"),
+        "{list}"
+    );
 }

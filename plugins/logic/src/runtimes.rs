@@ -25,7 +25,6 @@ use mythos_module::protocol::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::path::Path;
 
 /// The file, in the module's directory. Not `runtimes.json`: the core's `<project>/runtimes.json`
@@ -288,6 +287,40 @@ fn implied(programs: &Programs, file: &TaskFile) -> Vec<RuntimeEntry> {
         .collect()
 }
 
+/// An implied runtime as the routes that list runtimes answer it: its task is the one the core
+/// derives from the instance the program's build answers ([`implied_task`] of its program),
+/// whose program is named by the PROGRAM its saved source declares, which need not be the
+/// program's name in the project. So the program is compiled alone, as its build compiles it.
+/// When it does not compile (or its source cannot be read), it has no build to derive a task
+/// from, and the task stays named by the program's name in the project, as the tool's summary
+/// says.
+fn listed(
+    mut runtime: RuntimeEntry,
+    programs: &Programs,
+    data: &Path,
+    project: Option<&Project>,
+) -> RuntimeEntry {
+    let Some(entry) = programs.programs.iter().find(|p| p.name == runtime.id) else {
+        return runtime;
+    };
+    if let Some(declared) = declared_name(entry, data, project) {
+        runtime.tasks = vec![implied_task(&stub(&declared, entry.interval_ms))];
+    }
+    runtime
+}
+
+/// The name of the PROGRAM that `entry`'s saved source declares, as its build compiles it;
+/// `None` when it would not compile.
+fn declared_name(entry: &ProgramEntry, data: &Path, project: Option<&Project>) -> Option<String> {
+    check_entry(entry).ok()?;
+    let target = TargetProfile::by_name(&entry.target)?;
+    let source = read_source(data, entry).ok()?;
+    compile_entry(entry, &source, &target, project?)
+        .compiled
+        .ok()
+        .map(|c| c.name)
+}
+
 /// The runtime of `id` among `runtimes`: the exact spelling, else one that differs only in case.
 fn position(runtimes: &[RuntimeEntry], id: &str) -> Option<usize> {
     runtimes
@@ -310,9 +343,19 @@ pub(crate) fn runtimes(call: &HttpCall, data: &Path) -> (HttpReply, Option<Value
         ("GET", "/runtimes") => (|| {
             let programs = load_programs(data)?;
             let file = load(data)?;
+            let alone = implied(&programs, &file);
+            let project = if alone.is_empty() {
+                None
+            } else {
+                read_project(data).ok()
+            };
+            let alone: Vec<RuntimeEntry> = alone
+                .into_iter()
+                .map(|r| listed(r, &programs, data, project.as_ref()))
+                .collect();
             Ok(json!({
                 "runtimes": file.runtimes,
-                "implied": implied(&programs, &file),
+                "implied": alone,
                 "problems": configuration_problems(&programs, &file),
             }))
         })(),
@@ -322,9 +365,15 @@ pub(crate) fn runtimes(call: &HttpCall, data: &Path) -> (HttpReply, Option<Value
             if let Some(at) = position(&file.runtimes, id) {
                 return Ok(json!({ "runtime": file.runtimes[at], "implied": false }));
             }
-            let alone = implied(&programs, &file);
+            let mut alone = implied(&programs, &file);
             let at = position(&alone, id).ok_or_else(|| no_runtime(id))?;
-            Ok(json!({ "runtime": alone[at], "implied": true }))
+            let runtime = listed(
+                alone.swap_remove(at),
+                &programs,
+                data,
+                read_project(data).ok().as_ref(),
+            );
+            Ok(json!({ "runtime": runtime, "implied": true }))
         })(),
         ("PUT", "/runtimes/:runtime") => body::<RuntimeBody>(call).and_then(|b| {
             let programs = load_programs(data)?;
@@ -343,7 +392,12 @@ pub(crate) fn runtimes(call: &HttpCall, data: &Path) -> (HttpReply, Option<Value
         }),
         ("DELETE", "/runtimes/:runtime") => (|| {
             let mut file = load(data)?;
-            let at = position(&file.runtimes, id).ok_or_else(|| no_runtime(id))?;
+            // An id that is not a runtime id is taken only when a runtime is stored under it
+            // (a hand edit), so that the runtime can be taken out (`Logic::serve`).
+            let at = position(&file.runtimes, id).ok_or_else(|| match id_problem(id) {
+                Some(problem) => error(400, problem),
+                None => no_runtime(id),
+            })?;
             let gone = file.runtimes.remove(at);
             save(data, &file)?;
             event = Some(json!({ "project": project, "runtime": gone.id, "what": "deleted" }));
@@ -617,29 +671,25 @@ fn symbol<'a>(symbols: &'a [Symbol], variable: &str) -> Option<&'a Symbol> {
         .find(|s| s.path.eq_ignore_ascii_case(variable))
 }
 
-/// What identifies a build of the runtime: its module and target, its tasks, each program
-/// with its version in the runtime, and each data block with its layout. Not whether it is put
-/// in RUN, nor whether a block is retained, as a program's version leaves both out.
-fn runtime_version(
-    runtime: &RuntimeEntry,
-    tasks: &[TaskConfig],
-    built: &[Built],
-    data: &[RuntimeDataBlock],
-) -> String {
-    let programs: Vec<(&str, &str)> = built
+/// The runtime's version, as the core reports it of the instance (`RuntimeStatus.version`): its
+/// one program's version, or every program's joined by `, ` in the instance's order. Each is the
+/// program's version in the runtime, which follows its task, its code, its bindings and its data
+/// blocks' layouts; not whether the runtime is put in RUN, nor whether a block is retained.
+fn runtime_version(built: &[Built]) -> String {
+    built
         .iter()
-        .map(|b| (b.program.name.as_str(), b.program.version.as_str()))
-        .collect();
-    let blocks: Vec<(&str, &str)> = data
-        .iter()
-        .map(|d| (d.name.as_str(), d.layout.as_str()))
-        .collect();
-    let mut hash = Sha256::new();
-    hash.update(
-        serde_json::to_vec(&(&runtime.module, &runtime.target, tasks, programs, blocks))
-            .unwrap_or_default(),
-    );
-    hex::encode(&hash.finalize()[..6])
+        .map(|b| b.program.version.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// What a load does with the RETAIN values of program `p` in runtime `id` (ADR-013 §2.5): the
+/// core keeps them per runtime id, so a warm load gives `p` what is kept under `id`, whichever
+/// program ran under that id before, and nothing of what was kept while `p` ran alone.
+fn retain_warning(p: &str, id: &str) -> String {
+    format!(
+        "program '{p}': RETAIN values are kept per runtime id, not per program: a warm load of runtime '{id}' puts into each RETAIN variable of '{p}' the value kept under runtime '{id}' for a variable of the same name, type and size, whichever program ran in runtime '{id}' before, and none of the values kept while '{p}' ran alone as runtime '{p}'; a cold load starts every RETAIN variable from its initial value"
+    )
 }
 
 /// The program of `entry` as the instance carries it.
@@ -752,12 +802,12 @@ fn build_runtime(
                 .into_iter()
                 .map(|w| format!("program '{p}': {w}")),
         );
-        // The core keeps RETAIN values per runtime id: what was kept while the program ran
-        // alone, under its own name, is not this runtime's.
+        // The core keeps RETAIN values per runtime id, not per program, and the runtime module
+        // puts each into the RETAIN variable of the same name, type and size, whichever program
+        // wrote it. This module cannot know what the core keeps under the id (it never calls
+        // the core), so it says what happens in either case.
         if b.compiled.symbols.iter().any(|s| s.retain) {
-            warnings.push(format!(
-                "program '{p}': values kept for it while it ran alone as runtime '{p}' are not taken into runtime '{id}'; its RETAIN variables start from their initial values at the first load"
-            ));
+            warnings.push(retain_warning(p, id));
         }
     }
     let mut instance = json!({
@@ -778,7 +828,7 @@ fn build_runtime(
     }
     Ok(with_problems(
         json!({
-            "version": runtime_version(runtime, &tasks, &built, &data_blocks),
+            "version": runtime_version(&built),
             "warnings": warnings,
             "programs": built.iter().map(|b| json!({
                 "name": b.entry.name,
@@ -884,7 +934,7 @@ fn check_runtime(
         "problems": problems,
     });
     if ok {
-        answer["version"] = json!(runtime_version(runtime, &tasks, &built, &data_blocks));
+        answer["version"] = json!(runtime_version(&built));
     }
     if !data_blocks.is_empty() {
         answer["data"] = json!(data_blocks);

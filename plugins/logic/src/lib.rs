@@ -601,6 +601,7 @@ fn given(project: &Project) -> Given<'_> {
 /// hot swap two processes may write) and ending in `.tmp` (left out of a device's plant
 /// slice), synced, then renamed over the file.
 fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
+    about_to_write(path)?;
     let fail = |p: &Path, e: std::io::Error| error(500, format!("{}: {e}", p.display()));
     let Some(tmp) = temporary_path(path) else {
         return Err(error(500, format!("{}: not a file's path", path.display())));
@@ -636,6 +637,52 @@ fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
         return Err(error(500, message));
     }
     Ok(())
+}
+
+/// Remove a file of the module: a write, so gated as [`write_synced`] is.
+fn remove_written(path: &Path) -> Result<(), Refusal> {
+    about_to_write(path)?;
+    std::fs::remove_file(path).map_err(|e| error(500, format!("{}: {e}", path.display())))
+}
+
+std::thread_local! {
+    /// Set while a write route runs in a project with no module directory yet, without the
+    /// lock (see [`Logic::serve`]): a write it reaches is not made, and [`WANTED`] is set.
+    static DRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether a write was reached while [`DRY`] was set.
+    static WANTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Every write of the module passes here first: while [`DRY`] is set it is not made.
+fn about_to_write(path: &Path) -> Result<(), Refusal> {
+    if DRY.get() {
+        WANTED.set(true);
+        return Err(error(
+            500,
+            format!(
+                "{}: not written while the call is tried without the lock",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Run `route` with every write held back ([`DRY`]): its answer when it reached no write,
+/// `None` when it reached one (and wrote nothing).
+fn without_writes<T>(route: impl FnOnce() -> T) -> Option<T> {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            DRY.set(false);
+        }
+    }
+    WANTED.set(false);
+    DRY.set(true);
+    let reset = Reset;
+    let answer = route();
+    drop(reset);
+    (!WANTED.replace(false)).then_some(answer)
 }
 
 /// Hold the lock of [`LOCK_FILE`] in `data` until the file returned is dropped. The lock is
@@ -1566,7 +1613,7 @@ pub fn manifest() -> ModuleManifest {
                     "properties": { "source": { "type": "string" } }
                 })), &[]),
             route("POST", "/programs/:program/build", "engineer", "build_logic_program",
-                "Compile the saved source, Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart, and pack it as a runtime instance. The answer's 'instance' is what save_runtimes_config takes in its 'instances' (replace the one with the same id); nothing is loaded by this call. The program is compiled with the project's library and its user types and data blocks (the data module's); when those types and blocks do not check, it is compiled without them and 'project_problems' says why. When the program declares data blocks, the instance carries them in 'data'. A data block in two runtimes is refused when saved. A program that a configured runtime of the project runs (list_logic_runtimes) is not built alone: it is refused with 409 naming the runtime, which build_logic_runtime builds with all its programs.",
+                "Compile the saved source, Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart, and pack it as a runtime instance. The answer's 'instance' is what save_runtimes_config takes in its 'instances' (replace the one with the same id, and take out any instance of a configured runtime the program was in before, which the core still runs until it is taken out or rebuilt without the program: the core does not refuse one program run by two runtimes when they share no output tag, published tag or data block); nothing is loaded by this call. The program is compiled with the project's library and its user types and data blocks (the data module's); when those types and blocks do not check, it is compiled without them and 'project_problems' says why. When the program declares data blocks, the instance carries them in 'data'. A data block in two runtimes is refused when saved. A program that a configured runtime of the project runs (list_logic_runtimes) is not built alone: it is refused with 409 naming the runtime, which build_logic_runtime builds with all its programs.",
                 None, &["tags"]),
             route("GET", "/library", "viewer", "list_logic_library",
                 "The project's library: Structured Text sources of functions and function blocks shared by every program, by name. Reads only; nothing is written, compiled or loaded.", None, &[]),
@@ -1591,19 +1638,19 @@ pub fn manifest() -> ModuleManifest {
                     }
                 })), &[]),
             route("GET", "/runtimes", "viewer", "list_logic_runtimes",
-                "The project's runtimes as authored in the logic module (logic/tasks.json): 'runtimes', each configured one with its module, target, run and tasks; 'implied', the runtime each program named by no configured runtime runs alone in (its id the program's name, one cyclic task at the program's interval, priority 31), derived and never written; and 'problems', what the stored files break of the rules (after a hand edit). Reads only; nothing is written, built or loaded.", None, &[]),
+                "The project's runtimes as authored in the logic module (logic/tasks.json): 'runtimes', each configured one with its module, target, run and tasks; 'implied', the runtime each program named by no configured runtime runs alone in (its id the program's name, one cyclic task at the program's interval, priority 31, the task and its program named by the PROGRAM the saved source declares, as the core names them, or by the program's name when that source does not compile), derived and never written; and 'problems', what the stored files break of the rules (after a hand edit). Reads only; nothing is written, built or loaded.", None, &[]),
             route("GET", "/runtimes/:runtime", "viewer", "get_logic_runtime",
                 "One runtime of the project, configured or implied (a program running alone, by its name), with 'implied' saying which. Ids are compared without regard to case; the answer has the stored spelling. Reads only; nothing is written, built or loaded.", None, &[]),
             route("PUT", "/runtimes/:runtime", "engineer", "save_logic_runtime",
-                "Make or replace a configured runtime of the project: the runtime module that runs it, the target profile its programs are compiled for, whether it is put in RUN when loaded, and its tasks, each naming programs of the project in the order they run (stored in the spelling of the program list). Refused, and nothing saved, when the id is a device name on Windows, differs only in case from another runtime's, or is a program's name; when a task names a program the project lacks or a program of another runtime; or when the tasks do not check as the core checks them. Nothing is built or loaded by this call.",
+                "Make or replace a configured runtime of the project: the runtime module that runs it, the target profile its programs are compiled for, whether it is put in RUN when loaded, and its tasks, each naming programs of the project in the order they run (stored in the spelling of the program list). Refused, and nothing saved, when the id is a device name on Windows, differs only in case from another runtime's, or is a program's name; when a task names a program the project lacks or a program of another runtime; or when the tasks do not check as the core checks them. Nothing is built or loaded by this call: a runtime the core runs keeps running what it was built with, a program taken out of it included, until it is built again and saved with save_runtimes_config.",
                 Some(runtime_schema()), &[]),
             route("DELETE", "/runtimes/:runtime", "engineer", "delete_logic_runtime",
-                "Remove a configured runtime from the project: its programs run alone again, each in its own runtime. A runtime that the core already runs is not touched, and nothing is loaded.", None, &[]),
+                "Remove a configured runtime from the project's configuration. Nothing is loaded, and nothing that runs is touched: if the core runs the runtime, its instance (the runtime's id) runs on, with all its programs, until it is taken out with save_runtimes_config. Each of its programs is then built alone again (build_logic_program) and runs alone only once that build is saved, after the runtime's instance is taken out. An id that is not a runtime id is taken when a runtime is stored under it (a hand edit of logic/tasks.json).", None, &[]),
             route("POST", "/runtimes/:runtime/check", "viewer", "check_logic_runtime",
                 "Check a runtime of the project without building or saving anything: each of its programs compiled from its saved source for the runtime's target, with its diagnostics, binding problems and its version in the runtime ('programs'); and 'problems', what the configuration breaks and what the core would refuse of the runtime as a whole (its tasks, its data blocks, an output or a published tag of two programs, an event task's tag no program reads into a BOOL). 'ok' when it would build; then 'version', the runtime's. 'data' is the data blocks its programs declare, each once. With a body (module, target, run and tasks, all four) that configuration is checked in place of the stored one, and nothing is saved. A program running alone is checked by its name as a runtime of its own. Nothing is loaded.",
                 Some(runtime_check_schema()), &[]),
             route("POST", "/runtimes/:runtime/build", "engineer", "build_logic_runtime",
-                "Build a runtime of the project: every program of it compiled from its saved source, in one snapshot of the project, for the runtime's target, packed as one runtime instance with its tasks and the data blocks its programs declare, each once. Answers 'instance', 'version' (the runtime's), 'programs' (each program's version in the runtime, code_size and memory_size), 'warnings', and 'replaces': the ids those programs run under alone. Nothing is loaded by this call: save 'instance' with save_runtimes_config in its 'instances', in place of the one with the same id, and take out the instances named in 'replaces' in the same save (the core refuses a data block or an output tag in two runtimes). RETAIN values kept for a program while it ran in another runtime are not taken into this one. A program running alone, by its name, builds exactly as build_logic_program builds it.",
+                "Build a runtime of the project: every program of it compiled from its saved source, in one snapshot of the project, for the runtime's target, packed as one runtime instance with its tasks and the data blocks its programs declare, each once. Answers 'instance', 'version' (the runtime's, as the core reports it once loaded: its programs' versions joined by ', '), 'programs' (each program's version in the runtime, code_size and memory_size), 'warnings', and 'replaces': the ids those programs run under alone. Nothing is loaded by this call: save 'instance' with save_runtimes_config in its 'instances', in place of the one with the same id, and take out the instances named in 'replaces' in the same save (the core refuses a data block or an output tag in two runtimes). 'replaces' does not name another configured runtime a program of this one was in before, which this module does not know to be loaded: if the core still runs one, take it out or build it again without the program and save it in the same save, or the program runs in both (the core does not refuse that when they share no output tag, published tag or data block). The core keeps RETAIN values per runtime id, not per program: a warm load gives a program the values kept under this runtime's id for variables of the same name, type and size, whichever program ran under it before, and none kept while it ran in another runtime; a cold load starts them from their initial values. A program running alone, by its name, builds exactly as build_logic_program builds it.",
                 None, &["tags"]),
         ],
     }
@@ -1692,10 +1739,14 @@ impl Logic {
                 return (HttpReply::error(400, problem), None);
             }
         }
-        // A runtime's id is the core's runtime id.
+        // A runtime's id is the core's runtime id. It names no file of this module, so a
+        // runtime stored under another id (a hand edit) can still be deleted by it: the route
+        // refuses the id when no runtime is stored under it.
         if let Some(id) = call.params.get("runtime") {
             if let Some(problem) = runtimes::id_problem(id) {
-                return (HttpReply::error(400, problem), None);
+                if !(call.method == "DELETE" && call.route == "/runtimes/:runtime") {
+                    return (HttpReply::error(400, problem), None);
+                }
             }
         }
         let _guard = self.writes.lock().await;
@@ -1704,6 +1755,17 @@ impl Logic {
         let _lock = if only_reads(call) {
             None
         } else {
+            // In a project with no module directory yet, the lock would make the directory and
+            // the lock file even for a write that is refused. So the call is first tried with
+            // every write held back: one that reaches no write answers as it is (it read only
+            // files that do not exist, which is what a read sees); one that reaches a write
+            // wrote nothing and is made again below, under the lock, from the start.
+            if matches!(std::fs::symlink_metadata(&data), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+            {
+                if let Some(answer) = without_writes(|| self.handle_in(call, &data)) {
+                    return answer;
+                }
+            }
             match lock_writes(&data) {
                 Ok(file) => Some(file),
                 Err((status, body)) => return (HttpReply::json(status, body), None),
@@ -1828,7 +1890,7 @@ impl Logic {
                     }
                     programs.programs.retain(|p| p.name != name);
                     save(data, &programs)?;
-                    let _ = std::fs::remove_file(source_path(data, &entry));
+                    let _ = remove_written(&source_path(data, &entry));
                     changed("deleted", name);
                     Ok(json!({ "deleted": name }))
                 }),
@@ -1869,10 +1931,17 @@ impl Logic {
                         return Err((
                             409,
                             json!({
-                                "error": format!(
-                                    "program '{name}' is in task '{}' of runtime '{}': build that runtime with build_logic_runtime",
-                                    task.name, runtime.id
-                                ),
+                                "error": match runtimes::id_problem(&runtime.id) {
+                                    None => format!(
+                                        "program '{name}' is in task '{}' of runtime '{}': build that runtime with build_logic_runtime",
+                                        task.name, runtime.id
+                                    ),
+                                    // A hand edit: that runtime cannot be built, only deleted.
+                                    Some(problem) => format!(
+                                        "program '{name}' is in task '{}' of runtime '{}', which cannot be built: {problem}; take it out with delete_logic_runtime",
+                                        task.name, runtime.id
+                                    ),
+                                },
                                 "runtime": runtime.id,
                             }),
                         ));
@@ -1939,8 +2008,7 @@ fn library(call: &HttpCall, data: &Path) -> (HttpReply, Option<Value>) {
             // The listed spelling's file, never the request's: on Linux another spelling is
             // another file.
             let path = library_path(data, &stem);
-            std::fs::remove_file(&path)
-                .map_err(|e| error(500, format!("{}: {e}", path.display())))?;
+            remove_written(&path)?;
             event = Some(json!({ "project": project, "name": stem, "what": "deleted" }));
             Ok(json!({ "deleted": stem }))
         })(),

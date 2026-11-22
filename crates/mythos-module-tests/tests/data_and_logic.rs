@@ -694,6 +694,8 @@ async fn two_programs_sharing_a_data_block_are_built_and_loaded_by_the_logic_mod
         })
         .await;
     assert_eq!(runtime["id"], "Line", "{runtime}");
+    // The build's version is the one the core reports of the runtime it loaded.
+    assert_eq!(runtime["version"], built["version"], "{runtime}");
     assert_eq!(
         runtime["data"][0]["members"],
         json!([
@@ -853,5 +855,117 @@ async fn a_task_change_of_a_runtime_built_by_the_logic_module_is_an_online_chang
     );
     rig.runtime_when("the third build runs and has scanned", runs(&third))
         .await;
+    rig.close().await;
+}
+
+/// The file in which the core keeps runtime `id`'s RETAIN values, once it has one.
+fn retain_file_of(root: &Path, id: &str) -> Option<PathBuf> {
+    fn walk(dir: &Path, name: &str) -> Option<PathBuf> {
+        for e in std::fs::read_dir(dir).ok()? {
+            let p = e.ok()?.path();
+            if p.is_dir() {
+                if let Some(f) = walk(&p, name) {
+                    return Some(f);
+                }
+            } else if p.file_name().is_some_and(|n| n == name)
+                && p.components().any(|c| c.as_os_str() == "retain")
+            {
+                return Some(p);
+            }
+        }
+        None
+    }
+    walk(root, &format!("{id}.json"))
+}
+
+/// The core keeps RETAIN values per runtime id, not per program (the core's and the runtime
+/// module's, not fixed in the logic module). So when runtime `Line`'s one program changes from A
+/// to B, a warm load gives B's RETAIN `total` what was kept under `Line` for A's `total`, and a
+/// cold load does not. The build of B says exactly that: this test is the check that its warning
+/// is true, and it goes red when the core stops handing one program's values to another, which
+/// is when the warning must change with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_id_given_another_program_warns_of_the_values_a_warm_load_hands_it() {
+    let rig = rig().await;
+    let settings = json!({"interval_ms": 20, "runtime": "vm", "target": "pc", "run": true});
+    rig.program(
+        "A",
+        "PROGRAM A\nVAR RETAIN total : DINT; END_VAR\n  total := total + 1;\nEND_PROGRAM",
+        settings.clone(),
+    )
+    .await;
+    rig.program(
+        "B",
+        "PROGRAM B\nVAR RETAIN total : DINT; END_VAR\nVAR n : DINT; END_VAR\n  n := n + 1;\nEND_PROGRAM",
+        settings,
+    )
+    .await;
+    let one = |p: &str| {
+        json!({ "module": "vm", "target": "pc", "run": true, "tasks": [
+            { "name": "main", "kind": { "type": "cyclic", "interval_ms": 20 }, "priority": 1, "programs": [p] }
+        ]})
+    };
+    let first = rig.build_runtime("Line", one("A")).await;
+    rig.load_built(&first, 200).await;
+    // Until the core has kept a total of A's above its initial value under `Line`.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let kept = retain_file_of(rig._root.path(), "Line")
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .unwrap_or_default();
+        if kept.contains("total") && !kept.contains("00000000") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the core kept no total of A's under Line: {kept:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let second = rig.build_runtime("Line", one("B")).await;
+    assert_eq!(
+        second["warnings"],
+        json!([
+            "program 'B': RETAIN values are kept per runtime id, not per program: a warm load of runtime 'Line' puts into each RETAIN variable of 'B' the value kept under runtime 'Line' for a variable of the same name, type and size, whichever program ran in runtime 'Line' before, and none of the values kept while 'B' ran alone as runtime 'B'; a cold load starts every RETAIN variable from its initial value"
+        ]),
+        "{second}"
+    );
+    let total = || async {
+        let watched = rig
+            .eng(
+                "POST",
+                "/api/v1/runtimes/Line/watch",
+                Some(json!({ "variables": ["total"] })),
+                200,
+            )
+            .await;
+        (watched["values"][0]["value"].clone(), watched)
+    };
+    let applied = rig.load_built(&second, 200).await;
+    rig.runtime_when("B runs warm and has scanned", |t| {
+        t["program"] == "B" && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
+    })
+    .await;
+    let (warm, watched) = total().await;
+    assert!(
+        warm.as_i64().is_some_and(|v| v >= 1),
+        "a warm load gives B what was kept under Line for A, as the warning says: {watched}; the core answered {applied}"
+    );
+    // Cold: from its initial value, as the warning says (B never writes its total).
+    let asked = rig
+        .eng("POST", "/api/v1/runtimes/Line/cold-start", None, 200)
+        .await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (cold, watched) = total().await;
+        if cold == 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a cold start leaves B's total at its initial value 0: {watched}; the core answered {asked}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     rig.close().await;
 }
