@@ -854,6 +854,7 @@ impl Hidden {
                 ty,
                 init: None,
                 hidden: true,
+                constant: false,
             });
         }
         ast::Place {

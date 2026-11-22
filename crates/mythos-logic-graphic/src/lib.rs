@@ -281,11 +281,26 @@ pub fn lower_with_probes(
     ld: &[Source],
     st: Option<&Source>,
 ) -> Result<(Unit, Vec<Probe>), Vec<Diagnostic>> {
-    let several = ld.len() + st.is_some() as usize > 1;
+    lower_project_with_probes(ld, st, &mythos_logic_st::Project::default())
+}
+
+/// [`lower_with_probes`], in `project` (ADR-014, slice D1): the POUs of the documents and of
+/// `st` may use the types, functions and function blocks of the project's library sources,
+/// which are checked with them whole ([`mythos_logic_st::lower_tree_in`]). With library
+/// sources there is more than one source, and each diagnostic with a line names its own.
+pub fn lower_project_with_probes(
+    ld: &[Source],
+    st: Option<&Source>,
+    project: &mythos_logic_st::Project,
+) -> Result<(Unit, Vec<Probe>), Vec<Diagnostic>> {
+    let several = ld.len() + st.is_some() as usize + project.library.len() > 1;
     let (mut tree, mut diags) = match st {
         Some(st) => parser::Parser::new(lexer::tokens(st.text)).source(),
         None => (ast::Source::default(), Vec::new()),
     };
+    // The library's POUs before the documents' interfaces are read: a block of a diagram
+    // may call one of them.
+    mythos_logic_st::project::add_library(&mut tree, &mut diags, project);
     let mut places = Places::default();
     // Every document's interfaces first, so that a body may call a POU of any of them.
     let mut pous = Vec::new();
@@ -329,7 +344,7 @@ pub fn lower_with_probes(
         // can name them (two underscores, §6.1.2).
         tree.types.extend(sfc::types(Span::default()));
     }
-    let mut out = match mythos_logic_st::lower_tree(tree, diags) {
+    let mut out = match mythos_logic_st::lower_tree_in(tree, diags, project) {
         Ok(unit) if said_about_documents.is_empty() => return Ok((unit, probes)),
         Ok(_) => Vec::new(),
         Err(diags) => diags,
@@ -362,6 +377,10 @@ fn map(
     st_name: Option<&str>,
 ) -> Diagnostic {
     if d.line < FIRST_LINE {
+        // One of a library source already names it (`mythos_logic_st::project`).
+        if d.source.is_some() {
+            return d;
+        }
         let source = (d.line != 0).then(|| st_name.map(String::from)).flatten();
         return Diagnostic { source, ..d };
     }

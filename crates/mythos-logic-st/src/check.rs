@@ -18,12 +18,29 @@
 //! refused. A type that holds one refused for its depth is refused silently: one message.
 
 use crate::ast::{self, BinOp, CaseLabel, ExprKind as A};
+use crate::project::{self, Project};
 use mythos_logic_ir::*;
 
 pub fn check(src: &ast::Source) -> Result<Unit, Vec<Diagnostic>> {
+    check_in(src, &Project::default())
+}
+
+/// [`check`], in `project`: its data blocks are checked and may be declared in
+/// `VAR_EXTERNAL` (ADR-014, slice D1). Its library sources are already in `src`
+/// ([`project::add_library`]); a diagnostic names the source of a declaration with them.
+pub fn check_in(src: &ast::Source, project: &Project) -> Result<Unit, Vec<Diagnostic>> {
     let mut c = Checker {
         unit: Unit::new(),
         names: Vec::new(),
+        name_lines: Vec::new(),
+        struct_lines: Vec::new(),
+        library_sources: project.library.iter().map(|(n, _)| n.to_string()).collect(),
+        data: project
+            .data
+            .iter()
+            .map(|b| (b.name.to_string(), b.ty.to_string()))
+            .collect(),
+        blocks: Vec::new(),
         aliases: vec![Alias::Unread; src.types.len()],
         alias_specs: src
             .types
@@ -53,6 +70,7 @@ pub fn check(src: &ast::Source) -> Result<Unit, Vec<Diagnostic>> {
         untyped: Vec::new(),
     };
     c.names(src);
+    c.data_blocks();
     c.declarations(src);
     let contained = c.containment(src) || c.struct_cycled;
     for (i, p) in src.pous.iter().enumerate() {
@@ -138,6 +156,16 @@ struct Checker {
     /// Every type and POU of the source and of the standard library, by its name in upper
     /// case, and whether it is the library's.
     names: Vec<(String, Named, bool)>,
+    /// For each of `names`: the line it is declared on.
+    name_lines: Vec<u32>,
+    /// For each structure of the unit: the line it is declared on.
+    struct_lines: Vec<u32>,
+    /// The name of each library source of the project, for saying where a name is declared.
+    library_sources: Vec<String>,
+    /// Each data block of the project: its name and its type's, as the project declares them.
+    data: Vec<(String, String)>,
+    /// For each data block: its structure type, `None` when its declaration was refused.
+    blocks: Vec<Option<Ty>>,
     aliases: Vec<Alias>,
     /// For each type declaration of the source: the array type it names, if it names one.
     alias_specs: Vec<Option<ast::TypeSpec>>,
@@ -333,10 +361,17 @@ impl Checker {
                         format!("{name} is a name of the standard; choose another"),
                     );
                 }
-            } else if c.names.iter().any(|(n, _, _)| *n == upper) {
-                c.err(span, format!("{name} is declared twice"));
+            } else if let Some(first) = c.names.iter().position(|(n, _, _)| *n == upper) {
+                let (a, b) = (c.name_lines[first], span.line);
+                if project::source_of(a) != project::source_of(b) {
+                    let (a, b) = (c.origin(a), c.origin(b));
+                    c.err(span, format!("{name} is declared twice: in {a} and in {b}"));
+                } else {
+                    c.err(span, format!("{name} is declared twice"));
+                }
             } else {
                 c.names.push((upper, what, library));
+                c.name_lines.push(span.line);
             }
         }
         for (i, t) in src.types.iter().enumerate() {
@@ -346,6 +381,7 @@ impl Checker {
                         name: t.name.clone(),
                         fields: Vec::new(),
                     });
+                    self.struct_lines.push(t.span.line);
                     self.struct_of.push(Some(self.unit.structs.len() - 1));
                     self.struct_gaps.push(t.partial);
                     Named::Struct(self.unit.structs.len() - 1)
@@ -497,6 +533,7 @@ impl Checker {
                     retention: Retention::Unqualified,
                     init: None,
                     hidden: false,
+                    constant: false,
                 });
             }
             for d in &p.vars {
@@ -518,6 +555,9 @@ impl Checker {
             self.err(d.span, format!("{} is declared twice", d.name));
             return;
         }
+        if d.section == Section::External {
+            return self.declare_external(d, pou);
+        }
         if let ast::TypeSpecKind::OfValue = d.ty.kind {
             // A front-end's own: its type is the value's, given at the first assignment.
             let at = self.unit.pous[self.cur].vars.len();
@@ -528,6 +568,7 @@ impl Checker {
                 retention: d.retention,
                 init: None,
                 hidden: d.hidden,
+                constant: false,
             });
             self.untyped.push((self.cur, at));
             return;
@@ -584,7 +625,188 @@ impl Checker {
             retention: d.retention,
             init,
             hidden: d.hidden,
+            constant: false,
         });
+    }
+
+    /// A data block of the project, declared in `VAR_EXTERNAL`: the program's own copy of it,
+    /// named as the project names the block (ADR-014, slice D1).
+    fn declare_external(&mut self, d: &ast::VarDecl, pou: &ast::Pou) {
+        if pou.kind != ast::PouKind::Program {
+            self.err(
+                d.span,
+                "VAR_EXTERNAL in a function block or function is not supported yet: give the block the member as a parameter",
+            );
+            self.refuse(&d.name);
+            return;
+        }
+        let Some(k) = self
+            .data
+            .iter()
+            .position(|(n, _)| n.eq_ignore_ascii_case(&d.name))
+        else {
+            self.err(
+                d.span,
+                format!("there is no data block {} in the project", d.name),
+            );
+            self.refuse(&d.name);
+            return;
+        };
+        let Some(block) = self.blocks[k] else {
+            // The project's declaration of it was refused, and why was told.
+            self.refuse(&d.name);
+            return;
+        };
+        let Some(ty) = self.resolve(&d.ty) else {
+            self.refuse(&d.name);
+            return;
+        };
+        let name = self.data[k].0.clone();
+        if ty != block {
+            let (its, written) = (self.n(block), self.n(ty));
+            self.err(
+                d.ty.span,
+                format!("data block {name} is a {its}, not a {written}"),
+            );
+            self.refuse(&d.name);
+            return;
+        }
+        if let Some(init) = &d.init {
+            let span = match init {
+                ast::Init::Value(e) => e.span,
+                ast::Init::Array(_, span) => *span,
+            };
+            self.err(
+                span,
+                "a VAR_EXTERNAL takes no initial value: the data block has it",
+            );
+            self.refuse(&d.name);
+            return;
+        }
+        self.unit.pous[self.cur].vars.push(Var {
+            name,
+            ty,
+            section: Section::External,
+            retention: Retention::Unqualified,
+            init: None,
+            hidden: false,
+            constant: d.constant,
+        });
+    }
+
+    /// How a message names where a declaration on `line` is.
+    fn origin(&self, line: u32) -> String {
+        match project::source_of(line).and_then(|k| self.library_sources.get(k)) {
+            Some(name) => format!("the library source '{name}'"),
+            None => "the program".to_string(),
+        }
+    }
+
+    /// Check each data block of the project: its name, and that its type is a structure of
+    /// the library. Each gets its type in `blocks`, or `None` when it is refused.
+    fn data_blocks(&mut self) {
+        for k in 0..self.data.len() {
+            let ty = self.data_block(k);
+            self.blocks.push(ty);
+        }
+    }
+
+    fn data_block(&mut self, k: usize) -> Option<Ty> {
+        let (name, ty_name) = self.data[k].clone();
+        let mut sound = true;
+        let lexed = crate::lexer::tokens(&name);
+        let word = match lexed.toks.as_slice() {
+            [crate::lexer::Token {
+                tok: crate::lexer::Tok::Word(upper, written),
+                ..
+            }, crate::lexer::Token {
+                tok: crate::lexer::Tok::Eof,
+                ..
+            }] if lexed.diags.is_empty() && *written == name => Some(upper.clone()),
+            _ => None,
+        };
+        let message = match word {
+            None => Some(format!(
+                "data block '{name}': the name is not an identifier (letters, digits and single underscores, not beginning with a digit)"
+            )),
+            Some(u) if is_keyword(&u) => Some(format!(
+                "data block '{name}': {name} is a keyword of IEC 61131-3 and cannot be used as a name"
+            )),
+            Some(u)
+                if Ty::from_name(&u).is_some()
+                    || StdFn::by_name(&u).is_some()
+                    || truncation(&u).is_some()
+                    || operator_function(&u).is_some()
+                    || crate::library::declares(&u) =>
+            {
+                Some(format!(
+                    "data block '{name}': {name} is a name of the standard; choose another"
+                ))
+            }
+            Some(u) if self.names.iter().any(|(n, _, _)| *n == u) => Some(format!(
+                "data block '{name}': {name} is also the name of a type or POU of the project; a data block needs its own"
+            )),
+            Some(_) if self.data[..k].iter().any(|(n, _)| n.eq_ignore_ascii_case(&name)) => {
+                Some(format!("data block '{name}' is declared twice"))
+            }
+            Some(_) => None,
+        };
+        if let Some(m) = message {
+            self.diags.push(Diagnostic::whole(m));
+            sound = false;
+        }
+        let not_a_structure = |extra: &str| {
+            format!(
+                "data block '{name}' is a {ty_name}; a data block is an instance of a structure type{extra}"
+            )
+        };
+        let ty_upper = ty_name.to_ascii_uppercase();
+        let ty = match self.named(&ty_name) {
+            Some(Named::Struct(i)) if project::source_of(self.struct_lines[i]).is_some() => {
+                Some(Ty::Struct(i))
+            }
+            Some(Named::Struct(_)) => {
+                self.diags.push(Diagnostic::whole(format!(
+                    "data block '{name}' is a {ty_name}, a structure of the program; a data block is an instance of a structure type of the library"
+                )));
+                None
+            }
+            Some(Named::Pou(p)) if self.unit.pous[p].kind == PouKind::FunctionBlock => {
+                self.diags.push(Diagnostic::whole(not_a_structure(
+                    " (a function block type comes later)",
+                )));
+                None
+            }
+            Some(Named::Pou(_)) | Some(Named::Alias(_)) => {
+                self.diags.push(Diagnostic::whole(not_a_structure("")));
+                None
+            }
+            // What it is could not be read, and that was told.
+            Some(Named::Unknown) => None,
+            None if crate::library::declares(&ty_upper) => {
+                self.diags.push(Diagnostic::whole(not_a_structure(
+                    " (a function block type comes later)",
+                )));
+                None
+            }
+            None if Ty::from_name(&ty_upper).is_some()
+                || is_keyword(&ty_upper)
+                || ty_upper.starts_with("STRING")
+                || ty_upper.starts_with("ARRAY") =>
+            {
+                self.diags.push(Diagnostic::whole(not_a_structure("")));
+                None
+            }
+            // A type the parser could not read the name of may be the one.
+            None if self.lost.contains(&ast::Lost::Type) => None,
+            None => {
+                self.diags.push(Diagnostic::whole(format!(
+                    "data block '{name}': there is no type {ty_name}"
+                )));
+                None
+            }
+        };
+        ty.filter(|_| sound)
     }
 
     /// The type a declaration names.
@@ -1104,7 +1326,8 @@ impl Checker {
                 let role = match vars[i].section {
                     Section::Input => Role::Input,
                     Section::Output => Role::Output,
-                    Section::Var => Role::Internal,
+                    // A function block declares no data block; were one there, it is private.
+                    Section::Var | Section::External => Role::Internal,
                 };
                 Some((i, vars[i].ty, role))
             }
@@ -1159,12 +1382,19 @@ impl Checker {
         // IEC 61131-3 ed. 3 Figure 7: VAR_INPUT is "not modifiable within the entity"
         // (Figure 13 rule 2a says the same of a function block's inputs). A PROGRAM's too: its
         // inputs are what the runtime binds to tags.
-        let readonly = (pou.vars[var].section == Section::Input).then(|| {
-            format!(
+        let readonly = if pou.vars[var].section == Section::Input {
+            Some(format!(
                 "{} is an input of {}; it cannot be written inside it",
                 p.name, pou.name
-            )
-        });
+            ))
+        } else if pou.vars[var].constant {
+            Some(format!(
+                "{} is declared VAR_EXTERNAL CONSTANT: the program reads it and does not write it",
+                p.name
+            ))
+        } else {
+            None
+        };
         Some(Target {
             place: Place {
                 var,

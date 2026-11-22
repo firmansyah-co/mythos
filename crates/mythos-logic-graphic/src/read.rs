@@ -566,6 +566,7 @@ fn variable(
         ty,
         init,
         hidden: false,
+        constant: false,
     })
 }
 

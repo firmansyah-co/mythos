@@ -759,6 +759,9 @@ impl Parser {
                     continue;
                 }
                 "VAR_OUTPUT" => Section::Output,
+                // A data block of the project (ADR-014, slice D1). Read in any POU; the
+                // checker takes it in a PROGRAM only, and only of a block the project has.
+                "VAR_EXTERNAL" => Section::External,
                 _ => {
                     let _ = self.not_yet::<()>(written);
                     self.skip_section();
@@ -788,6 +791,11 @@ impl Parser {
                 self.skip_section();
                 continue;
             }
+            // VAR_EXTERNAL CONSTANT: the program reads the block and does not write it.
+            let constant = section == Section::External && self.is_kw("CONSTANT");
+            if constant {
+                self.bump();
+            }
             let qualifier = [
                 "CONSTANT",
                 "RETAIN",
@@ -810,6 +818,7 @@ impl Parser {
             let _ = self.decls("END_VAR", section, &mut pou.vars);
             for d in &mut pou.vars[from..] {
                 d.retention = retention;
+                d.constant = constant;
             }
         }
         pou.partial_vars = self.failures != before;
@@ -1043,6 +1052,7 @@ impl Parser {
                 ty: ty.clone(),
                 init: init.clone(),
                 hidden: false,
+                constant: false,
             });
         }
         Ok(())

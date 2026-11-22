@@ -124,6 +124,8 @@ pub struct VarDecl {
     /// Made by another front-end for itself, not written by the program: the memory of a
     /// Ladder Diagram edge contact (`mythos_logic_ir::Var::hidden`). Never from ST text.
     pub hidden: bool,
+    /// Declared in `VAR_EXTERNAL CONSTANT` (`mythos_logic_ir::Var::constant`).
+    pub constant: bool,
 }
 
 /// One step from a variable to a part of it.

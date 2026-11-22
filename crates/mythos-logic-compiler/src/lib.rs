@@ -20,6 +20,7 @@ pub use mythos_logic_backend_vm::{ArrayInfo, MemberLayout, Symbol, TypeLayout};
 pub use mythos_logic_graphic::{At, Body, BodyOf, Holds, Probe};
 use mythos_logic_ir::Ty;
 pub use mythos_logic_ir::{Diagnostic, Element, Span, TextRange};
+pub use mythos_logic_st::DataBlock;
 pub use profile::TargetProfile;
 
 /// The languages a program may be written in. One front-end crate each.
@@ -37,7 +38,8 @@ pub enum Language {
 }
 
 /// The sources of one program: at most one Structured Text source, and PLCopen TC6
-/// documents. Each is named for the diagnostics, which say which source a line is in when
+/// documents; and of its project, the library sources and the data blocks (ADR-014, slice
+/// D1). Each source is named for the diagnostics, which say which source a line is in when
 /// there is more than one.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Sources<'a> {
@@ -46,6 +48,68 @@ pub struct Sources<'a> {
     /// `(name, text)` of each TC6 document: its POUs' bodies are in LD, FBD or SFC, one
     /// document may hold all three, and a POU of any may call one of the others.
     pub tc6: &'a [(&'a str, &'a str)],
+    /// `(name, text)` of each Structured Text source of the project's types and library:
+    /// TYPE blocks, functions and function block types, no PROGRAM. Every one is checked
+    /// whole; what the program does not use of them adds nothing to what is compiled.
+    pub library: &'a [(&'a str, &'a str)],
+    /// The data blocks of the project.
+    pub data: &'a [DataBlock<'a>],
+}
+
+impl<'a> Sources<'a> {
+    fn project(&self) -> mythos_logic_st::Project<'a> {
+        mythos_logic_st::Project {
+            library: self.library,
+            data: self.data,
+        }
+    }
+}
+
+/// One data block a program declares in `VAR_EXTERNAL`: where the program's own copy of it
+/// is, how it is laid out, and which of its members the program writes.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DataUse {
+    /// As the project declares it (not as the program spells it).
+    pub name: String,
+    /// Its type's name, as the project declares it.
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// The layout hash: 16 lowercase hex digits (`mythos_logic_backend_vm::layout_hash`).
+    pub layout: String,
+    /// Of the program's copy, in the program's memory.
+    pub offset: u32,
+    pub size: u32,
+    /// Declared in `VAR_EXTERNAL CONSTANT`.
+    pub constant: bool,
+    /// The top-level members, in declaration order.
+    pub members: Vec<DataMember>,
+}
+
+/// A top-level member of a data block.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DataMember {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// Inside the block.
+    pub offset: u32,
+    pub size: u32,
+    /// The program stores into it or into a part of it: decided from the IR
+    /// ([`mythos_logic_ir::Unit::stores`]), so alike for every language. A store that cannot
+    /// be told to be within one member makes every member written.
+    pub written: bool,
+}
+
+/// One data block of the project as laid out, with no program.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DataLayout {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    pub layout: String,
+    pub size: u32,
+    /// Each `written` is false.
+    pub members: Vec<DataMember>,
 }
 
 /// A compiled program.
@@ -70,6 +134,9 @@ pub struct Compiled {
     /// variable keeping its state (§2.17): what an editor shows power flow and values from.
     /// Empty for a program of Structured Text alone.
     pub probes: Vec<Probe>,
+    /// Each data block the program declares in `VAR_EXTERNAL`, in the order of the project's
+    /// declaration ([`Sources::data`]). Empty for a program that declares none.
+    pub data: Vec<DataUse>,
 }
 
 impl Compiled {
@@ -112,11 +179,93 @@ fn lower_sources_with_probes(
     let st = sources
         .st
         .map(|(name, text)| mythos_logic_graphic::Source { name, text });
+    let project = sources.project();
     if ld.is_empty() {
-        let (_, text) = sources.st.unwrap_or(("", ""));
-        return mythos_logic_st::lower(text).map(|unit| (unit, Vec::new()));
+        if project.is_empty() {
+            let (_, text) = sources.st.unwrap_or(("", ""));
+            return mythos_logic_st::lower(text).map(|unit| (unit, Vec::new()));
+        }
+        return mythos_logic_st::lower_project(sources.st, &project).map(|unit| (unit, Vec::new()));
     }
-    mythos_logic_graphic::lower_with_probes(&ld, st.as_ref())
+    if project.is_empty() {
+        return mythos_logic_graphic::lower_with_probes(&ld, st.as_ref());
+    }
+    mythos_logic_graphic::lower_project_with_probes(&ld, st.as_ref(), &project)
+}
+
+/// Check the library sources and the data block declarations of `sources` alone (its `st`
+/// and `tc6` are not looked at), and lay the blocks out, each as a program's copy of it is
+/// laid out, in the order of [`Sources::data`].
+pub fn check_project(sources: &Sources) -> Result<Vec<DataLayout>, Vec<Diagnostic>> {
+    let unit = mythos_logic_st::check_project(&sources.project())?;
+    let out = mythos_logic_backend_vm::emit(&unit).map_err(|d| vec![d])?;
+    let data = data_uses(&unit, &out.externals, sources.data);
+    Ok(data
+        .into_iter()
+        .map(|d| DataLayout {
+            name: d.name,
+            ty: d.ty,
+            layout: d.layout,
+            size: d.size,
+            members: d
+                .members
+                .into_iter()
+                .map(|m| DataMember {
+                    written: false,
+                    ..m
+                })
+                .collect(),
+        })
+        .collect())
+}
+
+/// Each data block of `data` the program of `unit` declares, as `externals` lays it out, with
+/// which top-level members the program writes.
+fn data_uses(
+    unit: &mythos_logic_ir::Unit,
+    externals: &[mythos_logic_backend_vm::ExternalLayout],
+    data: &[DataBlock],
+) -> Vec<DataUse> {
+    let stores = unit.stores(unit.entry);
+    let vars = &unit.program().vars;
+    let mut out = Vec::new();
+    for block in data {
+        let Some(e) = externals
+            .iter()
+            .find(|e| e.name.eq_ignore_ascii_case(block.name))
+        else {
+            continue;
+        };
+        // Within the block, every store is within one member or may reach all of them.
+        let mut written = vec![false; e.members.len()];
+        for s in stores.iter().filter(|s| s.var == e.var) {
+            match s.member {
+                Some(m) if m < written.len() => written[m] = true,
+                Some(_) | None => written.iter_mut().for_each(|w| *w = true),
+            }
+        }
+        out.push(DataUse {
+            name: block.name.to_string(),
+            ty: block.ty.to_string(),
+            layout: e.layout.clone(),
+            offset: e.offset,
+            size: e.size,
+            constant: vars[e.var].constant,
+            members: e
+                .members
+                .iter()
+                .zip(written)
+                .map(|(m, written)| DataMember {
+                    name: m.name.clone(),
+                    ty: m.ty.clone(),
+                    offset: m.offset,
+                    size: m.size,
+                    written,
+                })
+                .collect(),
+        });
+    }
+    out
 }
 
 /// Compile a program from `sources` for `target`.
@@ -125,7 +274,7 @@ pub fn compile_sources(
     target: &TargetProfile,
 ) -> Result<Compiled, Vec<Diagnostic>> {
     let (unit, probes) = lower_sources_with_probes(sources)?;
-    let mut compiled = compile_unit(unit, target)?;
+    let mut compiled = compile_unit(unit, target, sources.data)?;
     compiled.probes = probes;
     Ok(compiled)
 }
@@ -142,11 +291,11 @@ pub fn compile_in(
     target: &TargetProfile,
 ) -> Result<Compiled, Vec<Diagnostic>> {
     match language {
-        Language::St => compile_unit(lower(source, language)?, target),
+        Language::St => compile_unit(lower(source, language)?, target, &[]),
         Language::Ld | Language::Fbd | Language::Sfc => compile_sources(
             &Sources {
-                st: None,
                 tc6: &[("", source)],
+                ..Default::default()
             },
             target,
         ),
@@ -157,6 +306,7 @@ pub fn compile_in(
 fn compile_unit(
     unit: mythos_logic_ir::Unit,
     target: &TargetProfile,
+    data: &[DataBlock],
 ) -> Result<Compiled, Vec<Diagnostic>> {
     let mut diags = Vec::new();
     if target.format_version != mythos_logic_backend_vm::FORMAT_VERSION {
@@ -231,6 +381,7 @@ fn compile_unit(
     if !diags.is_empty() {
         return Err(diags);
     }
+    let data = data_uses(&unit, &out.externals, data);
     Ok(Compiled {
         name: unit.program().name.clone(),
         bytecode: out.bytes,
@@ -241,5 +392,6 @@ fn compile_unit(
         stack_depth: out.stack_depth,
         call_depth: out.call_depth,
         probes: Vec::new(),
+        data,
     })
 }

@@ -19,6 +19,8 @@ pub use keywords::{is_keyword, KEYWORDS, TYPE_KEYWORDS};
 
 /// The version of the IR's shape. A backend given another version refuses it.
 ///
+/// 7: [`Section::External`] and [`Var::constant`]: a program's copy of a data block of the
+/// project, which it may be forbidden to write.
 /// 6: [`Var::hidden`], a variable a language made for itself (the edge memory of a Ladder
 /// Diagram contact), which the host may read and never write.
 /// 5: no standard function blocks of its own: TON, CTU and the rest are function block types
@@ -29,7 +31,7 @@ pub use keywords::{is_keyword, KEYWORDS, TYPE_KEYWORDS};
 /// 2: STRING, string literals, and the functions of the standard library ([`StdFn`]).
 /// 1: a unit of several program organization units (functions, function block types, one
 /// program), structures and arrays; places with a path. 0 was one program of scalar variables.
-pub const IR_VERSION: u32 = 6;
+pub const IR_VERSION: u32 = 7;
 
 /// The length of a STRING declared without one. IEC 61131-3 ed. 3 gives no default:
 /// Table 10 footnote k and §6.4.2.2 leave the maximum length to the implementer, and the
@@ -227,6 +229,10 @@ pub enum Section {
     Var,
     Input,
     Output,
+    /// A program's own copy of a data block of the project, declared in `VAR_EXTERNAL`
+    /// (ADR-014, slice D1): laid out in the program's memory as a variable of its structure
+    /// type, named as the project names the block. Only a PROGRAM declares one.
+    External,
 }
 
 /// The retentive qualifier of the section a variable is declared in (IEC 61131-3 ed. 3
