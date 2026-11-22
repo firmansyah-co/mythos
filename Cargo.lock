@@ -2531,15 +2531,18 @@ dependencies = [
 
 [[package]]
 name = "mythos-logic"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "hex",
+ "mythos-data",
  "mythos-logic-compiler",
+ "mythos-logic-st",
  "mythos-module",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "tokio",
 ]
 

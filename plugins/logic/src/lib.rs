@@ -16,8 +16,18 @@
 //! cannot be compiled in without taking its PROGRAM out of its file; and a program built with
 //! another's POUs would change, and take a new version, when that other program is edited.
 //! A function or function block a program needs is in its own source: in a Ladder Diagram
-//! document beside its PROGRAM, in Structured Text before it. A library of the project's own,
-//! sources without a PROGRAM shared by every program, is not built.
+//! document beside its PROGRAM, in Structured Text before it.
+//!
+//! **The project's library and data (ADR-014 §2.7, §2.8).** Beside the programs, the module
+//! keeps the project's library: Structured Text sources of functions and function blocks,
+//! `library/<name>.st`, with no PROGRAM and no TYPE, compiled into every program. And it
+//! *reads*, never writes, the data module's directory beside its own (`<project>/data/`): the
+//! project's user types (`types/<Name>.st`) and data blocks (`blocks.json`). Every check and
+//! build compiles the program with the types and the library, and with the data blocks; when
+//! the stored types and blocks do not check by themselves, the program is compiled without
+//! them, so a program that uses none of them is never refused for them, and the answer says
+//! why in `project_problems`. A project with neither a library nor data compiles exactly as it
+//! did before there were either.
 //!
 //! It never talks to a runtime, and it does not load what it builds: a module cannot call the
 //! core. The workbench, or an agent over MCP, takes the built instance and saves it into the
@@ -25,16 +35,19 @@
 
 use async_trait::async_trait;
 use mythos_logic_compiler::{
-    compile_sources, At, BodyOf, Diagnostic, Holds, Sources, Symbol, TargetProfile,
+    check_project, compile_sources, At, BodyOf, DataBlock, Diagnostic, Holds, Sources, Symbol,
+    TargetProfile,
 };
 use mythos_module::protocol::{
-    HttpCall, HttpReply, InputBinding, InputOf, ModuleKind, ModuleManifest, OutputBinding,
-    PublishedBinding, RouteDecl, RouteScope, RuntimeProgram, PROTOCOL_VERSION,
+    check_data, DataBlock as RuntimeDataBlock, DataBlockMember, DataMember, DataUse, HttpCall,
+    HttpReply, InputBinding, InputOf, ModuleKind, ModuleManifest, OutputBinding, PublishedBinding,
+    RouteDecl, RouteScope, RuntimeProgram, PROTOCOL_VERSION,
 };
 use mythos_module::{Events, Service};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tokio::sync::Mutex;
 
@@ -43,9 +56,28 @@ pub const MODULE_ID: &str = "org.mythos.logic";
 pub const PROVIDES: &str = "logic";
 /// Sent on the telemetry stream when a project's programs change, so open editors follow.
 pub const PROGRAMS_CHANGED_EVENT: &str = "LOGIC_PROGRAMS_CHANGED";
+/// Sent when a source of the project's library is saved or deleted: `{"project", "name",
+/// "what": "saved" | "deleted"}`. Not [`PROGRAMS_CHANGED_EVENT`], whose `program` the
+/// workbench reads.
+pub const LIBRARY_CHANGED_EVENT: &str = "LOGIC_LIBRARY_CHANGED";
 
 const PROGRAMS_FILE: &str = "programs.json";
 const SOURCES_DIR: &str = "programs";
+/// The project's library, in the module's own directory: `library/<name>.st`.
+const LIBRARY_DIR: &str = "library";
+/// The data module's directory beside this one (ADR-014 §2.8), read and never written.
+const DATA_DIR: &str = "data";
+/// In the data directory: one file a user type, and the data blocks.
+const TYPES_DIR: &str = "types";
+const BLOCKS_FILE: &str = "blocks.json";
+/// The extension of a library source or a type file, exactly.
+const SOURCE_EXTENSION: &str = ".st";
+/// Names that are a device on Windows whatever follows them: `CON.st` is the console there.
+/// Compared without regard to case, on every OS.
+const DEVICE_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+    "COM8", "COM9", "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
 
 // -----------------------------------------------------------------------------
 // What is stored
@@ -171,6 +203,323 @@ fn find<'a>(programs: &'a Programs, name: &str) -> Result<&'a ProgramEntry, Refu
         .iter()
         .find(|p| p.name == name)
         .ok_or_else(|| error(404, format!("the project has no program '{name}'")))
+}
+
+// -----------------------------------------------------------------------------
+// The project's library, types and data blocks
+// -----------------------------------------------------------------------------
+
+fn device_name(name: &str) -> bool {
+    DEVICE_NAMES.iter().any(|d| d.eq_ignore_ascii_case(name))
+}
+
+/// What is wrong with `name` as a library source's name, as the message of the refusal;
+/// `None` when it is one: a program's name (it becomes a file name) that is not a device name
+/// of Windows.
+fn library_name_problem(name: &str) -> Option<String> {
+    if !valid_name(name) {
+        return Some(format!(
+            "'{name}' is not a library source name: a letter, then letters, digits or _, at most 64"
+        ));
+    }
+    if device_name(name) {
+        return Some(format!(
+            "'{name}' cannot be a library source name: it is a device name on Windows (CON, PRN, AUX, NUL, COM0 to COM9, LPT0 to LPT9)"
+        ));
+    }
+    None
+}
+
+/// Whether `name` is a type name as the data module takes one (ADR-014 §2.8, the D3 contract
+/// §1.2), word for word: an identifier (ASCII letters, digits and `_`, not beginning with a
+/// digit, no `__`, not ending in `_`) of at most 64 characters, and never a device name of
+/// Windows. The two modules may not depend on each other, so the rule is written twice; a test
+/// of each pins them together.
+fn type_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !name.contains("__")
+        && !name.ends_with('_')
+        && name.len() <= 64
+        && !device_name(name)
+}
+
+/// The stem of a file named `<stem>.st` whose stem `takes`, exactly the lowercase extension;
+/// `None` for any other name.
+fn source_stem(file_name: &str, takes: fn(&str) -> bool) -> Option<&str> {
+    let stem = file_name.strip_suffix(SOURCE_EXTENSION)?;
+    takes(stem).then_some(stem)
+}
+
+/// The data module's `blocks.json`: unknown keys refused, `retain` required, as it writes it.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BlocksFile {
+    blocks: Vec<BlockEntry>,
+}
+
+/// One data block of the project, in declaration order.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BlockEntry {
+    name: String,
+    #[serde(rename = "type")]
+    ty: String,
+    retain: bool,
+}
+
+/// What a program of the project is compiled with besides its own source, as read.
+#[derive(Debug, Clone, Default)]
+struct Project {
+    /// `(source name, text)` of each user type: `data/types/X.st`, by file name in byte order.
+    types: Vec<(String, String)>,
+    /// `(source name, text)` of each library source: `logic/library/X.st`, by file name.
+    library: Vec<(String, String)>,
+    blocks: Vec<BlockEntry>,
+    /// `blocks.json` could not be read as the project's data blocks: the blocks are taken as
+    /// not checking.
+    problem: Option<Diagnostic>,
+}
+
+impl Project {
+    /// A project of before the library and the data: compiled exactly as then.
+    fn is_empty(&self) -> bool {
+        self.types.is_empty()
+            && self.library.is_empty()
+            && self.blocks.is_empty()
+            && self.problem.is_none()
+    }
+}
+
+/// Every source in `dir` by the file rule: a regular file directly in it (a link or a
+/// directory is not one), named `<stem>.st` with a stem that `takes`; anything else is
+/// ignored. Each as `(stem, text)`, sorted by file name in byte order: every name is its stem
+/// followed by `.st`, and `.` sorts before every character a stem may hold, so sorting the
+/// stems sorts the names. A missing directory holds none.
+fn read_sources(dir: &Path, takes: fn(&str) -> bool) -> Result<Vec<(String, String)>, Refusal> {
+    let fail = |path: &Path, e: std::io::Error| error(500, format!("{}: {e}", path.display()));
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(fail(dir, e)),
+    };
+    let mut sources = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| fail(dir, e))?;
+        let path = entry.path();
+        let kind = entry.file_type().map_err(|e| fail(&path, e))?;
+        if !kind.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let Some(stem) = file_name.to_str().and_then(|n| source_stem(n, takes)) else {
+            continue;
+        };
+        let text = std::fs::read_to_string(&path).map_err(|e| fail(&path, e))?;
+        sources.push((stem.to_string(), text));
+    }
+    sources.sort_by(|(a, _), (b, _)| a.as_bytes().cmp(b.as_bytes()));
+    Ok(sources)
+}
+
+/// The bytes of `blocks.json`, `None` when there is none.
+fn read_blocks_bytes(path: &Path) -> Result<Option<Vec<u8>>, Refusal> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(error(500, format!("{}: {e}", path.display()))),
+    }
+}
+
+/// The project's data directory, beside the module's own `logic` (ADR-014 §2.8).
+fn data_dir_of(logic: &Path) -> Result<PathBuf, Refusal> {
+    logic.parent().map(|p| p.join(DATA_DIR)).ok_or_else(|| {
+        error(
+            500,
+            format!(
+                "{}: the module's data directory has no parent, so the project's data cannot be found",
+                logic.display()
+            ),
+        )
+    })
+}
+
+/// The project's library, types and data blocks, read and never written. `blocks.json` is
+/// read before and after the types: when another process wrote it between, everything is read
+/// once more (a write between two reads can still give one compile a state that never was; no
+/// lock across processes closes that).
+fn read_project(logic: &Path) -> Result<Project, Refusal> {
+    let data = data_dir_of(logic)?;
+    let blocks_path = data.join(BLOCKS_FILE);
+    let library = read_sources(&logic.join(LIBRARY_DIR), |n| {
+        library_name_problem(n).is_none()
+    })?;
+    let first = read_blocks_bytes(&blocks_path)?;
+    let mut types = read_sources(&data.join(TYPES_DIR), type_name)?;
+    let mut bytes = read_blocks_bytes(&blocks_path)?;
+    if bytes != first {
+        types = read_sources(&data.join(TYPES_DIR), type_name)?;
+        bytes = read_blocks_bytes(&blocks_path)?;
+    }
+    let (blocks, problem) = match bytes {
+        None => (Vec::new(), None),
+        Some(bytes) => match serde_json::from_slice::<BlocksFile>(&bytes) {
+            Ok(file) => (file.blocks, None),
+            Err(e) => (
+                Vec::new(),
+                Some(Diagnostic::whole(format!(
+                    "data/blocks.json cannot be read as the project's data blocks: {e}"
+                ))),
+            ),
+        },
+    };
+    let named = |prefix: &str, sources: Vec<(String, String)>| {
+        sources
+            .into_iter()
+            .map(|(stem, text)| (format!("{prefix}/{stem}{SOURCE_EXTENSION}"), text))
+            .collect()
+    };
+    Ok(Project {
+        types: named("data/types", types),
+        library: named("logic/library", library),
+        blocks,
+        problem,
+    })
+}
+
+fn pairs(sources: &[(String, String)]) -> Vec<(&str, &str)> {
+    sources
+        .iter()
+        .map(|(n, t)| (n.as_str(), t.as_str()))
+        .collect()
+}
+
+fn data_blocks(blocks: &[BlockEntry]) -> Vec<DataBlock<'_>> {
+    blocks
+        .iter()
+        .map(|b| DataBlock {
+            name: &b.name,
+            ty: &b.ty,
+        })
+        .collect()
+}
+
+/// The project's types and data blocks checked by themselves: `Err` with why when they do
+/// not check, and then a program is compiled without them.
+fn check_stored_data(project: &Project) -> Result<(), Vec<Diagnostic>> {
+    if let Some(problem) = &project.problem {
+        return Err(vec![problem.clone()]);
+    }
+    if project.types.is_empty() && project.blocks.is_empty() {
+        return Ok(());
+    }
+    let types = pairs(&project.types);
+    let blocks = data_blocks(&project.blocks);
+    check_project(&Sources {
+        library: &types,
+        data: &blocks,
+        ..Default::default()
+    })
+    .map(|_| ())
+}
+
+/// A TYPE declared in a library source: refused, with where it is, since the project's types
+/// are the data module's (ADR-014 §2.8).
+fn library_types(library: &[(String, String)]) -> Vec<Diagnostic> {
+    let mut found = Vec::new();
+    for (name, text) in library {
+        let (read, _) =
+            mythos_logic_st::parser::Parser::new(mythos_logic_st::lexer::tokens(text)).source();
+        for t in &read.types {
+            let mut d = Diagnostic::at(
+                t.span,
+                format!(
+                    "{} is a TYPE in the library source '{name}'; the project's types are made in the data module",
+                    t.name
+                ),
+            );
+            d.source = Some(name.clone());
+            found.push(d);
+        }
+    }
+    found
+}
+
+/// What a program's compile is given of the project: the library sources (the types first
+/// when the stored data checks) and the data blocks, or none of the data, with why.
+struct Given<'a> {
+    library: Vec<(&'a str, &'a str)>,
+    data: Vec<DataBlock<'a>>,
+    problems: Option<Vec<Diagnostic>>,
+}
+
+fn given(project: &Project) -> Given<'_> {
+    match check_stored_data(project) {
+        Ok(()) => {
+            let mut library = pairs(&project.types);
+            library.extend(pairs(&project.library));
+            Given {
+                library,
+                data: data_blocks(&project.blocks),
+                problems: None,
+            }
+        }
+        Err(problems) => Given {
+            library: pairs(&project.library),
+            data: Vec::new(),
+            problems: Some(problems),
+        },
+    }
+}
+
+/// Write a file whole or not at all: a temporary beside it, named for this process (during a
+/// hot swap two processes may write) and ending in `.tmp` (left out of a device's plant
+/// slice), synced, then renamed over the file.
+fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
+    let fail = |p: &Path, e: std::io::Error| error(500, format!("{}: {e}", p.display()));
+    let (Some(dir), Some(file)) = (path.parent(), path.file_name()) else {
+        return Err(error(500, format!("{}: not a file's path", path.display())));
+    };
+    std::fs::create_dir_all(dir).map_err(|e| fail(dir, e))?;
+    let tmp = dir.join(format!(
+        ".{}.{}.tmp",
+        file.to_string_lossy(),
+        std::process::id()
+    ));
+    let written = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()
+    })();
+    if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, path)) {
+        let mut message = format!("{}: {e}", path.display());
+        if tmp.exists() {
+            if let Err(r) = std::fs::remove_file(&tmp) {
+                message.push_str(&format!("; {} is left: {r}", tmp.display()));
+            }
+        }
+        return Err(error(500, message));
+    }
+    Ok(())
+}
+
+/// The library source stored under another spelling of `name`, or the same: names that
+/// differ only in case are one name.
+fn stored_library_name(data: &Path, name: &str) -> Result<Option<String>, Refusal> {
+    Ok(read_sources(&data.join(LIBRARY_DIR), |n| {
+        library_name_problem(n).is_none()
+    })?
+    .into_iter()
+    .map(|(stem, _)| stem)
+    .find(|stem| stem.eq_ignore_ascii_case(name)))
+}
+
+fn library_path(data: &Path, stem: &str) -> PathBuf {
+    data.join(LIBRARY_DIR)
+        .join(format!("{stem}{SOURCE_EXTENSION}"))
 }
 
 /// What a new program starts as. In Structured Text, every section a program may have, empty.
@@ -432,34 +781,81 @@ fn variables(symbols: &[Symbol]) -> Vec<Value> {
         .collect()
 }
 
+/// What compiling a program gave: the program or the compiler's diagnostics, and, when the
+/// stored types and data blocks do not check, why (they were left out).
+struct Compiling {
+    compiled: Result<mythos_logic_compiler::Compiled, Vec<Diagnostic>>,
+    project_problems: Option<Vec<Diagnostic>>,
+}
+
 /// Compile the program's `source`, written in its language, for `target`: from that one
-/// source alone (see the top of this file).
+/// source (see the top of this file), with the project's types, library and data blocks.
 fn compile_entry(
     entry: &ProgramEntry,
     source: &str,
     target: &TargetProfile,
-) -> Result<mythos_logic_compiler::Compiled, Vec<Diagnostic>> {
+    project: &Project,
+) -> Compiling {
     let file = |extension: &str| format!("{}.{extension}", entry.name);
-    if is_tc6(&entry.language) {
-        let name = file("xml");
-        compile_sources(
-            &Sources {
-                st: None,
-                tc6: &[(name.as_str(), source)],
-                ..Default::default()
-            },
-            target,
-        )
+    if project.is_empty() {
+        // A project of before the library and the data: exactly as then.
+        let compiled = if is_tc6(&entry.language) {
+            let name = file("xml");
+            compile_sources(
+                &Sources {
+                    st: None,
+                    tc6: &[(name.as_str(), source)],
+                    ..Default::default()
+                },
+                target,
+            )
+        } else {
+            let name = file("st");
+            compile_sources(
+                &Sources {
+                    st: Some((name.as_str(), source)),
+                    tc6: &[],
+                    ..Default::default()
+                },
+                target,
+            )
+        };
+        return Compiling {
+            compiled,
+            project_problems: None,
+        };
+    }
+    // The stored data first, by itself: data that does not check is left out, so it refuses
+    // only a program that uses it (the compiler would refuse every program for it).
+    let given = given(project);
+    let project_problems = given.problems.clone();
+    let typed = library_types(&project.library);
+    if !typed.is_empty() {
+        return Compiling {
+            compiled: Err(typed),
+            project_problems,
+        };
+    }
+    let name = file(if is_tc6(&entry.language) { "xml" } else { "st" });
+    let own = [(name.as_str(), source)];
+    let sources = if is_tc6(&entry.language) {
+        Sources {
+            st: None,
+            tc6: &own,
+            library: &given.library,
+            data: &given.data,
+        }
     } else {
-        let name = file("st");
-        compile_sources(
-            &Sources {
-                st: Some((name.as_str(), source)),
-                tc6: &[],
-                ..Default::default()
-            },
-            target,
-        )
+        Sources {
+            st: Some(own[0]),
+            tc6: &[],
+            library: &given.library,
+            data: &given.data,
+        }
+    };
+    Compiling {
+        compiled: compile_sources(&sources, target),
+        project_problems,
     }
 }
 
@@ -518,8 +914,12 @@ fn probes(compiled: &mythos_logic_compiler::Compiled, bodies: bool) -> Vec<Value
         .collect()
 }
 
-/// What identifies a build: its code and everything that ties it to the plant. A check gives
-/// the same, so an editor knows whether the text it shows is what a runtime runs.
+/// What identifies a build: its code and everything that ties it to the plant, and the data
+/// blocks it was built with, laid out (a renamed member can leave the code alike, and the core
+/// refuses a program built with another layout). A check gives the same, so an editor knows
+/// whether the text it shows is what a runtime runs. A program without data blocks hashes
+/// what it did before there were any. Whether a block is retained is the runtime's, not the
+/// program's: it is not in the version.
 fn version_of(entry: &ProgramEntry, compiled: &mythos_logic_compiler::Compiled) -> String {
     let mut hash = Sha256::new();
     hash.update(&compiled.bytecode);
@@ -527,11 +927,83 @@ fn version_of(entry: &ProgramEntry, compiled: &mythos_logic_compiler::Compiled) 
     hash.update(
         serde_json::to_vec(&(&entry.inputs, &entry.outputs, &entry.published)).unwrap_or_default(),
     );
+    if !compiled.data.is_empty() {
+        hash.update(serde_json::to_vec(&compiled.data).unwrap_or_default());
+    }
     hex::encode(&hash.finalize()[..6])
 }
 
+/// The compiler's data blocks of a program in the protocol's form, field by field (the two
+/// have the same JSON; a field added to one and not the other does not compile here).
+fn data_uses(compiled: &mythos_logic_compiler::Compiled) -> Vec<DataUse> {
+    compiled
+        .data
+        .iter()
+        .map(|d| DataUse {
+            name: d.name.clone(),
+            ty: d.ty.clone(),
+            layout: d.layout.clone(),
+            offset: d.offset,
+            size: d.size,
+            constant: d.constant,
+            members: d
+                .members
+                .iter()
+                .map(|m| DataMember {
+                    name: m.name.clone(),
+                    ty: m.ty.clone(),
+                    offset: m.offset,
+                    size: m.size,
+                    written: m.written,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// The runtime's data blocks for a program: one for each block it declares, laid out as it
+/// was built with, retained as `blocks.json` says of the block of that name (the compiler
+/// gives the project's spelling).
+fn instance_data(
+    compiled: &mythos_logic_compiler::Compiled,
+    blocks: &[BlockEntry],
+) -> Result<Vec<RuntimeDataBlock>, String> {
+    compiled
+        .data
+        .iter()
+        .map(|d| {
+            let entry = blocks
+                .iter()
+                .find(|b| b.name.eq_ignore_ascii_case(&d.name))
+                .ok_or_else(|| {
+                    format!(
+                        "data block '{}' was compiled in but is not in data/blocks.json",
+                        d.name
+                    )
+                })?;
+            Ok(RuntimeDataBlock {
+                name: d.name.clone(),
+                ty: d.ty.clone(),
+                layout: d.layout.clone(),
+                size: d.size,
+                members: d
+                    .members
+                    .iter()
+                    .map(|m| DataBlockMember {
+                        name: m.name.clone(),
+                        ty: m.ty.clone(),
+                        offset: m.offset,
+                        size: m.size,
+                    })
+                    .collect(),
+                retain: entry.retain,
+            })
+        })
+        .collect()
+}
+
 /// Compile `source` for the entry's target: the answer of `check`.
-fn check(entry: &ProgramEntry, source: &str) -> Value {
+fn check(entry: &ProgramEntry, source: &str, project: &Project) -> Value {
     let target = match TargetProfile::by_name(&entry.target) {
         Some(target) => target,
         None => {
@@ -546,9 +1018,30 @@ fn check(entry: &ProgramEntry, source: &str) -> Value {
             });
         }
     };
-    match compile_entry(entry, source, &target) {
+    let compiling = compile_entry(entry, source, &target, project);
+    let mut answer = match compiling.compiled {
         Ok(compiled) => {
-            let problems = check_bindings(entry, &compiled.symbols);
+            let mut problems = check_bindings(entry, &compiled.symbols);
+            if !compiled.data.is_empty() {
+                // What the core refuses of the program's data, said as its build would say it.
+                // Only the fields `check_data` reads: this program is never answered.
+                let program = RuntimeProgram {
+                    name: compiled.name.clone(),
+                    version: String::new(),
+                    interval_ms: entry.interval_ms,
+                    code: String::new(),
+                    symbols: Value::Null,
+                    inputs: entry.inputs.clone(),
+                    outputs: entry.outputs.clone(),
+                    published: entry.published.clone(),
+                    data: data_uses(&compiled),
+                };
+                let refused = instance_data(&compiled, &project.blocks)
+                    .and_then(|data| check_data(&[&program], &data));
+                if let Err(m) = refused {
+                    problems.push(m);
+                }
+            }
             let mut answer = json!({
                 "ok": true,
                 "diagnostics": [],
@@ -569,10 +1062,25 @@ fn check(entry: &ProgramEntry, source: &str) -> Value {
                 }
                 _ => {}
             }
+            if !compiled.data.is_empty() {
+                answer["data"] = json!(compiled.data);
+            }
             answer
         }
         Err(diagnostics) => json!({ "ok": false, "diagnostics": diagnostics }),
+    };
+    if let Some(problems) = compiling.project_problems {
+        answer["project_problems"] = json!(problems);
     }
+    answer
+}
+
+/// `body` with the project's problems, when there are any.
+fn with_problems(mut body: Value, problems: &Option<Vec<Diagnostic>>) -> Value {
+    if let Some(problems) = problems {
+        body["project_problems"] = json!(problems);
+    }
+    body
 }
 
 /// Compile the saved source and pack it as the runtime instance the core loads.
@@ -580,27 +1088,36 @@ fn build(
     entry: &ProgramEntry,
     source: &str,
     registered: Option<&[String]>,
+    project: &Project,
 ) -> Result<Value, Refusal> {
     check_entry(entry).map_err(|e| error(400, e))?;
     let target = TargetProfile::by_name(&entry.target)
         .ok_or_else(|| error(400, format!("'{}' is not a target profile", entry.target)))?;
-    let compiled = compile_entry(entry, source, &target).map_err(|diagnostics| {
+    let compiling = compile_entry(entry, source, &target, project);
+    let problems_of_project = compiling.project_problems;
+    let compiled = compiling.compiled.map_err(|diagnostics| {
         (
             400,
-            json!({
-                "error": "the program does not compile and was not built",
-                "diagnostics": diagnostics,
-            }),
+            with_problems(
+                json!({
+                    "error": "the program does not compile and was not built",
+                    "diagnostics": diagnostics,
+                }),
+                &problems_of_project,
+            ),
         )
     })?;
     let problems = check_bindings(entry, &compiled.symbols);
     if !problems.is_empty() {
         return Err((
             400,
-            json!({
-                "error": "the program's bindings do not match its variables and it was not built",
-                "binding_problems": problems,
-            }),
+            with_problems(
+                json!({
+                    "error": "the program's bindings do not match its variables and it was not built",
+                    "binding_problems": problems,
+                }),
+                &problems_of_project,
+            ),
         ));
     }
 
@@ -615,9 +1132,17 @@ fn build(
         inputs: entry.inputs.clone(),
         outputs: entry.outputs.clone(),
         published: entry.published.clone(),
-        // This plugin builds no program with data blocks yet (ADR-014, D2 stage 1).
-        data: Vec::new(),
+        data: data_uses(&compiled),
     };
+    let data = instance_data(&compiled, &project.blocks).map_err(|e| error(500, e))?;
+    // What the core would refuse of the instance's data is not built: a block named like the
+    // program, a tag read into a member, and whatever else the core's own check says.
+    check_data(&[&program], &data).map_err(|m| {
+        (
+            400,
+            with_problems(json!({ "error": m }), &problems_of_project),
+        )
+    })?;
 
     // A tag nothing provides now is said, not refused: the connection that provides it may
     // be configured later, and a program reading it sees it as not GOOD until then.
@@ -642,18 +1167,26 @@ fn build(
         }
     }
 
-    Ok(json!({
-        "version": version,
-        "warnings": warnings,
-        "code_size": compiled.code_size,
-        "memory_size": compiled.memory_size,
-        "instance": {
-            "id": entry.name,
-            "module": entry.runtime,
-            "run": entry.run,
-            "program": program,
-        },
-    }))
+    let mut instance = json!({
+        "id": entry.name,
+        "module": entry.runtime,
+        "run": entry.run,
+        "program": program,
+    });
+    // Only when there is one: an instance of today has no `data` key.
+    if !data.is_empty() {
+        instance["data"] = json!(data);
+    }
+    Ok(with_problems(
+        json!({
+            "version": version,
+            "warnings": warnings,
+            "code_size": compiled.code_size,
+            "memory_size": compiled.memory_size,
+            "instance": instance,
+        }),
+        &problems_of_project,
+    ))
 }
 
 // -----------------------------------------------------------------------------
@@ -723,7 +1256,7 @@ pub fn manifest() -> ModuleManifest {
         version: env!("CARGO_PKG_VERSION").into(),
         kind: ModuleKind::Service,
         provides: PROVIDES.into(),
-        description: "Control programs in Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart: their source, their bindings to tags, check and build".into(),
+        description: "Control programs in Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart: their source, their bindings to tags, check and build; and the project's library of functions and function blocks".into(),
         capabilities: vec![],
         config_schema: Value::Null,
         always_on: false,
@@ -765,8 +1298,30 @@ pub fn manifest() -> ModuleManifest {
                     "properties": { "source": { "type": "string" } }
                 })), &[]),
             route("POST", "/programs/:program/build", "engineer", "build_logic_program",
-                "Compile the saved source, Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart, and pack it as a runtime instance. The answer's 'instance' is what save_runtimes_config takes in its 'instances' (replace the one with the same id); nothing is loaded by this call.",
+                "Compile the saved source, Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart, and pack it as a runtime instance. The answer's 'instance' is what save_runtimes_config takes in its 'instances' (replace the one with the same id); nothing is loaded by this call. The program is compiled with the project's library and its user types and data blocks (the data module's); when those types and blocks do not check, it is compiled without them and 'project_problems' says why. When the program declares data blocks, the instance carries them in 'data'. A data block in two runtimes is refused when saved: until a runtime of several programs is built in this module, put the programs that share a block in one instance's programs, with tasks.",
                 None, &["tags"]),
+            route("GET", "/library", "viewer", "list_logic_library",
+                "The project's library: Structured Text sources of functions and function blocks shared by every program, by name. Reads only; nothing is written, compiled or loaded.", None, &[]),
+            route("GET", "/library/:name", "viewer", "get_logic_library_source",
+                "A source of the project's library, by name (without regard to case; answered with its stored spelling): Structured Text holding functions and function blocks. Reads only.", None, &[]),
+            route("PUT", "/library/:name", "engineer", "save_logic_library_source",
+                "Make or replace a source of the project's library: Structured Text holding FUNCTIONs and FUNCTION_BLOCKs, no PROGRAM and no TYPE (the project's types are made in the data module). Every program is compiled with every library source, and a mistake in one refuses every program, so check it first with check_logic_library. Nothing is compiled or loaded by this call; a name that differs only in case from a stored one is refused.",
+                Some(json!({
+                    "type": "object",
+                    "required": ["source"],
+                    "properties": { "source": { "type": "string", "description": "Structured Text: FUNCTION … END_FUNCTION and FUNCTION_BLOCK … END_FUNCTION_BLOCK" } }
+                })), &[]),
+            route("DELETE", "/library/:name", "engineer", "delete_logic_library_source",
+                "Remove a source from the project's library. Every program is then compiled without it: one that uses what it held no longer compiles. Nothing is built or loaded.", None, &[]),
+            route("POST", "/library/check", "viewer", "check_logic_library",
+                "Check the project's library with the compiler, with the project's user types and data blocks, without saving or building anything: the stored sources, or with 'name' and 'source' (both or neither) that one source's text put in, new or replacing. Answers 'ok' and the diagnostics, each with 'source' naming its file (logic/library/<name>.st or data/types/<Name>.st); when the project's types and data blocks do not check, the library is checked without them and 'project_problems' says why.",
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "A library source's name; give source with it" },
+                        "source": { "type": "string", "description": "That source's text; give name with it" }
+                    }
+                })), &[]),
         ],
     }
 }
@@ -938,20 +1493,154 @@ impl Logic {
                         Some(source) => source,
                         None => read_source(data, entry)?,
                     };
-                    Ok(check(entry, &source))
+                    Ok(check(entry, &source, &read_project(data)?))
                 }),
                 200,
             ),
             ("POST", "/programs/:program/build") => reply(
                 load(data).and_then(|p| {
                     let entry = find(&p, name)?;
-                    build(entry, &read_source(data, entry)?, call.tags.as_deref())
+                    build(
+                        entry,
+                        &read_source(data, entry)?,
+                        call.tags.as_deref(),
+                        &read_project(data)?,
+                    )
                 }),
                 200,
             ),
+            (_, route) if route == "/library" || route.starts_with("/library/") => {
+                let (reply, event) = library(call, data);
+                if let Some(event) = event {
+                    events.send(LIBRARY_CHANGED_EVENT, event);
+                }
+                reply
+            }
             (method, route) => HttpReply::error(404, format!("the logic module has no route {method} {route}")),
         }
     }
+}
+
+#[derive(Deserialize, Default)]
+struct LibraryCheckBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+/// The routes of the project's library: the reply, and the data of the event to send when a
+/// source was saved or deleted.
+fn library(call: &HttpCall, data: &Path) -> (HttpReply, Option<Value>) {
+    let project = call.project.clone().unwrap_or_default();
+    let name = call.params.get("name").map(String::as_str).unwrap_or("");
+    let mut event = None;
+    let result = match (call.method.as_str(), call.route.as_str()) {
+        ("GET", "/library") => read_sources(&data.join(LIBRARY_DIR), |n| {
+            library_name_problem(n).is_none()
+        })
+        .map(|sources| {
+            json!({ "sources": sources.iter().map(|(stem, _)| json!({ "name": stem })).collect::<Vec<_>>() })
+        }),
+        ("GET", "/library/:name") => (|| {
+            let stem = stored_library_name(data, name)?.ok_or_else(|| no_library_source(name))?;
+            let path = library_path(data, &stem);
+            let source = std::fs::read_to_string(&path)
+                .map_err(|e| error(500, format!("{}: {e}", path.display())))?;
+            Ok(json!({ "name": stem, "source": source }))
+        })(),
+        ("PUT", "/library/:name") => body::<SourceBody>(call).and_then(|b| {
+            let stored = stored_library_name(data, name)?;
+            if let Some(other) = stored.as_deref().filter(|s| *s != name) {
+                return Err(other_spelling(other));
+            }
+            write_synced(&library_path(data, name), b.source.as_bytes())?;
+            event = Some(json!({ "project": project, "name": name, "what": "saved" }));
+            Ok(json!({ "name": name, "created": stored.is_none() }))
+        }),
+        ("DELETE", "/library/:name") => (|| {
+            let stem = stored_library_name(data, name)?.ok_or_else(|| no_library_source(name))?;
+            // The listed spelling's file, never the request's: on Linux another spelling is
+            // another file.
+            let path = library_path(data, &stem);
+            std::fs::remove_file(&path)
+                .map_err(|e| error(500, format!("{}: {e}", path.display())))?;
+            event = Some(json!({ "project": project, "name": stem, "what": "deleted" }));
+            Ok(json!({ "deleted": stem }))
+        })(),
+        ("POST", "/library/check") => (|| {
+            let given = match &call.body {
+                None | Some(Value::Null) => LibraryCheckBody::default(),
+                Some(_) => body::<LibraryCheckBody>(call)?,
+            };
+            let draft = match (given.name, given.source) {
+                (None, None) => None,
+                (Some(n), Some(t)) => {
+                    if let Some(problem) = library_name_problem(&n) {
+                        return Err(error(400, problem));
+                    }
+                    if let Some(other) =
+                        stored_library_name(data, &n)?.filter(|s| *s != n)
+                    {
+                        return Err(other_spelling(&other));
+                    }
+                    Some((n, t))
+                }
+                _ => return Err(error(400, "give both name and source, or neither")),
+            };
+            Ok(check_library(read_project(data)?, draft))
+        })(),
+        (method, route) => Err(error(
+            404,
+            format!("the logic module has no route {method} {route}"),
+        )),
+    };
+    (reply(result, 200), event)
+}
+
+fn no_library_source(name: &str) -> Refusal {
+    error(404, format!("the project has no library source '{name}'"))
+}
+
+fn other_spelling(existing: &str) -> Refusal {
+    error(
+        409,
+        format!(
+            "the project already has a library source '{existing}'; names that differ only in case are one name"
+        ),
+    )
+}
+
+/// The project's library checked with the compiler, with `draft` (a source's name and text)
+/// put in, new or replacing: what every program would be refused for.
+fn check_library(mut project: Project, draft: Option<(String, String)>) -> Value {
+    if let Some((name, text)) = draft {
+        let source = format!("logic/library/{name}{SOURCE_EXTENSION}");
+        match project.library.iter_mut().find(|(n, _)| *n == source) {
+            Some(stored) => stored.1 = text,
+            None => {
+                project.library.push((source, text));
+                project
+                    .library
+                    .sort_by(|(a, _), (b, _)| a.as_bytes().cmp(b.as_bytes()));
+            }
+        }
+    }
+    let given = given(&project);
+    let mut diagnostics = library_types(&project.library);
+    if diagnostics.is_empty() {
+        if let Err(found) = check_project(&Sources {
+            library: &given.library,
+            data: &given.data,
+            ..Default::default()
+        }) {
+            diagnostics = found;
+        }
+    }
+    with_problems(
+        json!({ "ok": diagnostics.is_empty(), "diagnostics": diagnostics }),
+        &given.problems,
+    )
 }
 
 #[async_trait]
@@ -966,6 +1655,12 @@ impl Service for Logic {
                 return HttpReply::error(400, format!("'{name}' is not a program name"));
             }
         }
+        // So does a library source's.
+        if let Some(name) = call.params.get("name") {
+            if let Some(problem) = library_name_problem(name) {
+                return HttpReply::error(400, problem);
+            }
+        }
         let _guard = self.writes.lock().await;
         self.handle_in(&call, &data, events)
     }
@@ -974,6 +1669,20 @@ impl Service for Logic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A check of a project of today: no library, no types, no data blocks.
+    fn check(entry: &ProgramEntry, source: &str) -> Value {
+        super::check(entry, source, &Project::default())
+    }
+
+    /// A build in a project of today.
+    fn build(
+        entry: &ProgramEntry,
+        source: &str,
+        registered: Option<&[String]>,
+    ) -> Result<Value, Refusal> {
+        super::build(entry, source, registered, &Project::default())
+    }
 
     fn entry() -> ProgramEntry {
         serde_json::from_value(json!({
@@ -1706,5 +2415,692 @@ mod tests {
             body["binding_problems"],
             json!(["output external.P.P1.speed: the program has no variable flow"])
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // The project's library, types and data blocks (D3)
+    // -------------------------------------------------------------------------
+
+    const SHARED: &str =
+        "TYPE Shared : STRUCT level : INT; seen : INT; spare : INT := 5; END_STRUCT; END_TYPE\n";
+
+    /// Writes `S.level` from its input; nothing else of S.
+    const WRITER: &str = "PROGRAM Writer
+VAR_INPUT level : INT; END_VAR
+VAR_EXTERNAL S : Shared; END_VAR
+  S.level := level;
+END_PROGRAM";
+
+    const MOTORS: &str =
+        "FUNCTION Twice : INT\nVAR_INPUT x : INT; END_VAR\n  Twice := x * 2;\nEND_FUNCTION\n";
+
+    fn writer_entry() -> ProgramEntry {
+        serde_json::from_value(json!({
+            "name": "Writer", "language": "st", "interval_ms": 20, "runtime": "vm", "target": "pc", "run": true,
+            "inputs": [{"variable": "level", "tag": "external.P.LT1.level"}]
+        }))
+        .unwrap()
+    }
+
+    /// A project's directory as the core makes it: the module's own `logic`, and beside it
+    /// the data module's `data`.
+    struct Dir {
+        root: tempfile::TempDir,
+        logic: PathBuf,
+    }
+
+    fn project_dir() -> Dir {
+        let root = tempfile::tempdir().unwrap();
+        let logic = root.path().join("logic");
+        std::fs::create_dir_all(&logic).unwrap();
+        Dir { root, logic }
+    }
+
+    impl Dir {
+        fn put(&self, path: &[&str], text: &str) {
+            let file = path
+                .iter()
+                .fold(self.root.path().to_path_buf(), |p, s| p.join(s));
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+
+        fn types(&self, text: &str) {
+            self.put(&["data", "types", "Shared.st"], text);
+        }
+
+        fn blocks(&self, blocks: &[(&str, &str, bool)]) {
+            let blocks: Vec<Value> = blocks
+                .iter()
+                .map(|(n, t, r)| json!({"name": n, "type": t, "retain": r}))
+                .collect();
+            self.put(
+                &["data", "blocks.json"],
+                &json!({ "blocks": blocks }).to_string(),
+            );
+        }
+
+        fn library(&self, name: &str, text: &str) {
+            self.put(&["logic", "library", &format!("{name}.st")], text);
+        }
+
+        fn project(&self) -> Project {
+            read_project(&self.logic).unwrap()
+        }
+    }
+
+    fn keys(v: &Value) -> Vec<&str> {
+        let mut k: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        k.sort_unstable();
+        k
+    }
+
+    /// The block `S` of type `Shared` as the data module answers it, with `retain` as a
+    /// runtime's data block writes it (absent when false).
+    fn block_s(types: &str, retain: bool) -> Value {
+        let layouts = check_project(&Sources {
+            library: &[("data/types/Shared.st", types)],
+            data: &[DataBlock {
+                name: "S",
+                ty: "Shared",
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+        let l = &layouts[0];
+        let mut b = json!({
+            "name": l.name, "type": l.ty, "layout": l.layout, "size": l.size,
+            "members": l.members.iter().map(|m| json!({
+                "name": m.name, "type": m.ty, "offset": m.offset, "size": m.size
+            })).collect::<Vec<_>>(),
+        });
+        if retain {
+            b["retain"] = json!(true);
+        }
+        b
+    }
+
+    fn call(
+        method: &str,
+        route: &str,
+        name: Option<&str>,
+        body: Option<Value>,
+        logic: &Path,
+    ) -> HttpCall {
+        serde_json::from_value(json!({
+            "method": method, "route": route,
+            "params": name.map_or(json!({}), |n| json!({"name": n})),
+            "body": body, "project": "plant", "data_dir": logic.display().to_string(),
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_project_of_today_checks_and_builds_with_exactly_todays_keys() {
+        let dir = project_dir();
+        // What a project gets once any call reaches the data module (an empty `data`), and an
+        // empty library: neither is anything.
+        std::fs::create_dir_all(dir.root.path().join("data").join("types")).unwrap();
+        std::fs::create_dir_all(dir.logic.join("library")).unwrap();
+        let project = dir.project();
+        assert!(project.is_empty(), "{project:?}");
+
+        let checked = super::check(&entry(), TANK, &project);
+        assert_eq!(
+            keys(&checked),
+            [
+                "binding_problems",
+                "code_size",
+                "diagnostics",
+                "memory_size",
+                "ok",
+                "program",
+                "variables",
+                "version"
+            ],
+            "{checked}"
+        );
+        let built = super::build(&entry(), TANK, None, &project).unwrap();
+        assert_eq!(
+            keys(&built),
+            [
+                "code_size",
+                "instance",
+                "memory_size",
+                "version",
+                "warnings"
+            ]
+        );
+        assert_eq!(keys(&built["instance"]), ["id", "module", "program", "run"]);
+        assert_eq!(
+            keys(&built["instance"]["program"]),
+            [
+                "code",
+                "inputs",
+                "interval_ms",
+                "name",
+                "outputs",
+                "published",
+                "symbols",
+                "version"
+            ]
+        );
+        // The versions these programs had before D3, read from the tree at 4bd8f15.
+        assert_eq!(built["version"], "d3adaba64d45");
+        assert_eq!(checked["version"], "d3adaba64d45");
+        for (e, source, version) in [
+            (ld_entry(), ladder("run"), "603a39003bec"),
+            (fbd_entry(), diagram("level"), "018750a43b66"),
+            (sfc_entry(), chart("90"), "a1226c2936b9"),
+        ] {
+            assert_eq!(
+                super::build(&e, &source, None, &project).unwrap()["version"],
+                version,
+                "{}",
+                e.language
+            );
+        }
+    }
+
+    #[test]
+    fn a_program_without_var_external_builds_the_same_bytes_and_version_beside_types_blocks_and_a_library(
+    ) {
+        let dir = project_dir();
+        dir.types(SHARED);
+        dir.blocks(&[("S", "Shared", true)]);
+        dir.library("Motors", MOTORS);
+        let project = dir.project();
+        assert!(!project.is_empty());
+        for (e, source) in [(entry(), TANK.to_string()), (ld_entry(), ladder("run"))] {
+            let today = build(&e, &source, None).unwrap();
+            let now = super::build(&e, &source, None, &project).unwrap();
+            assert_eq!(now, today, "{}", e.language);
+            let checked = super::check(&e, &source, &project);
+            assert_eq!(checked, check(&e, &source), "{}", e.language);
+        }
+    }
+
+    #[test]
+    fn a_program_with_var_external_is_built_with_its_blocks_layout_and_retain() {
+        let dir = project_dir();
+        dir.types(SHARED);
+        // T first and not retained: S's retain is S's own.
+        dir.blocks(&[("T", "Shared", false), ("S", "Shared", true)]);
+        let project = dir.project();
+        let built = super::build(&writer_entry(), WRITER, None, &project).unwrap();
+        assert!(built.get("project_problems").is_none(), "{built}");
+        assert_eq!(
+            built["instance"]["data"],
+            json!([block_s(SHARED, true)]),
+            "{built}"
+        );
+        let checked = super::check(&writer_entry(), WRITER, &project);
+        assert_eq!(checked["ok"], true, "{checked}");
+        assert_eq!(checked["binding_problems"], json!([]), "{checked}");
+        // The program carries the compiler's data, which the check shows: S.level written.
+        assert_eq!(built["instance"]["program"]["data"], checked["data"]);
+        let members = checked["data"][0]["members"].as_array().unwrap();
+        let written: Vec<(&str, bool)> = members
+            .iter()
+            .map(|m| (m["name"].as_str().unwrap(), m["written"].as_bool().unwrap()))
+            .collect();
+        assert_eq!(
+            written,
+            [("level", true), ("seen", false), ("spare", false)]
+        );
+        assert_eq!(checked["version"], built["version"]);
+
+        // Not retained: the runtime's block says nothing of retain.
+        dir.blocks(&[("T", "Shared", true), ("S", "Shared", false)]);
+        let built = super::build(&writer_entry(), WRITER, None, &dir.project()).unwrap();
+        assert_eq!(built["instance"]["data"], json!([block_s(SHARED, false)]));
+    }
+
+    #[test]
+    fn what_check_data_refuses_is_not_built() {
+        let dir = project_dir();
+        dir.types(SHARED);
+        dir.blocks(&[("Recipe", "Shared", false), ("S", "Shared", false)]);
+        let project = dir.project();
+        // R3: a block named like the program.
+        let recipe = "PROGRAM Recipe\nVAR_EXTERNAL Recipe : Shared; END_VAR\n  Recipe.level := 1;\nEND_PROGRAM";
+        let mut e = writer_entry();
+        e.name = "Recipe".into();
+        e.inputs.clear();
+        let said = "data block 'Recipe' has the name of a program of this runtime";
+        let (status, refused) = super::build(&e, recipe, None, &project).unwrap_err();
+        assert_eq!((status, refused), (400, json!({ "error": said })));
+        let checked = super::check(&e, recipe, &project);
+        assert_eq!(checked["binding_problems"], json!([said]), "{checked}");
+
+        // R12: a tag read into a member.
+        let mut e = writer_entry();
+        e.inputs.push(
+            serde_json::from_value(json!({"variable": "S.seen", "tag": "external.P.X.seen"}))
+                .unwrap(),
+        );
+        let said = "program 'Writer': S.seen is a member of data block 'S', which only a program writes: a tag cannot be read into it";
+        let (status, refused) = super::build(&e, WRITER, None, &project).unwrap_err();
+        assert_eq!((status, refused), (400, json!({ "error": said })));
+        let checked = super::check(&e, WRITER, &project);
+        assert_eq!(checked["binding_problems"], json!([said]), "{checked}");
+    }
+
+    #[test]
+    fn when_the_data_does_not_check_a_program_without_blocks_builds_and_one_with_blocks_says_why() {
+        let dir = project_dir();
+        dir.types(SHARED);
+        dir.blocks(&[("S", "Missing", false)]);
+        let project = dir.project();
+        let problems = check_stored_data(&project).unwrap_err();
+        assert!(
+            problems.iter().any(|d| d.message.contains("Missing")),
+            "{problems:?}"
+        );
+        let problems = json!(problems);
+
+        let built = super::build(&entry(), TANK, None, &project).unwrap();
+        assert_eq!(built["project_problems"], problems, "{built}");
+        assert_eq!(built["version"], "d3adaba64d45");
+        assert!(built["instance"].get("data").is_none());
+        let checked = super::check(&entry(), TANK, &project);
+        assert_eq!(checked["ok"], true);
+        assert_eq!(checked["project_problems"], problems);
+
+        let (status, refused) = super::build(&writer_entry(), WRITER, None, &project).unwrap_err();
+        assert_eq!(status, 400);
+        assert_eq!(refused["project_problems"], problems, "{refused}");
+        let messages: Vec<&str> = refused["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["message"].as_str().unwrap())
+            .collect();
+        assert!(
+            messages.contains(&"there is no data block S in the project"),
+            "{refused}"
+        );
+        let checked = super::check(&writer_entry(), WRITER, &project);
+        assert_eq!(checked["ok"], false);
+        assert_eq!(checked["project_problems"], problems);
+
+        // A blocks.json that is not the project's data blocks (L7), with no types at all.
+        for (text, why) in [
+            ("{\"blocks\": [", "EOF while parsing"),
+            ("{\"blocks\": [], \"x\": 1}", "unknown field `x`"),
+            (
+                "{\"blocks\": [{\"name\": \"S\", \"type\": \"Shared\"}]}",
+                "missing field `retain`",
+            ),
+        ] {
+            let dir = project_dir();
+            dir.put(&["data", "blocks.json"], text);
+            let project = dir.project();
+            let built = super::build(&entry(), TANK, None, &project).unwrap();
+            assert_eq!(built["version"], "d3adaba64d45");
+            let p = &built["project_problems"];
+            assert_eq!(p.as_array().unwrap().len(), 1, "{built}");
+            let message = p[0]["message"].as_str().unwrap();
+            assert!(
+                message
+                    .starts_with("data/blocks.json cannot be read as the project's data blocks: ")
+                    && message.contains(why),
+                "{message}"
+            );
+            assert_eq!(p[0]["line"], 0);
+            assert!(p[0].get("source").is_none());
+        }
+    }
+
+    #[test]
+    fn the_version_follows_the_data_layout() {
+        let dir = project_dir();
+        dir.types(SHARED);
+        dir.blocks(&[("S", "Shared", false)]);
+        let before = super::build(&writer_entry(), WRITER, None, &dir.project()).unwrap();
+        // A member renamed, its type and place kept: the code may be alike, the block is not.
+        dir.types(&SHARED.replace("seen", "watched"));
+        let after = super::build(&writer_entry(), WRITER, None, &dir.project()).unwrap();
+        assert_ne!(
+            before["instance"]["data"][0]["layout"],
+            after["instance"]["data"][0]["layout"]
+        );
+        assert_ne!(before["version"], after["version"]);
+        // Retain is the runtime's: the version does not follow it.
+        dir.blocks(&[("S", "Shared", true)]);
+        let retained = super::build(&writer_entry(), WRITER, None, &dir.project()).unwrap();
+        assert_eq!(retained["version"], after["version"]);
+        assert_ne!(retained["instance"]["data"], after["instance"]["data"]);
+    }
+
+    #[test]
+    fn a_library_source_is_compiled_into_every_program_and_its_mistakes_name_it() {
+        let dir = project_dir();
+        dir.library("Motors", MOTORS);
+        let twice = TANK.replace("(setpoint - level) * 10", "Twice(setpoint - level) * 5");
+        let built = super::build(&entry(), &twice, None, &dir.project()).unwrap();
+        assert!(built.get("project_problems").is_none(), "{built}");
+        // Without the library, it does not compile.
+        let (status, _) = build(&entry(), &twice, None).unwrap_err();
+        assert_eq!(status, 400);
+        // The program's own mistake names its source once there are several.
+        let wrong = "PROGRAM Tank\nVAR a : INT; END_VAR\n  a := b;\nEND_PROGRAM";
+        let checked = super::check(&entry(), wrong, &dir.project());
+        assert_eq!(checked["diagnostics"][0]["source"], "Tank.st", "{checked}");
+
+        // A mistake in the library refuses a program that does not use it, and names its place.
+        dir.library("Motors", &MOTORS.replace("x * 2", "y * 2"));
+        let checked = super::check(&entry(), TANK, &dir.project());
+        assert_eq!(checked["ok"], false);
+        let d = &checked["diagnostics"][0];
+        assert_eq!(d["source"], "logic/library/Motors.st", "{checked}");
+        assert_eq!(d["line"], 3, "{checked}");
+        assert_eq!(d["message"], "y is not declared", "{checked}");
+        let (status, refused) = super::build(&entry(), TANK, None, &dir.project()).unwrap_err();
+        assert_eq!(status, 400);
+        assert_eq!(refused["diagnostics"][0], *d);
+
+        // With only the data module's types, the program's own source is named too.
+        let dir = project_dir();
+        dir.types(SHARED);
+        let checked = super::check(&entry(), wrong, &dir.project());
+        assert_eq!(checked["diagnostics"][0]["source"], "Tank.st", "{checked}");
+    }
+
+    #[test]
+    fn a_type_in_the_library_is_refused_with_its_place() {
+        let dir = project_dir();
+        dir.library(
+            "Motors",
+            &format!("{MOTORS}TYPE Speed : STRUCT rpm : INT; END_STRUCT; END_TYPE\n"),
+        );
+        let said = "Speed is a TYPE in the library source 'logic/library/Motors.st'; the project's types are made in the data module";
+        let checked = super::check(&entry(), TANK, &dir.project());
+        assert_eq!(checked["ok"], false);
+        let d = &checked["diagnostics"];
+        assert_eq!(d.as_array().unwrap().len(), 1, "{checked}");
+        assert_eq!(d[0]["message"], said);
+        assert_eq!(d[0]["source"], "logic/library/Motors.st");
+        assert_eq!(
+            (d[0]["line"].clone(), d[0]["col"].clone()),
+            (json!(5), json!(6)),
+            "{checked}"
+        );
+        let (status, refused) = super::build(&entry(), TANK, None, &dir.project()).unwrap_err();
+        assert_eq!(status, 400);
+        assert_eq!(refused["diagnostics"], *d);
+        let library = check_library(dir.project(), None);
+        assert_eq!(library["ok"], false);
+        assert_eq!(library["diagnostics"], *d);
+
+        // A TYPE in the program's own source is the program's, as before.
+        let dir = project_dir();
+        dir.library("Motors", MOTORS);
+        let own = format!("TYPE Pair : STRUCT a : INT; b : INT; END_STRUCT; END_TYPE\n{TANK}");
+        let checked = super::check(&entry(), &own, &dir.project());
+        assert_eq!(checked["ok"], true, "{checked}");
+        assert_eq!(check(&entry(), &own)["ok"], true);
+    }
+
+    #[test]
+    fn the_logic_module_ignores_what_the_data_module_ignores() {
+        // The two copies of the file rule, name by name: the data module's own table and more.
+        let long = "x".repeat(65);
+        let names = [
+            "CON",
+            "con",
+            "Com1",
+            "LPT9",
+            "nul",
+            "PrN",
+            "aUx",
+            "COM0",
+            "lpt0",
+            "a.b",
+            "a__b",
+            "a_",
+            "1a",
+            &long,
+            "é",
+            "",
+            "Recipe",
+            "_Tmp",
+            "Con1",
+            "CONSOLE",
+            "RecipeData",
+            "x9",
+            &long[..64],
+        ];
+        for name in names {
+            assert_eq!(
+                type_name(name),
+                mythos_data::type_name_problem(name).is_none(),
+                "{name}"
+            );
+        }
+        let files = [
+            "RecipeData.st",
+            "X.tmp",
+            ".blocks.json.9.tmp",
+            "notes.txt",
+            "Bad-Name.st",
+            "Y.ST",
+            "CON.st",
+            "a__b.st",
+            "Z.st.tmp",
+            ".st",
+            "_T.st",
+            "Recipe.St",
+        ];
+        for file in files {
+            assert_eq!(
+                source_stem(file, type_name),
+                mythos_data::type_file_stem(file),
+                "{file}"
+            );
+        }
+
+        let dir = project_dir();
+        dir.types(SHARED);
+        for file in files {
+            dir.put(
+                &["data", "types", file],
+                "TYPE Junk : STRUCT a : INT; END_STRUCT; END_TYPE\n",
+            );
+        }
+        std::fs::create_dir_all(dir.root.path().join("data").join("types").join("Dir.st")).unwrap();
+        let read: Vec<String> = dir.project().types.into_iter().map(|(n, _)| n).collect();
+        // `RecipeData.st` and `_T.st` are type files (and hold a Junk each); the rest is not.
+        assert_eq!(
+            read,
+            [
+                "data/types/RecipeData.st",
+                "data/types/Shared.st",
+                "data/types/_T.st"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_library_name_is_one_name_without_regard_to_case_and_never_a_device() {
+        for bad in ["cOn", "Prn", "aux", "NuL", "Com7", "lpT0"] {
+            assert_eq!(
+                library_name_problem(bad),
+                Some(format!("'{bad}' cannot be a library source name: it is a device name on Windows (CON, PRN, AUX, NUL, COM0 to COM9, LPT0 to LPT9)"))
+            );
+        }
+        for bad in ["", "_x", "1a", "a-b", "a.st", &"x".repeat(65)] {
+            assert_eq!(
+                library_name_problem(bad),
+                Some(format!("'{bad}' is not a library source name: a letter, then letters, digits or _, at most 64"))
+            );
+        }
+        for good in ["Motors", "Con1", "CONSOLE", "x9", "COM10"] {
+            assert_eq!(library_name_problem(good), None, "{good}");
+        }
+
+        let dir = project_dir();
+        let logic = &dir.logic;
+        let (reply, event) = library(
+            &call(
+                "PUT",
+                "/library/:name",
+                Some("Motors"),
+                Some(json!({"source": MOTORS})),
+                logic,
+            ),
+            logic,
+        );
+        assert_eq!(
+            (reply.status, reply.body),
+            (200, json!({"name": "Motors", "created": true}))
+        );
+        assert_eq!(
+            event,
+            Some(json!({"project": "plant", "name": "Motors", "what": "saved"}))
+        );
+        assert_eq!(
+            std::fs::read_to_string(logic.join("library").join("Motors.st")).unwrap(),
+            MOTORS
+        );
+        let (reply, _) = library(
+            &call(
+                "PUT",
+                "/library/:name",
+                Some("Motors"),
+                Some(json!({"source": MOTORS})),
+                logic,
+            ),
+            logic,
+        );
+        assert_eq!(reply.body["created"], false);
+        // Another spelling of a stored name is refused, and nothing is written.
+        let (reply, event) = library(
+            &call(
+                "PUT",
+                "/library/:name",
+                Some("MOTORS"),
+                Some(json!({"source": "x"})),
+                logic,
+            ),
+            logic,
+        );
+        assert_eq!(
+            (reply.status, reply.body),
+            (
+                409,
+                json!({"error": "the project already has a library source 'Motors'; names that differ only in case are one name"})
+            )
+        );
+        assert_eq!(event, None);
+        let listed: Vec<String> = std::fs::read_dir(logic.join("library"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(listed, ["Motors.st"], "no temporary is left");
+        let (reply, _) = library(&call("GET", "/library", None, None, logic), logic);
+        assert_eq!(reply.body, json!({"sources": [{"name": "Motors"}]}));
+        let (reply, _) = library(
+            &call("GET", "/library/:name", Some("motors"), None, logic),
+            logic,
+        );
+        assert_eq!(reply.body, json!({"name": "Motors", "source": MOTORS}));
+        // A draft of another spelling is refused as a save would be; both or neither.
+        let (reply, _) = library(
+            &call(
+                "POST",
+                "/library/check",
+                None,
+                Some(json!({"name": "motors", "source": "x"})),
+                logic,
+            ),
+            logic,
+        );
+        assert_eq!(reply.status, 409);
+        let (reply, _) = library(
+            &call(
+                "POST",
+                "/library/check",
+                None,
+                Some(json!({"name": "Motors"})),
+                logic,
+            ),
+            logic,
+        );
+        assert_eq!(
+            (reply.status, reply.body),
+            (
+                400,
+                json!({"error": "give both name and source, or neither"})
+            )
+        );
+        let (reply, _) = library(
+            &call(
+                "POST",
+                "/library/check",
+                None,
+                Some(json!({"name": "Motors", "source": MOTORS.replace("x * 2", "y * 2")})),
+                logic,
+            ),
+            logic,
+        );
+        assert_eq!(reply.body["ok"], false, "{}", reply.body);
+        assert_eq!(
+            reply.body["diagnostics"][0]["source"],
+            "logic/library/Motors.st"
+        );
+        let (reply, _) = library(&call("POST", "/library/check", None, None, logic), logic);
+        assert_eq!(reply.body, json!({"ok": true, "diagnostics": []}));
+        // Deleted by another spelling: the stored file goes.
+        let (reply, event) = library(
+            &call("DELETE", "/library/:name", Some("motors"), None, logic),
+            logic,
+        );
+        assert_eq!(reply.body, json!({"deleted": "Motors"}));
+        assert_eq!(
+            event,
+            Some(json!({"project": "plant", "name": "Motors", "what": "deleted"}))
+        );
+        assert!(!logic.join("library").join("Motors.st").exists());
+        let (reply, _) = library(
+            &call("GET", "/library/:name", Some("Motors"), None, logic),
+            logic,
+        );
+        assert_eq!(
+            (reply.status, reply.body),
+            (
+                404,
+                json!({"error": "the project has no library source 'Motors'"})
+            )
+        );
+    }
+
+    #[test]
+    fn the_logic_module_writes_nothing_under_the_data_directory() {
+        let dir = project_dir();
+        dir.types(SHARED);
+        dir.blocks(&[("S", "Shared", false)]);
+        let data = dir.root.path().join("data");
+        let snapshot = || {
+            let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+            for sub in [data.clone(), data.join("types")] {
+                for e in std::fs::read_dir(&sub).unwrap() {
+                    let path = e.unwrap().path();
+                    let bytes = std::fs::read(&path).unwrap_or_default();
+                    files.push((path.display().to_string(), bytes));
+                }
+            }
+            files.sort();
+            files
+        };
+        let before = snapshot();
+        super::check(&writer_entry(), WRITER, &dir.project());
+        super::build(&writer_entry(), WRITER, None, &dir.project()).unwrap();
+        check_library(dir.project(), Some(("Motors".into(), MOTORS.into())));
+        assert_eq!(snapshot(), before);
+        // A project whose data directory is not there is not given one.
+        let bare = project_dir();
+        bare.project();
+        assert!(!bare.root.path().join("data").exists());
     }
 }
