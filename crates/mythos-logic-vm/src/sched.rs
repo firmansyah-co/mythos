@@ -14,7 +14,8 @@
 //!   preempted task is continued when no task of higher priority is in progress or ready.
 //! - A [`Kind::Cyclic`] task is due at `start + phase + k * interval`, fixed times that do not
 //!   drift with how long its runs take. Due again while its last run has not ended (or not
-//!   begun), that run is not made and an overrun is counted.
+//!   begun), that run is not made and an overrun is counted, whenever the host asks [`next`];
+//!   a due time at the very end of the run is not an overrun.
 
 /// The lowest priority a task can have; 0 is the highest.
 pub const LOWEST_PRIORITY: u8 = 31;
@@ -166,8 +167,17 @@ pub fn ended(tasks: &mut [Task], task: usize, now: i64) -> bool {
     c.last_run = Some(took);
     c.longest_run = Some(c.longest_run.map_or(took, |l| l.max(took)));
     c.last_end = Some(now);
-    if let Kind::Cycle { min_cycle } = t.kind {
-        t.due = began.saturating_add(min_cycle);
+    match t.kind {
+        // Ready again at its end, or at its minimum cycle time if that is later: that is when it
+        // became ready, so it does not pass a cycle task ready since before its end.
+        Kind::Cycle { min_cycle } => t.due = began.saturating_add(min_cycle).max(now),
+        // The due times that passed while it was in progress make no run, whether or not the
+        // host asked [`next`] between them and the end.
+        Kind::Cyclic { interval, .. } if now > t.due => {
+            let passed = due_times(now.abs_diff(t.due) - 1, interval);
+            skip(t, passed, passed, interval);
+        }
+        _ => {}
     }
     true
 }
@@ -231,16 +241,14 @@ fn release(tasks: &mut [Task], now: i64) {
         match t.kind {
             Kind::Cyclic { interval, .. } if now >= t.due => {
                 // How many due times have passed: the first may make a run, the others not.
-                let passed = (now - t.due) / interval + 1;
+                let passed = due_times(now.abs_diff(t.due), interval);
                 let missed = if t.ready.is_none() && t.began.is_none() {
                     t.ready = Some(t.due);
                     passed - 1
                 } else {
                     passed
                 };
-                let o = &mut t.counters.overruns;
-                *o = o.saturating_add(u32::try_from(missed).unwrap_or(u32::MAX));
-                t.due = t.due.saturating_add(passed.saturating_mul(interval));
+                skip(t, passed, missed, interval);
             }
             Kind::Cycle { .. } if t.ready.is_none() && t.began.is_none() && now >= t.due => {
                 t.ready = Some(t.due);
@@ -248,4 +256,21 @@ fn release(tasks: &mut [Task], now: i64) {
             _ => {}
         }
     }
+}
+
+/// How many due times, `interval` apart, lie from a due time to `span` nanoseconds after it,
+/// both included. In `u64`, which holds the distance between any two times: no overflow.
+fn due_times(span: u64, interval: i64) -> u64 {
+    // `interval` is above zero (`Task::new`).
+    (span / interval.unsigned_abs()).saturating_add(1)
+}
+
+/// Moves a cyclic task's due time past `passed` due times, counting `missed` overruns; both
+/// saturate at the end of time.
+fn skip(t: &mut Task, passed: u64, missed: u64, interval: i64) {
+    let o = &mut t.counters.overruns;
+    *o = o.saturating_add(u32::try_from(missed).unwrap_or(u32::MAX));
+    t.due = t
+        .due
+        .saturating_add_unsigned(passed.saturating_mul(interval.unsigned_abs()));
 }

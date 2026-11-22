@@ -13,7 +13,9 @@ use crate::strings::{self, Str};
 /// go to their safe values (ADR-013).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
-    /// The memory, the stack or the call frames given are smaller than the program declares.
+    /// The memory, the stack or the call frames given are smaller than the program declares,
+    /// or a [`Run`] resumed with a program it did not begin with holds more stack or calls in
+    /// progress than that program declares.
     WrongSizes,
     /// More instructions than the budget: most likely a loop that never ends.
     BudgetExceeded,
@@ -442,6 +444,12 @@ impl Run {
         let calls = calls
             .get_mut(..program.call_depth())
             .ok_or(Fault::WrongSizes)?;
+        // A run resumed with a program it did not begin with may hold more stack or more calls
+        // than this program has: refused here, once a piece, so that no instruction indexes
+        // past them.
+        if self.sp as usize > stack.len() || self.depth as usize > calls.len() {
+            return Err(Fault::WrongSizes);
+        }
         let code = program.code;
         let mut s = Stack {
             slots: stack,

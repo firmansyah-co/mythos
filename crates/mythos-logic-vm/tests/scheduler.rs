@@ -247,3 +247,107 @@ fn each_task_counts_its_runs_preemptions_and_last_and_longest_run_time() {
     assert!(!ended(&mut t, 0, 70), "no run in progress to end");
     assert_eq!(t[0].counters().runs, 2);
 }
+
+#[test]
+fn an_overrun_is_counted_the_same_whether_or_not_the_host_asked_during_the_run() {
+    // Host A asks at 120, between the due time 100 and the end at 150; host B's one piece went
+    // past 100 without asking. Both runs were in progress at 100: no run is owed for it.
+    let mut a = [cyclic(100, 0, 1)];
+    start(&mut a, 0);
+    assert_eq!(next(&mut a, 0), Next::Begin(0));
+    assert_eq!(next(&mut a, 120), Next::Resume(0));
+    assert!(ended(&mut a, 0, 150));
+    let mut b = [cyclic(100, 0, 1)];
+    start(&mut b, 0);
+    assert_eq!(next(&mut b, 0), Next::Begin(0));
+    assert!(ended(&mut b, 0, 150));
+    for t in [&mut a, &mut b] {
+        assert_eq!(t[0].counters().overruns, 1);
+        assert_eq!(next(t, 150), Next::Idle);
+        assert_eq!(wake(t), Some(200));
+        assert_eq!(next(t, 200), Next::Begin(0));
+    }
+
+    // A due time at the very end of a run is not missed: the run is made.
+    let mut t = [cyclic(100, 0, 1)];
+    start(&mut t, 0);
+    assert_eq!(next(&mut t, 0), Next::Begin(0));
+    assert!(ended(&mut t, 0, 100));
+    assert_eq!(t[0].counters().overruns, 0);
+    assert_eq!(next(&mut t, 100), Next::Begin(0));
+}
+
+#[test]
+fn a_cycle_task_ready_again_at_its_end_does_not_pass_one_ready_since_before() {
+    let cycle = || task(Kind::Cycle { min_cycle: 0 }, 5);
+    let mut t = [cycle(), cycle()];
+    start(&mut t, 0);
+    assert_eq!(next(&mut t, 0), Next::Begin(0));
+    assert!(ended(&mut t, 0, 10));
+    // Task 1 has been ready since 0; task 0 again only since its end at 10.
+    assert_eq!(next(&mut t, 10), Next::Begin(1));
+    assert!(ended(&mut t, 1, 20));
+    assert_eq!(next(&mut t, 20), Next::Begin(0));
+}
+
+#[test]
+fn times_at_the_ends_of_the_clock_saturate_and_do_not_overflow() {
+    // Every nanosecond due since 0: all but one run missed, more than the counter holds.
+    let mut t = [cyclic(1, 0, 1)];
+    start(&mut t, 0);
+    assert_eq!(next(&mut t, i64::MAX), Next::Begin(0));
+    assert_eq!(t[0].counters().overruns, u32::MAX);
+    assert_eq!(wake(&t), Some(i64::MAX));
+
+    // From a start before zero to the end of the clock: a distance beyond i64.
+    let mut t = [cyclic(1000, 0, 1)];
+    start(&mut t, -1);
+    assert_eq!(next(&mut t, i64::MAX), Next::Begin(0));
+    assert_eq!(t[0].counters().overruns, u32::MAX);
+
+    // A run in progress across them, reported at its end.
+    let mut t = [cyclic(1, 0, 1)];
+    start(&mut t, i64::MIN);
+    assert_eq!(next(&mut t, i64::MIN), Next::Begin(0));
+    assert!(ended(&mut t, 0, i64::MAX));
+    assert_eq!(t[0].counters().overruns, u32::MAX);
+}
+
+#[test]
+fn an_event_triggered_twice_before_it_runs_makes_one_run_and_once_during_its_run_one_more() {
+    let mut t = [event(3)];
+    start(&mut t, 0);
+    assert!(trigger(&mut t, 0, 1));
+    assert!(trigger(&mut t, 0, 2), "already ready: not queued");
+    assert_eq!(next(&mut t, 3), Next::Begin(0));
+    assert!(trigger(&mut t, 0, 4), "during its run");
+    assert_eq!(next(&mut t, 5), Next::Resume(0));
+    assert!(ended(&mut t, 0, 6));
+    assert_eq!(next(&mut t, 6), Next::Begin(0));
+    assert!(ended(&mut t, 0, 7));
+    assert_eq!(next(&mut t, 8), Next::Idle);
+    assert_eq!(t[0].counters().runs, 2);
+}
+
+#[test]
+fn several_startup_tasks_run_in_priority_order_before_everything_and_a_cyclic_task_counts_its_overruns_meanwhile(
+) {
+    let mut t = [
+        task(Kind::Cycle { min_cycle: 0 }, 0),
+        task(Kind::Startup, 9),
+        cyclic(10, 0, 0),
+        task(Kind::Startup, 2),
+    ];
+    start(&mut t, 0);
+    assert_eq!(next(&mut t, 0), Next::Begin(3));
+    assert!(ended(&mut t, 3, 5));
+    assert_eq!(next(&mut t, 5), Next::Begin(1));
+    assert!(ended(&mut t, 1, 25));
+    // Due at 0, 10 and 20 during the startup: one run, two overruns.
+    assert_eq!(next(&mut t, 25), Next::Begin(2));
+    assert_eq!(t[2].counters().overruns, 2);
+    assert!(ended(&mut t, 2, 26));
+    assert_eq!(next(&mut t, 26), Next::Begin(0));
+    assert_eq!(t[1].counters().runs, 1);
+    assert_eq!(t[3].counters().runs, 1);
+}

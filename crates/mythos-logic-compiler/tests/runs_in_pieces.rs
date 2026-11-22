@@ -325,6 +325,56 @@ fn a_piece_of_zero_instructions_is_a_piece_of_one() {
 }
 
 #[test]
+fn a_run_resumed_with_a_program_of_a_shallower_stack_faults_and_does_not_panic() {
+    // A holds up to four values on its stack, B two: at some suspensions of A, more values are
+    // on the stack than B's stack has room for.
+    let (_, a_bytes) = load(
+        "PROGRAM A VAR a, b, c, d, e, f, g, h, i : DINT; END_VAR
+           a := ((b + c) * (d + e)) + ((f + g) * (h + i));
+           a := ((b + c) * (d + e)) + ((f + g) * (h + i));
+         END_PROGRAM",
+    );
+    let (_, b_bytes) = load(
+        "PROGRAM B VAR x, y, z : DINT; END_VAR
+           x := y + z; x := y + z; x := y + z; x := y + z; x := y + z; x := y + z;
+         END_PROGRAM",
+    );
+    let a = Program::load(&a_bytes).unwrap();
+    let b = Program::load(&b_bytes).unwrap();
+    assert!(a.stack_depth() > b.stack_depth(), "the premise of the test");
+
+    let mut whole = Space::new(&a);
+    let expected = whole.scan(&a, 0, BUDGET);
+    let mut s = Space::new(&a);
+    let mut run = Run::begin(&a, 0, BUDGET);
+    let mut refused = 0;
+    loop {
+        // From this suspension of A, a copy of the run resumed with B and B's own space.
+        let mut wrong = run;
+        let mut other = Space::new(&b);
+        let r = wrong.resume(&b, &mut other.memory, &mut other.stack, &mut other.calls, 1);
+        if r == Err(Fault::WrongSizes) {
+            refused += 1;
+        }
+        match run.resume(&a, &mut s.memory, &mut s.stack, &mut s.calls, 1) {
+            Ok(Piece::Suspended) => {}
+            end => {
+                assert_eq!(end.map(|_| expected.unwrap()), expected, "A itself");
+                break;
+            }
+        }
+    }
+    assert!(
+        whole.memory == s.memory,
+        "A itself computes what it computes"
+    );
+    assert!(
+        refused > 0,
+        "a run holding more stack than B has is refused, not followed"
+    );
+}
+
+#[test]
 fn a_suspended_run_reads_the_clock_it_began_with_when_it_is_resumed_later() {
     // The timer has run since the first scan, at 0: in the second scan, begun at 50 ms, its
     // elapsed time is 50 ms, however much later the pieces of that scan are executed.
