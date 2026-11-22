@@ -42,7 +42,7 @@ use mythos_logic_st::ast::PouKind;
 use mythos_module::protocol::{
     check_data, DataBlock as RuntimeDataBlock, DataBlockMember, DataMember, DataUse, HttpCall,
     HttpReply, InputBinding, InputOf, ModuleKind, ModuleManifest, OutputBinding, PublishedBinding,
-    RouteDecl, RouteScope, RuntimeProgram, PROTOCOL_VERSION,
+    RouteDecl, RouteScope, RuntimeProgram, TaskConfig, PROTOCOL_VERSION,
 };
 use mythos_module::{Events, Service};
 use serde::{Deserialize, Serialize};
@@ -1112,6 +1112,28 @@ fn version_of(entry: &ProgramEntry, compiled: &mythos_logic_compiler::Compiled) 
     hex::encode(&hash.finalize()[..6])
 }
 
+/// What identifies a build of a program in a configured runtime (ADR-013 §2.19): as
+/// [`version_of`], with the task the runtime runs it in, as configured, in place of the
+/// program's own interval, which such a runtime does not use. A change of the task (its kind,
+/// priority, watchdog, or the programs it runs and their order) changes the versions of its
+/// programs; a change of the unused interval does not.
+fn version_in_runtime(
+    entry: &ProgramEntry,
+    compiled: &mythos_logic_compiler::Compiled,
+    task: &TaskConfig,
+) -> String {
+    let mut hash = Sha256::new();
+    hash.update(&compiled.bytecode);
+    hash.update(serde_json::to_vec(task).unwrap_or_default());
+    hash.update(
+        serde_json::to_vec(&(&entry.inputs, &entry.outputs, &entry.published)).unwrap_or_default(),
+    );
+    if !compiled.data.is_empty() {
+        hash.update(serde_json::to_vec(&compiled.data).unwrap_or_default());
+    }
+    hex::encode(&hash.finalize()[..6])
+}
+
 /// The compiler's data blocks of a program in the protocol's form, field by field (the two
 /// have the same JSON; a field added to one and not the other does not compile here).
 fn data_uses(compiled: &mythos_logic_compiler::Compiled) -> Vec<DataUse> {
@@ -1183,6 +1205,17 @@ fn instance_data(
 
 /// Compile `source` for the entry's target: the answer of `check`.
 fn check(entry: &ProgramEntry, source: &str, project: &Project) -> Value {
+    check_in(entry, source, project, None)
+}
+
+/// [`check`], of a program that a configured runtime runs in `task` when one is given: its
+/// version is then its version in that runtime ([`version_in_runtime`]).
+fn check_in(
+    entry: &ProgramEntry,
+    source: &str,
+    project: &Project,
+    task: Option<&TaskConfig>,
+) -> Value {
     let target = match TargetProfile::by_name(&entry.target) {
         Some(target) => target,
         None => {
@@ -1226,7 +1259,10 @@ fn check(entry: &ProgramEntry, source: &str, project: &Project) -> Value {
                 "diagnostics": [],
                 "program": compiled.name,
                 // The version a build of this text with these settings would have.
-                "version": version_of(entry, &compiled),
+                "version": match task {
+                    Some(task) => version_in_runtime(entry, &compiled, task),
+                    None => version_of(entry, &compiled),
+                },
                 "variables": variables(&compiled.symbols),
                 "code_size": compiled.code_size,
                 "memory_size": compiled.memory_size,
@@ -1260,6 +1296,33 @@ fn with_problems(mut body: Value, problems: &Option<Vec<Diagnostic>>) -> Value {
         body["project_problems"] = json!(problems);
     }
     body
+}
+
+/// The bindings of `entry` to tags nothing provides now, each said as a warning. Said, not
+/// refused: the connection that provides a tag may be configured later, and a program reading
+/// it sees it as not GOOD until then. Nothing is said when nothing is known of the tags.
+fn unregistered(entry: &ProgramEntry, registered: Option<&[String]>) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if let Some(registered) = registered {
+        let known = |tag: &str| registered.iter().any(|r| r == tag);
+        for b in &entry.inputs {
+            if !known(&b.tag) {
+                warnings.push(format!(
+                    "input {} is not a tag of this controller now: {} will not take a value",
+                    b.tag, b.variable
+                ));
+            }
+        }
+        for b in &entry.outputs {
+            if !known(&b.tag) {
+                warnings.push(format!(
+                    "output {} is not a tag of this controller now: writes to it will fail",
+                    b.tag
+                ));
+            }
+        }
+    }
+    warnings
 }
 
 /// Compile the saved source and pack it as the runtime instance the core loads.
@@ -1323,28 +1386,7 @@ fn build(
         )
     })?;
 
-    // A tag nothing provides now is said, not refused: the connection that provides it may
-    // be configured later, and a program reading it sees it as not GOOD until then.
-    let mut warnings = Vec::new();
-    if let Some(registered) = registered {
-        let known = |tag: &str| registered.iter().any(|r| r == tag);
-        for b in &entry.inputs {
-            if !known(&b.tag) {
-                warnings.push(format!(
-                    "input {} is not a tag of this controller now: {} will not take a value",
-                    b.tag, b.variable
-                ));
-            }
-        }
-        for b in &entry.outputs {
-            if !known(&b.tag) {
-                warnings.push(format!(
-                    "output {} is not a tag of this controller now: writes to it will fail",
-                    b.tag
-                ));
-            }
-        }
-    }
+    let warnings = unregistered(entry, registered);
 
     let mut instance = json!({
         "id": entry.name,
@@ -1459,6 +1501,20 @@ fn runtime_schema() -> Value {
     })
 }
 
+/// The body `check_logic_runtime` takes: none, or a whole runtime to check in place of the
+/// stored one.
+fn runtime_check_schema() -> Value {
+    let mut schema = runtime_schema();
+    if let Some(o) = schema.as_object_mut() {
+        o.remove("required");
+        o.insert(
+            "description".into(),
+            json!("Optional: a configuration to check in place of the stored one, with all four of module, target, run and tasks; it is not saved"),
+        );
+    }
+    schema
+}
+
 /// What `mythos-module-logic --manifest` prints.
 pub fn manifest() -> ModuleManifest {
     ModuleManifest {
@@ -1510,7 +1566,7 @@ pub fn manifest() -> ModuleManifest {
                     "properties": { "source": { "type": "string" } }
                 })), &[]),
             route("POST", "/programs/:program/build", "engineer", "build_logic_program",
-                "Compile the saved source, Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart, and pack it as a runtime instance. The answer's 'instance' is what save_runtimes_config takes in its 'instances' (replace the one with the same id); nothing is loaded by this call. The program is compiled with the project's library and its user types and data blocks (the data module's); when those types and blocks do not check, it is compiled without them and 'project_problems' says why. When the program declares data blocks, the instance carries them in 'data'. A data block in two runtimes is refused when saved: until a runtime of several programs is built in this module, put the programs that share a block in one instance's programs, with tasks.",
+                "Compile the saved source, Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart, and pack it as a runtime instance. The answer's 'instance' is what save_runtimes_config takes in its 'instances' (replace the one with the same id); nothing is loaded by this call. The program is compiled with the project's library and its user types and data blocks (the data module's); when those types and blocks do not check, it is compiled without them and 'project_problems' says why. When the program declares data blocks, the instance carries them in 'data'. A data block in two runtimes is refused when saved. A program that a configured runtime of the project runs (list_logic_runtimes) is not built alone: it is refused with 409 naming the runtime, which build_logic_runtime builds with all its programs.",
                 None, &["tags"]),
             route("GET", "/library", "viewer", "list_logic_library",
                 "The project's library: Structured Text sources of functions and function blocks shared by every program, by name. Reads only; nothing is written, compiled or loaded.", None, &[]),
@@ -1543,6 +1599,12 @@ pub fn manifest() -> ModuleManifest {
                 Some(runtime_schema()), &[]),
             route("DELETE", "/runtimes/:runtime", "engineer", "delete_logic_runtime",
                 "Remove a configured runtime from the project: its programs run alone again, each in its own runtime. A runtime that the core already runs is not touched, and nothing is loaded.", None, &[]),
+            route("POST", "/runtimes/:runtime/check", "viewer", "check_logic_runtime",
+                "Check a runtime of the project without building or saving anything: each of its programs compiled from its saved source for the runtime's target, with its diagnostics, binding problems and its version in the runtime ('programs'); and 'problems', what the configuration breaks and what the core would refuse of the runtime as a whole (its tasks, its data blocks, an output or a published tag of two programs, an event task's tag no program reads into a BOOL). 'ok' when it would build; then 'version', the runtime's. 'data' is the data blocks its programs declare, each once. With a body (module, target, run and tasks, all four) that configuration is checked in place of the stored one, and nothing is saved. A program running alone is checked by its name as a runtime of its own. Nothing is loaded.",
+                Some(runtime_check_schema()), &[]),
+            route("POST", "/runtimes/:runtime/build", "engineer", "build_logic_runtime",
+                "Build a runtime of the project: every program of it compiled from its saved source, in one snapshot of the project, for the runtime's target, packed as one runtime instance with its tasks and the data blocks its programs declare, each once. Answers 'instance', 'version' (the runtime's), 'programs' (each program's version in the runtime, code_size and memory_size), 'warnings', and 'replaces': the ids those programs run under alone. Nothing is loaded by this call: save 'instance' with save_runtimes_config in its 'instances', in place of the one with the same id, and take out the instances named in 'replaces' in the same save (the core refuses a data block or an output tag in two runtimes). RETAIN values kept for a program while it ran in another runtime are not taken into this one. A program running alone, by its name, builds exactly as build_logic_program builds it.",
+                None, &["tags"]),
         ],
     }
 }
@@ -1783,13 +1845,38 @@ impl Logic {
                         Some(source) => source,
                         None => read_source(data, entry)?,
                     };
-                    Ok(check(entry, &source, &read_project(data)?))
+                    let configured = runtimes::load(data)?;
+                    let project = read_project(data)?;
+                    Ok(match runtimes::assignment(&configured, name) {
+                        // In a configured runtime: compiled for its target, and the version is
+                        // the one that runtime's build gives the program.
+                        Some((runtime, task)) => {
+                            let mut in_runtime = entry.clone();
+                            in_runtime.target.clone_from(&runtime.target);
+                            check_in(&in_runtime, &source, &project, Some(task))
+                        }
+                        None => check(entry, &source, &project),
+                    })
                 }),
                 200,
             ),
             ("POST", "/programs/:program/build") => reply(
                 load(data).and_then(|p| {
                     let entry = find(&p, name)?;
+                    // A program of a configured runtime is built only with it: built alone, it
+                    // would be an instance the caller saves beside the runtime that runs it.
+                    if let Some((runtime, task)) = runtimes::assignment(&runtimes::load(data)?, name) {
+                        return Err((
+                            409,
+                            json!({
+                                "error": format!(
+                                    "program '{name}' is in task '{}' of runtime '{}': build that runtime with build_logic_runtime",
+                                    task.name, runtime.id
+                                ),
+                                "runtime": runtime.id,
+                            }),
+                        ));
+                    }
                     build(
                         entry,
                         &read_source(data, entry)?,
@@ -2878,6 +2965,96 @@ END_PROGRAM";
                 super::build(&e, &source, None, &project).unwrap()["version"],
                 version,
                 "{}",
+                e.language
+            );
+        }
+    }
+
+    /// A project of today, with no task configuration, through the routes as the server calls
+    /// them: each of the four programs whose versions are pinned above builds to that version
+    /// with today's keys through the program's route and, byte for byte the same, through the
+    /// runtime route of its implied runtime; its check is today's; and no call makes a file.
+    #[tokio::test]
+    async fn a_project_without_runtimes_builds_every_program_exactly_as_before() {
+        fn files(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+            let mut out = Vec::new();
+            for e in std::fs::read_dir(dir).unwrap() {
+                let path = e.unwrap().path();
+                if path.is_dir() {
+                    out.extend(files(&path));
+                } else {
+                    let bytes = std::fs::read(&path).unwrap();
+                    out.push((path, bytes));
+                }
+            }
+            out.sort();
+            out
+        }
+        for (e, source, version) in [
+            (entry(), TANK.to_string(), "d3adaba64d45"),
+            (ld_entry(), ladder("run"), "603a39003bec"),
+            (fbd_entry(), diagram("level"), "018750a43b66"),
+            (sfc_entry(), chart("90"), "a1226c2936b9"),
+        ] {
+            let dir = project_dir();
+            dir.put(
+                &["logic", "programs.json"],
+                &json!({ "programs": [e] }).to_string(),
+            );
+            let file = format!("Tank.{}", if e.language == "st" { "st" } else { "xml" });
+            dir.put(&["logic", "programs", &file], &source);
+            let before = files(dir.root.path());
+            let logic = Logic::default();
+            let serve = |route: &str, param: &str| {
+                let call: HttpCall = serde_json::from_value(json!({
+                    "method": "POST", "route": route, "params": { param: "Tank" },
+                    "project": "plant", "data_dir": dir.logic.display().to_string(),
+                }))
+                .unwrap();
+                let logic = &logic;
+                async move { logic.serve(&call).await }
+            };
+            let (program, event) = serve("/programs/:program/build", "program").await;
+            assert!(event.is_none());
+            assert_eq!(program.status, 200, "{}", program.body);
+            assert_eq!(program.body["version"], version, "{}", e.language);
+            assert_eq!(
+                keys(&program.body),
+                [
+                    "code_size",
+                    "instance",
+                    "memory_size",
+                    "version",
+                    "warnings"
+                ]
+            );
+            assert_eq!(
+                keys(&program.body["instance"]),
+                ["id", "module", "program", "run"]
+            );
+            assert_eq!(
+                program.body,
+                build(&e, &source, None).unwrap(),
+                "{}",
+                e.language
+            );
+            let (runtime, _) = serve("/runtimes/:runtime/build", "runtime").await;
+            assert_eq!(runtime.status, 200);
+            assert_eq!(
+                serde_json::to_vec(&runtime.body).unwrap(),
+                serde_json::to_vec(&program.body).unwrap(),
+                "{}",
+                e.language
+            );
+            let (checked, _) = serve("/programs/:program/check", "program").await;
+            assert_eq!(checked.body, check(&e, &source), "{}", e.language);
+            assert_eq!(checked.body["version"], version);
+            let (runtime_check, _) = serve("/runtimes/:runtime/check", "runtime").await;
+            assert_eq!(runtime_check.body["version"], version);
+            assert_eq!(
+                files(dir.root.path()),
+                before,
+                "{}: a file was made",
                 e.language
             );
         }

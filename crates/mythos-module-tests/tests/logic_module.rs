@@ -1252,6 +1252,8 @@ async fn an_agent_writes_checks_and_builds_a_program_over_mcp() {
             "get_logic_runtime",
             "save_logic_runtime",
             "delete_logic_runtime",
+            "check_logic_runtime",
+            "build_logic_runtime",
         ]
     );
 
@@ -1428,6 +1430,90 @@ async fn a_project_of_today_answers_without_any_data_key() {
         !rig.project.join("data").exists(),
         "the logic module made a data directory"
     );
+    rig.close().await;
+}
+
+/// A project of today through the server, with no task configuration: the program's check and
+/// build answer today's keys, the runtime route of its implied runtime answers the program's
+/// build itself, and no call writes `logic/tasks.json`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_of_today_builds_with_exactly_todays_keys_and_writes_no_task_configuration() {
+    let rig = rig().await;
+    let tank = format!("{PROGRAMS}/Tank");
+    rig.eng("POST", PROGRAMS, Some(json!({"name": "Tank"})), 201)
+        .await;
+    rig.eng(
+        "PUT",
+        &format!("{tank}/source"),
+        Some(json!({"source": TANK})),
+        200,
+    )
+    .await;
+    rig.eng("PUT", &format!("{tank}/settings"), Some(settings()), 200)
+        .await;
+    let file = rig.project.join("logic").join("tasks.json");
+    let checked = rig.eng("POST", &format!("{tank}/check"), None, 200).await;
+    let mut keys: Vec<&str> = checked
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "binding_problems",
+            "code_size",
+            "diagnostics",
+            "memory_size",
+            "ok",
+            "program",
+            "variables",
+            "version"
+        ],
+        "{checked}"
+    );
+    let built = rig.eng("POST", &format!("{tank}/build"), None, 200).await;
+    let mut keys: Vec<&str> = built
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "code_size",
+            "instance",
+            "memory_size",
+            "version",
+            "warnings"
+        ],
+        "{built}"
+    );
+    let instance: Vec<&str> = built["instance"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(instance, ["id", "module", "program", "run"], "{built}");
+    assert_eq!(built["version"], checked["version"]);
+    let runtime = rig
+        .eng("POST", &format!("{RUNTIMES}/Tank/build"), None, 200)
+        .await;
+    assert_eq!(runtime, built);
+    let runtime_check = rig
+        .eng("POST", &format!("{RUNTIMES}/Tank/check"), None, 200)
+        .await;
+    assert_eq!(
+        runtime_check["version"], checked["version"],
+        "{runtime_check}"
+    );
+    rig.eng("GET", RUNTIMES, None, 200).await;
+    assert!(!file.exists(), "a read wrote logic/tasks.json");
     rig.close().await;
 }
 
@@ -1739,6 +1825,44 @@ async fn an_agent_configures_a_runtime_over_mcp() {
     .await;
     assert_eq!(refused["isError"], true, "{refused}");
     assert_eq!(refused["structuredContent"]["status"], 409, "{refused}");
+    // Checked and built over MCP alone, the runtime named by `runtime_id`.
+    for name in ["check_logic_runtime", "build_logic_runtime"] {
+        let required = schema(name)["required"].clone();
+        assert!(
+            required.as_array().unwrap().contains(&json!("runtime_id")),
+            "{name}: {required}"
+        );
+    }
+    let checked = tool(
+        "check_logic_runtime",
+        json!({"project_id": "plant", "runtime_id": "Line", "body": {}}),
+    )
+    .await;
+    assert_eq!(checked["isError"], false, "{checked}");
+    assert_eq!(
+        checked["structuredContent"]["body"]["ok"], true,
+        "{checked}"
+    );
+    let built = tool(
+        "build_logic_runtime",
+        json!({"project_id": "plant", "runtime_id": "Line"}),
+    )
+    .await;
+    assert_eq!(built["isError"], false, "{built}");
+    let body = &built["structuredContent"]["body"];
+    assert_eq!(body["instance"]["id"], "Line", "{built}");
+    assert_eq!(body["replaces"], json!(["Writer", "Reader"]), "{built}");
+    assert_eq!(
+        body["version"],
+        checked["structuredContent"]["body"]["version"]
+    );
+    let alone = tool(
+        "build_logic_program",
+        json!({"project_id": "plant", "program": "Writer"}),
+    )
+    .await;
+    assert_eq!(alone["isError"], true, "{alone}");
+    assert_eq!(alone["structuredContent"]["status"], 409, "{alone}");
     let deleted = tool(
         "delete_logic_runtime",
         json!({"project_id": "plant", "runtime_id": "Line"}),

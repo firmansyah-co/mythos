@@ -876,18 +876,22 @@ fn the_manifest_declares_the_runtime_routes_each_a_tool_of_its_own() {
             "GET /runtimes/:runtime get_logic_runtime viewer []",
             "PUT /runtimes/:runtime save_logic_runtime engineer []",
             "DELETE /runtimes/:runtime delete_logic_runtime engineer []",
+            "POST /runtimes/:runtime/check check_logic_runtime viewer []",
+            "POST /runtimes/:runtime/build build_logic_runtime engineer [\"tags\"]",
         ]
     );
     // After the library's, last.
     let tools: Vec<&str> = manifest.routes.iter().map(|r| r.tool.as_str()).collect();
     assert_eq!(
-        &tools[tools.len() - 5..],
+        &tools[tools.len() - 7..],
         [
             "check_logic_library",
             "list_logic_runtimes",
             "get_logic_runtime",
             "save_logic_runtime",
-            "delete_logic_runtime"
+            "delete_logic_runtime",
+            "check_logic_runtime",
+            "build_logic_runtime"
         ]
     );
     // Each a tool of its own, and every summary says nothing is loaded.
@@ -920,4 +924,938 @@ fn the_manifest_declares_the_runtime_routes_each_a_tool_of_its_own() {
         save.body.as_ref().unwrap()["properties"]["tasks"]["items"]["required"],
         json!(["name", "kind", "priority", "programs"])
     );
+    // The check takes the same runtime, or none: nothing in it is required.
+    let check = manifest
+        .routes
+        .iter()
+        .find(|r| r.tool == "check_logic_runtime")
+        .unwrap();
+    let schema = check.body.as_ref().unwrap();
+    assert!(schema.get("required").is_none(), "{schema}");
+    assert_eq!(
+        schema["properties"],
+        save.body.as_ref().unwrap()["properties"]
+    );
+    // The program's build no longer tells a caller to compose an instance by hand.
+    let build = manifest
+        .routes
+        .iter()
+        .find(|r| r.tool == "build_logic_program")
+        .unwrap();
+    assert!(!build
+        .summary
+        .contains("until a runtime of several programs"));
+    assert!(
+        build.summary.contains("build_logic_runtime"),
+        "{}",
+        build.summary
+    );
+}
+
+// -----------------------------------------------------------------------------
+// Checking and building a runtime (C8c stage 2)
+// -----------------------------------------------------------------------------
+
+const SHARED: &str = "TYPE Shared : STRUCT level : INT; spare : INT := 5; END_STRUCT; END_TYPE\n";
+
+/// Writes `S.level` from its input; nothing else of S.
+const WRITER: &str = "PROGRAM Writer
+VAR_INPUT level : INT; END_VAR
+VAR_EXTERNAL S : Shared; END_VAR
+  S.level := level;
+END_PROGRAM";
+
+/// Drives the speed from S, which it only reads.
+const READER: &str = "PROGRAM Reader
+VAR_OUTPUT speed : INT; END_VAR
+VAR_EXTERNAL S : Shared; END_VAR
+  speed := S.level * 10 + S.spare;
+END_PROGRAM";
+
+const LEVEL: &str = "external.P.LT1.level";
+const SPEED: &str = "external.P.P1.speed";
+
+impl Project {
+    /// The data module's files: the type `Shared` and `blocks`, each `(name, retain)` of it.
+    fn data(&self, blocks: &[(&str, bool)]) {
+        let data = self.root.path().join("data");
+        std::fs::create_dir_all(data.join("types")).unwrap();
+        std::fs::write(data.join("types").join("Shared.st"), SHARED).unwrap();
+        let blocks: Vec<Value> = blocks
+            .iter()
+            .map(|(n, r)| json!({ "name": n, "type": "Shared", "retain": r }))
+            .collect();
+        std::fs::write(
+            data.join("blocks.json"),
+            json!({ "blocks": blocks }).to_string(),
+        )
+        .unwrap();
+    }
+}
+
+/// Program `name` with `source` and `settings` (merged over interval 20, vm, pc, run).
+async fn written(logic: &Logic, p: &Project, name: &str, source: &str, settings: Value) {
+    program(logic, p, name, 20).await;
+    let mut all = json!({ "interval_ms": 20, "runtime": "vm", "target": "pc", "run": true });
+    for (k, v) in settings.as_object().unwrap() {
+        all[k] = v.clone();
+    }
+    let n = [("program", name)];
+    ok(&send(
+        logic,
+        p,
+        "PUT",
+        "/programs/:program/source",
+        &n,
+        Some(json!({ "source": source })),
+    )
+    .await);
+    ok(&send(
+        logic,
+        p,
+        "PUT",
+        "/programs/:program/settings",
+        &n,
+        Some(all),
+    )
+    .await);
+}
+
+/// A program of Structured Text named `name` that counts in `x`.
+fn counter(name: &str) -> String {
+    format!("PROGRAM {name}\nVAR_OUTPUT x : INT; END_VAR\n  x := x + 1;\nEND_PROGRAM")
+}
+
+async fn writer_and_reader(logic: &Logic, p: &Project) {
+    p.data(&[("S", false)]);
+    written(
+        logic,
+        p,
+        "Writer",
+        WRITER,
+        json!({ "inputs": [{ "variable": "level", "tag": LEVEL }] }),
+    )
+    .await;
+    written(
+        logic,
+        p,
+        "Reader",
+        READER,
+        json!({ "outputs": [{ "variable": "speed", "tag": SPEED, "safe": 0 }] }),
+    )
+    .await;
+}
+
+/// Runtime `Line`: Writer in `fast`, Reader in `slow`.
+fn line() -> Value {
+    json!({ "module": "vm", "target": "pc", "run": true, "tasks": [
+        { "name": "fast", "kind": { "type": "cyclic", "interval_ms": 20 }, "priority": 1, "programs": ["Writer"] },
+        { "name": "slow", "kind": { "type": "cyclic", "interval_ms": 50 }, "priority": 5, "programs": ["Reader"] }
+    ]})
+}
+
+async fn build_of(logic: &Logic, p: &Project, id: &str, tags: Option<&[&str]>) -> Answer {
+    let mut call: HttpCall = serde_json::from_value(json!({
+        "method": "POST", "route": "/runtimes/:runtime/build", "params": { "runtime": id },
+        "project": "plant", "data_dir": p.logic.display().to_string(),
+    }))
+    .unwrap();
+    call.tags = tags.map(|t| t.iter().map(|s| (*s).to_string()).collect());
+    let (reply, event) = logic.serve(&call).await;
+    Answer {
+        status: reply.status,
+        body: reply.body,
+        event,
+    }
+}
+
+async fn built(logic: &Logic, p: &Project, id: &str) -> Value {
+    let a = build_of(logic, p, id, None).await;
+    assert!(a.event.is_none());
+    ok(&a).clone()
+}
+
+async fn check_of(logic: &Logic, p: &Project, id: &str, draft: Option<Value>) -> Value {
+    let a = send(
+        logic,
+        p,
+        "POST",
+        "/runtimes/:runtime/check",
+        &[("runtime", id)],
+        draft,
+    )
+    .await;
+    assert!(a.event.is_none());
+    ok(&a).clone()
+}
+
+fn sorted_keys(v: &Value) -> Vec<&str> {
+    let mut k: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+    k.sort_unstable();
+    k
+}
+
+fn names(v: &Value) -> Vec<&str> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect()
+}
+
+/// The block `S` of `Shared` as a runtime's data writes it, laid out by the compiler.
+fn block_s(retain: bool) -> Value {
+    let layouts = mythos_logic_compiler::check_project(&mythos_logic_compiler::Sources {
+        library: &[("data/types/Shared.st", SHARED)],
+        data: &[mythos_logic_compiler::DataBlock {
+            name: "S",
+            ty: "Shared",
+        }],
+        ..Default::default()
+    })
+    .unwrap();
+    let l = &layouts[0];
+    let mut b = json!({
+        "name": l.name, "type": l.ty, "layout": l.layout, "size": l.size,
+        "members": l.members.iter().map(|m| json!({
+            "name": m.name, "type": m.ty, "offset": m.offset, "size": m.size
+        })).collect::<Vec<_>>(),
+    });
+    if retain {
+        b["retain"] = json!(true);
+    }
+    b
+}
+
+#[tokio::test]
+async fn a_runtime_of_several_programs_is_built_with_its_tasks_in_order() {
+    let (logic, p) = (Logic::default(), project());
+    for name in ["A", "B"] {
+        written(&logic, &p, name, &counter(name), json!({})).await;
+    }
+    // Its PROGRAM spelled otherwise, which is one name without regard to case.
+    written(
+        &logic,
+        &p,
+        "Pump",
+        &counter("PUMP"),
+        json!({ "interval_ms": 70 }),
+    )
+    .await;
+    let tasks = json!([
+        { "name": "fast", "kind": { "type": "cyclic", "interval_ms": 10, "phase_ms": 0 }, "priority": 1, "programs": ["B"] },
+        { "name": "slow", "kind": { "type": "cycle", "min_cycle_ms": 0 }, "priority": 9, "watchdog_ms": 4000, "programs": ["pump", "A"] }
+    ]);
+    let saved = put(
+        &logic,
+        &p,
+        "Line",
+        json!({ "module": "vm", "target": "pc", "run": false, "tasks": tasks }),
+    )
+    .await;
+    ok(&saved);
+    let before = p.files();
+
+    let b = built(&logic, &p, "line").await;
+    assert_eq!(
+        sorted_keys(&b),
+        ["instance", "programs", "replaces", "version", "warnings"],
+        "{b}"
+    );
+    let instance = &b["instance"];
+    assert_eq!(
+        sorted_keys(instance),
+        ["id", "module", "programs", "run", "tasks"]
+    );
+    assert_eq!(instance["id"], "Line", "the stored spelling");
+    assert_eq!(
+        (&instance["module"], &instance["run"]),
+        (&json!("vm"), &json!(false))
+    );
+    // In task order, then in each task's order; named by the compiled PROGRAM.
+    assert_eq!(names(&instance["programs"]), ["B", "PUMP", "A"]);
+    let mut emitted = tasks.clone();
+    emitted[1]["programs"] = json!(["PUMP", "A"]);
+    assert_eq!(instance["tasks"], emitted);
+    // The stored interval, which a runtime with tasks does not use; never one made up.
+    assert_eq!(instance["programs"][1]["interval_ms"], 70);
+    assert_eq!(names(&b["programs"]), ["B", "Pump", "A"]);
+    for (i, program) in b["programs"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(program["version"], instance["programs"][i]["version"]);
+        assert_eq!(
+            sorted_keys(program),
+            ["code_size", "memory_size", "name", "version"]
+        );
+    }
+    assert_eq!(b["warnings"], json!([]));
+    // A build and a check write nothing.
+    check_of(&logic, &p, "Line", None).await;
+    assert_eq!(p.files(), before);
+}
+
+#[tokio::test]
+async fn a_configured_runtime_of_one_program_gives_it_in_program_with_its_tasks() {
+    let (logic, p) = (Logic::default(), project());
+    // Alone in a runtime, a program may name its PROGRAM otherwise: nothing is prefixed.
+    written(&logic, &p, "A", &counter("Other"), json!({})).await;
+    let task = json!({ "name": "t", "kind": { "type": "cyclic", "interval_ms": 10, "phase_ms": 0 }, "priority": 1, "programs": ["A"] });
+    ok(&put(
+        &logic,
+        &p,
+        "R",
+        json!({ "module": "vm", "target": "pc", "run": true, "tasks": [task] }),
+    )
+    .await);
+    let b = built(&logic, &p, "R").await;
+    let instance = &b["instance"];
+    assert_eq!(
+        sorted_keys(instance),
+        ["id", "module", "program", "run", "tasks"],
+        "{b}"
+    );
+    assert_eq!(instance["program"]["name"], "Other");
+    let mut emitted = task.clone();
+    emitted["programs"] = json!(["Other"]);
+    assert_eq!(instance["tasks"], json!([emitted]));
+    assert_eq!(b["replaces"], json!(["A"]));
+}
+
+#[tokio::test]
+async fn two_programs_sharing_a_block_build_into_one_instance_with_the_block_once() {
+    let (logic, p) = (Logic::default(), project());
+    writer_and_reader(&logic, &p).await;
+    ok(&put(&logic, &p, "Line", line()).await);
+    let b = built(&logic, &p, "Line").await;
+    assert_eq!(b["instance"]["data"], json!([block_s(false)]), "{b}");
+    for program in b["instance"]["programs"].as_array().unwrap() {
+        assert_eq!(program["data"][0]["name"], "S", "{program}");
+    }
+    assert_eq!(names(&b["instance"]["programs"]), ["Writer", "Reader"]);
+    // Retained as blocks.json says.
+    p.data(&[("S", true)]);
+    let b = built(&logic, &p, "Line").await;
+    assert_eq!(b["instance"]["data"], json!([block_s(true)]));
+}
+
+#[tokio::test]
+async fn what_the_core_refuses_of_a_runtime_is_not_built() {
+    let (logic, p) = (Logic::default(), project());
+    writer_and_reader(&logic, &p).await;
+    p.data(&[("S", false), ("Recipe", false)]);
+    // R11: a second writer of S.level.
+    written(
+        &logic,
+        &p,
+        "Other",
+        &WRITER.replace("PROGRAM Writer", "PROGRAM Other"),
+        json!({ "inputs": [{ "variable": "level", "tag": LEVEL }] }),
+    )
+    .await;
+    let two = json!({ "module": "vm", "target": "pc", "run": true, "tasks": [
+        { "name": "t", "kind": { "type": "cyclic", "interval_ms": 20 }, "priority": 1, "programs": ["Writer", "Other"] }
+    ]});
+    ok(&put(&logic, &p, "Two", two).await);
+    let said = "runtime 'Two': data block 'S': member 'level' is written by programs 'Writer' and 'Other'; a member has one writer";
+    refused(&build_of(&logic, &p, "Two", None).await, 400, said);
+    let checked = check_of(&logic, &p, "Two", None).await;
+    assert_eq!(checked["ok"], false);
+    assert_eq!(checked["problems"], json!([said]), "{checked}");
+    assert!(checked.get("version").is_none());
+
+    // R3: a block named like a program of the runtime.
+    written(&logic, &p, "Recipe", &counter("Recipe"), json!({})).await;
+    written(
+        &logic,
+        &p,
+        "Mixer",
+        "PROGRAM Mixer\nVAR_EXTERNAL Recipe : Shared; END_VAR\n  Recipe.level := 1;\nEND_PROGRAM",
+        json!({}),
+    )
+    .await;
+    let mixing = json!({ "module": "vm", "target": "pc", "run": true, "tasks": [
+        { "name": "t", "kind": { "type": "cyclic", "interval_ms": 20 }, "priority": 1, "programs": ["Mixer", "Recipe"] }
+    ]});
+    ok(&put(&logic, &p, "Mixing", mixing).await);
+    refused(
+        &build_of(&logic, &p, "Mixing", None).await,
+        400,
+        "runtime 'Mixing': data block 'Recipe' has the name of a program of this runtime",
+    );
+    // Each alone builds: it is the runtime that is refused.
+    ok(&delete(&logic, &p, "Mixing").await);
+    for name in ["Mixer", "Recipe"] {
+        let alone = send(
+            &logic,
+            &p,
+            "POST",
+            "/programs/:program/build",
+            &[("program", name)],
+            None,
+        )
+        .await;
+        ok(&alone);
+    }
+}
+
+#[tokio::test]
+async fn two_programs_of_a_runtime_cannot_bind_one_output_nor_publish_one_tag() {
+    let (logic, p) = (Logic::default(), project());
+    let output = json!({ "outputs": [{ "variable": "x", "tag": SPEED, "safe": 0 }] });
+    written(&logic, &p, "A", &counter("A"), output.clone()).await;
+    written(&logic, &p, "B", &counter("B"), output).await;
+    let both = json!({ "module": "vm", "target": "pc", "run": true, "tasks": [
+        { "name": "t", "kind": { "type": "cyclic", "interval_ms": 20 }, "priority": 1, "programs": ["A", "B"] }
+    ]});
+    ok(&put(&logic, &p, "Line", both.clone()).await);
+    let said = format!("runtime 'Line': {SPEED} is an output of both 'Line/A' and 'Line/B': one tag has one writer");
+    refused(&build_of(&logic, &p, "Line", None).await, 400, &said);
+    assert_eq!(
+        check_of(&logic, &p, "Line", None).await["problems"],
+        json!([said])
+    );
+
+    let published =
+        json!({ "outputs": [], "published": [{ "variable": "x", "tag": "internal.P.count" }] });
+    for name in ["A", "B"] {
+        let mut s = json!({ "interval_ms": 20, "runtime": "vm", "target": "pc", "run": true });
+        s["published"] = published["published"].clone();
+        ok(&send(
+            &logic,
+            &p,
+            "PUT",
+            "/programs/:program/settings",
+            &[("program", name)],
+            Some(s),
+        )
+        .await);
+    }
+    refused(
+        &build_of(&logic, &p, "Line", None).await,
+        400,
+        "runtime 'Line': internal.P.count is published by both 'Line/A' and 'Line/B'",
+    );
+}
+
+#[tokio::test]
+async fn an_event_task_whose_tag_no_program_reads_into_a_bool_is_not_built() {
+    let (logic, p) = (Logic::default(), project());
+    let source = "PROGRAM A\nVAR_INPUT go : BOOL; n : INT; END_VAR\nVAR_OUTPUT x : INT; END_VAR\n  IF go THEN x := x + n; END_IF;\nEND_PROGRAM";
+    written(&logic, &p, "A", source, json!({})).await;
+    written(&logic, &p, "B", &counter("B"), json!({})).await;
+    let tag = "external.P.go";
+    ok(&put(&logic, &p, "Line", json!({ "module": "vm", "target": "pc", "run": true, "tasks": [
+        { "name": "edge", "kind": { "type": "event", "tag": tag }, "priority": 0, "programs": ["A"] },
+        { "name": "t", "kind": { "type": "cyclic", "interval_ms": 20 }, "priority": 1, "programs": ["B"] }
+    ]})).await);
+    let said = format!("runtime 'Line': task 'edge': its tag {tag} is not read into a BOOL variable by any program of this runtime");
+    for inputs in [
+        json!([]),
+        json!([{ "variable": "n", "tag": tag }]),
+        json!([{ "variable": "go", "tag": tag, "of": "good" }]),
+    ] {
+        let s = json!({ "interval_ms": 20, "runtime": "vm", "target": "pc", "run": true, "inputs": inputs });
+        ok(&send(
+            &logic,
+            &p,
+            "PUT",
+            "/programs/:program/settings",
+            &[("program", "A")],
+            Some(s),
+        )
+        .await);
+        refused(&build_of(&logic, &p, "Line", None).await, 400, &said);
+    }
+    // Read as a value into a BOOL: built.
+    let s = json!({ "interval_ms": 20, "runtime": "vm", "target": "pc", "run": true,
+                    "inputs": [{ "variable": "GO", "tag": tag }] });
+    ok(&send(
+        &logic,
+        &p,
+        "PUT",
+        "/programs/:program/settings",
+        &[("program", "A")],
+        Some(s),
+    )
+    .await);
+    let b = built(&logic, &p, "Line").await;
+    assert_eq!(
+        b["instance"]["tasks"][0]["kind"],
+        json!({ "type": "event", "tag": tag })
+    );
+}
+
+/// A program whose variables take 80 000 bytes: more than the rp2040 profile's 64 KiB.
+const BIG: &str =
+    "PROGRAM Big\nVAR big : ARRAY [1..40000] OF INT; END_VAR\n  big[1] := big[1] + 1;\nEND_PROGRAM";
+
+#[tokio::test]
+async fn a_program_in_a_runtime_is_compiled_for_the_runtimes_target() {
+    let (logic, p) = (Logic::default(), project());
+    // Its own target says rp2040, where it does not fit: alone it is not built.
+    written(&logic, &p, "Big", BIG, json!({ "target": "rp2040" })).await;
+    let alone = send(
+        &logic,
+        &p,
+        "POST",
+        "/programs/:program/build",
+        &[("program", "Big")],
+        None,
+    )
+    .await;
+    assert_eq!(alone.status, 400, "{}", alone.body);
+    let task = |target: &str| {
+        json!({ "module": "vm", "target": target, "run": true, "tasks": [
+            { "name": "t", "kind": { "type": "cyclic", "interval_ms": 20 }, "priority": 1, "programs": ["Big"] }
+        ]})
+    };
+    ok(&put(&logic, &p, "OnPc", task("pc")).await);
+    let b = built(&logic, &p, "OnPc").await;
+    assert!(
+        b["programs"][0]["memory_size"].as_u64().unwrap() > 64 * 1024,
+        "{b}"
+    );
+    // Its own target pc, the runtime's rp2040: refused, whatever its own says.
+    ok(&delete(&logic, &p, "OnPc").await);
+    let s = json!({ "interval_ms": 20, "runtime": "vm", "target": "pc", "run": true });
+    ok(&send(
+        &logic,
+        &p,
+        "PUT",
+        "/programs/:program/settings",
+        &[("program", "Big")],
+        Some(s),
+    )
+    .await);
+    ok(&put(&logic, &p, "OnChip", task("rp2040")).await);
+    let a = build_of(&logic, &p, "OnChip", None).await;
+    assert_eq!(a.status, 400, "{}", a.body);
+    assert_eq!(
+        a.body["error"],
+        "program 'Big' does not compile and runtime 'OnChip' was not built"
+    );
+    assert_eq!(a.body["program"], "Big");
+    let said = a.body["diagnostics"][0]["message"].as_str().unwrap();
+    assert!(said.ends_with("the target rp2040 allows 65536"), "{said}");
+    let checked = check_of(&logic, &p, "OnChip", None).await;
+    assert_eq!(checked["ok"], false);
+    assert_eq!(checked["programs"][0]["diagnostics"], a.body["diagnostics"]);
+}
+
+#[tokio::test]
+async fn a_program_named_otherwise_in_its_source_is_not_built_into_a_runtime_of_several() {
+    let (logic, p) = (Logic::default(), project());
+    written(&logic, &p, "A", &counter("A"), json!({})).await;
+    written(&logic, &p, "B", &counter("Other"), json!({})).await;
+    ok(&put(&logic, &p, "Line", json!({ "module": "vm", "target": "pc", "run": true, "tasks": [
+        { "name": "t", "kind": { "type": "cyclic", "interval_ms": 20 }, "priority": 1, "programs": ["A", "B"] }
+    ]})).await);
+    let said = "runtime 'Line': program 'B' declares PROGRAM Other in its source; in a runtime of several programs its variables are named B.<variable>, so its PROGRAM must be named B";
+    refused(&build_of(&logic, &p, "Line", None).await, 400, said);
+    let checked = check_of(&logic, &p, "Line", None).await;
+    assert_eq!(checked["problems"], json!([said]), "{checked}");
+    assert_eq!(
+        checked["programs"][1]["ok"], true,
+        "the program itself compiles"
+    );
+}
+
+#[tokio::test]
+async fn a_programs_version_in_a_runtime_follows_its_task_and_not_its_unused_interval() {
+    let (logic, p) = (Logic::default(), project());
+    writer_and_reader(&logic, &p).await;
+    ok(&put(&logic, &p, "Line", line()).await);
+    let versions = |b: &Value| -> Vec<String> {
+        b["programs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["version"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let first = versions(&built(&logic, &p, "Line").await);
+    assert_eq!(first.len(), 2);
+    // The program's own check gives that version: its version in the runtime.
+    let alone = |name: &'static str| {
+        let (logic, p) = (&logic, &p);
+        async move {
+            ok(&send(
+                logic,
+                p,
+                "POST",
+                "/programs/:program/check",
+                &[("program", name)],
+                None,
+            )
+            .await)["version"]
+                .clone()
+        }
+    };
+    let writer_in_runtime = alone("Writer").await;
+    assert_eq!(
+        writer_in_runtime,
+        json!(first[0]),
+        "the check gives the version in the runtime"
+    );
+    // The unused stored interval: the same versions.
+    let s = json!({ "interval_ms": 999, "runtime": "vm", "target": "pc", "run": true,
+                    "inputs": [{ "variable": "level", "tag": LEVEL }] });
+    ok(&send(
+        &logic,
+        &p,
+        "PUT",
+        "/programs/:program/settings",
+        &[("program", "Writer")],
+        Some(s),
+    )
+    .await);
+    let b = built(&logic, &p, "Line").await;
+    assert_eq!(versions(&b), first);
+    assert_eq!(b["instance"]["programs"][0]["interval_ms"], 999);
+    // Its task's priority, watchdog, kind: Writer's version, not Reader's.
+    for change in [
+        json!({ "priority": 2 }),
+        json!({ "watchdog_ms": 500 }),
+        json!({ "kind": { "type": "cyclic", "interval_ms": 30 } }),
+        json!({ "kind": { "type": "cyclic", "interval_ms": 20, "phase_ms": 5 } }),
+    ] {
+        let mut l = line();
+        for (k, v) in change.as_object().unwrap() {
+            l["tasks"][0][k] = v.clone();
+        }
+        ok(&put(&logic, &p, "Line", l).await);
+        let now = versions(&built(&logic, &p, "Line").await);
+        assert_ne!(now[0], first[0], "{change}");
+        assert_eq!(now[1], first[1], "{change}");
+    }
+    // Both in one task, in either order: each order is another task.
+    let one = |order: [&str; 2]| {
+        json!({ "module": "vm", "target": "pc", "run": true, "tasks": [
+            { "name": "fast", "kind": { "type": "cyclic", "interval_ms": 20 }, "priority": 1, "programs": order }
+        ]})
+    };
+    ok(&put(&logic, &p, "Line", one(["Writer", "Reader"])).await);
+    let wr = built(&logic, &p, "Line").await;
+    ok(&put(&logic, &p, "Line", one(["Reader", "Writer"])).await);
+    let rw = built(&logic, &p, "Line").await;
+    assert_eq!(names(&rw["programs"]), ["Reader", "Writer"]);
+    assert_ne!(wr["programs"][0]["version"], rw["programs"][1]["version"]);
+}
+
+#[tokio::test]
+async fn the_runtimes_version_ignores_run_and_retain_and_follows_its_tasks() {
+    let (logic, p) = (Logic::default(), project());
+    writer_and_reader(&logic, &p).await;
+    ok(&put(&logic, &p, "Line", line()).await);
+    let first = built(&logic, &p, "Line").await;
+    let mut stopped = line();
+    stopped["run"] = json!(false);
+    ok(&put(&logic, &p, "Line", stopped).await);
+    let b = built(&logic, &p, "Line").await;
+    assert_eq!(b["instance"]["run"], false);
+    assert_eq!(b["version"], first["version"], "run is not in the version");
+    p.data(&[("S", true)]);
+    let b = built(&logic, &p, "Line").await;
+    assert_eq!(b["instance"]["data"][0]["retain"], true);
+    assert_eq!(
+        b["version"], first["version"],
+        "retain is not in the version"
+    );
+    let mut slower = line();
+    slower["tasks"][1]["kind"]["interval_ms"] = json!(60);
+    ok(&put(&logic, &p, "Line", slower).await);
+    let b = built(&logic, &p, "Line").await;
+    assert_ne!(b["version"], first["version"]);
+    // The module and the target are in it.
+    let mut other = line();
+    other["module"] = json!("vm2");
+    ok(&put(&logic, &p, "Line", other).await);
+    assert_ne!(built(&logic, &p, "Line").await["version"], first["version"]);
+    // And a check that is ok gives the build's version.
+    ok(&put(&logic, &p, "Line", line()).await);
+    let checked = check_of(&logic, &p, "Line", None).await;
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert_eq!(checked["version"], first["version"]);
+}
+
+#[tokio::test]
+async fn a_program_in_a_configured_runtime_is_built_only_with_its_runtime() {
+    let (logic, p) = (Logic::default(), project());
+    writer_and_reader(&logic, &p).await;
+    ok(&put(&logic, &p, "Line", line()).await);
+    for name in ["Writer", "Reader"] {
+        let a = send(
+            &logic,
+            &p,
+            "POST",
+            "/programs/:program/build",
+            &[("program", name)],
+            None,
+        )
+        .await;
+        assert_eq!(a.status, 409, "{}", a.body);
+        let task = if name == "Writer" { "fast" } else { "slow" };
+        assert_eq!(
+            a.body,
+            json!({
+                "error": format!("program '{name}' is in task '{task}' of runtime 'Line': build that runtime with build_logic_runtime"),
+                "runtime": "Line",
+            })
+        );
+    }
+    // Out of the runtime, it builds alone again.
+    ok(&delete(&logic, &p, "Line").await);
+    ok(&send(
+        &logic,
+        &p,
+        "POST",
+        "/programs/:program/build",
+        &[("program", "Writer")],
+        None,
+    )
+    .await);
+}
+
+#[tokio::test]
+async fn a_program_in_a_configured_runtime_is_checked_for_its_runtime() {
+    let (logic, p) = (Logic::default(), project());
+    writer_and_reader(&logic, &p).await;
+    // Alone, its own target: rp2040, where it does not fit.
+    written(&logic, &p, "Big", BIG, json!({ "target": "rp2040" })).await;
+    let check = |name: &'static str| {
+        let (logic, p) = (&logic, &p);
+        async move {
+            ok(&send(
+                logic,
+                p,
+                "POST",
+                "/programs/:program/check",
+                &[("program", name)],
+                None,
+            )
+            .await)
+            .clone()
+        }
+    };
+    let today = check("Writer").await;
+    assert_eq!(check("Big").await["ok"], false);
+    let mut l = line();
+    l["tasks"][1]["programs"] = json!(["Reader", "Big"]);
+    ok(&put(&logic, &p, "Line", l).await);
+    let b = built(&logic, &p, "Line").await;
+    for (i, name) in ["Writer", "Reader", "Big"].into_iter().enumerate() {
+        let checked = check(name).await;
+        assert_eq!(checked["ok"], true, "{name}: {checked}");
+        assert_eq!(checked["version"], b["programs"][i]["version"], "{name}");
+    }
+    // Today's keys, today's answer but for the version.
+    let mut writer = check("Writer").await;
+    assert_eq!(sorted_keys(&writer), sorted_keys(&today));
+    assert_ne!(writer["version"], today["version"]);
+    writer["version"] = today["version"].clone();
+    assert_eq!(writer, today);
+    // A draft's text is checked the same way.
+    let draft = send(
+        &logic,
+        &p,
+        "POST",
+        "/programs/:program/check",
+        &[("program", "Writer")],
+        Some(json!({ "source": WRITER })),
+    )
+    .await;
+    assert_eq!(ok(&draft)["version"], b["programs"][0]["version"]);
+}
+
+#[tokio::test]
+async fn building_a_program_running_alone_through_the_runtime_route_answers_the_programs_build() {
+    let (logic, p) = (Logic::default(), project());
+    writer_and_reader(&logic, &p).await;
+    let tags = [LEVEL];
+    let mut call: HttpCall = serde_json::from_value(json!({
+        "method": "POST", "route": "/programs/:program/build", "params": { "program": "Reader" },
+        "project": "plant", "data_dir": p.logic.display().to_string(),
+    }))
+    .unwrap();
+    call.tags = Some(vec![LEVEL.to_string()]);
+    let (program, _) = logic.serve(&call).await;
+    assert_eq!(program.status, 200);
+    for id in ["Reader", "reader"] {
+        let runtime = build_of(&logic, &p, id, Some(&tags)).await;
+        assert_eq!(runtime.status, 200);
+        assert_eq!(
+            serde_json::to_vec(&runtime.body).unwrap(),
+            serde_json::to_vec(&program.body).unwrap(),
+            "{id}"
+        );
+    }
+    assert!(
+        program.body["warnings"].as_array().unwrap().len() == 1,
+        "{}",
+        program.body
+    );
+    // Its check, as a runtime of its own.
+    let checked = check_of(&logic, &p, "Reader", None).await;
+    let alone = ok(&send(
+        &logic,
+        &p,
+        "POST",
+        "/programs/:program/check",
+        &[("program", "Reader")],
+        None,
+    )
+    .await)
+    .clone();
+    let mut expected = alone.clone();
+    expected["name"] = json!("Reader");
+    assert_eq!(
+        checked,
+        json!({ "ok": true, "runtime": "Reader", "version": alone["version"], "programs": [expected], "problems": [] })
+    );
+    refused(
+        &build_of(&logic, &p, "Mixer", None).await,
+        404,
+        "the project has no runtime 'Mixer'",
+    );
+    let a = send(
+        &logic,
+        &p,
+        "POST",
+        "/runtimes/:runtime/check",
+        &[("runtime", "Mixer")],
+        None,
+    )
+    .await;
+    refused(&a, 404, "the project has no runtime 'Mixer'");
+}
+
+#[tokio::test]
+async fn a_runtime_build_names_what_it_replaces_and_warns_of_retained_values_not_taken() {
+    let (logic, p) = (Logic::default(), project());
+    writer_and_reader(&logic, &p).await;
+    written(
+        &logic,
+        &p,
+        "Keeper",
+        "PROGRAM Keeper\nVAR RETAIN n : INT; END_VAR\n  n := n + 1;\nEND_PROGRAM",
+        json!({}),
+    )
+    .await;
+    let mut l = line();
+    l["tasks"][0]["programs"] = json!(["Keeper", "Writer"]);
+    ok(&put(&logic, &p, "Line", l).await);
+    let a = build_of(&logic, &p, "Line", Some(&[LEVEL])).await;
+    let b = ok(&a);
+    assert_eq!(b["replaces"], json!(["Keeper", "Writer", "Reader"]));
+    assert_eq!(
+        b["warnings"],
+        json!([
+            "program 'Keeper': values kept for it while it ran alone as runtime 'Keeper' are not taken into runtime 'Line'; its RETAIN variables start from their initial values at the first load",
+            format!("program 'Reader': output {SPEED} is not a tag of this controller now: writes to it will fail"),
+        ])
+    );
+    // Nothing known of the tags: only the RETAIN warning.
+    let b = built(&logic, &p, "Line").await;
+    assert_eq!(b["warnings"].as_array().unwrap().len(), 1, "{b}");
+}
+
+#[tokio::test]
+async fn a_check_of_a_runtime_gives_each_programs_diagnostics_and_the_runtimes_problems() {
+    let (logic, p) = (Logic::default(), project());
+    writer_and_reader(&logic, &p).await;
+    written(
+        &logic,
+        &p,
+        "Broken",
+        "PROGRAM Broken\n  y := 1;\nEND_PROGRAM",
+        json!({}),
+    )
+    .await;
+    let before = p.files();
+    // A draft, never saved.
+    let mut draft = line();
+    draft["tasks"][1]["programs"] = json!(["reader", "Broken"]);
+    let checked = check_of(&logic, &p, "Line", Some(draft.clone())).await;
+    assert_eq!(p.files(), before, "a check writes nothing");
+    assert_eq!(checked["ok"], false);
+    assert_eq!(checked["runtime"], "Line");
+    assert_eq!(names(&checked["programs"]), ["Writer", "Reader", "Broken"]);
+    let broken = &checked["programs"][2];
+    assert_eq!(broken["ok"], false);
+    assert_eq!(
+        broken["diagnostics"][0]["message"], "y is not declared",
+        "{broken}"
+    );
+    assert!(broken.get("version").is_none());
+    for good in &checked["programs"].as_array().unwrap()[..2] {
+        assert_eq!(good["ok"], true, "{good}");
+        assert_eq!(good["binding_problems"], json!([]));
+        assert!(good["version"].is_string());
+    }
+    assert_eq!(checked["problems"], json!([]));
+    assert_eq!(checked["data"], json!([block_s(false)]));
+    assert!(checked.get("version").is_none());
+    // A draft that breaks the configuration's rules says so; still nothing written.
+    let mut ghost = line();
+    ghost["tasks"][1]["programs"] = json!(["Reader", "Ghost"]);
+    let checked = check_of(&logic, &p, "Line", Some(ghost)).await;
+    assert_eq!(
+        checked["problems"],
+        json!(["runtime 'Line': task 'slow' runs 'Ghost': the project has no program 'Ghost'"])
+    );
+    let checked = check_of(&logic, &p, "Writer", Some(line())).await;
+    assert_eq!(
+        checked["problems"][0],
+        "'Writer' is a program of the project; a runtime is not named like a program"
+    );
+    // A draft body is a whole runtime.
+    let a = send(
+        &logic,
+        &p,
+        "POST",
+        "/runtimes/:runtime/check",
+        &[("runtime", "Line")],
+        Some(json!({ "module": "vm" })),
+    )
+    .await;
+    assert_eq!(a.status, 400, "{}", a.body);
+    assert_eq!(p.files(), before);
+    // The draft, saved and good, checks as the build builds.
+    ok(&put(&logic, &p, "Line", line()).await);
+    let stored = check_of(&logic, &p, "Line", None).await;
+    let draft = check_of(&logic, &p, "Line", Some(line())).await;
+    assert_eq!(stored, draft);
+    assert_eq!(stored["ok"], true, "{stored}");
+    let b = built(&logic, &p, "Line").await;
+    assert_eq!(stored["version"], b["version"]);
+    assert_eq!(
+        stored["programs"][1]["version"],
+        b["programs"][1]["version"]
+    );
+    // An empty body is the stored runtime.
+    assert_eq!(check_of(&logic, &p, "Line", Some(json!({}))).await, stored);
+}
+
+#[tokio::test]
+async fn a_task_configuration_that_cannot_be_read_refuses_the_program_check_and_build() {
+    let (logic, p) = (Logic::default(), project());
+    program(&logic, &p, "A", 20).await;
+    std::fs::write(p.tasks_file(), "{ not json").unwrap();
+    let before = p.files();
+    for (route, params) in [
+        ("/programs/:program/check", [("program", "A")]),
+        ("/programs/:program/build", [("program", "A")]),
+        ("/runtimes/:runtime/check", [("runtime", "A")]),
+        ("/runtimes/:runtime/build", [("runtime", "A")]),
+    ] {
+        let a = send(&logic, &p, "POST", route, &params, None).await;
+        assert_eq!(a.status, 500, "{route}: {}", a.body);
+        assert!(
+            a.body["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("logic/tasks.json cannot be read"),
+            "{route}"
+        );
+    }
+    assert_eq!(p.files(), before);
 }

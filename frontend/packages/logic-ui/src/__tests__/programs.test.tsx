@@ -789,6 +789,50 @@ describe('what the runtime is doing', () => {
     expect((byTestId(container, 'runtime-stop') as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it('a program running in a runtime of several programs is not said to be not loaded', async () => {
+    const line = runtimeOf('Line', { program: 'Pump, Tank', version: 'bbbbbbbbbbbb, cccccccccccc' });
+    const backend = tank({ runtimes: runtimesOf(line), config: { instances: [{ id: 'Line' }] } });
+    const { calls, container } = await opened(backend);
+    const why = 'program Tank runs in runtime Line with other programs, which this editor does not show yet';
+    expect(mode(container)).toBe('UNKNOWN');
+    expect(byTestId(container, 'runtime-unknown-why')?.textContent).toBe(why);
+    // Every command acts on the runtime named like the program: none is offered, and each says why.
+    for (const id of ['program-load', 'program-load-cold', 'runtime-run', 'runtime-stop', 'runtime-unload', 'runtime-release-all']) {
+      const command = byTestId(container, id) as HTMLButtonElement;
+      expect(command.disabled, id).toBe(true);
+      expect(command.title, id).toBe(why);
+    }
+    // Nor is any sent when asked for another way: nothing claims an effect it did not have.
+    calls.length = 0;
+    expect(await state().download('Tank')).toBe(false);
+    expect(state().error).toBe(`Program Tank was not loaded: ${why}.`);
+    expect(await state().unload('Tank')).toBe(false);
+    expect(state().error).toBe(`Program Tank was not unloaded: ${why}.`);
+    await state().command('Tank', false);
+    expect(await state().force('Tank', 'speed', 1)).toBe(false);
+    expect(await state().release('Tank', null)).toBe(false);
+    expect(writes(calls)).toEqual([]);
+    expect(backend.config?.instances).toEqual([{ id: 'Line' }]);
+
+    // Spelled otherwise by its PROGRAM, it is the same program; a runtime of its own name is its own.
+    backend.runtimes = runtimesOf(runtimeOf('Line', { program: 'Pump, TANK' }));
+    await doing(() => state().readRuntimes());
+    expect(byTestId(container, 'runtime-unknown-why')?.textContent).toBe(why);
+    backend.runtimes = runtimesOf(runtimeOf('Line', { program: 'Pump, Tanker' }), runtimeOf('Tank'));
+    await doing(() => state().readRuntimes());
+    expect(mode(container)).toBe('RUN');
+    expect((byTestId(container, 'program-load') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('a program alone in a configured runtime of another name is not said to be not loaded either', async () => {
+    const { container } = await opened(tank({ runtimes: runtimesOf(runtimeOf('R', { program: 'Tank' })) }));
+    expect(mode(container)).toBe('UNKNOWN');
+    expect(byTestId(container, 'runtime-unknown-why')?.textContent).toBe(
+      'program Tank runs in runtime R, which this editor does not show yet'
+    );
+    expect((byTestId(container, 'program-load') as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('says so when the runtime runs another version than the one just built', async () => {
     const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank', { version: 'older' })) });
     const { container } = await opened(backend);

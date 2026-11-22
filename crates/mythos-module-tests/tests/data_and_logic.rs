@@ -4,9 +4,11 @@
 //! against a Modbus simulator, the value passing from one program to the other through the
 //! block.
 //!
-//! The logic module builds one runtime instance per program, and the core refuses a block in
-//! two runtimes. Building one instance of several programs is C8c's (ADR-013 §2.19): until
-//! then these tests compose that instance themselves from two build answers.
+//! A program running alone is built as one runtime instance, and the core refuses a block in two
+//! runtimes. The logic module builds one instance of several programs from a runtime configured
+//! in it (ADR-013 §2.19, C8c): the tests at the end save that instance as it is answered. The
+//! three tests before them compose such an instance by hand from two program builds, as the
+//! core's own checks of a block shared in one runtime need no logic module.
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
@@ -310,8 +312,10 @@ fn as_runtime_block(block: &Value) -> Value {
     b
 }
 
-/// The instance of several programs C8c will build: the two programs in one cyclic task, and
-/// the blocks either declares, each once.
+/// An instance of several programs composed by hand from program builds: the programs in one
+/// cyclic task, and the blocks either declares, each once. The logic module builds such an
+/// instance itself from a configured runtime (`build_logic_runtime`); this is kept for the
+/// tests of what the core checks of a block shared inside one runtime.
 fn composed(id: &str, built: &[&Value]) -> Value {
     let mut data: Vec<Value> = Vec::new();
     for b in built {
@@ -578,4 +582,276 @@ async fn the_tools_of_every_module_have_distinct_names() {
     }
     assert!(services.get("hmi").is_some());
     services.shutdown().await;
+}
+
+const RUNTIMES: &str = "/api/v1/projects/plant/logic/runtimes";
+const CORE_RUNTIMES: &str = "/api/v1/projects/plant/runtimes";
+
+/// Runtime `Line` as the logic module stores it: Writer in `fast` (priority 1, 20 ms), Reader in
+/// `slow` (priority `slow`, 50 ms).
+fn line(slow: u8) -> Value {
+    json!({ "module": "vm", "target": "pc", "run": true, "tasks": [
+        { "name": "fast", "kind": { "type": "cyclic", "interval_ms": 20 }, "priority": 1, "programs": ["Writer"] },
+        { "name": "slow", "kind": { "type": "cyclic", "interval_ms": 50 }, "priority": slow, "programs": ["Reader"] }
+    ]})
+}
+
+impl Rig {
+    /// Configure runtime `id` in the logic module and build it.
+    async fn build_runtime(&self, id: &str, runtime: Value) -> Value {
+        self.eng("PUT", &format!("{RUNTIMES}/{id}"), Some(runtime), 200)
+            .await;
+        self.eng("POST", &format!("{RUNTIMES}/{id}/build"), None, 200)
+            .await
+    }
+
+    /// Save a built runtime as a caller of `build_logic_runtime` does: the core's instances
+    /// without those named in `replaces` and without the one of the same id, then the answered
+    /// instance, unedited.
+    async fn load_built(&self, built: &Value, expected: u16) -> Value {
+        let config = self.eng("GET", CORE_RUNTIMES, None, 200).await;
+        // `null` while the project has no runtimes.
+        assert!(
+            config
+                .get("config")
+                .is_some_and(|c| c.is_null() || c["instances"].is_array()),
+            "{config}"
+        );
+        let replaced: Vec<&Value> = built["replaces"].as_array().unwrap().iter().collect();
+        let mut instances: Vec<Value> = config["config"]["instances"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|i| i["id"] != built["instance"]["id"] && !replaced.contains(&&i["id"]))
+            .collect();
+        instances.push(built["instance"].clone());
+        self.eng(
+            "PUT",
+            CORE_RUNTIMES,
+            Some(json!({ "instances": instances })),
+            expected,
+        )
+        .await
+    }
+}
+
+/// The versions the core reports for a runtime of several programs: each program's, in the
+/// instance's order.
+fn versions_of(built: &Value) -> String {
+    built["instance"]["programs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["version"].as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Runs the version `built` gave and has scanned at least once.
+fn runs(built: &Value) -> impl Fn(&Value) -> bool {
+    let version = versions_of(built);
+    move |t: &Value| t["version"] == version && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_programs_sharing_a_data_block_are_built_and_loaded_by_the_logic_module_alone() {
+    let rig = rig().await;
+    rig.shared().await;
+    rig.writer_and_reader().await;
+    rig.eng(
+        "PUT",
+        "/api/v1/projects/plant/io",
+        Some(rig.io_config()),
+        200,
+    )
+    .await;
+    let built = rig.build_runtime("Line", line(5)).await;
+    assert_eq!(built["replaces"], json!(["Writer", "Reader"]), "{built}");
+    // The answered instance, unedited, is the only one.
+    let applied = rig
+        .eng(
+            "PUT",
+            CORE_RUNTIMES,
+            Some(json!({ "instances": [built["instance"]] })),
+            200,
+        )
+        .await;
+    assert_eq!(
+        applied["changes"]["started"],
+        json!(["runtime:Line"]),
+        "{applied}"
+    );
+    // Level 20 reaches Reader only through S: 20 * 10 + the unwritten spare's 5.
+    rig.speed_is("Reader drives 205 from what Writer handed over", 205)
+        .await;
+    rig.sim.set_input(0, 31).await;
+    rig.speed_is("the speed follows the level, through the block", 315)
+        .await;
+    let runtime = rig
+        .runtime_when("it runs the built programs with the block", |t| {
+            runs(&built)(t) && t["data"].is_array()
+        })
+        .await;
+    assert_eq!(runtime["id"], "Line", "{runtime}");
+    assert_eq!(
+        runtime["data"][0]["members"],
+        json!([
+            {"name": "level", "type": "INT", "writer": "Writer"},
+            {"name": "spare", "type": "INT", "writer": null}
+        ]),
+        "{runtime}"
+    );
+    // A variable of a runtime of several programs is named by its program.
+    let watched = rig
+        .eng(
+            "POST",
+            "/api/v1/runtimes/Line/watch",
+            Some(json!({ "variables": ["Reader.speed"] })),
+            200,
+        )
+        .await;
+    assert_eq!(watched["values"][0]["value"], 315, "{watched}");
+    rig.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn programs_sharing_a_block_loaded_alone_refuse_their_runtime_until_the_replaced_instances_go(
+) {
+    let rig = rig().await;
+    rig.shared().await;
+    rig.writer_and_reader().await;
+    rig.eng(
+        "PUT",
+        "/api/v1/projects/plant/io",
+        Some(rig.io_config()),
+        200,
+    )
+    .await;
+    let writer = rig.build("Writer").await;
+    let reader = rig.build("Reader").await;
+    // Each alone is a runtime of its own: the block in two runtimes is refused.
+    let refused = rig
+        .eng(
+            "PUT",
+            CORE_RUNTIMES,
+            Some(json!({ "instances": [writer["instance"], reader["instance"]] })),
+            400,
+        )
+        .await;
+    assert!(
+        refused
+            .to_string()
+            .contains("data block 'S' is in runtimes 'Writer' and 'Reader'"),
+        "{refused}"
+    );
+    let applied = rig
+        .eng(
+            "PUT",
+            CORE_RUNTIMES,
+            Some(json!({ "instances": [writer["instance"]] })),
+            200,
+        )
+        .await;
+    assert_eq!(
+        applied["changes"]["started"],
+        json!(["runtime:Writer"]),
+        "{applied}"
+    );
+
+    // The runtime of both, saved beside the instance it replaces: refused.
+    let built = rig.build_runtime("Line", line(5)).await;
+    assert_eq!(built["replaces"], json!(["Writer", "Reader"]), "{built}");
+    let refused = rig
+        .eng(
+            "PUT",
+            CORE_RUNTIMES,
+            Some(json!({ "instances": [writer["instance"], built["instance"]] })),
+            400,
+        )
+        .await;
+    assert!(
+        refused
+            .to_string()
+            .contains("data block 'S' is in runtimes 'Writer' and 'Line'"),
+        "{refused}"
+    );
+    // Without the instances it names in `replaces`: started.
+    let applied = rig.load_built(&built, 200).await;
+    assert_eq!(
+        applied["changes"]["started"],
+        json!(["runtime:Line"]),
+        "{applied}"
+    );
+    let config = rig.eng("GET", CORE_RUNTIMES, None, 200).await;
+    let ids: Vec<&str> = config["config"]["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["Line"], "{config}");
+    rig.speed_is("Reader drives 205 from what Writer handed over", 205)
+        .await;
+    rig.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_change_of_a_runtime_built_by_the_logic_module_is_an_online_change() {
+    let rig = rig().await;
+    rig.shared().await;
+    rig.writer_and_reader().await;
+    rig.eng(
+        "PUT",
+        "/api/v1/projects/plant/io",
+        Some(rig.io_config()),
+        200,
+    )
+    .await;
+    let first = rig.build_runtime("Line", line(5)).await;
+    rig.load_built(&first, 200).await;
+    rig.runtime_when("the first build runs and has scanned", runs(&first))
+        .await;
+
+    // Another priority for `slow`: the same programs, so changed online.
+    let second = rig.build_runtime("Line", line(7)).await;
+    assert_ne!(versions_of(&second), versions_of(&first));
+    assert_eq!(second["instance"]["tasks"][1]["priority"], 7);
+    let applied = rig.load_built(&second, 200).await;
+    let load = &applied["changes"]["runtimes"][0];
+    assert_eq!(load["runtime"], "Line", "{applied}");
+    assert_eq!(load["start"], "online", "why: {}; {applied}", load["why"]);
+    rig.runtime_when("the second build runs and has scanned", runs(&second))
+        .await;
+    rig.speed_is("Reader drives 205 after the change", 205)
+        .await;
+
+    // A third program: not the same programs, so a warm start, and the core says why.
+    rig.program(
+        "Extra",
+        "PROGRAM Extra\nVAR n : DINT; END_VAR\n  n := n + 1;\nEND_PROGRAM",
+        json!({"interval_ms": 20, "runtime": "vm", "target": "pc", "run": true}),
+    )
+    .await;
+    let mut three = line(7);
+    three["tasks"][1]["programs"] = json!(["Reader", "Extra"]);
+    let third = rig.build_runtime("Line", three).await;
+    assert_eq!(
+        third["replaces"],
+        json!(["Writer", "Reader", "Extra"]),
+        "{third}"
+    );
+    let applied = rig.load_built(&third, 200).await;
+    let load = &applied["changes"]["runtimes"][0];
+    assert_eq!(
+        (&load["start"], &load["why"]),
+        (
+            &json!("warm"),
+            &json!("the program running was 'Reader,Writer', not 'Extra,Reader,Writer'")
+        ),
+        "{applied}"
+    );
+    rig.runtime_when("the third build runs and has scanned", runs(&third))
+        .await;
+    rig.close().await;
 }

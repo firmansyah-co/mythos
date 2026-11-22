@@ -13,14 +13,19 @@
 //! and no read makes the file.
 
 use super::{
-    body, device_name, error, load as load_programs, reply, write_synced, Programs, Refusal,
+    body, build as build_program, check as check_program, check_bindings, check_entry,
+    compile_entry, data_uses, device_name, error, find, instance_data, load as load_programs,
+    read_project, read_source, reply, unregistered, version_in_runtime, with_problems,
+    write_synced, ProgramEntry, Programs, Project, Refusal,
 };
-use mythos_logic_compiler::TargetProfile;
+use mythos_logic_compiler::{Compiled, Diagnostic, Symbol, TargetProfile};
 use mythos_module::protocol::{
-    check_tasks, implied_task, HttpCall, HttpReply, RuntimeProgram, TaskConfig,
+    check_data, check_tasks, implied_task, DataBlock as RuntimeDataBlock, HttpCall, HttpReply,
+    InputOf, RuntimeProgram, TaskConfig, TaskKind,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 /// The file, in the module's directory. Not `runtimes.json`: the core's `<project>/runtimes.json`
@@ -101,13 +106,21 @@ pub(crate) fn id_problem(id: &str) -> Option<String> {
 
 /// The configured runtime and the task of it that run program `name` (without regard to case),
 /// if one does.
-pub(crate) fn assigned<'a>(file: &'a TaskFile, name: &str) -> Option<(&'a str, &'a str)> {
+pub(crate) fn assignment<'a>(
+    file: &'a TaskFile,
+    name: &str,
+) -> Option<(&'a RuntimeEntry, &'a TaskConfig)> {
     file.runtimes.iter().find_map(|r| {
         r.tasks
             .iter()
             .find(|t| t.programs.iter().any(|p| p.eq_ignore_ascii_case(name)))
-            .map(|t| (r.id.as_str(), t.name.as_str()))
+            .map(|t| (r, t))
     })
+}
+
+/// [`assignment`], by the runtime's id and the task's name.
+pub(crate) fn assigned<'a>(file: &'a TaskFile, name: &str) -> Option<(&'a str, &'a str)> {
+    assignment(file, name).map(|(r, t)| (r.id.as_str(), t.name.as_str()))
 }
 
 /// A program as [`check_tasks`] and [`implied_task`] read it: only its name and interval.
@@ -316,38 +329,8 @@ pub(crate) fn runtimes(call: &HttpCall, data: &Path) -> (HttpReply, Option<Value
         ("PUT", "/runtimes/:runtime") => body::<RuntimeBody>(call).and_then(|b| {
             let programs = load_programs(data)?;
             let mut file = load(data)?;
-            // A task names a program in the spelling it is stored in.
-            let mut tasks = b.tasks;
-            for t in &mut tasks {
-                for p in &mut t.programs {
-                    if let Some(e) = programs
-                        .programs
-                        .iter()
-                        .find(|e| e.name.eq_ignore_ascii_case(p))
-                    {
-                        p.clone_from(&e.name);
-                    }
-                }
-            }
-            let entry = RuntimeEntry {
-                id: id.to_string(),
-                module: b.module,
-                target: b.target,
-                run: b.run,
-                tasks,
-            };
-            let at = file.runtimes.iter().position(|r| r.id == id);
-            let created = at.is_none();
-            let at = match at {
-                Some(at) => {
-                    file.runtimes[at] = entry.clone();
-                    at
-                }
-                None => {
-                    file.runtimes.push(entry.clone());
-                    file.runtimes.len() - 1
-                }
-            };
+            let (at, created) = put_in(&mut file, &programs, id, b);
+            let entry = file.runtimes[at].clone();
             if let Some((status, problem)) = problems_of(&programs, &file.runtimes, at, Others::All)
                 .into_iter()
                 .next()
@@ -366,12 +349,572 @@ pub(crate) fn runtimes(call: &HttpCall, data: &Path) -> (HttpReply, Option<Value
             event = Some(json!({ "project": project, "runtime": gone.id, "what": "deleted" }));
             Ok(json!({ "deleted": gone.id }))
         })(),
+        ("POST", "/runtimes/:runtime/check") => (|| {
+            let programs = load_programs(data)?;
+            let mut file = load(data)?;
+            let draft = match &call.body {
+                None | Some(Value::Null) => None,
+                Some(Value::Object(o)) if o.is_empty() => None,
+                Some(_) => Some(body::<RuntimeBody>(call)?),
+            };
+            let at = match draft {
+                Some(b) => Some(put_in(&mut file, &programs, id, b).0),
+                None => position(&file.runtimes, id),
+            };
+            match at {
+                Some(at) => check_runtime(&programs, &file, at, data),
+                None => {
+                    let alone = implied(&programs, &file);
+                    let at = position(&alone, id).ok_or_else(|| no_runtime(id))?;
+                    check_alone(find(&programs, &alone[at].id)?, data)
+                }
+            }
+        })(),
+        ("POST", "/runtimes/:runtime/build") => (|| {
+            let programs = load_programs(data)?;
+            let file = load(data)?;
+            let tags = call.tags.as_deref();
+            match position(&file.runtimes, id) {
+                Some(at) => build_runtime(&programs, &file, at, data, tags),
+                None => {
+                    // A program running alone: exactly its own build.
+                    let alone = implied(&programs, &file);
+                    let at = position(&alone, id).ok_or_else(|| no_runtime(id))?;
+                    let entry = find(&programs, &alone[at].id)?;
+                    build_program(
+                        entry,
+                        &read_source(data, entry)?,
+                        tags,
+                        &read_project(data)?,
+                    )
+                }
+            }
+        })(),
         (method, route) => Err(error(
             404,
             format!("the logic module has no route {method} {route}"),
         )),
     };
     (reply(result, 200), event)
+}
+
+/// Put runtime `id` of `body` into `file`, in place of the one of exactly that id or after the
+/// others, with each task naming a program in the spelling it is stored in: where it is, and
+/// whether it is new. Nothing is checked or written.
+fn put_in(file: &mut TaskFile, programs: &Programs, id: &str, body: RuntimeBody) -> (usize, bool) {
+    let mut tasks = body.tasks;
+    for t in &mut tasks {
+        for p in &mut t.programs {
+            if let Some(e) = programs
+                .programs
+                .iter()
+                .find(|e| e.name.eq_ignore_ascii_case(p))
+            {
+                p.clone_from(&e.name);
+            }
+        }
+    }
+    let entry = RuntimeEntry {
+        id: id.to_string(),
+        module: body.module,
+        target: body.target,
+        run: body.run,
+        tasks,
+    };
+    match file.runtimes.iter().position(|r| r.id == id) {
+        Some(at) => {
+            file.runtimes[at] = entry;
+            (at, false)
+        }
+        None => {
+            file.runtimes.push(entry);
+            (file.runtimes.len() - 1, true)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Checking and building a configured runtime (the C8c contract §3.5, §3.6)
+// -----------------------------------------------------------------------------
+
+/// The programs of `runtime`, in the order its tasks run them (task by task, each task's in its
+/// order), each once, with the task it is in. A name the project lacks is left out: that is a
+/// problem of the configuration (T8).
+fn members<'a>(
+    runtime: &'a RuntimeEntry,
+    programs: &'a Programs,
+) -> Vec<(&'a ProgramEntry, &'a TaskConfig)> {
+    let mut found: Vec<(&ProgramEntry, &TaskConfig)> = Vec::new();
+    for t in &runtime.tasks {
+        for p in &t.programs {
+            let Some(e) = programs
+                .programs
+                .iter()
+                .find(|e| e.name.eq_ignore_ascii_case(p))
+            else {
+                continue;
+            };
+            if !found.iter().any(|(f, _)| f.name == e.name) {
+                found.push((e, t));
+            }
+        }
+    }
+    found
+}
+
+/// The entry as a runtime builds it: with the runtime's target. Its own module, run and
+/// interval are not used by the runtime (its module, its run and its tasks are).
+fn as_built(entry: &ProgramEntry, runtime: &RuntimeEntry) -> ProgramEntry {
+    let mut e = entry.clone();
+    e.target.clone_from(&runtime.target);
+    e
+}
+
+/// In a runtime of several programs a variable is named `<program>.<variable>` by its
+/// compiled PROGRAM's name, so that name must be the program's in the project: what is wrong,
+/// when it is not.
+fn naming_problem(
+    id: &str,
+    entry: &ProgramEntry,
+    compiled: &Compiled,
+    several: bool,
+) -> Option<String> {
+    (several && !compiled.name.eq_ignore_ascii_case(&entry.name)).then(|| {
+        format!(
+            "runtime '{id}': program '{p}' declares PROGRAM {q} in its source; in a runtime of several programs its variables are named {p}.<variable>, so its PROGRAM must be named {p}",
+            p = entry.name,
+            q = compiled.name
+        )
+    })
+}
+
+/// A program of a runtime, compiled, as the instance carries it.
+struct Built<'a> {
+    entry: &'a ProgramEntry,
+    compiled: Compiled,
+    program: RuntimeProgram,
+}
+
+/// The runtime's tasks as the instance gives them: each program named by its compiled
+/// PROGRAM's name, which is what the instance's programs are named.
+fn emitted_tasks(runtime: &RuntimeEntry, built: &[Built]) -> Vec<TaskConfig> {
+    runtime
+        .tasks
+        .iter()
+        .map(|t| TaskConfig {
+            programs: t
+                .programs
+                .iter()
+                .map(|p| {
+                    built
+                        .iter()
+                        .find(|b| b.entry.name.eq_ignore_ascii_case(p))
+                        .map_or_else(|| p.clone(), |b| b.compiled.name.clone())
+                })
+                .collect(),
+            ..t.clone()
+        })
+        .collect()
+}
+
+/// The data blocks of the runtime: each block a program declares, once (by name, without
+/// regard to case), in the order the programs first declare them.
+fn union_of_data(built: &[Built], project: &Project) -> Result<Vec<RuntimeDataBlock>, Refusal> {
+    let mut data: Vec<RuntimeDataBlock> = Vec::new();
+    for b in built {
+        for block in instance_data(&b.compiled, &project.blocks).map_err(|e| error(500, e))? {
+            if !data
+                .iter()
+                .any(|d| d.name.eq_ignore_ascii_case(&block.name))
+            {
+                data.push(block);
+            }
+        }
+    }
+    Ok(data)
+}
+
+/// What the core and the runtime module would refuse of the runtime as a whole, each said as
+/// they say it and starting `runtime '<id>': `: its tasks, its data, an output tag or a
+/// published tag of two of its programs, and an event task whose tag no program reads into a
+/// BOOL.
+fn runtime_problems(
+    id: &str,
+    built: &[Built],
+    tasks: &[TaskConfig],
+    data: &[RuntimeDataBlock],
+) -> Vec<String> {
+    let prefixed = |m: String| format!("runtime '{id}': {m}");
+    let refs: Vec<&RuntimeProgram> = built.iter().map(|b| &b.program).collect();
+    let several = built.len() > 1;
+    let owner = |p: &RuntimeProgram| {
+        if several {
+            format!("{id}/{}", p.name)
+        } else {
+            id.to_string()
+        }
+    };
+    let mut found = Vec::new();
+    if let Err(m) = check_tasks(&refs, tasks) {
+        found.push(prefixed(m));
+    }
+    if let Err(m) = check_data(&refs, data) {
+        found.push(prefixed(m));
+    }
+    // One tag has one writer, and one publisher (the core's words).
+    let mut outputs: Vec<(&str, String)> = Vec::new();
+    let mut published: Vec<(&str, String)> = Vec::new();
+    for p in &refs {
+        for o in &p.outputs {
+            if let Some((_, a)) = outputs.iter().find(|(t, _)| *t == o.tag) {
+                found.push(prefixed(format!(
+                    "{} is an output of both '{a}' and '{}': one tag has one writer",
+                    o.tag,
+                    owner(p)
+                )));
+            } else {
+                outputs.push((&o.tag, owner(p)));
+            }
+        }
+        for s in &p.published {
+            if let Some((_, a)) = published.iter().find(|(t, _)| *t == s.tag) {
+                found.push(prefixed(format!(
+                    "{} is published by both '{a}' and '{}'",
+                    s.tag,
+                    owner(p)
+                )));
+            } else {
+                published.push((&s.tag, owner(p)));
+            }
+        }
+    }
+    // An event task sees an edge in a BOOL a program reads its tag into (the runtime module's
+    // words).
+    for t in tasks {
+        let TaskKind::Event { tag } = &t.kind else {
+            continue;
+        };
+        let bound = built.iter().any(|b| {
+            b.entry.inputs.iter().any(|i| {
+                i.tag == *tag
+                    && i.of == InputOf::Value
+                    && symbol(&b.compiled.symbols, &i.variable).is_some_and(|s| s.ty == "BOOL")
+            })
+        });
+        if !bound {
+            found.push(prefixed(format!(
+                "task '{}': its tag {tag} is not read into a BOOL variable by any program of this runtime",
+                t.name
+            )));
+        }
+    }
+    found
+}
+
+fn symbol<'a>(symbols: &'a [Symbol], variable: &str) -> Option<&'a Symbol> {
+    symbols
+        .iter()
+        .find(|s| s.path.eq_ignore_ascii_case(variable))
+}
+
+/// What identifies a build of the runtime: its module and target, its tasks, each program
+/// with its version in the runtime, and each data block with its layout. Not whether it is put
+/// in RUN, nor whether a block is retained, as a program's version leaves both out.
+fn runtime_version(
+    runtime: &RuntimeEntry,
+    tasks: &[TaskConfig],
+    built: &[Built],
+    data: &[RuntimeDataBlock],
+) -> String {
+    let programs: Vec<(&str, &str)> = built
+        .iter()
+        .map(|b| (b.program.name.as_str(), b.program.version.as_str()))
+        .collect();
+    let blocks: Vec<(&str, &str)> = data
+        .iter()
+        .map(|d| (d.name.as_str(), d.layout.as_str()))
+        .collect();
+    let mut hash = Sha256::new();
+    hash.update(
+        serde_json::to_vec(&(&runtime.module, &runtime.target, tasks, programs, blocks))
+            .unwrap_or_default(),
+    );
+    hex::encode(&hash.finalize()[..6])
+}
+
+/// The program of `entry` as the instance carries it.
+fn runtime_program(
+    entry: &ProgramEntry,
+    compiled: &Compiled,
+    task: &TaskConfig,
+) -> Result<RuntimeProgram, Refusal> {
+    Ok(RuntimeProgram {
+        name: compiled.name.clone(),
+        version: version_in_runtime(entry, compiled, task),
+        // Stored, and not used by a runtime given tasks; never a value made up here.
+        interval_ms: entry.interval_ms,
+        code: hex::encode(&compiled.bytecode),
+        symbols: serde_json::to_value(&compiled.symbols).map_err(|e| error(500, e))?,
+        inputs: entry.inputs.clone(),
+        outputs: entry.outputs.clone(),
+        published: entry.published.clone(),
+        data: data_uses(compiled),
+    })
+}
+
+/// Build configured runtime `at` of `file`: every program from its saved source, in one
+/// snapshot of the project, for the runtime's target; the first thing wrong refuses it.
+fn build_runtime(
+    programs: &Programs,
+    file: &TaskFile,
+    at: usize,
+    data: &Path,
+    registered: Option<&[String]>,
+) -> Result<Value, Refusal> {
+    let runtime = &file.runtimes[at];
+    let id = runtime.id.as_str();
+    if let Some((status, problem)) = problems_of(programs, &file.runtimes, at, Others::All)
+        .into_iter()
+        .next()
+    {
+        return Err(error(status, problem));
+    }
+    let target = TargetProfile::by_name(&runtime.target)
+        .ok_or_else(|| error(400, format!("'{}' is not a target profile", runtime.target)))?;
+    let project = read_project(data)?;
+    let members = members(runtime, programs);
+    let several = members.len() > 1;
+    let mut project_problems: Option<Vec<Diagnostic>> = None;
+    let mut built: Vec<Built> = Vec::new();
+    for (entry, task) in members {
+        let p = entry.name.as_str();
+        let e = as_built(entry, runtime);
+        check_entry(&e).map_err(|m| error(400, format!("runtime '{id}': program '{p}': {m}")))?;
+        let compiling = compile_entry(&e, &read_source(data, entry)?, &target, &project);
+        project_problems = compiling.project_problems;
+        let compiled = compiling.compiled.map_err(|diagnostics| {
+            (
+                400,
+                with_problems(
+                    json!({
+                        "error": format!("program '{p}' does not compile and runtime '{id}' was not built"),
+                        "program": p,
+                        "diagnostics": diagnostics,
+                    }),
+                    &project_problems,
+                ),
+            )
+        })?;
+        let binding_problems = check_bindings(&e, &compiled.symbols);
+        if !binding_problems.is_empty() {
+            return Err((
+                400,
+                with_problems(
+                    json!({
+                        "error": format!("program '{p}''s bindings do not match its variables and runtime '{id}' was not built"),
+                        "program": p,
+                        "binding_problems": binding_problems,
+                    }),
+                    &project_problems,
+                ),
+            ));
+        }
+        if let Some(problem) = naming_problem(id, entry, &compiled, several) {
+            return Err((
+                400,
+                with_problems(json!({ "error": problem }), &project_problems),
+            ));
+        }
+        let program = runtime_program(entry, &compiled, task)?;
+        built.push(Built {
+            entry,
+            compiled,
+            program,
+        });
+    }
+    let tasks = emitted_tasks(runtime, &built);
+    let data_blocks = union_of_data(&built, &project)?;
+    if let Some(problem) = runtime_problems(id, &built, &tasks, &data_blocks)
+        .into_iter()
+        .next()
+    {
+        return Err((
+            400,
+            with_problems(json!({ "error": problem }), &project_problems),
+        ));
+    }
+
+    let mut warnings = Vec::new();
+    for b in &built {
+        let p = &b.entry.name;
+        warnings.extend(
+            unregistered(b.entry, registered)
+                .into_iter()
+                .map(|w| format!("program '{p}': {w}")),
+        );
+        // The core keeps RETAIN values per runtime id: what was kept while the program ran
+        // alone, under its own name, is not this runtime's.
+        if b.compiled.symbols.iter().any(|s| s.retain) {
+            warnings.push(format!(
+                "program '{p}': values kept for it while it ran alone as runtime '{p}' are not taken into runtime '{id}'; its RETAIN variables start from their initial values at the first load"
+            ));
+        }
+    }
+    let mut instance = json!({
+        "id": id,
+        "module": runtime.module,
+        "run": runtime.run,
+        "tasks": tasks,
+    });
+    // One program in `program`, as a runtime of today: a module that runs one program in one
+    // task then runs it, when its task is the one it runs.
+    if let [one] = built.as_slice() {
+        instance["program"] = json!(one.program);
+    } else {
+        instance["programs"] = json!(built.iter().map(|b| &b.program).collect::<Vec<_>>());
+    }
+    if !data_blocks.is_empty() {
+        instance["data"] = json!(data_blocks);
+    }
+    Ok(with_problems(
+        json!({
+            "version": runtime_version(runtime, &tasks, &built, &data_blocks),
+            "warnings": warnings,
+            "programs": built.iter().map(|b| json!({
+                "name": b.entry.name,
+                "version": b.program.version,
+                "code_size": b.compiled.code_size,
+                "memory_size": b.compiled.memory_size,
+            })).collect::<Vec<_>>(),
+            // The ids its programs run under alone: the caller takes them out of the core's
+            // runtimes in the save that puts this one in.
+            "replaces": built.iter().map(|b| &b.entry.name).collect::<Vec<_>>(),
+            "instance": instance,
+        }),
+        &project_problems,
+    ))
+}
+
+/// Check configured runtime `at` of `file` (stored, or a draft put in it): every program
+/// compiled as the build would, never refused for what it finds.
+fn check_runtime(
+    programs: &Programs,
+    file: &TaskFile,
+    at: usize,
+    data: &Path,
+) -> Result<Value, Refusal> {
+    let runtime = &file.runtimes[at];
+    let id = runtime.id.as_str();
+    let mut problems: Vec<String> = problems_of(programs, &file.runtimes, at, Others::All)
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect();
+    let configured = problems.is_empty();
+    let target = TargetProfile::by_name(&runtime.target);
+    let project = read_project(data)?;
+    let members = members(runtime, programs);
+    let several = members.len() > 1;
+    let mut project_problems: Option<Vec<Diagnostic>> = None;
+    let mut answers = Vec::new();
+    let mut built: Vec<Built> = Vec::new();
+    let mut all_ok = true;
+    for (entry, task) in members {
+        let p = entry.name.as_str();
+        let e = as_built(entry, runtime);
+        if let Err(m) = check_entry(&e) {
+            // Its target is the runtime's, which the configuration's problems already name.
+            if target.is_some() {
+                problems.push(format!("runtime '{id}': program '{p}': {m}"));
+            }
+        }
+        let source = read_source(data, entry)?;
+        let mut answer =
+            json!({ "name": p, "ok": false, "diagnostics": [], "binding_problems": [] });
+        let Some(target) = &target else {
+            answer["diagnostics"] = json!([Diagnostic::whole(format!(
+                "'{}' is not a target profile",
+                runtime.target
+            ))]);
+            all_ok = false;
+            answers.push(answer);
+            continue;
+        };
+        let compiling = compile_entry(&e, &source, target, &project);
+        project_problems = compiling.project_problems;
+        match compiling.compiled {
+            Err(diagnostics) => {
+                answer["diagnostics"] = json!(diagnostics);
+                all_ok = false;
+            }
+            Ok(compiled) => {
+                let binding_problems = check_bindings(&e, &compiled.symbols);
+                let program = runtime_program(entry, &compiled, task)?;
+                answer["ok"] = json!(binding_problems.is_empty());
+                answer["binding_problems"] = json!(binding_problems);
+                answer["version"] = json!(program.version);
+                answer["code_size"] = json!(compiled.code_size);
+                answer["memory_size"] = json!(compiled.memory_size);
+                if !binding_problems.is_empty() {
+                    all_ok = false;
+                }
+                if let Some(problem) = naming_problem(id, entry, &compiled, several) {
+                    problems.push(problem);
+                }
+                built.push(Built {
+                    entry,
+                    compiled,
+                    program,
+                });
+            }
+        }
+        answers.push(answer);
+    }
+    let tasks = emitted_tasks(runtime, &built);
+    let data_blocks = union_of_data(&built, &project)?;
+    // The runtime as a whole, once its configuration holds and every program built: before,
+    // the tasks' own check would say again what the configuration's problems say.
+    if configured && all_ok && problems.is_empty() {
+        problems.extend(runtime_problems(id, &built, &tasks, &data_blocks));
+    }
+    let ok = all_ok && problems.is_empty();
+    let mut answer = json!({
+        "ok": ok,
+        "runtime": id,
+        "programs": answers,
+        "problems": problems,
+    });
+    if ok {
+        answer["version"] = json!(runtime_version(runtime, &tasks, &built, &data_blocks));
+    }
+    if !data_blocks.is_empty() {
+        answer["data"] = json!(data_blocks);
+    }
+    Ok(with_problems(answer, &project_problems))
+}
+
+/// The check of a program running alone, as a runtime of its own: its program's check.
+fn check_alone(entry: &ProgramEntry, data: &Path) -> Result<Value, Refusal> {
+    let mut checked = check_program(entry, &read_source(data, entry)?, &read_project(data)?);
+    let ok = checked["ok"] == true
+        && checked["binding_problems"]
+            .as_array()
+            .is_some_and(Vec::is_empty);
+    let project_problems = checked.get("project_problems").cloned();
+    let version = checked.get("version").cloned();
+    checked["name"] = json!(entry.name);
+    let mut answer = json!({
+        "ok": ok,
+        "runtime": entry.name,
+        "programs": [checked],
+        "problems": [],
+    });
+    if let (true, Some(version)) = (ok, version) {
+        answer["version"] = version;
+    }
+    if let Some(problems) = project_problems {
+        answer["project_problems"] = problems;
+    }
+    Ok(answer)
 }
 
 #[cfg(test)]

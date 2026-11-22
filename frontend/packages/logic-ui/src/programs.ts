@@ -259,18 +259,39 @@ export function checkIsCurrent(doc: ProgramDoc): boolean {
 
 /**
  * How what the controller runs compares with this program, in words that claim no more than
- * is known. The runtime of a program has the program's name as its id.
+ * is known. The runtime of a program running alone has the program's name as its id. A program
+ * that a runtime of another id runs (a runtime configured in the logic module, ADR-013 §2.19)
+ * is `unknown` with that runtime's id in `runtime`: this editor does not show such a runtime,
+ * and its commands, which act on the runtime named like the program, are not offered for it.
  */
 export type RunState =
-  | { kind: 'unknown'; why: string }
+  | { kind: 'unknown'; why: string; runtime?: string }
   | { kind: 'not-loaded' }
   | { kind: 'loaded'; runtime: RuntimeStatus; stale: boolean };
+
+/** The runtime of another id that runs program `name`, if one does (programs compared without case, as the core compares them). */
+function otherRuntimeOf(name: string, runtimes: RuntimeStatus[]): RuntimeStatus | undefined {
+  const lower = name.toLowerCase();
+  return runtimes.find((r) => r.id !== name && r.program.split(', ').some((p) => p.toLowerCase() === lower));
+}
 
 export function runState(name: string, view: RuntimesView): RunState {
   if (view.runtimes === null) {
     return { kind: 'unknown', why: view.error ?? 'the runtimes have not been read yet' };
   }
   const runtime = view.runtimes.find((r) => r.id === name);
+  const other = runtime === undefined && view.error === null ? otherRuntimeOf(name, view.runtimes) : undefined;
+  if (other !== undefined) {
+    // Not "not loaded": it runs, in a runtime this editor does not show.
+    const several = other.program.split(', ').length > 1;
+    return {
+      kind: 'unknown',
+      runtime: other.id,
+      why: several
+        ? `program ${name} runs in runtime ${other.id} with other programs, which this editor does not show yet`
+        : `program ${name} runs in runtime ${other.id}, which this editor does not show yet`,
+    };
+  }
   if (view.error !== null) {
     // What was read before the failure is not what is: it is shown only as the last known.
     return runtime
@@ -278,6 +299,14 @@ export function runState(name: string, view: RuntimesView): RunState {
       : { kind: 'unknown', why: view.error };
   }
   return runtime ? { kind: 'loaded', runtime, stale: false } : { kind: 'not-loaded' };
+}
+
+/**
+ * Why no command for the program is offered, when it runs in a runtime of another id: every
+ * command of the editor acts on the runtime named like the program. `null` otherwise.
+ */
+export function inOtherRuntime(state: RunState): string | null {
+  return state.kind === 'unknown' && state.runtime !== undefined ? state.why : null;
 }
 
 const message = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
@@ -369,6 +398,19 @@ export const usePrograms = create<ProgramsState>((set, get) => {
     const text = `${what}: ${message(cause)}`;
     log.error(text);
     set({ busy: null, error: text });
+  };
+
+  /**
+   * Whether a command for program `name` is refused before it is sent, and said so: the program
+   * runs in a runtime of another id, and every command here acts on the runtime named like the
+   * program (Load and Unload replace or drop that instance; Run, Stop and the forces address it),
+   * so none would have the effect it reports.
+   */
+  const refusedElsewhere = (name: string, what: string): boolean => {
+    const why = inOtherRuntime(runState(name, get().runtimes));
+    if (why === null) return false;
+    set({ error: `${what}: ${why}.` });
+    return true;
   };
 
   /** Save what changed. Resolves with whether everything is saved. */
@@ -542,6 +584,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
     download: async (name, cold = false) => {
       const projectId = get().projectId;
       if (!projectId || !find(name)) return false;
+      if (refusedElsewhere(name, `Program ${name} was not loaded`)) return false;
       set({ busy: 'loading', error: null });
       try {
         if (!(await saveDoc(projectId, name))) {
@@ -594,6 +637,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
     unload: async (name) => {
       const projectId = get().projectId;
       if (!projectId) return false;
+      if (refusedElsewhere(name, `Program ${name} was not unloaded`)) return false;
       set({ busy: 'loading', error: null });
       try {
         await api.setInstance(projectId, name, null);
@@ -609,6 +653,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
     },
 
     command: async (name, run) => {
+      if (refusedElsewhere(name, `Runtime ${name} was not asked to ${run ? 'run' : 'stop'}`)) return;
       set({ busy: 'commanding', error: null });
       try {
         await (run ? api.run(name) : api.stop(name));
@@ -621,6 +666,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
     },
 
     force: async (name, variable, value) => {
+      if (refusedElsewhere(name, `${variable} of ${name} was not forced`)) return false;
       set({ busy: 'forcing', error: null });
       try {
         await api.force(name, variable, value);
@@ -636,6 +682,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
 
     release: async (name, variable) => {
       const what = variable === null ? `The forces of ${name} were` : `${variable} of ${name} was`;
+      if (refusedElsewhere(name, `${what} not released`)) return false;
       set({ busy: 'forcing', error: null });
       try {
         await api.release(name, variable);
