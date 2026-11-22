@@ -141,7 +141,33 @@ async fn wait_for_slot(
 
 /// This process's children running `<exe> --serve`. Tests run in parallel in one process, so
 /// each test asks about the executable in its own directory.
-fn module_children(exe: &Path) -> Vec<u32> {
+///
+/// **The scan runs off the test's thread.** It reads every process of the machine and takes
+/// from a tenth of a second to more than one (measured at a load average of 1.2: 97 ms to
+/// 1.5 s). `#[tokio::test]` gives a test one thread, and the simulated device, the I/O manager
+/// and the host side of the module process all run on it: a scan made on that thread stops
+/// them together. A poll already sent then gets no answer within the connection's 300 ms, the
+/// tag is `BAD_COMM_FAILURE`, rightly, until the scan ends, and a swap that needs the thread
+/// misses its 10 s. That is how `installing_a_new_build_of_a_module_swaps_it_in_without_a_gap`
+/// failed twice on a loaded machine on 2026-11-22; the server itself runs on several threads
+/// and its devices are not tasks of its own runtime.
+async fn module_children(exe: &Path) -> Vec<u32> {
+    module_children_after(exe, Duration::ZERO).await
+}
+
+/// [`module_children`], its scan made longer by `extra`: for the test that the scan leaves the
+/// thread free.
+async fn module_children_after(exe: &Path, extra: Duration) -> Vec<u32> {
+    let exe = exe.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        std::thread::sleep(extra);
+        scan_children(&exe)
+    })
+    .await
+    .unwrap()
+}
+
+fn scan_children(exe: &Path) -> Vec<u32> {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let me = sysinfo::Pid::from_u32(std::process::id());
     let mut system = System::new();
@@ -179,6 +205,34 @@ fn kill(pid: u32) {
     );
     let process = system.process(pid).expect("the process to kill is running");
     assert!(process.kill(), "could not kill process {pid}");
+}
+
+#[tokio::test]
+async fn looking_for_a_module_s_processes_leaves_the_test_s_thread_free() {
+    // What every test here relies on: while the processes are looked for, the one thread of the
+    // test goes on running its other tasks (in a test, the device and the I/O manager). A task
+    // that counts every 5 ms stands for them, and the scan is made 300 ms longer so that the
+    // count does not depend on how fast this machine lists its processes. A scan made on the
+    // thread itself leaves the count where it was.
+    let ticks = Arc::new(AtomicU32::new(0));
+    let counting = Arc::clone(&ticks);
+    let ticker = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            counting.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    tokio::task::yield_now().await;
+    let before = ticks.load(Ordering::Relaxed);
+    let found =
+        module_children_after(Path::new("no-such-module"), Duration::from_millis(300)).await;
+    let during = ticks.load(Ordering::Relaxed) - before;
+    ticker.abort();
+    assert!(found.is_empty(), "{found:?}");
+    assert!(
+        during >= 10,
+        "the thread ran {during} of about 60 ticks while the processes were looked for"
+    );
 }
 
 #[tokio::test]
@@ -296,7 +350,7 @@ async fn the_runtime_reads_a_device_through_the_module_process() {
         "{:?}",
         snapshot.connections[0].detail
     );
-    assert_eq!(module_children(&modbus_exe(dir.path())).len(), 1);
+    assert_eq!(module_children(&modbus_exe(dir.path())).await.len(), 1);
 
     let slot = wait_for_slot(&segment, |s| s.quality == QualityCode::GOOD, "first read").await;
     assert_eq!(slot.type_code, TagDataType::Uint16.code());
@@ -341,7 +395,7 @@ async fn the_runtime_reads_a_device_through_the_module_process() {
     assert_eq!(slot.quality, QualityCode::BAD_NOT_CONNECTED);
     // The module process is gone with the runtime.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !module_children(&modbus_exe(dir.path())).is_empty() {
+    while !module_children(&modbus_exe(dir.path())).await.is_empty() {
         assert!(
             Instant::now() < deadline,
             "the module process outlived its runtime"
@@ -372,7 +426,7 @@ async fn a_module_process_that_dies_is_replaced_and_its_tag_is_never_left_good()
     .await;
 
     wait_for_slot(&segment, |s| s.quality == QualityCode::GOOD, "first read").await;
-    let before = module_children(&modbus_exe(dir.path()));
+    let before = module_children(&modbus_exe(dir.path())).await;
     assert_eq!(before.len(), 1);
 
     // Past the respawn backoff, so the replacement may be started at once: the case of
@@ -399,7 +453,7 @@ async fn a_module_process_that_dies_is_replaced_and_its_tag_is_never_left_good()
     .await;
     assert_eq!(good.type_code, TagDataType::Uint16.code());
 
-    let after = module_children(&modbus_exe(dir.path()));
+    let after = module_children(&modbus_exe(dir.path())).await;
     assert_eq!(after.len(), 1, "exactly one module process runs again");
     assert_ne!(after, before, "a new process, not the killed one");
 
@@ -429,7 +483,7 @@ async fn checking_a_configuration_asks_the_module() {
 
     // Checking starts nothing that stays running.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !module_children(&modbus_exe(dir.path())).is_empty() {
+    while !module_children(&modbus_exe(dir.path())).await.is_empty() {
         assert!(
             Instant::now() < deadline,
             "a check left a module process behind"
@@ -582,6 +636,24 @@ impl SlotWatch {
 
 #[tokio::test]
 async fn installing_a_new_build_of_a_module_swaps_it_in_without_a_gap() {
+    a_new_build_is_swapped_in_without_a_gap(Duration::ZERO, Some(Duration::from_millis(20))).await;
+}
+
+/// The same, on a machine that takes 400 ms to list its processes and with no pause between
+/// two looks: what a loaded machine did to this test on 2026-11-22. With the scan on the test's
+/// own thread the device could not answer a poll already sent, and the tag went bad for as long
+/// as the scan took (thousands of reads). The swap has no gap however long the test takes to
+/// look.
+#[tokio::test]
+async fn a_new_build_is_swapped_in_without_a_gap_while_the_test_is_slow_to_look_for_its_processes()
+{
+    a_new_build_is_swapped_in_without_a_gap(Duration::from_millis(400), None).await;
+}
+
+/// Installs a new build over a running module and requires the swap without a gap. Each look for
+/// the module's processes takes `scan_takes` longer, and `pause` passes between two looks (none:
+/// the next look starts as soon as the other tasks have had one turn).
+async fn a_new_build_is_swapped_in_without_a_gap(scan_takes: Duration, pause: Option<Duration>) {
     let dir = module_dir();
     let exe = modbus_exe(dir.path());
     let sim = ModbusSimServer::start("127.0.0.1:0").await.unwrap();
@@ -593,7 +665,7 @@ async fn installing_a_new_build_of_a_module_swaps_it_in_without_a_gap() {
         "first read",
     )
     .await;
-    let before = module_children(&exe);
+    let before = module_children(&exe).await;
     assert_eq!(before.len(), 1);
 
     let _watcher = rig.io.spawn_module_watcher(WATCH_EVERY).unwrap();
@@ -604,7 +676,7 @@ async fn installing_a_new_build_of_a_module_swaps_it_in_without_a_gap() {
     // The watcher notices the new file and swaps the connection to a process started from it.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let now = module_children(&exe);
+        let now = module_children_after(&exe, scan_takes).await;
         if now.len() == 1 && now != before {
             break;
         }
@@ -620,7 +692,10 @@ async fn installing_a_new_build_of_a_module_swaps_it_in_without_a_gap() {
                 mythos_module::snapshot(&[dir.path().to_path_buf()]),
             );
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        match pause {
+            Some(pause) => tokio::time::sleep(pause).await,
+            None => tokio::task::yield_now().await,
+        }
     }
     sim.set_holding(0, 6).await;
     wait_for_slot(
@@ -656,7 +731,7 @@ async fn a_new_build_that_cannot_start_leaves_the_running_one_in_place() {
         "first read",
     )
     .await;
-    let before = module_children(&exe);
+    let before = module_children(&exe).await;
 
     // A "new version" whose manifest is fine but which dies as soon as it is started.
     let output = std::process::Command::new(UNDER_TEST)
@@ -683,7 +758,7 @@ async fn a_new_build_that_cannot_start_leaves_the_running_one_in_place() {
         "the running connection was disturbed: {gaps:?}"
     );
     assert_eq!(
-        module_children(&exe),
+        module_children(&exe).await,
         before,
         "the running process was replaced"
     );
