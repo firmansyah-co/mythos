@@ -2646,10 +2646,11 @@ dependencies = [
 
 [[package]]
 name = "mythos-runtime-vm"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "hex",
+ "mythos-logic-compiler",
  "mythos-logic-vm",
  "mythos-module",
  "mythos-plugin-sdk",

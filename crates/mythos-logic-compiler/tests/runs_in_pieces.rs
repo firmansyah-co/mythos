@@ -598,5 +598,5 @@ fn two_tasks_on_one_thread_interleave_as_the_rules_say_and_each_computes_what_it
         "a low run spans several high runs: {longest} ns"
     );
 
-    assert_eq!(sim.runs_checked, high.runs + low.runs);
+    assert_eq!(u64::from(sim.runs_checked), high.runs + low.runs);
 }

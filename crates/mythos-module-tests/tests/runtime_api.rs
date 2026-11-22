@@ -23,6 +23,7 @@ use tower::util::ServiceExt;
 
 const MODBUS: &str = env!("CARGO_BIN_EXE_modbus-module-under-test");
 const RUNTIME_VM: &str = env!("CARGO_BIN_EXE_runtime-vm-module-under-test");
+const STUBBORN: &str = env!("CARGO_BIN_EXE_stubborn-runtime-under-test");
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
 const LEVEL: &str = "external.Plant.LT1.level";
@@ -64,6 +65,11 @@ struct Rig {
 }
 
 async fn rig() -> Rig {
+    rig_with(&[]).await
+}
+
+/// [`rig`], with the module executables `extra` (source, file name) in its module directory too.
+async fn rig_with(extra: &[(&str, &str)]) -> Rig {
     let root_dir = tempfile::tempdir().unwrap();
     let storage = Arc::new(ControllerStorage::new(root_dir.path().join("projects")).unwrap());
     storage
@@ -72,10 +78,13 @@ async fn rig() -> Rig {
     storage.switch_active_project("plant").unwrap();
 
     let modules = tempfile::tempdir().unwrap();
-    for (source, name) in [
+    for &(source, name) in [
         (MODBUS, "mythos-module-modbus"),
         (RUNTIME_VM, "mythos-module-runtime-vm"),
-    ] {
+    ]
+    .iter()
+    .chain(extra)
+    {
         std::fs::copy(
             source,
             modules
@@ -1639,5 +1648,159 @@ async fn a_program_for_a_runtime_module_that_is_not_installed_is_refused_naming_
         body["problems"][0]["message"], "no runtime module provides 'plc-9000' (available: vm)",
         "{body}"
     );
+    rig.io.shutdown().await;
+}
+
+/// The runtime `counter` of the programs `sources`, each in a cyclic task of its own named
+/// after it; the first program, Count, drives the speed.
+fn grouped(sources: &[&str], version: &str) -> Value {
+    let mut programs = Vec::new();
+    let mut tasks = Vec::new();
+    for (k, source) in sources.iter().enumerate() {
+        let compiled = compile(source, &TargetProfile::pc()).unwrap_or_else(|d| panic!("{d:?}"));
+        let outputs = if k == 0 {
+            json!([{"variable": "speed", "tag": SPEED, "safe": SAFE_SPEED}])
+        } else {
+            json!([])
+        };
+        tasks.push(json!({
+            "name": format!("t{k}"), "kind": {"type": "cyclic", "interval_ms": 20 + 10 * k as u64},
+            "priority": k, "programs": [compiled.name.clone()]
+        }));
+        programs.push(json!({
+            "name": compiled.name, "version": version, "interval_ms": 20,
+            "code": hex::encode(&compiled.bytecode), "symbols": compiled.symbols,
+            "outputs": outputs
+        }));
+    }
+    if programs.len() == 1 {
+        return json!({"instances": [{
+            "id": "counter", "module": "vm", "run": true, "program": programs[0]
+        }]});
+    }
+    json!({"instances": [{
+        "id": "counter", "module": "vm", "run": true, "programs": programs, "tasks": tasks
+    }]})
+}
+
+const COUNT: &str = "
+PROGRAM Count
+VAR n : DINT; END_VAR
+VAR_OUTPUT speed : INT; END_VAR
+  n := n + 1;
+  speed := 300 + DINT_TO_INT(n MOD 100);
+END_PROGRAM
+";
+const IDLE: &str = "PROGRAM Idle VAR k : DINT; END_VAR k := k + 1; END_PROGRAM";
+const OTHER: &str = "PROGRAM Other VAR k : DINT; END_VAR k := k + 2; END_PROGRAM";
+
+impl Rig {
+    /// Load `config` into the active project, and how the runtime started.
+    async fn load_counter(&self, config: Value) -> Value {
+        let (status, body) = self
+            .send(
+                &self.engineer,
+                "PUT",
+                "/api/v1/projects/plant/runtimes",
+                Some(config),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let load = body["changes"]["runtimes"][0].clone();
+        assert_eq!(load["runtime"], "counter", "{body}");
+        load
+    }
+
+    /// Wait until the runtime of `version` runs and has scanned past 20.
+    async fn runs(&self, version: &str) {
+        self.tank_when(&format!("{version} runs"), |t| {
+            t["version"] == version && t["mode"] == "run" && t["scans"].as_u64() > Some(20)
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn an_online_change_needs_the_same_programs() {
+    let rig = rig().await;
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/io",
+            Some(rig.io_config()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let load = rig.load_counter(grouped(&[COUNT, IDLE], "v1")).await;
+    assert_eq!(
+        (&load["start"], &load["why"]),
+        (&json!("warm"), &json!("no build of it was loaded")),
+        "{load}"
+    );
+    rig.runs("v1, v1").await;
+    let tank = rig.tank().await;
+    assert_eq!(tank["program"], "Count, Idle", "{tank}");
+    assert_eq!(tank["tasks"].as_array().map(Vec::len), Some(2), "{tank}");
+
+    // A new build of the same two programs: changed online.
+    let load = rig.load_counter(grouped(&[COUNT, IDLE], "v2")).await;
+    assert_eq!(load["start"], "online", "{load}");
+    assert_eq!(load["why"], Value::Null, "{load}");
+    assert!(load["carried"].as_u64() > Some(0), "{load}");
+    rig.runs("v2, v2").await;
+
+    // Another program in place of one of them: not the same programs, so as at a warm start,
+    // and it says which programs ran.
+    let load = rig.load_counter(grouped(&[COUNT, OTHER], "v3")).await;
+    assert_eq!(load["start"], "warm", "{load}");
+    assert_eq!(
+        load["why"], "the program running was 'Count,Idle', not 'Count,Other'",
+        "{load}"
+    );
+    rig.runs("v3, v3").await;
+
+    // One program of the two alone: its name is its key.
+    let load = rig.load_counter(grouped(&[COUNT], "v4")).await;
+    assert_eq!(load["start"], "warm", "{load}");
+    assert_eq!(
+        load["why"], "the program running was 'Count,Other', not 'Count'",
+        "{load}"
+    );
+    rig.runs("v4").await;
+    rig.io.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_save_for_an_older_runtime_module_is_refused_and_says_why() {
+    let rig = rig_with(&[(STUBBORN, "mythos-module-stubborn")]).await;
+    let mut config = grouped(&[COUNT, IDLE], "v1");
+    config["instances"][0]["module"] = json!("stubborn");
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/runtimes",
+            Some(config),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let message = body["problems"][0]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("runtime 'counter' has 2 programs; the runtime module 'stubborn' (version 0.0.0) runs one program in one cyclic task and does not say it runs tasks: install a newer build of it"),
+        "{body}"
+    );
+    // Nothing was saved.
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "GET",
+            "/api/v1/projects/plant/runtimes",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["config"], Value::Null, "{body}");
     rig.io.shutdown().await;
 }

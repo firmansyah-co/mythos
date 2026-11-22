@@ -25,8 +25,9 @@ use crate::io::{ConnectionConfig, IoStatusHandle, WriteError};
 use crate::storage::ControllerStorage;
 use crate::tag::TagCatalog;
 use mythos_module::protocol::{
-    Call, CarryReport, ExchangeReply, ForcedValue, NotCarried, ProgramVariables, RetainedValue,
-    RuntimeMode, RuntimeProgram, RuntimeState, WatchReply, WireInput,
+    check_tasks, implied_task, Call, CarryReport, ExchangeReply, ForcedValue, NotCarried,
+    OutputBinding, ProgramVariables, ProgramVersion, RetainedValue, RuntimeMode, RuntimeProgram,
+    RuntimeState, TaskConfig, TaskKind, TaskState, TaskSupport, WatchReply, WireInput,
 };
 use mythos_module::{ModuleBinary, ProcessDriver};
 use mythos_pal::PlatformShm;
@@ -74,7 +75,12 @@ pub fn is_runtime_connection(id: &str) -> bool {
 // Configuration
 // -----------------------------------------------------------------------------
 
-/// One program in one runtime module.
+/// The programs of one runtime module process, and the tasks that run them (ADR-013 §2.19).
+///
+/// A runtime of today has one `program` and no `tasks`: it runs in its implied task, cyclic at
+/// the program's interval. A runtime of several programs gives them in `programs` and says in
+/// `tasks` which task runs each. A file of today reads and writes back unchanged, because the
+/// fields it does not use are left out.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeInstance {
@@ -85,7 +91,191 @@ pub struct RuntimeInstance {
     /// Whether it is put in RUN when it is loaded. Required: whether a program starts by
     /// itself is a decision, not a default.
     pub run: bool,
-    pub program: RuntimeProgram,
+    /// Its one program; or `programs`, never both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<RuntimeProgram>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub programs: Vec<RuntimeProgram>,
+    /// The tasks that run its programs; none for one program in its implied task. When tasks
+    /// are given, a program's `interval_ms` is not used.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<TaskConfig>,
+}
+
+impl RuntimeInstance {
+    /// Its programs: `program`, else `programs`.
+    pub fn all_programs(&self) -> Vec<&RuntimeProgram> {
+        match &self.program {
+            Some(program) => vec![program],
+            None => self.programs.iter().collect(),
+        }
+    }
+
+    /// The tasks it runs: those written out, or the implied one of its one program.
+    pub fn effective_tasks(&self) -> Vec<TaskConfig> {
+        if !self.tasks.is_empty() {
+            return self.tasks.clone();
+        }
+        match self.all_programs().as_slice() {
+            [program] => vec![implied_task(program)],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether a runtime module that runs one program in one cyclic task runs it exactly as
+    /// written: one program, and no task, or one cyclic task at the program's interval with no
+    /// phase, the default watchdog and only that program. Any priority: with one task it does
+    /// not matter.
+    pub fn runs_as_today(&self) -> bool {
+        let programs = self.all_programs();
+        let [program] = programs.as_slice() else {
+            return false;
+        };
+        match self.tasks.as_slice() {
+            [] => true,
+            [task] => {
+                matches!(task.kind, TaskKind::Cyclic { interval_ms, phase_ms: 0 }
+                    if interval_ms == program.interval_ms)
+                    && task.watchdog_ms.is_none()
+                    && matches!(task.programs.as_slice(), [name] if name.eq_ignore_ascii_case(&program.name))
+            }
+            _ => false,
+        }
+    }
+
+    /// What a running build must also run for a new build to carry on from its variables:
+    /// the names of its programs, sorted. Compared as a list, never as one string: a program
+    /// may have a `,` in its name, and `a,b` and `c` are not the programs `a` and `b,c`.
+    pub fn program_key(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.all_programs().iter().map(|p| p.name.clone()).collect();
+        names.sort_unstable();
+        names
+    }
+
+    /// Whether its variables are named `<program>.<path>`: it has two or more programs.
+    fn several(&self) -> bool {
+        self.all_programs().len() > 1
+    }
+
+    /// Who owns its outputs and published tags, in a message: `'<id>'`, or `'<id>/<program>'`
+    /// when it has several programs.
+    fn owner_of(&self, program: &RuntimeProgram) -> String {
+        if self.several() {
+            format!("{}/{}", self.id, program.name)
+        } else {
+            self.id.clone()
+        }
+    }
+
+    /// The name of a variable of `program` as the runtime's module names it.
+    fn variable_name(&self, program: &RuntimeProgram, variable: &str) -> String {
+        if self.several() {
+            format!("{}.{variable}", program.name)
+        } else {
+            variable.to_string()
+        }
+    }
+
+    /// Every output of every program, with the program it is of.
+    fn outputs(&self) -> Vec<(&RuntimeProgram, &OutputBinding)> {
+        self.all_programs()
+            .into_iter()
+            .flat_map(|p| p.outputs.iter().map(move |o| (p, o)))
+            .collect()
+    }
+
+    /// Its program and version as one line each: the one program's, or every program's
+    /// joined by `, ` in program order.
+    fn names_and_versions(&self) -> (String, String) {
+        let programs = self.all_programs();
+        let join = |f: &dyn Fn(&RuntimeProgram) -> &str| {
+            programs.iter().map(|p| f(p)).collect::<Vec<_>>().join(", ")
+        };
+        (join(&|p| &p.name), join(&|p| &p.version))
+    }
+
+    /// The interval it reports: its one program's in its implied task; otherwise the smallest
+    /// interval of its cyclic tasks, and none when it has no cyclic task.
+    fn interval_ms(&self) -> Option<u64> {
+        if self.tasks.is_empty() {
+            return self.all_programs().first().map(|p| p.interval_ms);
+        }
+        self.tasks
+            .iter()
+            .filter_map(|t| match t.kind {
+                TaskKind::Cyclic { interval_ms, .. } => Some(interval_ms),
+                _ => None,
+            })
+            .min()
+    }
+
+    /// How often it is exchanged with. As often as it scans, within bounds that keep an
+    /// operator's view fresh and the exchange cheap: for a runtime that runs as today its
+    /// program's interval; 20 ms when it has an event task, whose edges are seen only at an
+    /// exchange; otherwise its smallest cyclic interval; 200 ms when it has none.
+    fn exchange_ms(&self) -> u64 {
+        let interval = if self.runs_as_today() {
+            self.all_programs().first().map(|p| p.interval_ms)
+        } else if self
+            .tasks
+            .iter()
+            .any(|t| matches!(t.kind, TaskKind::Event { .. }))
+        {
+            Some(20)
+        } else {
+            self.interval_ms()
+        };
+        interval.unwrap_or(200).clamp(20, 200)
+    }
+
+    /// What can be checked of this runtime alone, without asking a runtime module. Each
+    /// message starts `runtime '<id>'`.
+    fn check(&self) -> Result<(), String> {
+        let id = &self.id;
+        if self.program.is_some() && !self.programs.is_empty() {
+            return Err(format!(
+                "runtime '{id}': give program or programs, not both"
+            ));
+        }
+        let programs = self.all_programs();
+        check_tasks(&programs, &self.tasks).map_err(|e| format!("runtime '{id}': {e}"))?;
+        if self.tasks.is_empty() && programs.iter().any(|p| p.interval_ms == 0) {
+            return Err(format!("runtime '{id}': interval_ms must be at least 1"));
+        }
+        for p in &programs {
+            // A runtime of several programs names the program a binding is of.
+            let at = if self.several() {
+                format!("runtime '{id}': program '{}'", p.name)
+            } else {
+                format!("runtime '{id}'")
+            };
+            for o in &p.outputs {
+                if o.tag.contains(':') {
+                    return Err(format!(
+                        "{at}: {} is another device's tag; a runtime writes this node's field tags",
+                        o.tag
+                    ));
+                }
+                if !(o.safe.is_number() || o.safe.is_boolean()) {
+                    return Err(format!(
+                        "{at}: the safe value of {} must be a number or a boolean",
+                        o.tag
+                    ));
+                }
+            }
+            for b in &p.published {
+                // `external.` is the field: only a driver's tags are named so (tag namespace
+                // rules §2.1). What a program computes is `internal.`.
+                if !b.tag.starts_with("internal.") {
+                    return Err(format!(
+                        "{at}: a published tag must start with 'internal.', which {} does not",
+                        b.tag
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The runtimes of a project (`runtimes.json`).
@@ -121,8 +311,8 @@ impl RuntimesConfig {
     /// What can be checked without asking a runtime module.
     pub fn validate(&self) -> Result<(), String> {
         let mut ids = HashSet::new();
-        let mut outputs: HashMap<&str, &str> = HashMap::new();
-        let mut published: HashMap<&str, &str> = HashMap::new();
+        let mut outputs: HashMap<&str, String> = HashMap::new();
+        let mut published: HashMap<&str, String> = HashMap::new();
         for i in &self.instances {
             if !valid_id(&i.id) {
                 return Err(format!(
@@ -136,46 +326,26 @@ impl RuntimesConfig {
             if i.module.trim().is_empty() {
                 return Err(format!("runtime '{}' names no module", i.id));
             }
-            if i.program.interval_ms == 0 {
-                return Err(format!(
-                    "runtime '{}': interval_ms must be at least 1",
-                    i.id
-                ));
-            }
-            for o in &i.program.outputs {
-                if o.tag.contains(':') {
-                    return Err(format!(
-                        "runtime '{}': {} is another device's tag; a runtime writes this node's field tags",
-                        i.id, o.tag
-                    ));
+            i.check()?;
+            // One tag has one writer, and one publisher: across runtimes, and across the
+            // programs of one runtime.
+            for p in i.all_programs() {
+                let owner = i.owner_of(p);
+                for o in &p.outputs {
+                    if let Some(other) = outputs.insert(o.tag.as_str(), owner.clone()) {
+                        return Err(format!(
+                            "{} is an output of both '{}' and '{}': one tag has one writer",
+                            o.tag, other, owner
+                        ));
+                    }
                 }
-                if !(o.safe.is_number() || o.safe.is_boolean()) {
-                    return Err(format!(
-                        "runtime '{}': the safe value of {} must be a number or a boolean",
-                        i.id, o.tag
-                    ));
-                }
-                if let Some(other) = outputs.insert(o.tag.as_str(), i.id.as_str()) {
-                    return Err(format!(
-                        "{} is an output of both '{}' and '{}': one tag has one writer",
-                        o.tag, other, i.id
-                    ));
-                }
-            }
-            for p in &i.program.published {
-                // `external.` is the field: only a driver's tags are named so (tag namespace
-                // rules §2.1). What a program computes is `internal.`.
-                if !p.tag.starts_with("internal.") {
-                    return Err(format!(
-                        "runtime '{}': a published tag must start with 'internal.', which {} does not",
-                        i.id, p.tag
-                    ));
-                }
-                if let Some(other) = published.insert(p.tag.as_str(), i.id.as_str()) {
-                    return Err(format!(
-                        "{} is published by both '{}' and '{}'",
-                        p.tag, other, i.id
-                    ));
+                for b in &p.published {
+                    if let Some(other) = published.insert(b.tag.as_str(), owner.clone()) {
+                        return Err(format!(
+                            "{} is published by both '{}' and '{}'",
+                            b.tag, other, owner
+                        ));
+                    }
                 }
             }
         }
@@ -189,9 +359,7 @@ impl RuntimesConfig {
             .map(|i| ConnectionConfig {
                 id: format!("{CONNECTION_PREFIX}{}", i.id),
                 driver: format!("{CONNECTION_PREFIX}{}", i.module),
-                // How often it is exchanged with: as often as it scans, within bounds that
-                // keep an operator's view fresh and the exchange cheap.
-                poll_interval_ms: i.program.interval_ms.clamp(20, 200),
+                poll_interval_ms: i.exchange_ms(),
                 cycle_timeout_ms: Some(CYCLE_TIMEOUT_MS),
                 config: serde_json::to_value(i).unwrap_or(Value::Null),
             })
@@ -297,9 +465,12 @@ pub struct OutputStatus {
 pub struct RuntimeStatus {
     pub id: String,
     pub module: String,
+    /// Its program, or for a runtime of several programs their names joined by `, `.
     pub program: String,
     pub version: String,
-    pub interval_ms: u64,
+    /// Its program's interval in its implied task; otherwise the smallest interval of its
+    /// cyclic tasks. `None` when it has no cyclic task: it runs at no one interval.
+    pub interval_ms: Option<u64>,
     /// `run`, `stop`, `fault`, or `unreachable` when its module does not answer.
     pub mode: String,
     /// Why it is in `fault`, or why it is `unreachable`.
@@ -325,6 +496,13 @@ pub struct RuntimeStatus {
     /// Every tag bound to a forced variable: an input the program no longer takes, an output
     /// written the forced value, a published tag giving it. What the HMI marks as forced.
     pub forced_tags: Vec<String>,
+    /// Each program and the version that runs, and each task's state, as its module last said:
+    /// from a runtime with tasks written out. Left out for a runtime of one program in its
+    /// implied task, and while nothing is known.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub programs: Vec<ProgramVersion>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<TaskState>,
 }
 
 /// A force or a release an engineer asked of an instance.
@@ -400,10 +578,11 @@ impl RuntimeLoad {
     }
 }
 
-/// What a new build asked of the running one: its variables, if it runs this program in this
+/// What a new build asked of the running one: its variables, if it runs these programs in this
 /// module.
 struct PendingCarry {
-    program: String,
+    /// The new build's [`RuntimeInstance::program_key`].
+    program: Vec<String>,
     module: String,
     reply: oneshot::Sender<Result<ProgramVariables, String>>,
 }
@@ -565,11 +744,11 @@ impl RuntimeStates {
     }
 
     /// Ask the running instance `id` for its variables at its next exchange, for a new build of
-    /// `program` in `module` to carry on from. `None` when no instance of that id is loaded.
+    /// the programs `program` (a [`RuntimeInstance::program_key`]) in `module` to carry on from. `None` when no instance of that id is loaded.
     fn ask_variables(
         &self,
         id: &str,
-        program: &str,
+        program: Vec<String>,
         module: &str,
     ) -> Option<oneshot::Receiver<Result<ProgramVariables, String>>> {
         let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
@@ -582,7 +761,7 @@ impl RuntimeStates {
             .entry(id.to_string())
             .or_default()
             .push(PendingCarry {
-                program: program.to_string(),
+                program,
                 module: module.to_string(),
                 reply,
             });
@@ -790,6 +969,10 @@ static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 pub struct RuntimeDriver {
     process: ProcessDriver,
     module: String,
+    /// Its module's version, and the tasks it says it runs (`profile.tasks`): `None` for a
+    /// module that runs one program in one cyclic task.
+    module_version: String,
+    support: Option<TaskSupport>,
     env: RuntimeEnv,
     generation: u64,
     instance: Option<RuntimeInstance>,
@@ -817,6 +1000,8 @@ impl RuntimeDriver {
     pub fn new(module: Arc<ModuleBinary>, env: RuntimeEnv) -> Self {
         Self {
             module: module.manifest.provides.clone(),
+            module_version: module.manifest.version.clone(),
+            support: TaskSupport::of(&module.manifest.profile),
             process: ProcessDriver::new(module),
             env,
             generation: GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1,
@@ -897,7 +1082,7 @@ impl RuntimeDriver {
         let Some(answer) =
             self.env
                 .states
-                .ask_variables(&instance.id, &instance.program.name, &self.module)
+                .ask_variables(&instance.id, instance.program_key(), &self.module)
         else {
             return Err("no build of it was loaded".to_string());
         };
@@ -966,13 +1151,14 @@ impl RuntimeDriver {
         let program = self
             .instance
             .as_ref()
-            .map(|i| i.program.name.clone())
+            .map(RuntimeInstance::program_key)
             .unwrap_or_default();
         for ask in asks {
             let answer = if ask.program != program {
                 Err(format!(
-                    "the program running was '{program}', not '{}'",
-                    ask.program
+                    "the program running was '{}', not '{}'",
+                    program.join(","),
+                    ask.program.join(",")
                 ))
             } else if ask.module != self.module {
                 Err(format!(
@@ -1010,7 +1196,7 @@ impl RuntimeDriver {
         };
         let owner = Self::owner(&instance.id);
         self.written.clear();
-        for o in &instance.program.outputs {
+        for (_, o) in instance.outputs() {
             if self.safe.contains(&o.tag) {
                 continue;
             }
@@ -1038,13 +1224,56 @@ impl RuntimeDriver {
         }
     }
 
-    /// Write the outputs the program changed since they were last confirmed.
+    /// Write the outputs the program changed since they were last confirmed. With tasks
+    /// written out, an output the reply leaves out, of a program whose task has ended no run
+    /// since RUN, is written its safe value: that can last without limit (a task's phase, an
+    /// event that does not come), and nothing else writes an output the runtime claims. Given
+    /// no tasks, its one program's outputs are left out only until its first scan ends, and are
+    /// left as they were, as before there were tasks.
     async fn write_outputs(&mut self, reply: &ExchangeReply) {
         let Some(instance) = &self.instance else {
             return;
         };
         let owner = Self::owner(&instance.id);
-        self.safe.clear();
+        let reported: HashSet<&str> = reply.outputs.iter().map(|o| o.tag.as_str()).collect();
+        let silent: Vec<&OutputBinding> = if instance.tasks.is_empty() {
+            Vec::new()
+        } else {
+            instance
+                .outputs()
+                .into_iter()
+                .map(|(_, o)| o)
+                .filter(|o| !reported.contains(o.tag.as_str()))
+                .collect()
+        };
+        self.safe.retain(|tag| silent.iter().any(|o| &o.tag == tag));
+        for o in silent {
+            if self.safe.contains(&o.tag) {
+                continue;
+            }
+            if self.claim.is_some_and(|c| !self.env.io.holds(&o.tag, c)) {
+                continue;
+            }
+            self.written.remove(&o.tag);
+            match self
+                .env
+                .io
+                .write_tag_as(&o.tag, o.safe.clone(), Some(&owner))
+                .await
+            {
+                Ok(()) => {
+                    self.safe.insert(o.tag.clone());
+                    self.errors.remove(&o.tag);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "{owner}: the safe value of {} was not confirmed: {e}",
+                        o.tag
+                    );
+                    self.errors.insert(o.tag.clone(), e.to_string());
+                }
+            }
+        }
         for o in &reply.outputs {
             if self.written.get(&o.tag) == Some(&o.value) {
                 continue;
@@ -1075,13 +1304,13 @@ impl RuntimeDriver {
             return;
         };
         let state = self.last.as_ref();
+        let (program, version) = instance.names_and_versions();
         let outputs: Vec<OutputStatus> = instance
-            .program
-            .outputs
-            .iter()
-            .map(|o| OutputStatus {
+            .outputs()
+            .into_iter()
+            .map(|(p, o)| OutputStatus {
                 tag: o.tag.clone(),
-                variable: o.variable.clone(),
+                variable: instance.variable_name(p, &o.variable),
                 safe: o.safe.clone(),
                 written: if self.safe.contains(&o.tag) {
                     Some(o.safe.clone())
@@ -1096,9 +1325,9 @@ impl RuntimeDriver {
             RuntimeStatus {
                 id: instance.id.clone(),
                 module: self.module.clone(),
-                program: instance.program.name.clone(),
-                version: instance.program.version.clone(),
-                interval_ms: instance.program.interval_ms,
+                program,
+                version,
+                interval_ms: instance.interval_ms(),
                 mode: mode.to_string(),
                 reason,
                 // What the module last said, and only that: a module that does not answer
@@ -1108,24 +1337,129 @@ impl RuntimeDriver {
                 max_scan_us: state.filter(|s| s.scans > 0).map(|s| s.max_scan_us),
                 overruns: state.map(|s| s.overruns),
                 outputs_safe: instance
-                    .program
-                    .outputs
+                    .outputs()
                     .iter()
-                    .all(|o| self.safe.contains(&o.tag)),
+                    .all(|(_, o)| self.safe.contains(&o.tag)),
                 outputs,
                 pid: self.process.pid(),
                 restarts: self.process.restarts(),
                 forced: state.map(|s| s.forced.clone()),
                 forced_tags: state
-                    .map(|s| forced_tags(&instance.program, &s.forced))
+                    .map(|s| instance_forced_tags(instance, &s.forced))
                     .unwrap_or_default(),
+                programs: state.map(|s| s.programs.clone()).unwrap_or_default(),
+                tasks: state.map(|s| s.tasks.clone()).unwrap_or_default(),
             },
         );
     }
 
     fn parse(config: &Value) -> Result<RuntimeInstance, PluginError> {
-        serde_json::from_value(config.clone())
-            .map_err(|e| PluginError::InvalidConfiguration(format!("not a runtime instance: {e}")))
+        let instance: RuntimeInstance = serde_json::from_value(config.clone()).map_err(|e| {
+            PluginError::InvalidConfiguration(format!("not a runtime instance: {e}"))
+        })?;
+        instance
+            .check()
+            .map_err(PluginError::InvalidConfiguration)?;
+        Ok(instance)
+    }
+
+    /// Whether its module runs `instance` as written: see [`support_problem`].
+    fn check_support(&self, instance: &RuntimeInstance) -> Result<(), PluginError> {
+        match support_problem(
+            &self.module,
+            &self.module_version,
+            self.support.as_ref(),
+            instance,
+        ) {
+            Some(problem) => Err(PluginError::InvalidConfiguration(problem)),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Why the runtime module `module` (version `version`), which says it runs the tasks
+/// `support`, would not run `instance` as written (ADR-013 §2.19); `None` when it would. A
+/// module that does not say it runs tasks is given only a runtime that runs as today, and a
+/// module that does only the kinds of task it lists. Checked before the module is asked,
+/// because a module that does not know tasks ignores them and would run something else than
+/// was written.
+fn support_problem(
+    module: &str,
+    version: &str,
+    support: Option<&TaskSupport>,
+    instance: &RuntimeInstance,
+) -> Option<String> {
+    let module = format!("the runtime module '{module}' (version {version})");
+    let id = &instance.id;
+    let Some(support) = support else {
+        if instance.runs_as_today() {
+            if instance.program.is_none() {
+                // Such a module reads its one program from `program`, and is not sent one.
+                return Some(format!(
+                    "runtime '{id}' gives its one program in programs; {module} reads it only from program and does not say it runs tasks: give it as program, or install a newer build of it"
+                ));
+            }
+            return None;
+        }
+        let programs = instance.all_programs();
+        let has = match (instance.tasks.first(), programs.as_slice()) {
+            (Some(task), [program]) => {
+                format!(
+                    "task '{}' of kind {}{}",
+                    task.name,
+                    task.kind.name(),
+                    not_as_today(task, program)
+                )
+            }
+            _ => format!("{} programs", programs.len()),
+        };
+        return Some(format!(
+            "runtime '{id}' has {has}; {module} runs one program in one cyclic task and does not say it runs tasks: install a newer build of it"
+        ));
+    };
+    let task = instance
+        .tasks
+        .iter()
+        .find(|t| !support.kinds.iter().any(|k| k == t.kind.name()))?;
+    let runs = if support.kinds.is_empty() {
+        "none".to_string()
+    } else {
+        support.kinds.join(", ")
+    };
+    Some(format!(
+        "runtime '{id}': task '{}' is a {} task, which {module} does not run (it runs: {runs})",
+        task.name,
+        task.kind.name()
+    ))
+}
+
+/// What makes a cyclic task of one program not the program's implied task, as the words that
+/// follow its kind in a refusal: empty for another kind, which its kind already says.
+fn not_as_today(task: &TaskConfig, program: &RuntimeProgram) -> String {
+    let TaskKind::Cyclic {
+        interval_ms,
+        phase_ms,
+    } = task.kind
+    else {
+        return String::new();
+    };
+    let mut why = Vec::new();
+    if interval_ms != program.interval_ms {
+        why.push(format!(
+            "interval_ms {interval_ms}, not its program's {}",
+            program.interval_ms
+        ));
+    }
+    if phase_ms != 0 {
+        why.push(format!("phase_ms {phase_ms}"));
+    }
+    if let Some(ms) = task.watchdog_ms {
+        why.push(format!("watchdog_ms {ms}"));
+    }
+    if why.is_empty() {
+        String::new()
+    } else {
+        format!(" with {}", why.join(" and "))
     }
 }
 
@@ -1167,6 +1501,33 @@ fn forced_tags(program: &RuntimeProgram, forced: &[ForcedValue]) -> Vec<String> 
     tags.into_iter().collect()
 }
 
+/// Every tag bound to one of the forced variables of a runtime. With one program a variable is
+/// named by its path; with several by `<program>.<path>`, the program in any case, and a forced
+/// `a.x` is bound where program `a` binds `x`.
+fn instance_forced_tags(instance: &RuntimeInstance, forced: &[ForcedValue]) -> Vec<String> {
+    let programs = instance.all_programs();
+    if let [program] = programs.as_slice() {
+        return forced_tags(program, forced);
+    }
+    let mut tags = BTreeSet::new();
+    for program in programs {
+        let of_program: Vec<ForcedValue> = forced
+            .iter()
+            .filter_map(|f| {
+                let (name, path) = f.variable.split_once('.')?;
+                name.trim()
+                    .eq_ignore_ascii_case(&program.name)
+                    .then(|| ForcedValue {
+                        variable: path.to_string(),
+                        value: f.value.clone(),
+                    })
+            })
+            .collect();
+        tags.extend(forced_tags(program, &of_program));
+    }
+    tags.into_iter().collect()
+}
+
 fn mode_name(mode: RuntimeMode) -> &'static str {
     match mode {
         RuntimeMode::Run => "run",
@@ -1188,6 +1549,7 @@ impl MythosPlugin for RuntimeDriver {
     /// Load the program into a module process, then claim its outputs.
     async fn start(&mut self, ctx: &PluginContext, config: &Value) -> Result<(), PluginError> {
         let instance = Self::parse(config)?;
+        self.check_support(&instance)?;
         let retain_file = self.env.retain.as_ref().and_then(|r| r.file(&instance.id));
         // How it starts (ADR-013 §2.5). Cold when the load asks for it. Changed online when it
         // replaces a running build of the same program: it takes over that build's variables.
@@ -1246,10 +1608,9 @@ impl MythosPlugin for RuntimeDriver {
         self.sent = Some(sent);
         self.retain_due = Instant::now();
         let outputs: Vec<String> = instance
-            .program
-            .outputs
+            .outputs()
             .iter()
-            .map(|o| o.tag.clone())
+            .map(|(_, o)| o.tag.clone())
             .collect();
         match self.env.io.claim(&Self::owner(&instance.id), &outputs) {
             Ok(claim) => self.claim = Some(claim),
@@ -1259,10 +1620,9 @@ impl MythosPlugin for RuntimeDriver {
             }
         }
         let mut reads: Vec<String> = instance
-            .program
-            .inputs
+            .all_programs()
             .iter()
-            .map(|i| i.tag.clone())
+            .flat_map(|p| p.inputs.iter().map(|i| i.tag.clone()))
             .collect();
         reads.sort();
         reads.dedup();
@@ -1306,7 +1666,8 @@ impl MythosPlugin for RuntimeDriver {
 #[async_trait]
 impl ProtocolDriver for RuntimeDriver {
     async fn describe_config(&self, config: &Value) -> Result<Vec<TagDeclaration>, PluginError> {
-        Self::parse(config)?;
+        let instance = Self::parse(config)?;
+        self.check_support(&instance)?;
         self.process.describe_config(config).await
     }
 
@@ -1568,7 +1929,7 @@ mod tests {
                 module: "vm".into(),
                 program: "P".into(),
                 version: "1".into(),
-                interval_ms: 20,
+                interval_ms: Some(20),
                 mode: "run".into(),
                 reason: None,
                 scans: Some(1),
@@ -1581,6 +1942,8 @@ mod tests {
                 restarts: 0,
                 forced: Some(Vec::new()),
                 forced_tags: Vec::new(),
+                programs: Vec::new(),
+                tasks: Vec::new(),
             },
         );
     }
@@ -1588,7 +1951,7 @@ mod tests {
     #[test]
     fn the_tags_of_a_forced_variable_are_every_tag_bound_to_it_whatever_its_case() {
         let instance: RuntimeInstance = serde_json::from_value(instance("t")).unwrap();
-        let mut program = instance.program;
+        let mut program = instance.program.unwrap();
         program.inputs.push(mythos_module::protocol::InputBinding {
             variable: "B".into(),
             tag: "external.A.B.e".into(),
@@ -1744,5 +2107,372 @@ mod tests {
         assert_eq!(io.owner_of(&tags[1]), None);
         io.release(second);
         assert_eq!(io.owner_of(&tags[0]), None);
+    }
+
+    /// A runtime `t` of the programs `names`, each with one output and one published tag of
+    /// its own, run by `tasks`.
+    fn several(names: &[&str], tasks: Value) -> Value {
+        let programs: Vec<Value> = names
+            .iter()
+            .map(|n| {
+                json!({
+                    "name": n, "version": "1", "interval_ms": 20, "code": "00",
+                    "outputs": [{"variable": "o", "tag": format!("external.A.{n}.o"), "safe": 0}],
+                    "published": [{"variable": "p", "tag": format!("internal.A.{n}.p")}]
+                })
+            })
+            .collect();
+        json!({"id": "t", "module": "vm", "run": true, "programs": programs, "tasks": tasks})
+    }
+
+    fn cyclic(name: &str, ms: u64, programs: &[&str]) -> Value {
+        json!({"name": name, "kind": {"type": "cyclic", "interval_ms": ms},
+               "priority": 5, "programs": programs})
+    }
+
+    fn parsed(i: Value) -> RuntimeInstance {
+        serde_json::from_value(i).unwrap()
+    }
+
+    #[test]
+    fn validate_refuses_each_task_mistake_with_its_message() {
+        let two = || {
+            several(
+                &["a", "b"],
+                json!([cyclic("f", 10, &["a"]), cyclic("s", 50, &["b"])]),
+            )
+        };
+        assert_eq!(check(vec![two()]), Ok(()));
+        let with = |change: &dyn Fn(&mut Value)| {
+            let mut i = two();
+            change(&mut i);
+            check(vec![i]).unwrap_err()
+        };
+        let both = with(&|i| i["program"] = i["programs"][0].clone());
+        assert_eq!(both, "runtime 't': give program or programs, not both");
+        assert_eq!(
+            with(&|i| i["programs"] = json!([])),
+            "runtime 't': it runs no program"
+        );
+        assert_eq!(
+            with(&|i| i["tasks"] = json!([])),
+            "runtime 't': it runs several programs and names no task: each program needs a task"
+        );
+        assert_eq!(
+            with(&|i| i["programs"][1]["name"] = json!("A")),
+            "runtime 't': two programs are named 'A'"
+        );
+        assert_eq!(
+            with(&|i| i["programs"][1]["name"] = json!("b.c")),
+            "runtime 't': 'b.c' is not a program name: no '.', '[', ']' or spaces"
+        );
+        assert_eq!(
+            with(&|i| i["tasks"][0]["name"] = json!("f 1")),
+            "runtime 't': 'f 1' is not a task name: use 1 to 64 letters, digits, '-' or '_'"
+        );
+        assert_eq!(
+            with(&|i| i["tasks"][1]["name"] = json!("f")),
+            "runtime 't': task name 'f' is used more than once"
+        );
+        assert_eq!(
+            with(&|i| i["tasks"][0]["priority"] = json!(32)),
+            "runtime 't': task 'f' has priority 32; priorities are 0 (highest) to 31"
+        );
+        assert_eq!(
+            with(&|i| i["tasks"][0]["kind"]["interval_ms"] = json!(0)),
+            "runtime 't': task 'f' has interval_ms 0; it must be at least 1"
+        );
+        assert_eq!(
+            with(&|i| i["tasks"][0]["kind"]["phase_ms"] = json!(u64::MAX / 1_000)),
+            "runtime 't': task 'f': phase_ms is too long"
+        );
+        assert_eq!(
+            with(&|i| i["tasks"][0]["watchdog_ms"] = json!(0)),
+            "runtime 't': task 'f': watchdog_ms must be at least 1"
+        );
+        assert_eq!(
+            with(&|i| i["tasks"][0]["kind"] = json!({"type": "event", "tag": " "})),
+            "runtime 't': event task 'f' names no tag"
+        );
+        assert_eq!(
+            with(&|i| i["tasks"][0]["programs"] = json!([])),
+            "runtime 't': task 'f' runs no program"
+        );
+        assert_eq!(
+            with(&|i| i["tasks"][0]["programs"] = json!(["a", "z"])),
+            "runtime 't': task 'f' runs 'z', which is not a program of this runtime (it has a, b)"
+        );
+        assert_eq!(
+            with(&|i| i["tasks"][0]["programs"] = json!(["a", "A"])),
+            "runtime 't': task 'f' names 'A' twice"
+        );
+        assert_eq!(
+            with(&|i| i["tasks"][1]["programs"] = json!(["b", "a"])),
+            "runtime 't': program 'a' is in tasks 'f' and 's'; a program is in one task"
+        );
+        assert_eq!(
+            with(&|i| i["tasks"] = json!([cyclic("f", 10, &["a"])])),
+            "runtime 't': program 'b' is in no task, so it would never run"
+        );
+        // A task, and a kind, serde does not know is no configuration.
+        assert!(with(&|i| i["tasks"][0]["phase"] = json!(1)).contains("unknown field `phase`"));
+        assert!(with(&|i| i["tasks"][0]["kind"]["type"] = json!("hourly")).contains("hourly"));
+        assert!(with(&|i| {
+            i["tasks"][0].as_object_mut().unwrap().remove("priority");
+        })
+        .contains("missing field `priority`"));
+
+        // A binding of one program of several names the program.
+        assert_eq!(
+            with(&|i| i["programs"][1]["outputs"][0]["safe"] = json!("off")),
+            "runtime 't': program 'b': the safe value of external.A.b.o must be a number or a boolean"
+        );
+        // One tag has one writer, and one publisher, inside one runtime too.
+        assert_eq!(
+            with(&|i| i["programs"][1]["outputs"][0]["tag"] = json!("external.A.a.o")),
+            "external.A.a.o is an output of both 't/a' and 't/b': one tag has one writer"
+        );
+        assert_eq!(
+            with(&|i| i["programs"][1]["published"][0]["tag"] = json!("internal.A.a.p")),
+            "internal.A.a.p is published by both 't/a' and 't/b'"
+        );
+        // With tasks written out a program's interval is not used, so 0 is no mistake.
+        let mut ignored = two();
+        ignored["programs"][0]["interval_ms"] = json!(0);
+        assert_eq!(check(vec![ignored]), Ok(()));
+
+        // One program keeps today's words, and any name, with tasks written out or not.
+        let mut one = instance("tank");
+        one["program"]["name"] = json!("P.1");
+        assert_eq!(check(vec![one.clone()]), Ok(()));
+        one["tasks"] = json!([cyclic("main", 10, &["p.1"])]);
+        assert_eq!(check(vec![one.clone()]), Ok(()));
+        one["program"]["outputs"][0]["safe"] = json!("off");
+        assert_eq!(
+            check(vec![one]).unwrap_err(),
+            "runtime 'tank': the safe value of external.A.B.d must be a number or a boolean"
+        );
+        let mut two_runtimes = instance("a");
+        two_runtimes["program"]["outputs"][0]["tag"] = json!("external.A.a.o");
+        assert_eq!(
+            check(vec![two_runtimes, two()]).unwrap_err(),
+            "external.A.a.o is an output of both 'a' and 't/a': one tag has one writer"
+        );
+    }
+
+    #[test]
+    fn a_runtime_runs_as_today_only_with_one_program_in_one_cyclic_task_at_its_interval() {
+        let today = parsed(instance("t"));
+        assert!(today.runs_as_today());
+        assert_eq!(
+            today.effective_tasks(),
+            vec![implied_task(today.program.as_ref().unwrap())]
+        );
+        let with_task = |task: Value| {
+            let mut i = instance("t");
+            i["tasks"] = json!([task]);
+            parsed(i).runs_as_today()
+        };
+        // Written out as the implied task, at any priority and in any case.
+        let mut same = cyclic("main", 20, &["p"]);
+        same["priority"] = json!(0);
+        assert!(with_task(same.clone()));
+        assert!(!with_task(cyclic("main", 50, &["P"])), "another interval");
+        let mut phased = same.clone();
+        phased["kind"]["phase_ms"] = json!(5);
+        assert!(!with_task(phased), "a phase");
+        let mut guarded = same.clone();
+        guarded["watchdog_ms"] = json!(100);
+        assert!(!with_task(guarded), "a watchdog");
+        let mut startup = same.clone();
+        startup["kind"] = json!({"type": "startup"});
+        assert!(!with_task(startup), "another kind");
+        let mut two_tasks = instance("t");
+        two_tasks["tasks"] = json!([same.clone(), same]);
+        assert!(!parsed(two_tasks).runs_as_today());
+        let two = parsed(several(&["b", "a"], json!([cyclic("f", 20, &["a", "b"])])));
+        assert!(!two.runs_as_today(), "two programs");
+        assert_eq!(two.effective_tasks(), two.tasks);
+    }
+
+    #[test]
+    fn the_program_key_is_the_sorted_names_and_one_program_s_is_its_name() {
+        assert_eq!(parsed(instance("t")).program_key(), ["P"]);
+        let two = parsed(several(&["b", "a"], json!([cyclic("f", 20, &["a", "b"])])));
+        assert_eq!(two.program_key(), ["a", "b"]);
+    }
+
+    #[test]
+    fn two_different_program_sets_have_different_program_keys() {
+        // A program name may hold a ','; joined into one string, these three sets were one key.
+        let one = parsed(several(
+            &["a,b", "c"],
+            json!([cyclic("x", 10, &["a,b", "c"])]),
+        ));
+        let other = parsed(several(
+            &["a", "b,c"],
+            json!([cyclic("x", 10, &["a", "b,c"])]),
+        ));
+        let mut single = instance("t");
+        single["program"]["name"] = json!("a,b");
+        let single = parsed(single);
+        let pair = parsed(several(&["a", "b"], json!([cyclic("x", 10, &["a", "b"])])));
+        for i in [&one, &other, &single, &pair] {
+            assert_eq!(check_tasks(&i.all_programs(), &i.tasks), Ok(()));
+        }
+        assert_ne!(one.program_key(), other.program_key());
+        assert_ne!(single.program_key(), pair.program_key());
+        assert_eq!(single.program_key(), ["a,b"]);
+    }
+
+    #[test]
+    fn the_exchange_period_and_the_interval_follow_the_tasks() {
+        let today = parsed(instance("t"));
+        assert_eq!((today.exchange_ms(), today.interval_ms()), (20, Some(20)));
+        let mut slow = instance("t");
+        slow["program"]["interval_ms"] = json!(1_000);
+        assert_eq!(parsed(slow).exchange_ms(), 200, "as today: clamped");
+        let tasks = |tasks: Value| parsed(several(&["a", "b"], tasks));
+        let cyc = tasks(json!([cyclic("f", 30, &["a"]), cyclic("s", 100, &["b"])]));
+        assert_eq!((cyc.exchange_ms(), cyc.interval_ms()), (30, Some(30)));
+        let event = tasks(json!([
+            cyclic("s", 100, &["b"]),
+            {"name": "e", "kind": {"type": "event", "tag": "external.A.B.c"}, "priority": 1, "programs": ["a"]}
+        ]));
+        assert_eq!((event.exchange_ms(), event.interval_ms()), (20, Some(100)));
+        let none = tasks(json!([
+            {"name": "c", "kind": {"type": "cycle"}, "priority": 31, "programs": ["a"]},
+            {"name": "s", "kind": {"type": "startup"}, "priority": 0, "programs": ["b"]}
+        ]));
+        assert_eq!(
+            (none.exchange_ms(), none.interval_ms()),
+            (200, None),
+            "no cyclic task: no interval is reported"
+        );
+        // One program in a written-out task of another interval: the task's.
+        let mut one = instance("t");
+        one["tasks"] = json!([cyclic("main", 50, &["P"])]);
+        let one = parsed(one);
+        assert_eq!((one.exchange_ms(), one.interval_ms()), (50, Some(50)));
+    }
+
+    #[test]
+    fn an_older_module_is_given_only_what_runs_as_today_and_a_newer_one_only_its_kinds() {
+        let problem = |support: Option<&TaskSupport>, i: Value| {
+            support_problem("vm", "0.4.0", support, &parsed(i))
+        };
+        assert_eq!(problem(None, instance("t")), None);
+        let mut as_today = instance("t");
+        as_today["tasks"] = json!([cyclic("main", 20, &["P"])]);
+        assert_eq!(problem(None, as_today), None);
+        let two = several(
+            &["a", "b"],
+            json!([cyclic("f", 20, &["a"]), cyclic("s", 50, &["b"])]),
+        );
+        assert_eq!(
+            problem(None, two.clone()).as_deref(),
+            Some("runtime 't' has 2 programs; the runtime module 'vm' (version 0.4.0) runs one program in one cyclic task and does not say it runs tasks: install a newer build of it")
+        );
+        let mut startup = instance("t");
+        startup["tasks"] = json!([{"name": "boot", "kind": {"type": "startup"}, "priority": 0, "programs": ["P"]}]);
+        assert_eq!(
+            problem(None, startup.clone()).as_deref(),
+            Some("runtime 't' has task 'boot' of kind startup; the runtime module 'vm' (version 0.4.0) runs one program in one cyclic task and does not say it runs tasks: install a newer build of it")
+        );
+        let cyclic_only = TaskSupport {
+            kinds: vec!["cyclic".into(), "cycle".into()],
+        };
+        assert_eq!(problem(Some(&cyclic_only), two), None);
+        assert_eq!(
+            problem(Some(&cyclic_only), startup.clone()).as_deref(),
+            Some("runtime 't': task 'boot' is a startup task, which the runtime module 'vm' (version 0.4.0) does not run (it runs: cyclic, cycle)")
+        );
+        let nothing = TaskSupport { kinds: vec![] };
+        assert!(problem(Some(&nothing), startup)
+            .unwrap()
+            .ends_with("(it runs: none)"));
+        assert_eq!(
+            problem(Some(&nothing), instance("t")),
+            None,
+            "the implied task needs no kind"
+        );
+    }
+
+    #[test]
+    fn one_program_written_in_programs_is_refused_by_an_older_module_in_its_words() {
+        // Such a module reads its program from `program`: sent `programs`, it could not read
+        // it. Refused here, in words that say what to do, whether or not a task is written out.
+        let mut alone = several(&["Tank"], json!([]));
+        alone["tasks"] = json!([]);
+        let mut with_task = several(&["Tank"], json!([cyclic("main", 20, &["Tank"])]));
+        with_task["tasks"][0]["priority"] = json!(31);
+        for i in [alone, with_task] {
+            let i = parsed(i);
+            assert!(i.runs_as_today());
+            assert_eq!(i.check(), Ok(()));
+            assert_eq!(
+                support_problem("vm", "0.4.0", None, &i).as_deref(),
+                Some("runtime 't' gives its one program in programs; the runtime module 'vm' (version 0.4.0) reads it only from program and does not say it runs tasks: give it as program, or install a newer build of it")
+            );
+            let tasks = TaskSupport {
+                kinds: vec!["cyclic".into()],
+            };
+            assert_eq!(support_problem("vm", "0.5.0", Some(&tasks), &i), None);
+        }
+    }
+
+    #[test]
+    fn the_refusal_of_one_cyclic_task_names_what_makes_it_not_run_as_today() {
+        let refused = |task: Value| {
+            let mut i = instance("t");
+            i["tasks"] = json!([task]);
+            support_problem("vm", "0.4.0", None, &parsed(i)).unwrap()
+        };
+        let older = "; the runtime module 'vm' (version 0.4.0) runs one program in one cyclic task and does not say it runs tasks: install a newer build of it";
+        let mut task = cyclic("main", 20, &["P"]);
+        task["watchdog_ms"] = json!(500);
+        assert_eq!(
+            refused(task),
+            format!("runtime 't' has task 'main' of kind cyclic with watchdog_ms 500{older}")
+        );
+        let mut task = cyclic("main", 20, &["P"]);
+        task["kind"]["phase_ms"] = json!(5);
+        assert_eq!(
+            refused(task),
+            format!("runtime 't' has task 'main' of kind cyclic with phase_ms 5{older}")
+        );
+        let mut task = cyclic("main", 50, &["P"]);
+        task["kind"]["phase_ms"] = json!(5);
+        task["watchdog_ms"] = json!(500);
+        assert_eq!(
+            refused(task),
+            format!("runtime 't' has task 'main' of kind cyclic with interval_ms 50, not its program's 20 and phase_ms 5 and watchdog_ms 500{older}")
+        );
+    }
+
+    #[test]
+    fn a_forced_variable_of_a_runtime_of_several_programs_is_bound_in_its_own_program() {
+        let mut i = several(&["a", "b"], json!([cyclic("f", 20, &["a", "b"])]));
+        // Both programs have a variable `o`; only program a's is forced.
+        i["programs"][0]["inputs"] = json!([{"variable": "O", "tag": "external.A.in"}]);
+        let i = parsed(i);
+        let forced = |names: &[&str]| -> Vec<ForcedValue> {
+            names
+                .iter()
+                .map(|n| ForcedValue {
+                    variable: n.to_string(),
+                    value: json!(1),
+                })
+                .collect()
+        };
+        assert_eq!(
+            instance_forced_tags(&i, &forced(&["A.o"])),
+            vec!["external.A.a.o".to_string(), "external.A.in".to_string()]
+        );
+        assert_eq!(
+            instance_forced_tags(&i, &forced(&["b.p", "o", "c.o"])),
+            vec!["internal.A.b.p".to_string()],
+            "an unprefixed name, or another program's, binds nothing"
+        );
     }
 }

@@ -292,25 +292,35 @@ fn a_cycle_task_ready_again_at_its_end_does_not_pass_one_ready_since_before() {
 
 #[test]
 fn times_at_the_ends_of_the_clock_saturate_and_do_not_overflow() {
-    // Every nanosecond due since 0: all but one run missed, more than the counter holds.
+    // Every nanosecond due since 0: all but one of the i64::MAX + 1 due times missed, each
+    // counted: a counter is a u64 and does not stop at u32::MAX.
     let mut t = [cyclic(1, 0, 1)];
     start(&mut t, 0);
     assert_eq!(next(&mut t, i64::MAX), Next::Begin(0));
-    assert_eq!(t[0].counters().overruns, u32::MAX);
+    assert_eq!(t[0].counters().overruns, i64::MAX.unsigned_abs());
+    assert!(t[0].counters().overruns > u64::from(u32::MAX));
     assert_eq!(wake(&t), Some(i64::MAX));
 
     // From a start before zero to the end of the clock: a distance beyond i64.
     let mut t = [cyclic(1000, 0, 1)];
     start(&mut t, -1);
     assert_eq!(next(&mut t, i64::MAX), Next::Begin(0));
-    assert_eq!(t[0].counters().overruns, u32::MAX);
+    assert_eq!(
+        t[0].counters().overruns,
+        9_223_372_036_854_775,
+        "2^63 / 1000 due times missed"
+    );
 
     // A run in progress across them, reported at its end.
     let mut t = [cyclic(1, 0, 1)];
     start(&mut t, i64::MIN);
     assert_eq!(next(&mut t, i64::MIN), Next::Begin(0));
     assert!(ended(&mut t, 0, i64::MAX));
-    assert_eq!(t[0].counters().overruns, u32::MAX);
+    assert_eq!(
+        t[0].counters().overruns,
+        u64::MAX - 1,
+        "the 2^64 - 2 due times from MIN + 1 to before MAX passed while it ran"
+    );
 }
 
 #[test]

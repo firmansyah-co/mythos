@@ -25,6 +25,8 @@ struct Stubborn {
 impl Stubborn {
     fn state(&self) -> RuntimeState {
         RuntimeState {
+            tasks: Vec::new(),
+            programs: Vec::new(),
             mode: RuntimeMode::Run,
             fault: None,
             program: "stubborn".to_string(),
