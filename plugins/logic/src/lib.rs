@@ -38,6 +38,7 @@ use mythos_logic_compiler::{
     check_project, compile_sources, At, BodyOf, DataBlock, Diagnostic, Holds, Sources, Symbol,
     TargetProfile,
 };
+use mythos_logic_st::ast::PouKind;
 use mythos_module::protocol::{
     check_data, DataBlock as RuntimeDataBlock, DataBlockMember, DataMember, DataUse, HttpCall,
     HttpReply, InputBinding, InputOf, ModuleKind, ModuleManifest, OutputBinding, PublishedBinding,
@@ -279,9 +280,13 @@ struct Project {
     /// `(source name, text)` of each library source: `logic/library/X.st`, by file name.
     library: Vec<(String, String)>,
     blocks: Vec<BlockEntry>,
-    /// `blocks.json` could not be read as the project's data blocks: the blocks are taken as
-    /// not checking.
-    problem: Option<Diagnostic>,
+    /// Why the project's data cannot be read as it is: `blocks.json` is not the project's
+    /// data blocks (or not a file), `data/types` is not a directory, a type file is not text.
+    /// The stored data is then taken as not checking, and no program is refused for it.
+    problems: Vec<Diagnostic>,
+    /// Library sources that cannot be read as text, each a diagnostic naming its source: a
+    /// mistake of the library, which refuses every program as any other does.
+    unreadable_library: Vec<Diagnostic>,
 }
 
 impl Project {
@@ -290,27 +295,35 @@ impl Project {
         self.types.is_empty()
             && self.library.is_empty()
             && self.blocks.is_empty()
-            && self.problem.is_none()
+            && self.problems.is_empty()
+            && self.unreadable_library.is_empty()
     }
 }
 
-/// Every source in `dir` by the file rule: a regular file directly in it (a link or a
-/// directory is not one), named `<stem>.st` with a stem that `takes`; anything else is
-/// ignored. Each as `(stem, text)`, sorted by file name in byte order: every name is its stem
-/// followed by `.st`, and `.` sorts before every character a stem may hold, so sorting the
-/// stems sorts the names. A missing directory holds none.
-fn read_sources(dir: &Path, takes: fn(&str) -> bool) -> Result<Vec<(String, String)>, Refusal> {
-    let fail = |path: &Path, e: std::io::Error| error(500, format!("{}: {e}", path.display()));
+/// The library's file rule: a library source's name.
+fn library_file(stem: &str) -> bool {
+    library_name_problem(stem).is_none()
+}
+
+/// Every file in `dir` by the file rule: a regular file directly in it (a link or a directory
+/// is not one), named `<stem>.st` with a stem that `takes`; anything else is ignored. Each as
+/// `(stem, path)`, sorted by file name in byte order: every name is its stem followed by
+/// `.st`, and `.` sorts before every character a stem may hold, so sorting the stems sorts the
+/// names. A missing directory holds none. Nothing is read but the directory.
+fn list_sources(
+    dir: &Path,
+    takes: fn(&str) -> bool,
+) -> Result<Vec<(String, PathBuf)>, (PathBuf, std::io::Error)> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(fail(dir, e)),
+        Err(e) => return Err((dir.to_path_buf(), e)),
     };
     let mut sources = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|e| fail(dir, e))?;
+        let entry = entry.map_err(|e| (dir.to_path_buf(), e))?;
         let path = entry.path();
-        let kind = entry.file_type().map_err(|e| fail(&path, e))?;
+        let kind = entry.file_type().map_err(|e| (path.clone(), e))?;
         if !kind.is_file() {
             continue;
         }
@@ -318,20 +331,61 @@ fn read_sources(dir: &Path, takes: fn(&str) -> bool) -> Result<Vec<(String, Stri
         let Some(stem) = file_name.to_str().and_then(|n| source_stem(n, takes)) else {
             continue;
         };
-        let text = std::fs::read_to_string(&path).map_err(|e| fail(&path, e))?;
-        sources.push((stem.to_string(), text));
+        sources.push((stem.to_string(), path));
     }
     sources.sort_by(|(a, _), (b, _)| a.as_bytes().cmp(b.as_bytes()));
     Ok(sources)
 }
 
-/// The bytes of `blocks.json`, `None` when there is none.
-fn read_blocks_bytes(path: &Path) -> Result<Option<Vec<u8>>, Refusal> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(error(500, format!("{}: {e}", path.display()))),
+/// The sources of [`list_sources`], read: `(stem, text)` of each, and `(stem, why)` of each
+/// that cannot be read as text. A file removed since it was listed is not there.
+struct Read {
+    texts: Vec<(String, String)>,
+    unreadable: Vec<(String, String)>,
+}
+
+fn read_sources(dir: &Path, takes: fn(&str) -> bool) -> Result<Read, (PathBuf, std::io::Error)> {
+    let mut read = Read {
+        texts: Vec::new(),
+        unreadable: Vec::new(),
+    };
+    for (stem, path) in list_sources(dir, takes)? {
+        match std::fs::read(&path) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => read.texts.push((stem, text)),
+                Err(e) => read
+                    .unreadable
+                    .push((stem, format!("it is not UTF-8 text ({})", e.utf8_error()))),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => read.unreadable.push((stem, e.to_string())),
+        }
     }
+    Ok(read)
+}
+
+/// `blocks.json` as read.
+#[derive(PartialEq)]
+enum BlocksRead {
+    Missing,
+    Bytes(Vec<u8>),
+    /// It cannot be read (a directory, say): why.
+    Failed(String),
+}
+
+fn read_blocks(path: &Path) -> BlocksRead {
+    match std::fs::read(path) {
+        Ok(bytes) => BlocksRead::Bytes(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BlocksRead::Missing,
+        Err(e) => BlocksRead::Failed(e.to_string()),
+    }
+}
+
+/// A diagnostic about a whole source, naming it.
+fn of_source(name: String, message: String) -> Diagnostic {
+    let mut d = Diagnostic::whole(message);
+    d.source = Some(name);
+    d
 }
 
 /// The project's data directory, beside the module's own `logic` (ADR-014 §2.8).
@@ -349,44 +403,84 @@ fn data_dir_of(logic: &Path) -> Result<PathBuf, Refusal> {
 
 /// The project's library, types and data blocks, read and never written. `blocks.json` is
 /// read before and after the types: when another process wrote it between, everything is read
-/// once more (a write between two reads can still give one compile a state that never was; no
-/// lock across processes closes that).
+/// once more (a write between two reads can still give one compile a state that never was; the
+/// data module's lock is taken by its writes only, and this module writes nothing there).
+///
+/// Data that cannot be read as it is becomes a problem of the project, never a refusal of the
+/// route: a program that uses none of it still compiles. A library directory that cannot be
+/// listed is a 500 naming it.
 fn read_project(logic: &Path) -> Result<Project, Refusal> {
     let data = data_dir_of(logic)?;
     let blocks_path = data.join(BLOCKS_FILE);
-    let library = read_sources(&logic.join(LIBRARY_DIR), |n| {
-        library_name_problem(n).is_none()
-    })?;
-    let first = read_blocks_bytes(&blocks_path)?;
-    let mut types = read_sources(&data.join(TYPES_DIR), type_name)?;
-    let mut bytes = read_blocks_bytes(&blocks_path)?;
-    if bytes != first {
-        types = read_sources(&data.join(TYPES_DIR), type_name)?;
-        bytes = read_blocks_bytes(&blocks_path)?;
+    let types_dir = data.join(TYPES_DIR);
+    let library = read_sources(&logic.join(LIBRARY_DIR), library_file)
+        .map_err(|(path, e)| error(500, format!("{}: {e}", path.display())))?;
+    let first = read_blocks(&blocks_path);
+    let mut types = read_sources(&types_dir, type_name);
+    let mut blocks = read_blocks(&blocks_path);
+    if blocks != first {
+        types = read_sources(&types_dir, type_name);
+        blocks = read_blocks(&blocks_path);
     }
-    let (blocks, problem) = match bytes {
-        None => (Vec::new(), None),
-        Some(bytes) => match serde_json::from_slice::<BlocksFile>(&bytes) {
-            Ok(file) => (file.blocks, None),
-            Err(e) => (
-                Vec::new(),
-                Some(Diagnostic::whole(format!(
-                    "data/blocks.json cannot be read as the project's data blocks: {e}"
-                ))),
-            ),
+    let mut problems = Vec::new();
+    let unreadable_blocks = |why: String| {
+        Diagnostic::whole(format!(
+            "data/blocks.json cannot be read as the project's data blocks: {why}"
+        ))
+    };
+    let blocks = match blocks {
+        BlocksRead::Missing => Vec::new(),
+        BlocksRead::Bytes(bytes) => match serde_json::from_slice::<BlocksFile>(&bytes) {
+            Ok(file) => file.blocks,
+            Err(e) => {
+                problems.push(unreadable_blocks(e.to_string()));
+                Vec::new()
+            }
         },
+        BlocksRead::Failed(why) => {
+            problems.push(unreadable_blocks(why));
+            Vec::new()
+        }
     };
-    let named = |prefix: &str, sources: Vec<(String, String)>| {
-        sources
-            .into_iter()
-            .map(|(stem, text)| (format!("{prefix}/{stem}{SOURCE_EXTENSION}"), text))
-            .collect()
+    let named = |prefix: &str, stem: &str| format!("{prefix}/{stem}{SOURCE_EXTENSION}");
+    let types = match types {
+        Ok(read) => {
+            for (stem, why) in read.unreadable {
+                let name = named("data/types", &stem);
+                let message = format!("{name} cannot be read as a type's source: {why}");
+                problems.push(of_source(name, message));
+            }
+            read.texts
+                .into_iter()
+                .map(|(stem, text)| (named("data/types", &stem), text))
+                .collect()
+        }
+        Err((_, e)) => {
+            problems.push(Diagnostic::whole(format!(
+                "data/types cannot be read as the project's types: {e}"
+            )));
+            Vec::new()
+        }
     };
+    let unreadable_library = library
+        .unreadable
+        .into_iter()
+        .map(|(stem, why)| {
+            let name = named("logic/library", &stem);
+            let message = format!("{name} cannot be read as a library source: {why}");
+            of_source(name, message)
+        })
+        .collect();
     Ok(Project {
-        types: named("data/types", types),
-        library: named("logic/library", library),
+        types,
+        library: library
+            .texts
+            .into_iter()
+            .map(|(stem, text)| (named("logic/library", &stem), text))
+            .collect(),
         blocks,
-        problem,
+        problems,
+        unreadable_library,
     })
 }
 
@@ -410,8 +504,8 @@ fn data_blocks(blocks: &[BlockEntry]) -> Vec<DataBlock<'_>> {
 /// The project's types and data blocks checked by themselves: `Err` with why when they do
 /// not check, and then a program is compiled without them.
 fn check_stored_data(project: &Project) -> Result<(), Vec<Diagnostic>> {
-    if let Some(problem) = &project.problem {
-        return Err(vec![problem.clone()]);
+    if !project.problems.is_empty() {
+        return Err(project.problems.clone());
     }
     if project.types.is_empty() && project.blocks.is_empty() {
         return Ok(());
@@ -426,11 +520,13 @@ fn check_stored_data(project: &Project) -> Result<(), Vec<Diagnostic>> {
     .map(|_| ())
 }
 
-/// A TYPE declared in a library source: refused, with where it is, since the project's types
-/// are the data module's (ADR-014 §2.8).
-fn library_types(library: &[(String, String)]) -> Vec<Diagnostic> {
-    let mut found = Vec::new();
-    for (name, text) in library {
+/// What refuses every program before it is compiled, each with where it is: a library source
+/// that cannot be read as text; a TYPE declared in a library source, since the project's types
+/// are the data module's (ADR-014 §2.8); a PROGRAM in one, said in the module's words, since
+/// the compiler's own would say a library may hold types.
+fn library_refusals(project: &Project) -> Vec<Diagnostic> {
+    let mut found = project.unreadable_library.clone();
+    for (name, text) in &project.library {
         let (read, _) =
             mythos_logic_st::parser::Parser::new(mythos_logic_st::lexer::tokens(text)).source();
         for t in &read.types {
@@ -444,12 +540,26 @@ fn library_types(library: &[(String, String)]) -> Vec<Diagnostic> {
             d.source = Some(name.clone());
             found.push(d);
         }
+        for p in read.pous.iter().filter(|p| p.kind == PouKind::Program) {
+            let mut d = Diagnostic::at(
+                p.span,
+                format!(
+                    "{} is a PROGRAM in the library source '{name}'; a library holds functions and function blocks",
+                    p.name
+                ),
+            );
+            d.source = Some(name.clone());
+            found.push(d);
+        }
     }
     found
 }
 
 /// What a program's compile is given of the project: the library sources (the types first
-/// when the stored data checks) and the data blocks, or none of the data, with why.
+/// when the stored data checks) and the data blocks, or none of the blocks, with why. When the
+/// stored data does not check, the types still come first if they check by themselves: a
+/// library source that uses one then still compiles, and no program is refused for blocks it
+/// does not use.
 struct Given<'a> {
     library: Vec<(&'a str, &'a str)>,
     data: Vec<DataBlock<'a>>,
@@ -467,11 +577,22 @@ fn given(project: &Project) -> Given<'_> {
                 problems: None,
             }
         }
-        Err(problems) => Given {
-            library: pairs(&project.library),
-            data: Vec::new(),
-            problems: Some(problems),
-        },
+        Err(problems) => {
+            let types = pairs(&project.types);
+            let typed = !types.is_empty()
+                && check_project(&Sources {
+                    library: &types,
+                    ..Default::default()
+                })
+                .is_ok();
+            let mut library = if typed { types } else { Vec::new() };
+            library.extend(pairs(&project.library));
+            Given {
+                library,
+                data: Vec::new(),
+                problems: Some(problems),
+            }
+        }
     }
 }
 
@@ -480,23 +601,33 @@ fn given(project: &Project) -> Given<'_> {
 /// slice), synced, then renamed over the file.
 fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
     let fail = |p: &Path, e: std::io::Error| error(500, format!("{}: {e}", p.display()));
-    let (Some(dir), Some(file)) = (path.parent(), path.file_name()) else {
+    let Some(tmp) = temporary_path(path) else {
         return Err(error(500, format!("{}: not a file's path", path.display())));
     };
-    std::fs::create_dir_all(dir).map_err(|e| fail(dir, e))?;
-    let tmp = dir.join(format!(
-        ".{}.{}.tmp",
-        file.to_string_lossy(),
-        std::process::id()
-    ));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| fail(dir, e))?;
+    }
+    // A temporary of this name left by an earlier process of the same pid is removed, and the
+    // temporary is then made new: never opened where it is, since whatever is at that name (a
+    // link, say) would be written through, outside this directory.
+    match std::fs::remove_file(&tmp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(fail(&tmp, e)),
+    }
+    let mut made = false;
     let written = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        made = true;
         f.write_all(bytes)?;
         f.sync_all()
     })();
     if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, path)) {
         let mut message = format!("{}: {e}", path.display());
-        if tmp.exists() {
+        if made {
             if let Err(r) = std::fs::remove_file(&tmp) {
                 message.push_str(&format!("; {} is left: {r}", tmp.display()));
             }
@@ -506,15 +637,37 @@ fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// The library source stored under another spelling of `name`, or the same: names that
-/// differ only in case are one name.
+/// The temporary a write of `path` goes through: beside it, `.<file>.<pid>.tmp`. The pid keeps
+/// two processes (during a hot swap) from writing one temporary; the `.tmp` ending keeps it
+/// out of a device's plant slice.
+fn temporary_path(path: &Path) -> Option<PathBuf> {
+    let (dir, file) = (path.parent()?, path.file_name()?);
+    Some(dir.join(format!(
+        ".{}.{}.tmp",
+        file.to_string_lossy(),
+        std::process::id()
+    )))
+}
+
+/// The library sources' names, by file name; nothing is read but the directory.
+fn library_names(data: &Path) -> Result<Vec<String>, Refusal> {
+    Ok(list_sources(&data.join(LIBRARY_DIR), library_file)
+        .map_err(|(path, e)| error(500, format!("{}: {e}", path.display())))?
+        .into_iter()
+        .map(|(stem, _)| stem)
+        .collect())
+}
+
+/// The stored spelling of library source `name`: the exact one when it is stored (two
+/// spellings can only be there by hand, on a file system that tells case apart), otherwise one
+/// that differs only in case, which is one name.
 fn stored_library_name(data: &Path, name: &str) -> Result<Option<String>, Refusal> {
-    Ok(read_sources(&data.join(LIBRARY_DIR), |n| {
-        library_name_problem(n).is_none()
-    })?
-    .into_iter()
-    .map(|(stem, _)| stem)
-    .find(|stem| stem.eq_ignore_ascii_case(name)))
+    let names = library_names(data)?;
+    Ok(names
+        .iter()
+        .find(|s| *s == name)
+        .or_else(|| names.iter().find(|s| s.eq_ignore_ascii_case(name)))
+        .cloned())
 }
 
 fn library_path(data: &Path, stem: &str) -> PathBuf {
@@ -829,10 +982,10 @@ fn compile_entry(
     // only a program that uses it (the compiler would refuse every program for it).
     let given = given(project);
     let project_problems = given.problems.clone();
-    let typed = library_types(&project.library);
-    if !typed.is_empty() {
+    let refused = library_refusals(project);
+    if !refused.is_empty() {
         return Compiling {
-            compiled: Err(typed),
+            compiled: Err(refused),
             project_problems,
         };
     }
@@ -1536,11 +1689,8 @@ fn library(call: &HttpCall, data: &Path) -> (HttpReply, Option<Value>) {
     let name = call.params.get("name").map(String::as_str).unwrap_or("");
     let mut event = None;
     let result = match (call.method.as_str(), call.route.as_str()) {
-        ("GET", "/library") => read_sources(&data.join(LIBRARY_DIR), |n| {
-            library_name_problem(n).is_none()
-        })
-        .map(|sources| {
-            json!({ "sources": sources.iter().map(|(stem, _)| json!({ "name": stem })).collect::<Vec<_>>() })
+        ("GET", "/library") => library_names(data).map(|names| {
+            json!({ "sources": names.iter().map(|stem| json!({ "name": stem })).collect::<Vec<_>>() })
         }),
         ("GET", "/library/:name") => (|| {
             let stem = stored_library_name(data, name)?.ok_or_else(|| no_library_source(name))?;
@@ -1616,6 +1766,10 @@ fn other_spelling(existing: &str) -> Refusal {
 fn check_library(mut project: Project, draft: Option<(String, String)>) -> Value {
     if let Some((name, text)) = draft {
         let source = format!("logic/library/{name}{SOURCE_EXTENSION}");
+        // A stored file that is not text is replaced like any other.
+        project
+            .unreadable_library
+            .retain(|d| d.source.as_deref() != Some(source.as_str()));
         match project.library.iter_mut().find(|(n, _)| *n == source) {
             Some(stored) => stored.1 = text,
             None => {
@@ -1627,7 +1781,7 @@ fn check_library(mut project: Project, draft: Option<(String, String)>) -> Value
         }
     }
     let given = given(&project);
-    let mut diagnostics = library_types(&project.library);
+    let mut diagnostics = library_refusals(&project);
     if diagnostics.is_empty() {
         if let Err(found) = check_project(&Sources {
             library: &given.library,
@@ -3102,5 +3256,303 @@ END_PROGRAM";
         let bare = project_dir();
         bare.project();
         assert!(!bare.root.path().join("data").exists());
+    }
+
+    // -------------------------------------------------------------------------
+    // Review of D3: files that are not text, odd shapes, links, the library's words
+    // -------------------------------------------------------------------------
+
+    /// Bytes a hand copy saved in Latin-1 holds: a comment with an e-acute.
+    fn latin1(text: &str) -> Vec<u8> {
+        let mut bytes = text.as_bytes().to_vec();
+        bytes.extend_from_slice(b"(* caf\xe9 *)\n");
+        bytes
+    }
+
+    fn put_bytes(dir: &Dir, path: &[&str], bytes: &[u8]) {
+        let file = path
+            .iter()
+            .fold(dir.root.path().to_path_buf(), |p, s| p.join(s));
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, bytes).unwrap();
+    }
+
+    /// TANK uses no type, block or library function: it builds as it does in a project of
+    /// today, whatever is wrong with the data, and the answer says what is.
+    fn builds_as_today_with_problems(project: &Project) -> Value {
+        let built = super::build(&entry(), TANK, None, project).unwrap();
+        assert_eq!(built["version"], "d3adaba64d45", "{built}");
+        let checked = super::check(&entry(), TANK, project);
+        assert_eq!(checked["ok"], true, "{checked}");
+        assert_eq!(checked["project_problems"], built["project_problems"]);
+        built["project_problems"].clone()
+    }
+
+    #[test]
+    fn a_type_file_that_is_not_text_is_a_problem_of_the_project_not_a_refusal() {
+        let dir = project_dir();
+        put_bytes(&dir, &["data", "types", "RecipeData.st"], &latin1(SHARED));
+        let problems = builds_as_today_with_problems(&dir.project());
+        assert_eq!(problems.as_array().unwrap().len(), 1, "{problems}");
+        assert_eq!(problems[0]["source"], "data/types/RecipeData.st");
+        assert!(
+            problems[0]["message"].as_str().unwrap().starts_with(
+                "data/types/RecipeData.st cannot be read as a type's source: it is not UTF-8 text"
+            ),
+            "{problems}"
+        );
+    }
+
+    #[test]
+    fn data_that_cannot_be_read_as_files_is_a_problem_of_the_project_not_a_refusal() {
+        // blocks.json a directory.
+        let dir = project_dir();
+        std::fs::create_dir_all(dir.root.path().join("data").join("blocks.json")).unwrap();
+        let problems = builds_as_today_with_problems(&dir.project());
+        let message = problems[0]["message"].as_str().unwrap();
+        assert!(
+            message.starts_with("data/blocks.json cannot be read as the project's data blocks: "),
+            "{problems}"
+        );
+        // data/types a file.
+        let dir = project_dir();
+        dir.put(&["data", "types"], "x");
+        let problems = builds_as_today_with_problems(&dir.project());
+        let message = problems[0]["message"].as_str().unwrap();
+        assert!(
+            message.starts_with("data/types cannot be read as the project's types: "),
+            "{problems}"
+        );
+        // The library is the module's own: a library that is a file is said as a 500 naming
+        // it, as any other error of reading the module's own directory.
+        let dir = project_dir();
+        dir.put(&["logic", "library"], "x");
+        let (status, body) = read_project(&dir.logic).unwrap_err();
+        assert_eq!(status, 500);
+        assert!(
+            body["error"].as_str().unwrap().contains("library"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn a_library_source_that_is_not_text_refuses_programs_and_its_own_routes_mend_it() {
+        let dir = project_dir();
+        let logic = &dir.logic;
+        dir.library("Motors", MOTORS);
+        let old = "FUNCTION Old : INT\n  Old := 1;\nEND_FUNCTION\n";
+        put_bytes(&dir, &["logic", "library", "Old.st"], &latin1(old));
+        let route = |m: &str, r: &str, n: Option<&str>, b: Option<Value>| {
+            let (reply, _) = library(&call(m, r, n, b, logic), logic);
+            (reply.status, reply.body)
+        };
+        assert_eq!(
+            route("GET", "/library", None, None),
+            (
+                200,
+                json!({"sources": [{"name": "Motors"}, {"name": "Old"}]})
+            )
+        );
+        assert_eq!(route("GET", "/library/:name", Some("Motors"), None).0, 200);
+        let (status, body) = route("GET", "/library/:name", Some("Old"), None);
+        assert_eq!(status, 500, "{body}");
+        // Every program is refused, with the file named, as for any library mistake.
+        let checked = super::check(&entry(), TANK, &dir.project());
+        assert_eq!(checked["ok"], false, "{checked}");
+        let d = &checked["diagnostics"][0];
+        assert_eq!(d["source"], "logic/library/Old.st", "{checked}");
+        assert!(
+            d["message"].as_str().unwrap().starts_with(
+                "logic/library/Old.st cannot be read as a library source: it is not UTF-8 text"
+            ),
+            "{checked}"
+        );
+        let (status, refused) = super::build(&entry(), TANK, None, &dir.project()).unwrap_err();
+        assert_eq!(status, 400);
+        assert_eq!(refused["diagnostics"][0], *d);
+        let (status, body) = route("POST", "/library/check", None, None);
+        assert_eq!((status, &body["ok"]), (200, &json!(false)), "{body}");
+        // A draft that replaces it checks.
+        let (_, body) = route(
+            "POST",
+            "/library/check",
+            None,
+            Some(json!({"name": "Old", "source": old})),
+        );
+        assert_eq!(body, json!({"ok": true, "diagnostics": []}));
+        // Its neighbour can be saved, and it can be replaced or deleted by its route.
+        assert_eq!(
+            route(
+                "PUT",
+                "/library/:name",
+                Some("Motors"),
+                Some(json!({"source": MOTORS}))
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            route(
+                "PUT",
+                "/library/:name",
+                Some("Old"),
+                Some(json!({"source": old}))
+            ),
+            (200, json!({"name": "Old", "created": false}))
+        );
+        assert_eq!(super::check(&entry(), TANK, &dir.project())["ok"], true);
+        put_bytes(&dir, &["logic", "library", "Old.st"], &latin1(old));
+        assert_eq!(
+            route("DELETE", "/library/:name", Some("Old"), None),
+            (200, json!({"deleted": "Old"}))
+        );
+        assert_eq!(super::check(&entry(), TANK, &dir.project())["ok"], true);
+    }
+
+    #[test]
+    fn a_library_source_using_a_type_compiles_when_only_the_blocks_do_not_check() {
+        let util = "FUNCTION LevelOf : INT\nVAR_INPUT s : Shared; END_VAR\n  LevelOf := s.level;\nEND_FUNCTION\n";
+        for blocks in [
+            "{\"blocks\": [",
+            "{\"blocks\": [{\"name\": \"S\", \"type\": \"Missing\", \"retain\": false}]}",
+        ] {
+            let dir = project_dir();
+            dir.types(SHARED);
+            dir.library("Util", util);
+            dir.put(&["data", "blocks.json"], blocks);
+            let problems = builds_as_today_with_problems(&dir.project());
+            assert_eq!(problems.as_array().unwrap().len(), 1, "{problems}");
+            // A program that calls it, with a variable of the type, compiles.
+            let probe = "PROGRAM Probe\nVAR_OUTPUT o : INT; END_VAR\nVAR s : Shared; END_VAR\n  s.level := 3;\n  o := LevelOf(s);\nEND_PROGRAM";
+            let mut e = writer_entry();
+            e.name = "Probe".into();
+            e.inputs.clear();
+            let checked = super::check(&e, probe, &dir.project());
+            assert_eq!(checked["ok"], true, "{checked}");
+            assert_eq!(checked["project_problems"], problems);
+            assert_eq!(check_library(dir.project(), None)["ok"], true);
+        }
+        // When the types themselves do not check, they are left out, and the library source
+        // that uses one is a library mistake, said with the project's problems.
+        let dir = project_dir();
+        dir.types("TYPE Shared : STRUCT level : NoSuchType; END_STRUCT; END_TYPE\n");
+        dir.library("Util", util);
+        let checked = super::check(&entry(), TANK, &dir.project());
+        assert_eq!(checked["ok"], false, "{checked}");
+        assert_eq!(checked["diagnostics"][0]["source"], "logic/library/Util.st");
+        assert!(checked.get("project_problems").is_some(), "{checked}");
+    }
+
+    #[test]
+    fn a_program_in_the_library_is_refused_in_the_modules_words() {
+        let dir = project_dir();
+        dir.library(
+            "Motors",
+            "PROGRAM P\nVAR a : INT; END_VAR\n a := 1;\nEND_PROGRAM\n",
+        );
+        let checked = super::check(&entry(), TANK, &dir.project());
+        assert_eq!(checked["ok"], false);
+        let d = &checked["diagnostics"];
+        assert_eq!(d.as_array().unwrap().len(), 1, "{checked}");
+        assert_eq!(
+            d[0]["message"],
+            "P is a PROGRAM in the library source 'logic/library/Motors.st'; a library holds functions and function blocks"
+        );
+        assert_eq!(d[0]["source"], "logic/library/Motors.st");
+        assert_eq!(
+            (d[0]["line"].clone(), d[0]["col"].clone()),
+            (json!(1), json!(9))
+        );
+        let library = check_library(dir.project(), None);
+        assert_eq!(library["diagnostics"], *d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_the_temporarys_name_is_not_written_through() {
+        let dir = project_dir();
+        let logic = &dir.logic;
+        let lib = logic.join("library");
+        std::fs::create_dir_all(&lib).unwrap();
+        let outside = dir.root.path().join("outside.txt");
+        std::fs::write(&outside, "untouched").unwrap();
+        let file = lib.join("Motors.st");
+        std::os::unix::fs::symlink(&outside, temporary_path(&file).unwrap()).unwrap();
+        let (reply, _) = library(
+            &call(
+                "PUT",
+                "/library/:name",
+                Some("Motors"),
+                Some(json!({"source": MOTORS})),
+                logic,
+            ),
+            logic,
+        );
+        assert_eq!(reply.status, 200, "{}", reply.body);
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "untouched");
+        assert!(std::fs::symlink_metadata(&file)
+            .unwrap()
+            .file_type()
+            .is_file());
+        assert!(std::fs::symlink_metadata(temporary_path(&file).unwrap()).is_err());
+        let (reply, _) = library(&call("GET", "/library", None, None, logic), logic);
+        assert_eq!(reply.body, json!({"sources": [{"name": "Motors"}]}));
+    }
+
+    #[test]
+    fn the_temporary_is_named_for_the_process() {
+        let file = Path::new("library").join("Motors.st");
+        assert_eq!(
+            temporary_path(&file),
+            Some(Path::new("library").join(format!(".Motors.st.{}.tmp", std::process::id())))
+        );
+    }
+
+    /// A link in `data/types/` or `logic/library/` is not a source, whatever it points at,
+    /// as the data module's rule has it.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_is_not_a_type_file_nor_a_library_source() {
+        let dir = project_dir();
+        dir.types(SHARED);
+        dir.library("Motors", MOTORS);
+        let outside = dir.root.path().join("Other.st");
+        std::fs::write(
+            &outside,
+            "TYPE Other : STRUCT a : INT; END_STRUCT; END_TYPE\n",
+        )
+        .unwrap();
+        let data_types = dir.root.path().join("data").join("types");
+        std::os::unix::fs::symlink(&outside, data_types.join("Other.st")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.logic.join("library").join("Other.st")).unwrap();
+        let project = dir.project();
+        let names = |s: &[(String, String)]| s.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&project.types), ["data/types/Shared.st"]);
+        assert_eq!(names(&project.library), ["logic/library/Motors.st"]);
+        let (reply, _) = library(&call("GET", "/library", None, None, &dir.logic), &dir.logic);
+        assert_eq!(reply.body, json!({"sources": [{"name": "Motors"}]}));
+    }
+
+    /// Two spellings of one library source, made by hand on a file system that tells case
+    /// apart: a request that names one exactly reaches that one.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_exact_library_spelling_is_found_before_another() {
+        let dir = project_dir();
+        let logic = &dir.logic;
+        dir.library("Motors", MOTORS);
+        let lower = MOTORS.replace("Twice", "Thrice");
+        dir.library("motors", &lower);
+        let (reply, _) = library(
+            &call("GET", "/library/:name", Some("motors"), None, logic),
+            logic,
+        );
+        assert_eq!(reply.body, json!({"name": "motors", "source": lower}));
+        let (reply, _) = library(
+            &call("DELETE", "/library/:name", Some("motors"), None, logic),
+            logic,
+        );
+        assert_eq!(reply.body, json!({"deleted": "motors"}));
+        assert!(logic.join("library").join("Motors.st").exists());
     }
 }

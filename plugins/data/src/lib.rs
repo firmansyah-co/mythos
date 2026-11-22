@@ -52,6 +52,13 @@ const TYPES_DIR: &str = "types";
 const BLOCKS_FILE: &str = "blocks.json";
 /// The extension of a type file, exactly.
 const TYPE_EXTENSION: &str = ".st";
+/// In the data directory, the file whose lock every write holds, so that two processes serving
+/// one project (a hot swap starts the new one before the old one stops) never check and write
+/// at the same time: each would check the state it read, write a different file, and leave
+/// files that do not check. It ends in `.tmp`, so a device's plant slice leaves it out. It is
+/// made by the first write and never removed: removing a lock file lets two writers each lock
+/// a different file.
+pub const LOCK_FILE: &str = ".lock.tmp";
 
 /// Names that are a device on Windows whatever follows them: `CON.st` is the console there.
 /// Compared without regard to case, on every OS.
@@ -92,7 +99,36 @@ pub struct BlockEntry {
 #[derive(Debug, Clone, Default)]
 struct State {
     types: Vec<(String, String)>,
+    /// Type files by the file rule whose bytes are not UTF-8 text (a copy saved by hand in
+    /// another encoding), each as `(stem, why)`. Such a state does not check; the file can
+    /// still be replaced or deleted by its route.
+    unreadable: Vec<(String, String)>,
     blocks: Vec<BlockEntry>,
+}
+
+impl State {
+    /// The stem of every type file, readable or not, by file name in byte order.
+    fn stems(&self) -> Vec<&str> {
+        let mut all: Vec<&str> = self
+            .types
+            .iter()
+            .chain(&self.unreadable)
+            .map(|(s, _)| s.as_str())
+            .collect();
+        all.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        all
+    }
+
+    /// The stored stem of type `name`: the exact spelling when one is stored (two spellings
+    /// can only be there by hand, on a file system that tells case apart), otherwise the one
+    /// that differs only in case.
+    fn find_stem(&self, name: &str) -> Option<String> {
+        let all = self.stems();
+        all.iter()
+            .find(|s| **s == name)
+            .or_else(|| all.iter().find(|s| s.eq_ignore_ascii_case(name)))
+            .map(|s| s.to_string())
+    }
 }
 
 type Refusal = (u16, Value);
@@ -146,15 +182,19 @@ fn source_name(stem: &str) -> String {
     format!("data/types/{stem}{TYPE_EXTENSION}")
 }
 
-fn read_types(data: &Path) -> Result<Vec<(String, String)>, Refusal> {
+/// The type files: `(readable, unreadable)`, see [`State`].
+type TypeFiles = (Vec<(String, String)>, Vec<(String, String)>);
+
+fn read_types(data: &Path) -> Result<TypeFiles, Refusal> {
     let dir = data.join(TYPES_DIR);
     let fail = |path: &Path, e: std::io::Error| error(500, format!("{}: {e}", path.display()));
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new())),
         Err(e) => return Err(fail(&dir, e)),
     };
     let mut types = Vec::new();
+    let mut unreadable = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| fail(&dir, e))?;
         let path = entry.path();
@@ -167,11 +207,23 @@ fn read_types(data: &Path) -> Result<Vec<(String, String)>, Refusal> {
         let Some(stem) = file_name.to_str().and_then(type_file_stem) else {
             continue;
         };
-        let text = std::fs::read_to_string(&path).map_err(|e| fail(&path, e))?;
-        types.push((stem.to_string(), text));
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            // Removed since it was listed: it is not there.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(fail(&path, e)),
+        };
+        match String::from_utf8(bytes) {
+            Ok(text) => types.push((stem.to_string(), text)),
+            Err(e) => unreadable.push((
+                stem.to_string(),
+                format!("it is not UTF-8 text ({})", e.utf8_error()),
+            )),
+        }
     }
     sort_types(&mut types);
-    Ok(types)
+    sort_types(&mut unreadable);
+    Ok((types, unreadable))
 }
 
 fn read_blocks(data: &Path) -> Result<Vec<BlockEntry>, Refusal> {
@@ -194,9 +246,12 @@ fn read_blocks(data: &Path) -> Result<Vec<BlockEntry>, Refusal> {
 }
 
 fn read_state(data: &Path) -> Result<State, Refusal> {
+    let blocks = read_blocks(data)?;
+    let (types, unreadable) = read_types(data)?;
     Ok(State {
-        blocks: read_blocks(data)?,
-        types: read_types(data)?,
+        types,
+        unreadable,
+        blocks,
     })
 }
 
@@ -210,6 +265,19 @@ fn sort_types(types: &mut [(String, String)]) {
 /// Check `state` with the compiler, as the logic module compiles programs in it: its types as
 /// the library, its blocks as the data. Each block laid out, in declaration order.
 fn check(state: &State) -> Result<Vec<DataLayout>, Vec<Diagnostic>> {
+    if !state.unreadable.is_empty() {
+        return Err(state
+            .unreadable
+            .iter()
+            .map(|(stem, why)| {
+                let name = source_name(stem);
+                let mut d =
+                    Diagnostic::whole(format!("{name} cannot be read as a type's source: {why}"));
+                d.source = Some(name);
+                d
+            })
+            .collect());
+    }
     let names: Vec<String> = state.types.iter().map(|(s, _)| source_name(s)).collect();
     let library: Vec<(&str, &str)> = names
         .iter()
@@ -316,23 +384,33 @@ fn declaration_problem(name: &str, text: &str) -> Option<String> {
 /// slice), synced, then renamed over the file.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
     let fail = |p: &Path, e: std::io::Error| error(500, format!("{}: {e}", p.display()));
-    let (Some(dir), Some(file)) = (path.parent(), path.file_name()) else {
+    let Some(tmp) = temporary_path(path) else {
         return Err(error(500, format!("{}: not a file's path", path.display())));
     };
-    std::fs::create_dir_all(dir).map_err(|e| fail(dir, e))?;
-    let tmp = dir.join(format!(
-        ".{}.{}.tmp",
-        file.to_string_lossy(),
-        std::process::id()
-    ));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| fail(dir, e))?;
+    }
+    // A temporary of this name left by an earlier process of the same pid is removed, and the
+    // temporary is then made new: never opened where it is, since whatever is at that name (a
+    // link, say) would be written through, outside this directory.
+    match std::fs::remove_file(&tmp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(fail(&tmp, e)),
+    }
+    let mut made = false;
     let written = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        made = true;
         f.write_all(bytes)?;
         f.sync_all()
     })();
     if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, path)) {
         let mut message = format!("{}: {e}", path.display());
-        if tmp.exists() {
+        if made {
             if let Err(r) = std::fs::remove_file(&tmp) {
                 message.push_str(&format!("; {} is left: {r}", tmp.display()));
             }
@@ -340,6 +418,35 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
         return Err(error(500, message));
     }
     Ok(())
+}
+
+/// The temporary a write of `path` goes through: beside it, `.<file>.<pid>.tmp`. The pid keeps
+/// two processes (during a hot swap) from writing one temporary; the `.tmp` ending keeps it
+/// out of a device's plant slice.
+fn temporary_path(path: &Path) -> Option<PathBuf> {
+    let (dir, file) = (path.parent()?, path.file_name()?);
+    Some(dir.join(format!(
+        ".{}.{}.tmp",
+        file.to_string_lossy(),
+        std::process::id()
+    )))
+}
+
+/// Hold the lock of [`LOCK_FILE`] in `data` until the file returned is dropped. The lock is
+/// the operating system's, so it holds between processes; it waits while another holds it.
+fn lock_writes(data: &Path) -> Result<std::fs::File, Refusal> {
+    let path = data.join(LOCK_FILE);
+    let fail = |e: std::io::Error| error(500, format!("{}: {e}", path.display()));
+    std::fs::create_dir_all(data).map_err(|e| error(500, format!("{}: {e}", data.display())))?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(fail)?;
+    file.lock().map_err(fail)?;
+    Ok(file)
 }
 
 /// `blocks.json` as the documented literal has it (ADR-014 §2.8, the D3 contract §1.1): one
@@ -486,7 +593,8 @@ struct CheckBody {
 type Served = (Result<Value, Refusal>, Option<Value>);
 
 /// The data service. Every call is serialized: each write is a read-check-write of the whole
-/// state, and the server forwards requests concurrently.
+/// state, and the server forwards requests concurrently. A write also holds the lock of
+/// [`LOCK_FILE`], which another process serving the same directory waits on.
 #[derive(Default)]
 pub struct Data {
     writes: Mutex<()>,
@@ -509,6 +617,17 @@ impl Data {
             }
         }
         let _guard = self.writes.lock().await;
+        // A write also holds the lock between processes (see [`LOCK_FILE`]). A read does not:
+        // it writes nothing, and makes no file.
+        let reads = call.method == "GET" || (call.method == "POST" && call.route == "/check");
+        let _lock = if reads {
+            None
+        } else {
+            match lock_writes(&data) {
+                Ok(file) => Some(file),
+                Err((status, body)) => return (HttpReply::json(status, body), None),
+            }
+        };
         let (result, event) = self.handle_in(call, &data);
         let reply = match result {
             Ok(body) => HttpReply::json(200, body),
@@ -528,14 +647,26 @@ impl Data {
             // said by every one of them, never passed over.
             ("GET", "/types") => (
                 read_state(data).map(|state| {
-                    json!({ "types": state.types.iter().map(|(n, _)| json!({ "name": n })).collect::<Vec<_>>() })
+                    json!({ "types": state.stems().iter().map(|n| json!({ "name": n })).collect::<Vec<_>>() })
                 }),
                 None,
             ),
             ("GET", "/types/:type") => (
                 read_state(data).and_then(|state| {
-                    let (stem, text) = find_type(&state.types, param("type"))?;
-                    Ok(json!({ "name": stem, "source": text }))
+                    let stem = find_type(&state, param("type"))?;
+                    match state.types.iter().find(|(s, _)| *s == stem) {
+                        Some((_, text)) => Ok(json!({ "name": stem, "source": text })),
+                        // Its bytes are not text: there is no source to give.
+                        None => {
+                            let path = data.join(TYPES_DIR).join(format!("{stem}{TYPE_EXTENSION}"));
+                            let why = state
+                                .unreadable
+                                .iter()
+                                .find(|(s, _)| *s == stem)
+                                .map_or("", |(_, why)| why.as_str());
+                            Err(error(500, format!("{}: {why}", path.display())))
+                        }
+                    }
                 }),
                 None,
             ),
@@ -581,14 +712,10 @@ impl Data {
     }
 }
 
-/// The type of `name`, looked up without regard to case: `(stem as stored, text)`.
-fn find_type<'a>(
-    types: &'a [(String, String)],
-    name: &str,
-) -> Result<&'a (String, String), Refusal> {
-    types
-        .iter()
-        .find(|(stem, _)| stem.eq_ignore_ascii_case(name))
+/// The stored stem of type `name` ([`State::find_stem`]), or the refusal that there is none.
+fn find_type(state: &State, name: &str) -> Result<String, Refusal> {
+    state
+        .find_stem(name)
         .ok_or_else(|| error(404, format!("the project has no type '{name}'")))
 }
 
@@ -604,24 +731,21 @@ fn same_spelling_or_refuse(existing: &str, name: &str, what: &str) -> Result<(),
 
 /// `state` with type `name`'s source `text` put in, new or replacing the one of the same
 /// spelling (another spelling is refused); and whether it is new.
+/// A file that is not text is replaced like any other.
 fn with_type(mut state: State, name: &str, text: String) -> Result<(State, bool), Refusal> {
-    let at = state
-        .types
-        .iter()
-        .position(|(stem, _)| stem.eq_ignore_ascii_case(name));
-    let created = match at {
-        Some(k) => {
-            same_spelling_or_refuse(&state.types[k].0, name, "type")?;
-            state.types[k].1 = text;
-            false
-        }
+    let stored = state.find_stem(name);
+    if let Some(existing) = &stored {
+        same_spelling_or_refuse(existing, name, "type")?;
+    }
+    state.unreadable.retain(|(s, _)| s != name);
+    match state.types.iter_mut().find(|(s, _)| s == name) {
+        Some(stored) => stored.1 = text,
         None => {
             state.types.push((name.to_string(), text));
             sort_types(&mut state.types);
-            true
         }
-    };
-    Ok((state, created))
+    }
+    Ok((state, stored.is_none()))
 }
 
 fn save_type(call: &HttpCall, data: &Path, name: &str) -> Result<Value, Refusal> {
@@ -653,7 +777,7 @@ fn save_type(call: &HttpCall, data: &Path, name: &str) -> Result<Value, Refusal>
 
 fn delete_type(data: &Path, name: &str) -> Result<(String, Value), Refusal> {
     let mut state = read_state(data)?;
-    let stem = find_type(&state.types, name)?.0.clone();
+    let stem = find_type(&state, name)?;
     let users: Vec<String> = state
         .blocks
         .iter()
@@ -670,6 +794,7 @@ fn delete_type(data: &Path, name: &str) -> Result<(String, Value), Refusal> {
         ));
     }
     state.types.retain(|(s, _)| *s != stem);
+    state.unreadable.retain(|(s, _)| *s != stem);
     let after = check(&state).map_err(|d| {
         refused_with(
             400,

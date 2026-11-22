@@ -25,7 +25,9 @@ fn project() -> Project {
     Project { dir, data }
 }
 
-/// Every file and directory under `root`, relative to it, with `/` between the parts.
+/// Every file and directory under `root`, relative to it, with `/` between the parts; but the
+/// lock file ([`LOCK_FILE`]), which the first write makes and no write removes (pinned by
+/// `a_write_holds_a_lock_another_process_waits_on`).
 fn listing(root: &Path) -> BTreeSet<String> {
     fn walk(root: &Path, dir: &Path, out: &mut BTreeSet<String>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -33,6 +35,9 @@ fn listing(root: &Path) -> BTreeSet<String> {
         };
         for e in entries {
             let path = e.unwrap().path();
+            if path.file_name() == Some(std::ffi::OsStr::new(LOCK_FILE)) {
+                continue;
+            }
             let rel: Vec<String> = path
                 .strip_prefix(root)
                 .unwrap()
@@ -1152,4 +1157,303 @@ fn the_manifest_declares_eight_routes_each_a_tool_of_its_own() {
             r.summary
         );
     }
+}
+
+// -----------------------------------------------------------------------------
+// Review of D3: two processes, files that are not text, links, spellings
+// -----------------------------------------------------------------------------
+
+/// One round of a race on a directory holding type `T` and no block: one call deletes `T`
+/// (no block has it), the other saves block `X` of type `T`, at the same moment. With
+/// `two_services`, each call is served by a `Data` of its own (each its own lock, as two
+/// processes during a hot swap); otherwise both by one. The statuses, and whether the files
+/// check afterwards.
+fn race(two_services: bool) -> (u16, u16, bool) {
+    let p = project();
+    let rt = || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+    };
+    let t = "TYPE T : STRUCT a : INT; b : DINT; END_STRUCT; END_TYPE\n";
+    let first = Data::default();
+    assert_eq!(rt().block_on(put_type(&first, &p, "T", t)).status, 200);
+    let second = Data::default();
+    let other = if two_services { &second } else { &first };
+    let barrier = std::sync::Barrier::new(2);
+    let (deleted, saved) = std::thread::scope(|s| {
+        let a = s.spawn(|| {
+            let rt = rt();
+            barrier.wait();
+            rt.block_on(call(
+                &first,
+                &p,
+                "DELETE",
+                "/types/:type",
+                &[("type", "T")],
+                None,
+            ))
+            .status
+        });
+        let b = s.spawn(|| {
+            let rt = rt();
+            barrier.wait();
+            rt.block_on(put_block(other, &p, "X", "T", false)).status
+        });
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    let now = rt().block_on(get_blocks(&Data::default(), &p));
+    assert!(
+        p.data.join(LOCK_FILE).is_file(),
+        "a write makes the lock file"
+    );
+    (deleted, saved, now.body["ok"] == true)
+}
+
+#[test]
+fn a_write_holds_a_lock_another_process_waits_on() {
+    // Before the lock, 198 of 200 rounds answered 200 to both and left a block of a type
+    // that is not there.
+    for round in 0..100 {
+        let (deleted, saved, checks) = race(true);
+        assert!(checks, "round {round}: the files do not check");
+        assert!(
+            matches!((deleted, saved), (200, 400) | (409, 200)),
+            "round {round}: delete {deleted}, save {saved}: exactly one may be done"
+        );
+    }
+}
+
+#[test]
+fn calls_to_one_service_at_the_same_moment_leave_files_that_check() {
+    for round in 0..100 {
+        let (deleted, saved, checks) = race(false);
+        assert!(checks, "round {round}: the files do not check");
+        assert!(
+            matches!((deleted, saved), (200, 400) | (409, 200)),
+            "round {round}: delete {deleted}, save {saved}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_type_file_that_is_not_text_does_not_check_and_its_own_routes_mend_it() {
+    let (data, p) = (Data::default(), project());
+    ok(&put_type(&data, &p, "RecipeData", RECIPE).await);
+    let file = p.data.join("types").join("RecipeData.st");
+    let latin1 = || {
+        let mut bytes = RECIPE.as_bytes().to_vec();
+        bytes.extend_from_slice(b"(* caf\xe9 *)\n"); // e-acute in Latin-1
+        std::fs::write(&file, &bytes).unwrap();
+    };
+    latin1();
+    // Listed, and the state does not check, saying which file and why.
+    let list = call(&data, &p, "GET", "/types", &[], None).await;
+    assert_eq!(*ok(&list), json!({ "types": [{ "name": "RecipeData" }] }));
+    let blocks = get_blocks(&data, &p).await;
+    let body = ok(&blocks);
+    assert_eq!(body["ok"], false);
+    let d = &body["diagnostics"][0];
+    assert_eq!(d["source"], "data/types/RecipeData.st", "{body}");
+    assert!(
+        d["message"].as_str().unwrap().starts_with(
+            "data/types/RecipeData.st cannot be read as a type's source: it is not UTF-8 text"
+        ),
+        "{body}"
+    );
+    // Its source cannot be given; that one route says so.
+    let read = call(
+        &data,
+        &p,
+        "GET",
+        "/types/:type",
+        &[("type", "RecipeData")],
+        None,
+    )
+    .await;
+    assert_eq!(read.status, 500, "{}", read.body);
+    assert!(read.body["error"].as_str().unwrap().contains("not UTF-8"));
+    // Another type cannot be saved beside it: the state would still not check.
+    let other = put_type(&data, &p, "LineState", LINE).await;
+    assert_eq!(other.status, 400, "{}", other.body);
+    // Replaced by its own route.
+    let mended = put_type(&data, &p, "RecipeData", RECIPE).await;
+    assert_eq!(ok(&mended)["created"], false);
+    assert_eq!(
+        mended.body["changed"],
+        Value::Null,
+        "the state before did not check"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), RECIPE);
+    // Or deleted by it.
+    latin1();
+    let deleted = call(
+        &data,
+        &p,
+        "DELETE",
+        "/types/:type",
+        &[("type", "RecipeData")],
+        None,
+    )
+    .await;
+    assert_eq!(
+        *ok(&deleted),
+        json!({ "deleted": "RecipeData", "blocks": [] })
+    );
+    assert!(!file.exists());
+    // While a block has the type, it is not deleted, and the block cannot be deleted either
+    // (the state left would not check); replacing the file mends it.
+    ok(&put_type(&data, &p, "RecipeData", RECIPE).await);
+    ok(&put_block(&data, &p, "Recipe", "RecipeData", false).await);
+    latin1();
+    let refused = call(
+        &data,
+        &p,
+        "DELETE",
+        "/types/:type",
+        &[("type", "RecipeData")],
+        None,
+    )
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    let refused = call(
+        &data,
+        &p,
+        "DELETE",
+        "/blocks/:block",
+        &[("block", "Recipe")],
+        None,
+    )
+    .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    ok(&put_type(&data, &p, "RecipeData", RECIPE).await);
+    assert_eq!(ok(&get_blocks(&data, &p).await)["ok"], true);
+}
+
+/// A link planted at the temporary's name (the pid is predictable) is not written through:
+/// the save stays inside the data directory and the type file is a file.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_at_the_temporarys_name_is_not_written_through() {
+    let (data, p) = (Data::default(), project());
+    let outside = p.dir.path().join("outside.txt");
+    std::fs::write(&outside, "precious\n").unwrap();
+    let types = p.data.join("types");
+    std::fs::create_dir_all(&types).unwrap();
+    let file = types.join("RecipeData.st");
+    let tmp = temporary_path(&file).unwrap();
+    std::os::unix::fs::symlink(&outside, &tmp).unwrap();
+    ok(&put_type(&data, &p, "RecipeData", RECIPE).await);
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "precious\n");
+    assert!(std::fs::symlink_metadata(&file)
+        .unwrap()
+        .file_type()
+        .is_file());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), RECIPE);
+    assert!(std::fs::symlink_metadata(&tmp).is_err(), "the link is gone");
+    let list = call(&data, &p, "GET", "/types", &[], None).await;
+    assert_eq!(*ok(&list), json!({ "types": [{ "name": "RecipeData" }] }));
+    // blocks.json goes the same way.
+    let blocks = p.data.join("blocks.json");
+    std::os::unix::fs::symlink(&outside, temporary_path(&blocks).unwrap()).unwrap();
+    ok(&put_block(&data, &p, "Recipe", "RecipeData", false).await);
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "precious\n");
+    assert!(std::fs::symlink_metadata(&blocks)
+        .unwrap()
+        .file_type()
+        .is_file());
+}
+
+#[test]
+fn the_temporary_is_named_for_the_process() {
+    let file = Path::new("types").join("RecipeData.st");
+    assert_eq!(
+        temporary_path(&file),
+        Some(Path::new("types").join(format!(".RecipeData.st.{}.tmp", std::process::id())))
+    );
+}
+
+/// A link in `types/` is not a type file, whatever it points at.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_in_types_is_not_a_type_file() {
+    let (data, p) = (Data::default(), project());
+    ok(&put_type(&data, &p, "RecipeData", RECIPE).await);
+    let outside = p.dir.path().join("Line.st");
+    std::fs::write(&outside, LINE).unwrap();
+    std::os::unix::fs::symlink(&outside, p.data.join("types").join("LineState.st")).unwrap();
+    let list = call(&data, &p, "GET", "/types", &[], None).await;
+    assert_eq!(*ok(&list), json!({ "types": [{ "name": "RecipeData" }] }));
+    let read = call(
+        &data,
+        &p,
+        "GET",
+        "/types/:type",
+        &[("type", "LineState")],
+        None,
+    )
+    .await;
+    assert_eq!(read.status, 404, "{}", read.body);
+    // A block of it is refused: there is no such type.
+    let a = put_block(&data, &p, "Line", "LineState", false).await;
+    assert_eq!(a.status, 400, "{}", a.body);
+}
+
+/// Two spellings of one type, made by hand on a file system that tells case apart: a request
+/// that names one exactly reaches that one.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_exact_spelling_is_found_before_another() {
+    let (data, p) = (Data::default(), project());
+    let types = p.data.join("types");
+    std::fs::create_dir_all(&types).unwrap();
+    let lower = RECIPE.replace("RecipeData", "recipedata");
+    std::fs::write(types.join("RecipeData.st"), RECIPE).unwrap();
+    std::fs::write(types.join("recipedata.st"), &lower).unwrap();
+    assert_eq!(listing(&types).len(), 2, "the file system folds case");
+    let read = call(
+        &data,
+        &p,
+        "GET",
+        "/types/:type",
+        &[("type", "recipedata")],
+        None,
+    )
+    .await;
+    assert_eq!(*ok(&read), json!({ "name": "recipedata", "source": lower }));
+    let read = call(
+        &data,
+        &p,
+        "GET",
+        "/types/:type",
+        &[("type", "RecipeData")],
+        None,
+    )
+    .await;
+    assert_eq!(ok(&read)["name"], "RecipeData");
+    // Another spelling still reaches one of them.
+    let read = call(
+        &data,
+        &p,
+        "GET",
+        "/types/:type",
+        &[("type", "RECIPEDATA")],
+        None,
+    )
+    .await;
+    assert_eq!(read.status, 200);
+    let deleted = call(
+        &data,
+        &p,
+        "DELETE",
+        "/types/:type",
+        &[("type", "recipedata")],
+        None,
+    )
+    .await;
+    assert_eq!(ok(&deleted)["deleted"], "recipedata");
+    assert_eq!(
+        listing(&types),
+        BTreeSet::from(["RecipeData.st".to_string()])
+    );
 }

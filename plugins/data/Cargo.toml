@@ -4,7 +4,10 @@ name = "mythos-data"
 # and the server says which version of it runs. Bump it when the module changes.
 version = "0.1.0"
 edition.workspace = true
-rust-version.workspace = true
+# Not the workspace's 1.82: a write holds a lock between processes with `std::fs::File::lock`
+# (stable since 1.89), so that two processes serving one project during a hot swap never leave
+# files that do not check.
+rust-version = "1.89.0"
 authors.workspace = true
 license.workspace = true
 description = "MythOS user types and data blocks of a project: stored, checked with the compiler, laid out, as a service module (ADR-014)"
