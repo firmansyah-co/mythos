@@ -241,6 +241,25 @@ fn a_step_renamed_in_the_editor_is_timed_by_its_condition_under_its_new_name() {
 }
 
 #[test]
+fn the_sd_sl_and_p0_actions_written_in_the_editor_run_their_full_times_and_pulse_once() {
+    // ADR-013 §2.17: Work is active in scan 1 only (10 ms). purge (SD T#30ms) starts 30 ms after
+    // it was stored, in scan 4, and stays until Start's R; horn (SL T#30ms) runs 30 ms, scans 1
+    // to 3; left (P0) is TRUE in scan 2 only, the scan after Work was left, and not in scan 0.
+    let mut r = editor("editor_qualifiers.xml");
+    let mut seen = [String::new(), String::new(), String::new()];
+    for k in 0..7 {
+        r.set("go", Value::Bool(k == 0));
+        r.set("stop", Value::Bool(k == 1));
+        r.set("back", Value::Bool(k == 5));
+        r.scan_at(k * 10);
+        for (out, name) in seen.iter_mut().zip(["purge", "horn", "left"]) {
+            out.push(if r.bool(name) { '1' } else { '0' });
+        }
+    }
+    assert_eq!(seen, ["0000110", "0111000", "0010000"]);
+}
+
+#[test]
 fn a_selection_the_editor_laid_out_in_its_priority_order_takes_the_branch_its_priorities_chose() {
     // Found in review: `priorities.xml` tests its right branch first (priority 1, to C); the editor
     // writes it without priorities, that branch on the left, so position gives the same order.

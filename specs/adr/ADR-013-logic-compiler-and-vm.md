@@ -1042,8 +1042,9 @@ the owner's to lead: the editor uses the workbench's classes and tokens (LD's `.
   ST tokenizer that steps over comments, strings and typed literals, and does not take `x.Old` for
   the step); while a text the editor does not write reads the step (an action or a transition of
   the POU, a body in LD or FBD, a network drawn in the chart), the rename is refused, saying where; its **action
-  table**, as S7-GRAPH's, a row per association: the qualifier (N, R, S, L, D, P, P1, DS; SD, SL and
-  P0 are not offered, refused until the owner decides, §2.17; a found one is shown as refused), the
+  table**, as S7-GRAPH's, a row per association: the qualifier (Table 59's: N, R, S, L, D, P, SD, DS,
+  SL, P1, P0, with SD, SL and P0 as §2.17 decides; one Table 59 does not have, found in a document, is
+  shown as refused), the
   duration where the qualifier takes one (T#1s proposed), and what it runs: an action of the POU or
   a BOOL variable with completion, declared where it is named (Ctrl+Enter, a BOOL output proposed),
   or ST statements written in the block. A transition's condition: an ST expression written in it
@@ -1118,7 +1119,7 @@ the owner's to lead: the editor uses the workbench's classes and tokens (LD's `.
   table and the condition, written as found); editing a field in the drawing itself (the fields are
   under the chart); moving an element by dragging it, copy and paste; a network drawn in the chart
   put by the editor; a chart's comments edited; editing a chart kept as found; adding a POU to the
-  document; SD, SL and P0 (refused until the owner decides, §2.17).
+  document.
 
 **What the front-end gives an editor** (L2a; the editor of §2.6 shows it). The spike's parser
 stopped at the first error and recorded only where a construct starts. The ST front-end now:
@@ -1299,7 +1300,7 @@ Adrian, 2026-11-17: where an implementation and the standard differ, follow the 
 | Unsafe and unreachable charts | §6.7.5, Figure 26: the system shall treat them as errors | every situation reachable with any condition TRUE or FALSE explored: activating a step already active, a step never active, a transition never enabled, each refused naming them; more than 100,000 situations refused as not checked (`an_unsafe_chart_is_refused_naming_the_situation_and_the_step`, `an_unreachable_chart_is_refused_naming_the_transition_never_cleared`, `a_step_after_a_transition_that_never_clears_is_refused_as_never_active`, `a_chart_too_large_to_check_is_refused_saying_so`, `a_chart_of_exactly_the_most_situations_checked_is_taken`) | not compared |
 | Action control | §6.7.4.6 rules a–e, Figure 22, Figure 23, Table 60: with or without final scan, the implementer's | without final scan (feature 2, Figure 23 b), from the library's RS, TON, R_TRIG: N, R, S, L, D, P, P1, DS. Feature 1's F_TRIG of Q is TRUE at a cold start (Table 44), which would run every action of statements then (§2.17) (`an_n_action_is_active_exactly_while_its_step_is`, `an_s_action_stays_active_after_its_step_until_an_r_association_resets_it`, `an_l_action_is_active_for_its_duration_at_most`, `a_d_action_starts_after_its_duration_and_only_while_its_step_is_active`, `a_p_action_is_active_for_one_scan_when_its_step_becomes_active`, `a_ds_action_is_stored_only_if_its_step_lasted_its_delay`, `an_action_of_statements_runs_while_it_is_active_and_its_flag_says_so`) | not compared |
 | The T input of action control | §6.7.4.6 rule c: the duration of an active time-related association, t#0s if none; rule d: an error if two are active at once | as rule c; two time-related associations of one action whose steps can be active together refused (`two_time_related_associations_of_one_action_active_together_are_refused`, in one step; `two_time_related_associations_in_two_steps_active_together_are_refused`, in two simultaneous sequences) | not compared |
-| SD, SL and P0 | Table 59 features 8, 10, 12; by rule c and Figure 23 an SD action whose step is left before its delay starts at once, an SL one ends at once; P0's F_TRIG is TRUE at a cold start (Table 44) | refused with the reason, for the owner to decide (§2.17) (`the_qualifiers_sd_sl_and_p0_are_refused_with_the_reason`) | not compared |
+| SD, SL and P0 | Table 59 features 8, 10, 12; by rule c and Figure 23 an SD action whose step is left before its delay starts at once, an SL one ends at once; P0's F_TRIG is TRUE at a cold start (Table 44) | **what Table 59 names, not Figure 23 at these three edges** (the owner's decision, §2.17): each SD and SL association is stored and timed by itself with its duration kept once its step is left, so the delay and the limit run in full (`an_sd_action_starts_its_full_delay_after_it_was_stored_whether_or_not_its_step_was_left`, `an_sl_action_runs_its_full_limit_whether_or_not_its_step_was_left_and_no_longer`, `an_sd_or_sl_action_keeps_the_duration_a_variable_had_while_its_step_was_active`, `an_r_association_ends_an_sd_delay_and_the_next_one_runs_in_full`); in doubt the action is off (`an_sd_action_two_steps_store_starts_only_when_the_delay_of_each_is_over`, `an_sd_action_that_has_started_stays_active_until_r_whatever_stores_it_again`, `an_sd_step_entered_again_while_its_delay_runs_starts_the_delay_again`, `an_sl_action_ends_at_the_first_limit_that_is_over_and_stays_ended_until_r`); P0's edge remembers FALSE at a start (`a_p0_action_is_active_for_one_scan_after_its_step_was_left_and_never_at_a_start`, `a_cold_start_drops_an_sd_delay_that_was_running_and_runs_no_p0_action`) | CODESYS's help says the same of SD and SL (§2.17); P0 not compared |
 | A BOOL variable as an action | Table 56 feature 1 (of VAR or VAR_OUTPUT); §6.7.4.1: an error if it is modified other than as the action | its value is Q; one of another type or section refused; a write to it in an action refused (`a_variable_that_is_an_action_written_elsewhere_is_refused`) | not compared |
 | An indicator variable | §6.7.4.4: deprecated | refused (`an_indicator_variable_is_refused_as_deprecated`) | not compared |
 | A step's time across a restart | not addressed | as the timers' (above): the scan clock starts again from zero, a step's time carries on from what it was, the restart not counted (`the_step_times_do_not_count_the_time_across_a_restart`) | not compared |
@@ -1722,8 +1723,7 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
   in IL (this compiler has no IL front-end, §2.1); an action that is a chart (SFC, Table 56
   feature 2s, below) and a condition in SFC (a condition is one Boolean value, §6.7.3);
   `macroStep` (a TC6 element that is not in ed. 3); any other element of the schema
-  (`vendorElement`, …); the qualifier `DL` (not in Table 59); SD, SL and P0
-  (below); an indicator variable (§6.7.4.4: deprecated); a negated step or action block; RETURN
+  (`vendorElement`, …); the qualifier `DL` (not in Table 59); an indicator variable (§6.7.4.4: deprecated); a negated step or action block; RETURN
   in an action (it would end the whole chart's scan before its transitions).
 - **The chart as a net.** Each transition is resolved through the divergences, convergences and
   jumps to the steps before it and the steps after it. A step, a transition, a step always
@@ -1779,16 +1779,58 @@ is L3d-2 and the editor L3d-3. Everything below was read in IEC 61131-3 ed. 3 §
   features the implementer's choice. The T input is the duration of the active time-related
   association, `T#0s` when there is none (rule c). Two time-related associations of one action
   whose steps can be active together are refused, from the same exploration (rule d: an error).
-- **SD, SL and P0 are refused until the owner decides** (a safety question, not a technical one).
-  Rule c gives T `T#0s` once no time-related association is active, so by Figure 23 an SD action
-  whose step is left before its delay starts at once (SD_TMR's PT drops to zero while SD_FF
-  holds IN), and an SL action whose step is left before its limit ends at once; and P0's pulse is
-  an F_TRIG, which by Table 44 is TRUE at a cold start, so a P0 action would run at a cold start
-  whatever its step. Following the text is the owner's rule, and each of these does what its name
-  in Table 59 does not say; keeping the duration of the last association, or starting P0's edge
-  memory TRUE, would differ from the standard. Each is refused with its reason, naming the
-  action (`the_qualifiers_sd_sl_and_p0_are_refused_with_the_reason`), until one of the two is
-  chosen.
+- **SD, SL and P0 do what Table 59 names; at three edges that is not what Figure 23 does** (the
+  owner's decision, 2026-11-22; they were refused by name until it was taken, a safety question
+  and not a technical one). The standard disagrees with itself there. Rule c gives T `T#0s` once
+  no time-related association is active, so by Figure 23 an SD action whose step is left before
+  its delay starts at once (SD_TMR's PT drops to zero while SD_FF holds IN), and an SL action
+  whose step is left before its limit ends at once; and P0's pulse is an F_TRIG, which by Table
+  44 is TRUE at its first execution, so a P0 action would run at a cold start whatever its step.
+  Each is the dangerous direction: a delay is most often a margin (a purge before an ignition),
+  and an action that runs when the controller starts has no cause in the process. Table 59 calls
+  them stored and time delayed, stored and time limited, and pulse on the falling edge, and that
+  is what is built:
+  - **Each SD and each SL association is stored and timed by itself.** An association has a
+    flip-flop set by its step and reset by R, a TON, and a duration of its own
+    (`__SFC_<action>_SD_<localId>_FF`, `_TMR`, `_KEPT`; `_SL_` likewise), read each scan its
+    step is active (so a variable is read while the step is active) and kept from then on. So
+    the delay and the limit count in full, the step left or not, and no other association of
+    the action, of any qualifier, changes them (Figure 23 has one SD_TMR and one SL_TMR on the
+    one T of rule c). Rule d is unchanged and counts SD and SL: two time-related associations
+    whose steps can be active together are refused.
+  - **In doubt, the action is off.** Two SD or two SL associations of one action in steps
+    active one after the other, or a step entered again with no R between, leave two readings
+    of "the delay" and "the limit". The one with the action off is built. An SD action starts
+    when no association that stored it is still in its delay, each delay counted from the last
+    time its step was entered (a step entered again while its delay runs starts that delay
+    again, `__SFC_<action>_SD_<localId>_WAS`; entered is the step's flag rising, so a step
+    that loops to itself, whose flag never falls, is not entered again for its action control,
+    for SD as for D and every qualifier
+    (`a_step_that_loops_to_itself_restarts_its_time_and_keeps_its_actions_as_figure_23_draws`,
+    `a_step_that_loops_to_itself_is_not_entered_again_for_an_sd_delay_or_a_p0_pulse`); once
+    started it stays so until R
+    (`__SFC_<action>_SD_START`), whatever stores it again and whatever a duration read from a
+    variable becomes. An SL action ends at the first limit that is over, each limit counted
+    from when its step first stored the action (a step entered again does not start it
+    again); once ended it stays so until R (`__SFC_<action>_SL_END`). With one association,
+    a constant duration and a step not entered again while stored, both are Figure 23's SD and
+    SL with the duration kept.
+  - **P0 remembers FALSE at a start.** The pulse is `NOT P0 AND was`, `was` the P0 input of the
+    scan before, FALSE at a cold start and when the chart starts again: no step was active
+    before, so none was left. The action is active for one scan, the scan after its step was
+    left (as P and P1 in the scan after it was entered). Several P0 associations of one action
+    are one input, their OR, as Figure 23 has them and as P and P1 are: a chart that goes from
+    one such step straight into another gives no pulse until the last of them is left
+    (`several_p0_associations_of_an_action_are_one_falling_edge_as_figure_23_has_them`); nor
+    does a step that loops to itself, whose flag never falls.
+  - **What stays Figure 23's:** R ends each at once and overrides Q; nothing of the action
+    control is retained, so a cold start drops a delay that was running and the action does not
+    start (`a_cold_start_drops_an_sd_delay_that_was_running_and_runs_no_p0_action`), and so
+    does a chart started again by a build of another chart.
+  - **Compared:** CODESYS's help (CODESYS SFC, "Qualifiers for Actions in SFC", read 2026-11-22)
+    says of SD that the action starts when the delay has passed after the step became active and
+    runs until a reset, and of SL that it ends when the time has passed or earlier by R, both
+    running on after the step is inactive: the names' meaning. P0 was not compared.
 - **Values kept for monitoring.** Each step is a variable of the POU by the step's name, a
   structure of `X` (BOOL) and `T` (TIME): `__SFC_STEP`, or `__SFC_INITIAL_STEP` whose `X`
   starts TRUE (§6.7.2: BOOL#1 for initial steps, BOOL#0 for the others, t#0s); so the program
@@ -2061,7 +2103,8 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   unreachable charts refused), each step's flag and time, each transition's condition and each
   action's state kept in every build; the logic module stores, checks, builds and loads them
   (`language: "sfc"`, `chart` in `check`); the workbench says it does not draw them yet. SD, SL
-  and P0 wait for the owner (§2.17). **L3d-1b** (done, §2.17): actions and transition
+  and P0 were refused until the owner decided (2026-11-22, §2.17: taken, as Table 59 names
+  them). **L3d-1b** (done, §2.17): actions and transition
   conditions in LD and FBD, of the POU, written in the action block or the transition, or (a
   condition) as a network drawn in the chart, each lowered by the LD or FBD front-end in a
   namespace of its own, its values kept for the view (`bodies` in `check`), a condition's with no
@@ -2758,3 +2801,55 @@ Evidence of the spike (2026-11-17):
   known when the runtimes go unanswered, and shows no value` red. Under a load average of 10–20
   (other worktrees' builds) the mixer of `fbdmodel.test.ts` timed out in three of those runs, and
   only there.
+- **SD, SL and P0** (the three qualifiers refused until the owner decided, 2026-11-22: taken as
+  Table 59 names them, §2.17). Changed: `sfc.rs` (`Qual::Sd`, `Sl`, `P0`; for each SD and SL
+  association a flip-flop, a TON and a duration kept, `__SFC_<action>_SD_<localId>_FF`, `_TMR`,
+  `_KEPT`, and for SD `_WAS`; the latches `__SFC_<action>_SD_START` and `_SL_END`; P0's edge in
+  `__SFC_<action>_P0_WAS` and `_P0_PULSE`; rule d counts SD and SL); in
+  `frontend/packages/logic-ui`, `QUALIFIERS` is Table 59's eleven in its order, the action table
+  and the Instructions card offer them, and the editor's own check no longer refuses the three.
+  No route was added, so no MCP tool. Tests: `sfc_runs_on_the_vm.rs` (48, 16 new);
+  `sfc_refusals.rs` (39: the refusal's test removed); `sfc_from_the_editor.rs` (7, 1 new:
+  `editor_qualifiers.xml`, a chart with the three written by the editor's own writer in
+  `sfcmodel.test.ts`, compiled and run: purge `0000110`, horn `0111000`, left `0010000` over
+  seven scans); `sfcmodel.test.ts` (32) and `sfc-editor.test.tsx` (9: the action table offers
+  the eleven).
+  **Found in an independent review of the PR (head 140b9d5), each fixed with a named test:**
+  (1) the duration kept was one variable per action, `__SFC_<action>_SD_T`, which is also the T
+  of an action named `<action>_SD`: its `T#0s`, written every scan, ended the delay at once (a
+  100 ms delay took 20 ms); the names carry the association's localId and no part is named `T`
+  (`an_action_named_as_a_part_of_another_action_s_control_shares_nothing_with_it`). (2) With one
+  duration and one timer per action, a later SD step's shorter duration started the action
+  before the delay of the step that stored it (`an_sd_action_two_steps_store_starts_only_when_the_delay_of_each_is_over`),
+  and (3) a later SD step's longer duration stopped an action that had started, with no R
+  (`an_sd_action_that_has_started_stays_active_until_r_whatever_stores_it_again`): each
+  association is stored and timed by itself, and started and ended are kept until R. With
+  them, decided for the same cases: a step entered again starts its SD delay again
+  (`an_sd_step_entered_again_while_its_delay_runs_starts_the_delay_again`); an SL action ends
+  at the first limit over and stays ended (`an_sl_action_ends_at_the_first_limit_that_is_over_and_stays_ended_until_r`,
+  `an_sl_action_that_has_ended_stays_so_when_its_duration_grows`, and
+  `an_sd_action_that_has_started_stays_so_when_its_duration_grows` beside it). (4) Two
+  P0 steps one after the other pulse once, when the last is left: kept as Figure 23 has it,
+  said in §2.17 and pinned (`several_p0_associations_of_an_action_are_one_falling_edge_as_figure_23_has_them`).
+  The reviewer's own repro file, run on the fix: the three of (1) to (3) pass, the one of (4)
+  fails as it says. **A second review, of the fix (head 5802520), found no action running where
+  it should be off and no name colliding;** it found the rule of the step entered again
+  written wider than built (a step that loops to itself does not start its SD delay again: its
+  flag never falls, as for D and every qualifier), now said as built and pinned
+  (`a_step_that_loops_to_itself_is_not_entered_again_for_an_sd_delay_or_a_p0_pulse`), and the
+  sentence on Figure 23's SD corrected. It also noted that a negative duration starts an SD
+  action in the scan it is stored, as a TON does for D, L and DS: not refused, not changed
+  here.
+  Mutation-checked in a copy of the commit (`git archive`, a target directory of its own, each
+  injection checked as landed, the file restored and the tests of the two Rust files green
+  before and after), eleven mutations, each red: rule c's `T#0s` once the step is left (8
+  tests); P0 as Figure 23's F_TRIG (5); P0's memory, and an association's flip-flop and timer,
+  not cleared when the chart starts again (`a_chart_started_again_by_a_build_of_another_chart_runs_no_p0_action_and_drops_an_sd_delay`,
+  each); SL never ended by a limit (4); SD and SL timed by the step and not by what was stored
+  (7); R not resetting an association's flip-flop (`an_r_association_ends_an_sd_delay_and_the_next_one_runs_in_full`);
+  no restart of the delay when the step is entered again and an SD action starting when any
+  delay is over (the test of each, above); started and ended not kept (the two tests of a
+  duration that grows, and the started action's); one duration per action
+  again (3, the collision's among them). Not done: no ST twin of the three in
+  `sfc_equals_st.rs` (the traces above are their statement), and P0 was not compared with
+  another tool.

@@ -670,7 +670,7 @@ export function setAction(
   if (!step || !a) return { ok: false, error: 'The action is not in the chart any more.' };
   if (patch.qualifier !== undefined) {
     if (!(QUALIFIERS as readonly string[]).includes(patch.qualifier)) {
-      return { ok: false, error: `${patch.qualifier} is not offered: SD, SL and P0 are refused until the owner decides (ADR-013 §2.17).` };
+      return { ok: false, error: `${patch.qualifier} is not an action qualifier of IEC 61131-3 (Table 59).` };
     }
     a.qualifier = patch.qualifier;
     // A qualifier that takes no duration drops it; one that takes one keeps it, or starts at 1 s.
@@ -724,8 +724,8 @@ const TIME_LITERAL = /^(T|TIME|LT|LTIME)#[-+]?[0-9_.a-zA-Z]+$/i;
  * transition of the POU); a condition with nothing written, or naming a transition the POU does
  * not have; a jump to a step the POU does not have; an action that names nothing, names neither
  * an action of the POU nor a variable, or names a variable that is not a BOOL; a qualifier that
- * takes a duration without one, or one that takes none with one; SD, SL and P0, refused until
- * the owner decides.
+ * takes a duration without one, or one that takes none with one; a qualifier Table 59 does not
+ * have.
  */
 export function check(pou: PouModel, vars: readonly VarInfo[]): Problems {
   const elements = new Map<number, string[]>();
@@ -749,9 +749,7 @@ export function check(pou: PouModel, vars: readonly VarInfo[]): Problems {
       if (TIMED.has(a.qualifier) && a.duration !== '' && !TIME_LITERAL.test(a.duration) && !isName(a.duration)) {
         say(a.id, `${a.duration} is not a duration: a TIME literal (T#5s) or a variable.`);
       }
-      if (['SD', 'SL', 'P0'].includes(a.qualifier.toUpperCase())) {
-        say(a.id, `${a.qualifier} is refused by the compiler until the owner decides (ADR-013 §2.17): choose another qualifier.`);
-      } else if (!(QUALIFIERS as readonly string[]).includes(a.qualifier)) say(a.id, `${a.qualifier} is not a qualifier of IEC 61131-3 this compiler takes.`);
+      if (!(QUALIFIERS as readonly string[]).includes(a.qualifier)) say(a.id, `${a.qualifier} is not a qualifier of IEC 61131-3 this compiler takes.`);
       if (a.kind === 'reference') {
         if (a.text === '') say(a.id, 'The action names nothing: an action of the POU or a BOOL variable.');
         else if (!actions.has(a.text.toLowerCase())) {

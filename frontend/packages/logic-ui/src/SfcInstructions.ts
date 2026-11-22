@@ -4,8 +4,9 @@
 //
 // S7-GRAPH's sequence elements, with IEC 61131-3's names (§6.7, Table 61): a step and a
 // transition, an alternative branch (selection), a simultaneous branch, a jump, the end of a
-// sequence; an action of each qualifier the compiler takes (Table 59 without SD, SL and P0,
-// refused until the owner decides, ADR-013 §2.17); the initial step and a new sequence. The
+// sequence; an action of each qualifier of Table 59 (SD, SL and P0 as ADR-013 §2.17 says: the
+// full delay, the full limit, a pulse only when the step is left); the initial step and a new
+// sequence. The
 // symbols are words and IEC's semigraphic forms, never Siemens' artwork.
 //
 // The keys are LD's positions given their SFC meaning, as FBD's are (ADR-013 §2.8, "Keys"): none
@@ -35,6 +36,9 @@ const QUALIFIER_NAMES: Array<[string, string]> = [
   ['P', 'pulse'],
   ['P1', 'pulse on entry'],
   ['DS', 'delayed and stored'],
+  ['SD', 'stored and delayed: starts after the full delay, the step left or not'],
+  ['SL', 'stored and time limited: runs the full limit, the step left or not'],
+  ['P0', 'pulse when the step is left'],
 ];
 
 export const SFC_ACTIONS: SfcInstruction[] = QUALIFIER_NAMES.map(([q, what]) => ({
