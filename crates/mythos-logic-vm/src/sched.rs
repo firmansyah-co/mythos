@@ -38,11 +38,11 @@ pub enum Kind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Counters {
     /// Runs that ended.
-    pub runs: u32,
+    pub runs: u64,
     /// Runs of a cyclic task not made because it was due again before its last run ended.
-    pub overruns: u32,
+    pub overruns: u64,
     /// Times a task of higher priority began while this one was the one in progress.
-    pub preemptions: u32,
+    pub preemptions: u64,
     /// From the beginning to the end of the last run, preemptions included.
     pub last_run: Option<i64>,
     /// The longest of those.
@@ -269,7 +269,7 @@ fn due_times(span: u64, interval: i64) -> u64 {
 /// saturate at the end of time.
 fn skip(t: &mut Task, passed: u64, missed: u64, interval: i64) {
     let o = &mut t.counters.overruns;
-    *o = o.saturating_add(u32::try_from(missed).unwrap_or(u32::MAX));
+    *o = o.saturating_add(missed);
     t.due = t
         .due
         .saturating_add_unsigned(passed.saturating_mul(interval.unsigned_abs()));

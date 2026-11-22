@@ -465,6 +465,35 @@ fn release_body() -> Value {
     })
 }
 
+/// A task's kind: one object per type, each with the fields that type takes and no other.
+fn task_kind() -> Value {
+    let kind = |name: &str, required: &[&str], fields: Value| {
+        let mut properties = json!({ "type": { "type": "string", "const": name } });
+        if let (Some(p), Value::Object(f)) = (properties.as_object_mut(), fields) {
+            p.extend(f);
+        }
+        let mut required: Vec<&str> = required.to_vec();
+        required.insert(0, "type");
+        json!({
+            "type": "object",
+            "required": required,
+            "additionalProperties": false,
+            "properties": properties
+        })
+    };
+    let ms = |minimum: u64| json!({ "type": "integer", "minimum": minimum });
+    json!({
+        "type": "object",
+        "description": "cyclic: every interval_ms, first phase_ms after RUN; cycle: again as soon as it ends, no sooner than min_cycle_ms after it last began; startup: once at every change to RUN, before any other task; event: at each rising edge of the BOOL tag, which a program of the runtime reads",
+        "oneOf": [
+            kind("cyclic", &["interval_ms"], json!({ "interval_ms": ms(1), "phase_ms": ms(0) })),
+            kind("cycle", &[], json!({ "min_cycle_ms": ms(0) })),
+            kind("startup", &[], json!({})),
+            kind("event", &["tag"], json!({ "tag": { "type": "string", "minLength": 1 } }))
+        ]
+    })
+}
+
 fn runtimes_config_body() -> Value {
     let program = json!({
         "type": "object",
@@ -472,7 +501,7 @@ fn runtimes_config_body() -> Value {
         "properties": {
             "name": { "type": "string", "description": "In a runtime of several programs, no '.', '[', ']' or spaces" },
             "version": { "type": "string" },
-            "interval_ms": { "type": "integer", "minimum": 1, "description": "The interval of its implied cyclic task; not used when tasks are given" },
+            "interval_ms": { "type": "integer", "minimum": 0, "description": "The interval of its implied cyclic task, at least 1 when no tasks are given; not used when tasks are given" },
             "code": { "type": "string", "description": "The compiled program, hex" },
             "symbols": { "description": "The compiler's symbol table" },
             "inputs": { "type": "array", "items": { "type": "object", "required": ["variable", "tag"], "properties": {
@@ -492,18 +521,7 @@ fn runtimes_config_body() -> Value {
         "additionalProperties": false,
         "properties": {
             "name": { "type": "string", "description": "Letters, digits, - and _" },
-            "kind": {
-                "type": "object",
-                "required": ["type"],
-                "description": "cyclic: every interval_ms, first phase_ms after RUN; cycle: again as soon as it ends, no sooner than min_cycle_ms after it last began; startup: once at every change to RUN, before any other task; event: at each rising edge of the BOOL tag, which a program of the runtime reads",
-                "properties": {
-                    "type": { "type": "string", "enum": ["cyclic", "cycle", "startup", "event"] },
-                    "interval_ms": { "type": "integer", "minimum": 1 },
-                    "phase_ms": { "type": "integer", "minimum": 0 },
-                    "min_cycle_ms": { "type": "integer", "minimum": 0 },
-                    "tag": { "type": "string" }
-                }
-            },
+            "kind": task_kind(),
             "priority": { "type": "integer", "minimum": 0, "maximum": 31, "description": "0 is the highest" },
             "watchdog_ms": { "type": "integer", "minimum": 1, "description": "How long it may owe a run before the runtime is put in fault; left out, ten intervals and at least 2 s for a cyclic or cycle task, 2 s for the others" },
             "programs": { "type": "array", "items": { "type": "string" }, "description": "Names of the runtime's programs, in the order they run; each program is in exactly one task" }
@@ -1802,6 +1820,70 @@ async fn call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_runtimes_body_schema_takes_what_the_route_takes_and_refuses_what_it_refuses() {
+        use crate::runtimes::RuntimesConfig;
+        use mythos_module::protocol::TaskKind;
+        let schema = runtimes_config_body();
+        let instance = &schema["properties"]["instances"]["items"]["properties"];
+        let kind = &instance["tasks"]["items"]["properties"]["kind"];
+        let variants = kind["oneOf"].as_array().expect("one object per kind");
+        let mut types: Vec<&str> = Vec::new();
+        for v in variants {
+            assert_eq!(v["additionalProperties"], json!(false), "{v}");
+            let name = v["properties"]["type"]["const"].as_str().unwrap();
+            types.push(name);
+            let sample = |field: &str| match field {
+                "type" => json!(name),
+                "tag" => json!("external.A.B.c"),
+                _ => json!(1),
+            };
+            let required: Vec<&str> = v["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r.as_str().unwrap())
+                .collect();
+            let least: serde_json::Map<String, Value> = required
+                .iter()
+                .map(|f| (f.to_string(), sample(f)))
+                .collect();
+            let parse = |o: &serde_json::Map<String, Value>| {
+                serde_json::from_value::<TaskKind>(Value::Object(o.clone()))
+            };
+            assert!(parse(&least).is_ok(), "{name}: its required fields");
+            // Each field the schema lists, the route takes.
+            for field in v["properties"].as_object().unwrap().keys() {
+                let mut with = least.clone();
+                with.insert(field.clone(), sample(field));
+                assert!(parse(&with).is_ok(), "{name}: {field}");
+            }
+            // A field it does not list, and a required field left out, the route refuses.
+            let mut extra = least.clone();
+            extra.insert("nope".into(), json!(1));
+            assert!(parse(&extra).is_err(), "{name}: an unknown field");
+            for field in required.iter().filter(|f| **f != "type") {
+                let mut missing = least.clone();
+                missing.remove(*field);
+                assert!(parse(&missing).is_err(), "{name}: without {field}");
+            }
+        }
+        types.sort_unstable();
+        assert_eq!(types, ["cycle", "cyclic", "event", "startup"]);
+
+        // A program's interval_ms: 0 is taken when tasks are given, so the schema allows it.
+        let program = &instance["programs"]["items"]["properties"]["interval_ms"];
+        assert_eq!(program["minimum"], json!(0));
+        let p = |name: &str, interval_ms: u64| json!({"name": name, "version": "1", "interval_ms": interval_ms, "code": "00"});
+        let config: RuntimesConfig = serde_json::from_value(json!({"instances": [{
+            "id": "t", "module": "vm", "run": true, "programs": [p("a", 0), p("b", 0)],
+            "tasks": [{"name": "f", "kind": {"type": "cyclic", "interval_ms": 20},
+                       "priority": 1, "programs": ["a", "b"]}]
+        }]}))
+        .unwrap();
+        assert_eq!(config.validate(), Ok(()));
+    }
 
     #[test]
     fn tool_names_are_unique_and_every_route_appears_once() {

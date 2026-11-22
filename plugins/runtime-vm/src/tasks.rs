@@ -447,6 +447,22 @@ impl Shared {
     /// task's tag may have risen.
     pub fn feed(&mut self, layout: &Layout, inputs: Vec<(String, Option<Value>, bool)>) {
         let now = Instant::now();
+        // An event task's tag as this exchange delivered it, `Some` only when GOOD and a BOOL. A
+        // tag this exchange left out is not taken from an earlier one: it is not known now.
+        let levels: Vec<Option<bool>> = layout
+            .tasks
+            .iter()
+            .map(|spec| {
+                let tag = spec.event_tag.as_ref()?;
+                match inputs.iter().rfind(|(t, _, _)| t == tag) {
+                    Some((_, Some(v), true)) => match to_vm(ElemType::Bool, v) {
+                        Some(VmValue::Bool(b)) => Some(b),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            })
+            .collect();
         for (tag, value, good) in inputs {
             self.inputs.insert(tag, (value, good));
         }
@@ -466,19 +482,13 @@ impl Shared {
         if self.mode != RuntimeMode::Run {
             return;
         }
-        for (t, spec) in self.tasks.iter_mut().zip(&layout.tasks) {
-            let Some(tag) = &spec.event_tag else {
+        for ((t, spec), level) in self.tasks.iter_mut().zip(&layout.tasks).zip(levels) {
+            if spec.event_tag.is_none() {
                 continue;
-            };
-            let level = match self.inputs.get(tag) {
-                Some((Some(v), true)) => match to_vm(ElemType::Bool, v) {
-                    Some(VmValue::Bool(b)) => Some(b),
-                    _ => None,
-                },
-                _ => None,
-            };
+            }
             // A rising edge is a GOOD FALSE then a GOOD TRUE: none at the first exchange, none
-            // across a time the tag was not GOOD. In doubt the task does not run.
+            // across a time the tag was not GOOD or not delivered. In doubt the task does not
+            // run.
             if t.prev == Some(false) && level == Some(true) {
                 if t.triggered {
                     t.missed += 1;
@@ -555,9 +565,9 @@ impl Shared {
             priority: spec.config.priority,
             programs: spec.config.programs.clone(),
             watchdog_ms: spec.watchdog.as_millis().min(u64::MAX as u128) as u64,
-            runs: u64::from(c.runs),
-            overruns: u64::from(c.overruns).saturating_add(self.tasks[k].missed),
-            preemptions: u64::from(c.preemptions),
+            runs: c.runs,
+            overruns: c.overruns.saturating_add(self.tasks[k].missed),
+            preemptions: c.preemptions,
             last_run_us: c.last_run.map(us_of_ns),
             longest_run_us: c.longest_run.map(us_of_ns),
             run_age_us: c.last_end.map(|end| us_of_ns(now.saturating_sub(end))),
@@ -632,6 +642,20 @@ impl Shared {
         }
     }
 
+    /// The triggers the exchanges saw since the last turn, given to the scheduler at `now`; a
+    /// trigger for a task already waiting to run makes no run and is counted.
+    fn take_triggers(&mut self, now: i64) {
+        for k in 0..self.tasks.len() {
+            if std::mem::take(&mut self.tasks[k].triggered) {
+                if self.sched[k].is_ready() {
+                    self.tasks[k].missed += 1;
+                } else {
+                    sched::trigger(&mut self.sched, k, now);
+                }
+            }
+        }
+    }
+
     /// The beginning of a run of a task: program `p`'s inputs from the last exchange, then its
     /// setpoints, then its forces, into its working memory.
     fn latch(&mut self, plan: &Plan, p: usize, memory: &mut [u8]) {
@@ -672,12 +696,15 @@ impl Shared {
             live.completed = true;
         }
         sched::ended(&mut self.sched, k, now);
+        // Ready again, or triggered by an exchange since the scheduler last took the triggers:
+        // the scheduler gives that trigger at its next turn, and the run it makes is owed now.
+        let again = self.sched[k].is_ready() || self.tasks[k].triggered;
         let owed = owed_after(
             self.sched[k].kind(),
             self.started_at,
             now,
             self.sched[k].counters().last_run.unwrap_or(0),
-            self.sched[k].is_ready(),
+            again,
         );
         self.tasks[k].owed_since =
             owed.map(|ns| self.since + Duration::from_nanos(ns.max(0) as u64));
@@ -784,15 +811,7 @@ pub(crate) fn schedule(layout: Arc<Layout>, control: Arc<Control>, quit: Arc<Ato
                     g.started = true;
                     g.started_at = now;
                 }
-                for k in 0..g.tasks.len() {
-                    if std::mem::take(&mut g.tasks[k].triggered) {
-                        if g.sched[k].is_ready() {
-                            g.tasks[k].missed += 1;
-                        } else {
-                            sched::trigger(&mut g.sched, k, now);
-                        }
-                    }
-                }
+                g.take_triggers(now);
                 match sched::next(&mut g.sched, now) {
                     Next::Idle => {
                         let until = sched::wake(&g.sched)
@@ -863,7 +882,7 @@ pub(crate) fn schedule(layout: Arc<Layout>, control: Arc<Control>, quit: Arc<Ato
             Err(fault) => {
                 let mut g = control.lock();
                 if Some(g.generation) == seen {
-                    let n = u64::from(g.sched[k].counters().runs) + 1;
+                    let n = g.sched[k].counters().runs.saturating_add(1);
                     let why = if layout.implied {
                         format!("scan {n} stopped: {}", describe(fault))
                     } else {
@@ -977,6 +996,103 @@ mod tests {
             assert_eq!(s.mode, mode);
             assert_eq!(s.programs[0].forces.len(), 1);
         }
+    }
+
+    const GO: &str = "external.A.B.go";
+
+    /// One event task `edge` at priority 5, running program `ev`, which reads GO into a BOOL.
+    fn event_task() -> (Layout, Vec<Work>) {
+        let c = mythos_logic_compiler::compile(
+            "PROGRAM ev\nVAR trig : BOOL; n : DINT; END_VAR\n  n := n + 1;\nEND_PROGRAM\n",
+            &mythos_logic_compiler::TargetProfile::pc(),
+        )
+        .unwrap_or_else(|d| panic!("{d:?}"));
+        let config = json!({
+            "programs": [{"name": "ev", "version": "1", "interval_ms": 10,
+                "code": hex::encode(&c.bytecode), "symbols": c.symbols,
+                "inputs": [{"variable": "trig", "tag": GO}]}],
+            "tasks": [{"name": "edge", "kind": {"type": "event", "tag": GO},
+                "priority": 5, "programs": ["ev"]}]
+        });
+        let layout = crate::plan(&config).ok().unwrap().layout;
+        let work = layout
+            .plans
+            .iter()
+            .map(|p| Work {
+                memory: vec![0u8; p.memory_size],
+                stack: Vec::new(),
+                calls: Vec::new(),
+            })
+            .collect();
+        (layout, work)
+    }
+
+    fn go(level: bool) -> Vec<(String, Option<Value>, bool)> {
+        vec![(GO.to_string(), Some(json!(level)), true)]
+    }
+
+    /// An event task in RUN, fed GO FALSE, started, then triggered by a rising edge and begun.
+    fn an_event_run_begun(layout: &Layout) -> Shared {
+        let mut g = Shared::new(layout, Vec::new());
+        g.restart(layout, false).unwrap();
+        g.feed(layout, go(false));
+        sched::start(&mut g.sched, 0);
+        g.started = true;
+        g.feed(layout, go(true));
+        g.take_triggers(1_000);
+        assert_eq!(sched::next(&mut g.sched, 1_000), Next::Begin(0));
+        g
+    }
+
+    #[test]
+    fn an_edge_seen_during_the_last_piece_of_an_event_run_is_watched_until_its_run() {
+        let (layout, mut work) = event_task();
+        let mut g = an_event_run_begun(&layout);
+        // While the run's last piece runs with no lock held, two exchanges: FALSE, then TRUE.
+        g.feed(&layout, go(false));
+        g.feed(&layout, go(true));
+        assert!(g.tasks[0].triggered, "the edge was seen");
+        // The scheduler finishes the run before its next turn takes the trigger.
+        g.finish(&layout, 0, &mut work, 2_000);
+        assert!(g.tasks[0].owed_since.is_some(), "the triggered run is owed");
+        g.take_triggers(3_000);
+        assert!(g.sched[0].is_ready(), "the task owes a run");
+        // Starved: never begun. Ten seconds on, past its 2 s watchdog, it faults.
+        g.watchdog(&layout, false, Instant::now() + Duration::from_secs(10));
+        assert_eq!(
+            g.mode,
+            RuntimeMode::Fault,
+            "owed_since = {:?}",
+            g.tasks[0].owed_since
+        );
+        assert!(
+            g.fault
+                .as_deref()
+                .is_some_and(|f| f.starts_with("watchdog: task 'edge' has ended no run for")),
+            "{:?}",
+            g.fault
+        );
+    }
+
+    #[test]
+    fn an_edge_taken_by_the_scheduler_during_an_event_run_is_watched_until_its_run() {
+        // The control: a turn of the scheduler between the edge and the end of the run.
+        let (layout, mut work) = event_task();
+        let mut g = an_event_run_begun(&layout);
+        g.feed(&layout, go(false));
+        g.feed(&layout, go(true));
+        g.take_triggers(1_500);
+        g.finish(&layout, 0, &mut work, 2_000);
+        assert!(g.sched[0].is_ready());
+        g.watchdog(&layout, false, Instant::now() + Duration::from_secs(10));
+        assert_eq!(g.mode, RuntimeMode::Fault);
+        // And a run that ends with no edge since owes nothing.
+        let (layout, mut work) = event_task();
+        let mut g = an_event_run_begun(&layout);
+        g.finish(&layout, 0, &mut work, 2_000);
+        assert_eq!(g.tasks[0].owed_since, None);
+        g.watchdog(&layout, false, Instant::now() + Duration::from_secs(10));
+        assert_eq!(g.mode, RuntimeMode::Run);
     }
 
     #[test]

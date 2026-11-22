@@ -668,9 +668,11 @@ END_PROGRAM
         vec![],
         level(true),
     ] {
-        exchange(&mut engine, inputs);
+        exchange(&mut engine, inputs.clone());
         std::thread::sleep(Duration::from_millis(60));
-        runs.push(task(&exchange(&mut engine, Vec::new()).state, "edge").runs);
+        // Read with the same inputs: an exchange that leaves the tag out would itself end any
+        // edge across it.
+        runs.push(task(&exchange(&mut engine, inputs).state, "edge").runs);
     }
     assert_eq!(runs, [0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2]);
     assert_eq!(watch_one(&mut engine, "n"), json!(2));
@@ -681,6 +683,144 @@ END_PROGRAM
         r.state.mode,
         RuntimeMode::Run,
         "an event task owes no run while untriggered"
+    );
+}
+
+const GO: &str = "external.A.B.go";
+
+/// One event task `edge`, running a program that counts its runs and reads GO into a BOOL.
+fn event_runtime() -> VmEngine {
+    const EV: &str = "
+PROGRAM ev
+VAR trig : BOOL; n : DINT; END_VAR
+  n := n + 1;
+END_PROGRAM
+";
+    start(json!({"run": true,
+        "programs": [program(EV, 10, json!({"inputs": [{"variable": "trig", "tag": GO}]}))],
+        "tasks": [{"name": "edge", "kind": {"type": "event", "tag": GO}, "priority": 1,
+                   "programs": ["ev"]}]}))
+}
+
+/// The runs of `edge` after these exchanges, each followed by a pause long enough for a run.
+fn edge_runs_after(engine: &mut VmEngine, sequence: Vec<Vec<WireInput>>) -> u64 {
+    let mut last = Vec::new();
+    for inputs in sequence {
+        exchange(engine, inputs.clone());
+        std::thread::sleep(Duration::from_millis(60));
+        last = inputs;
+    }
+    task(&exchange(engine, last).state, "edge").runs
+}
+
+fn go(level: bool) -> Vec<WireInput> {
+    vec![input(GO, Some(json!(level)), true)]
+}
+
+#[test]
+fn false_then_not_good_then_true_is_no_edge() {
+    let _one = one_at_a_time();
+    let mut engine = event_runtime();
+    // A GOOD FALSE before the tag was not GOOD: the TRUE after it is no edge, whatever the
+    // value that was not GOOD.
+    let runs = edge_runs_after(
+        &mut engine,
+        vec![
+            go(false),
+            vec![input(GO, Some(json!(true)), false)],
+            go(true),
+        ],
+    );
+    assert_eq!(runs, 0);
+    let runs = edge_runs_after(
+        &mut engine,
+        vec![
+            go(false),
+            vec![input(GO, Some(json!(false)), false)],
+            go(true),
+        ],
+    );
+    assert_eq!(runs, 0);
+    let runs = edge_runs_after(
+        &mut engine,
+        vec![go(false), vec![input(GO, None, true)], go(true)],
+    );
+    assert_eq!(runs, 0, "GOOD with no value");
+    // The control: GOOD FALSE then GOOD TRUE is one.
+    assert_eq!(edge_runs_after(&mut engine, vec![go(false), go(true)]), 1);
+}
+
+#[test]
+fn an_exchange_that_omits_the_event_tag_makes_no_edge_across_it() {
+    let _one = one_at_a_time();
+    let mut engine = event_runtime();
+    let other = vec![input("external.A.B.other", Some(json!(1)), true)];
+    let runs = edge_runs_after(&mut engine, vec![go(false), vec![], go(true)]);
+    assert_eq!(runs, 0, "FALSE, (no inputs), TRUE");
+    let runs = edge_runs_after(&mut engine, vec![go(false), other, go(true)]);
+    assert_eq!(runs, 0, "FALSE, (another tag only), TRUE");
+    assert_eq!(edge_runs_after(&mut engine, vec![go(false), go(true)]), 1);
+}
+
+#[test]
+fn every_program_of_a_task_sees_the_inputs_of_its_beginning() {
+    let _one = one_at_a_time();
+    // `first` takes the input, then runs long; `second` takes it after `first` has ended. Both
+    // are latched when the task begins, so both take the same value though it changes at every
+    // exchange, many times in `first`'s run.
+    const FIRST: &str = "
+PROGRAM first
+VAR inp : DINT; seen : DINT; i : DINT; k : DINT; END_VAR
+  seen := inp;
+  FOR i := 1 TO 30000 DO
+    k := k + (i MOD 2) - (i MOD 2);
+  END_FOR;
+END_PROGRAM
+";
+    const SECOND: &str = "
+PROGRAM second
+VAR inp : DINT; seen : DINT; END_VAR
+  seen := inp;
+END_PROGRAM
+";
+    const X: &str = "external.A.B.x";
+    const SEEN_FIRST: &str = "internal.T.first";
+    const SEEN_SECOND: &str = "internal.T.second";
+    let mut engine = start(json!({"run": true,
+        "programs": [
+            program(FIRST, 10, json!({"inputs": [{"variable": "inp", "tag": X}],
+                "published": [{"variable": "seen", "tag": SEEN_FIRST}]})),
+            program(SECOND, 10, json!({"inputs": [{"variable": "inp", "tag": X}],
+                "published": [{"variable": "seen", "tag": SEEN_SECOND}]})),
+        ],
+        "tasks": [{"name": "free", "kind": {"type": "cycle"}, "priority": 31,
+                   "programs": ["first", "second"]}]}));
+    let sample = |r: &ExchangeReply, uri: &str| {
+        r.samples
+            .iter()
+            .find(|s| s.uri == uri)
+            .and_then(|s| s.value)
+    };
+    let end = Instant::now() + Duration::from_millis(1_500);
+    let mut n = 0i64;
+    let mut compared = 0;
+    let mut last = None;
+    while Instant::now() < end {
+        let r = exchange(&mut engine, vec![input(X, Some(json!(n)), true)]);
+        if let (Some(a), Some(b)) = (sample(&r, SEEN_FIRST), sample(&r, SEEN_SECOND)) {
+            assert_eq!(a, b, "the two programs of one run took different inputs");
+            compared += 1;
+        }
+        last = Some(r);
+        n += 1;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(compared > 100, "{compared} exchanges compared");
+    let last = last.unwrap();
+    let longest = task(&last.state, "free").longest_run_us.unwrap();
+    assert!(
+        longest > 1_000,
+        "a run spans several exchanges: {longest} µs"
     );
 }
 

@@ -592,7 +592,8 @@ impl ProcessDriver {
     }
 
     /// Start a process and say hello. The manifest it answers with must be the one discovered:
-    /// a file replaced by a different module is not silently adopted.
+    /// a file replaced by a different module, or by another build of it, is not silently
+    /// adopted (see [`same_build`]).
     async fn open(&mut self) -> Result<(), PluginError> {
         let context = self.context.clone().ok_or_else(|| {
             PluginError::InitializationFailed("the driver has not been initialised".to_string())
@@ -613,15 +614,9 @@ impl ProcessDriver {
                 return Err(e);
             }
         };
-        if manifest.id != self.module.manifest.id || manifest.protocol != PROTOCOL_VERSION {
+        if let Err(why) = same_build(&self.module.manifest, &manifest, &self.module.path) {
             session.close(false).await;
-            return Err(PluginError::InitializationFailed(format!(
-                "{} is now module '{}' (protocol {}), not the '{}' that was discovered",
-                self.module.path.display(),
-                manifest.id,
-                manifest.protocol,
-                self.module.manifest.id
-            )));
+            return Err(PluginError::InitializationFailed(why));
         }
         self.session = Some(session);
         Ok(())
@@ -839,8 +834,80 @@ impl ProtocolDriver for ProcessDriver {
     }
 }
 
+/// Whether a process started from `path` that answered `answered` is the build `discovered`
+/// there: the same module, protocol, version and profile. A process started again after a crash
+/// runs the file now at the path; if the file was replaced by another build since, that build
+/// was never checked against the configuration it would be given (an older runtime module may
+/// ignore what it does not know and run something else than was written). A new build is
+/// taken up by loading again, which discovers it and checks it.
+fn same_build(
+    discovered: &ModuleManifest,
+    answered: &ModuleManifest,
+    path: &Path,
+) -> Result<(), String> {
+    if answered.id != discovered.id || answered.protocol != PROTOCOL_VERSION {
+        return Err(format!(
+            "{} is now module '{}' (protocol {}), not the '{}' that was discovered",
+            path.display(),
+            answered.id,
+            answered.protocol,
+            discovered.id
+        ));
+    }
+    if answered.version != discovered.version || answered.profile != discovered.profile {
+        return Err(format!(
+            "{} is now another build of module '{}' (version {}, profile {}), not the version {} (profile {}) that was discovered: load the configuration again to take it up",
+            path.display(),
+            answered.id,
+            answered.version,
+            answered.profile,
+            discovered.version,
+            discovered.profile
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_process_started_again_is_adopted_only_when_it_is_the_build_discovered() {
+        let vm = |version: &str, profile: Value| ModuleManifest {
+            protocol: PROTOCOL_VERSION,
+            id: "org.mythos.runtime.vm".to_string(),
+            name: "VM".to_string(),
+            version: version.to_string(),
+            kind: ModuleKind::Runtime,
+            provides: "vm".to_string(),
+            description: String::new(),
+            capabilities: Vec::new(),
+            config_schema: Value::Null,
+            routes: Vec::new(),
+            always_on: false,
+            profile,
+        };
+        let path = Path::new("modules/mythos-module-vm");
+        let tasks = serde_json::json!({"tasks": {"kinds": ["cyclic", "event"]}});
+        let discovered = vm("0.5.0", tasks.clone());
+        assert_eq!(same_build(&discovered, &discovered.clone(), path), Ok(()));
+        // The file replaced by an older build of the same module, which knows no tasks.
+        let older = vm("0.4.0", Value::Null);
+        assert_eq!(
+            same_build(&discovered, &older, path),
+            Err("modules/mythos-module-vm is now another build of module 'org.mythos.runtime.vm' (version 0.4.0, profile null), not the version 0.5.0 (profile {\"tasks\":{\"kinds\":[\"cyclic\",\"event\"]}}) that was discovered: load the configuration again to take it up".to_string())
+        );
+        // The same version saying it runs other things, and another module, are refused too.
+        assert!(same_build(&discovered, &vm("0.5.0", Value::Null), path).is_err());
+        let mut other = discovered.clone();
+        other.id = "org.mythos.other".to_string();
+        assert!(same_build(&discovered, &other, path)
+            .unwrap_err()
+            .contains("is now module 'org.mythos.other'"));
+        let mut newer_protocol = discovered.clone();
+        newer_protocol.protocol = PROTOCOL_VERSION + 1;
+        assert!(same_build(&discovered, &newer_protocol, path).is_err());
+    }
+
     use super::*;
 
     /// macOS copies a file with its modification time: a reinstalled build has the same size

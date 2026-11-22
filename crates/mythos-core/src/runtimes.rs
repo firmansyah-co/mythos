@@ -144,15 +144,12 @@ impl RuntimeInstance {
     }
 
     /// What a running build must also run for a new build to carry on from its variables:
-    /// the names of its programs, sorted, joined by `,`. For one program, its name.
-    pub fn program_key(&self) -> String {
-        let mut names: Vec<&str> = self
-            .all_programs()
-            .iter()
-            .map(|p| p.name.as_str())
-            .collect();
+    /// the names of its programs, sorted. Compared as a list, never as one string: a program
+    /// may have a `,` in its name, and `a,b` and `c` are not the programs `a` and `b,c`.
+    pub fn program_key(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.all_programs().iter().map(|p| p.name.clone()).collect();
         names.sort_unstable();
-        names.join(",")
+        names
     }
 
     /// Whether its variables are named `<program>.<path>`: it has two or more programs.
@@ -585,7 +582,7 @@ impl RuntimeLoad {
 /// module.
 struct PendingCarry {
     /// The new build's [`RuntimeInstance::program_key`].
-    program: String,
+    program: Vec<String>,
     module: String,
     reply: oneshot::Sender<Result<ProgramVariables, String>>,
 }
@@ -751,7 +748,7 @@ impl RuntimeStates {
     fn ask_variables(
         &self,
         id: &str,
-        program: &str,
+        program: Vec<String>,
         module: &str,
     ) -> Option<oneshot::Receiver<Result<ProgramVariables, String>>> {
         let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
@@ -764,7 +761,7 @@ impl RuntimeStates {
             .entry(id.to_string())
             .or_default()
             .push(PendingCarry {
-                program: program.to_string(),
+                program,
                 module: module.to_string(),
                 reply,
             });
@@ -1085,7 +1082,7 @@ impl RuntimeDriver {
         let Some(answer) =
             self.env
                 .states
-                .ask_variables(&instance.id, &instance.program_key(), &self.module)
+                .ask_variables(&instance.id, instance.program_key(), &self.module)
         else {
             return Err("no build of it was loaded".to_string());
         };
@@ -1159,8 +1156,9 @@ impl RuntimeDriver {
         for ask in asks {
             let answer = if ask.program != program {
                 Err(format!(
-                    "the program running was '{program}', not '{}'",
-                    ask.program
+                    "the program running was '{}', not '{}'",
+                    program.join(","),
+                    ask.program.join(",")
                 ))
             } else if ask.module != self.module {
                 Err(format!(
@@ -1226,13 +1224,56 @@ impl RuntimeDriver {
         }
     }
 
-    /// Write the outputs the program changed since they were last confirmed.
+    /// Write the outputs the program changed since they were last confirmed. With tasks
+    /// written out, an output the reply leaves out, of a program whose task has ended no run
+    /// since RUN, is written its safe value: that can last without limit (a task's phase, an
+    /// event that does not come), and nothing else writes an output the runtime claims. Given
+    /// no tasks, its one program's outputs are left out only until its first scan ends, and are
+    /// left as they were, as before there were tasks.
     async fn write_outputs(&mut self, reply: &ExchangeReply) {
         let Some(instance) = &self.instance else {
             return;
         };
         let owner = Self::owner(&instance.id);
-        self.safe.clear();
+        let reported: HashSet<&str> = reply.outputs.iter().map(|o| o.tag.as_str()).collect();
+        let silent: Vec<&OutputBinding> = if instance.tasks.is_empty() {
+            Vec::new()
+        } else {
+            instance
+                .outputs()
+                .into_iter()
+                .map(|(_, o)| o)
+                .filter(|o| !reported.contains(o.tag.as_str()))
+                .collect()
+        };
+        self.safe.retain(|tag| silent.iter().any(|o| &o.tag == tag));
+        for o in silent {
+            if self.safe.contains(&o.tag) {
+                continue;
+            }
+            if self.claim.is_some_and(|c| !self.env.io.holds(&o.tag, c)) {
+                continue;
+            }
+            self.written.remove(&o.tag);
+            match self
+                .env
+                .io
+                .write_tag_as(&o.tag, o.safe.clone(), Some(&owner))
+                .await
+            {
+                Ok(()) => {
+                    self.safe.insert(o.tag.clone());
+                    self.errors.remove(&o.tag);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "{owner}: the safe value of {} was not confirmed: {e}",
+                        o.tag
+                    );
+                    self.errors.insert(o.tag.clone(), e.to_string());
+                }
+            }
+        }
         for o in &reply.outputs {
             if self.written.get(&o.tag) == Some(&o.value) {
                 continue;
@@ -1352,14 +1393,25 @@ fn support_problem(
     let id = &instance.id;
     let Some(support) = support else {
         if instance.runs_as_today() {
+            if instance.program.is_none() {
+                // Such a module reads its one program from `program`, and is not sent one.
+                return Some(format!(
+                    "runtime '{id}' gives its one program in programs; {module} reads it only from program and does not say it runs tasks: give it as program, or install a newer build of it"
+                ));
+            }
             return None;
         }
-        let count = instance.all_programs().len();
-        let has = match instance.tasks.first() {
-            Some(task) if count <= 1 => {
-                format!("task '{}' of kind {}", task.name, task.kind.name())
+        let programs = instance.all_programs();
+        let has = match (instance.tasks.first(), programs.as_slice()) {
+            (Some(task), [program]) => {
+                format!(
+                    "task '{}' of kind {}{}",
+                    task.name,
+                    task.kind.name(),
+                    not_as_today(task, program)
+                )
             }
-            _ => format!("{count} programs"),
+            _ => format!("{} programs", programs.len()),
         };
         return Some(format!(
             "runtime '{id}' has {has}; {module} runs one program in one cyclic task and does not say it runs tasks: install a newer build of it"
@@ -1379,6 +1431,36 @@ fn support_problem(
         task.name,
         task.kind.name()
     ))
+}
+
+/// What makes a cyclic task of one program not the program's implied task, as the words that
+/// follow its kind in a refusal: empty for another kind, which its kind already says.
+fn not_as_today(task: &TaskConfig, program: &RuntimeProgram) -> String {
+    let TaskKind::Cyclic {
+        interval_ms,
+        phase_ms,
+    } = task.kind
+    else {
+        return String::new();
+    };
+    let mut why = Vec::new();
+    if interval_ms != program.interval_ms {
+        why.push(format!(
+            "interval_ms {interval_ms}, not its program's {}",
+            program.interval_ms
+        ));
+    }
+    if phase_ms != 0 {
+        why.push(format!("phase_ms {phase_ms}"));
+    }
+    if let Some(ms) = task.watchdog_ms {
+        why.push(format!("watchdog_ms {ms}"));
+    }
+    if why.is_empty() {
+        String::new()
+    } else {
+        format!(" with {}", why.join(" and "))
+    }
 }
 
 /// What a module said when it refused, without the error kind's prefix.
@@ -2215,9 +2297,32 @@ mod tests {
 
     #[test]
     fn the_program_key_is_the_sorted_names_and_one_program_s_is_its_name() {
-        assert_eq!(parsed(instance("t")).program_key(), "P");
+        assert_eq!(parsed(instance("t")).program_key(), ["P"]);
         let two = parsed(several(&["b", "a"], json!([cyclic("f", 20, &["a", "b"])])));
-        assert_eq!(two.program_key(), "a,b");
+        assert_eq!(two.program_key(), ["a", "b"]);
+    }
+
+    #[test]
+    fn two_different_program_sets_have_different_program_keys() {
+        // A program name may hold a ','; joined into one string, these three sets were one key.
+        let one = parsed(several(
+            &["a,b", "c"],
+            json!([cyclic("x", 10, &["a,b", "c"])]),
+        ));
+        let other = parsed(several(
+            &["a", "b,c"],
+            json!([cyclic("x", 10, &["a", "b,c"])]),
+        ));
+        let mut single = instance("t");
+        single["program"]["name"] = json!("a,b");
+        let single = parsed(single);
+        let pair = parsed(several(&["a", "b"], json!([cyclic("x", 10, &["a", "b"])])));
+        for i in [&one, &other, &single, &pair] {
+            assert_eq!(check_tasks(&i.all_programs(), &i.tasks), Ok(()));
+        }
+        assert_ne!(one.program_key(), other.program_key());
+        assert_ne!(single.program_key(), pair.program_key());
+        assert_eq!(single.program_key(), ["a,b"]);
     }
 
     #[test]
@@ -2290,6 +2395,58 @@ mod tests {
             problem(Some(&nothing), instance("t")),
             None,
             "the implied task needs no kind"
+        );
+    }
+
+    #[test]
+    fn one_program_written_in_programs_is_refused_by_an_older_module_in_its_words() {
+        // Such a module reads its program from `program`: sent `programs`, it could not read
+        // it. Refused here, in words that say what to do, whether or not a task is written out.
+        let mut alone = several(&["Tank"], json!([]));
+        alone["tasks"] = json!([]);
+        let mut with_task = several(&["Tank"], json!([cyclic("main", 20, &["Tank"])]));
+        with_task["tasks"][0]["priority"] = json!(31);
+        for i in [alone, with_task] {
+            let i = parsed(i);
+            assert!(i.runs_as_today());
+            assert_eq!(i.check(), Ok(()));
+            assert_eq!(
+                support_problem("vm", "0.4.0", None, &i).as_deref(),
+                Some("runtime 't' gives its one program in programs; the runtime module 'vm' (version 0.4.0) reads it only from program and does not say it runs tasks: give it as program, or install a newer build of it")
+            );
+            let tasks = TaskSupport {
+                kinds: vec!["cyclic".into()],
+            };
+            assert_eq!(support_problem("vm", "0.5.0", Some(&tasks), &i), None);
+        }
+    }
+
+    #[test]
+    fn the_refusal_of_one_cyclic_task_names_what_makes_it_not_run_as_today() {
+        let refused = |task: Value| {
+            let mut i = instance("t");
+            i["tasks"] = json!([task]);
+            support_problem("vm", "0.4.0", None, &parsed(i)).unwrap()
+        };
+        let older = "; the runtime module 'vm' (version 0.4.0) runs one program in one cyclic task and does not say it runs tasks: install a newer build of it";
+        let mut task = cyclic("main", 20, &["P"]);
+        task["watchdog_ms"] = json!(500);
+        assert_eq!(
+            refused(task),
+            format!("runtime 't' has task 'main' of kind cyclic with watchdog_ms 500{older}")
+        );
+        let mut task = cyclic("main", 20, &["P"]);
+        task["kind"]["phase_ms"] = json!(5);
+        assert_eq!(
+            refused(task),
+            format!("runtime 't' has task 'main' of kind cyclic with phase_ms 5{older}")
+        );
+        let mut task = cyclic("main", 50, &["P"]);
+        task["kind"]["phase_ms"] = json!(5);
+        task["watchdog_ms"] = json!(500);
+        assert_eq!(
+            refused(task),
+            format!("runtime 't' has task 'main' of kind cyclic with interval_ms 50, not its program's 20 and phase_ms 5 and watchdog_ms 500{older}")
         );
     }
 

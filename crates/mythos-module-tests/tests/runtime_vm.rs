@@ -1196,7 +1196,7 @@ fn a_runtimes_file_of_today_round_trips_byte_for_byte() {
     let instance = &config.instances[0];
     assert!(instance.programs.is_empty() && instance.tasks.is_empty());
     assert!(instance.runs_as_today());
-    assert_eq!(instance.program_key(), "Tank");
+    assert_eq!(instance.program_key(), ["Tank"]);
     assert_eq!(
         String::from_utf8(serde_json::to_vec_pretty(&config).unwrap()).unwrap(),
         FILE_OF_TODAY,
@@ -1256,6 +1256,44 @@ async fn the_status_of_a_runtime_of_today_has_exactly_todays_keys() {
         status["outputs"][1]["variable"], "speed",
         "named by its path"
     );
+    p.runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_output_of_a_program_whose_task_has_not_run_is_written_its_safe_value() {
+    // Runs's task begins a minute after RUN. Until then the pump output, which the runtime
+    // claims so nothing else writes it, is written its safe value (FALSE: 0), not left at the 9
+    // the drive held before anything commanded it.
+    let mut v = serde_json::to_value(two_programs(SPEEDS)).unwrap();
+    v["instances"][0]["tasks"][1]["kind"]["phase_ms"] = json!(60_000);
+    let cfg: RuntimesConfig = serde_json::from_value(v).unwrap();
+    let p = plant_running(cfg, 20).await;
+    p.drive_is(
+        "Speeds drives the speed, the pump is at its safe value",
+        0,
+        300,
+    )
+    .await;
+    p.until("the status says the pump was written its safe value", |s| {
+        s.tank.as_ref().is_some_and(|t| {
+            t.outputs
+                .iter()
+                .any(|o| o.tag == PUMP && o.written == Some(json!(false)))
+        })
+    })
+    .await;
+    let tank = p.tank();
+    assert_eq!(tank.mode, "run", "{tank:?}");
+    let runs: Vec<(&str, u64)> = tank
+        .tasks
+        .iter()
+        .map(|t| (t.name.as_str(), t.runs))
+        .collect();
+    assert_eq!(runs[1], ("slow", 0), "Runs has not run: {runs:?}");
+    let output = |tag: &str| tank.outputs.iter().find(|o| o.tag == tag).unwrap().clone();
+    assert_eq!(output(PUMP).written, Some(json!(false)), "{tank:?}");
+    assert_eq!(output(SPEED).written, Some(json!(300)), "{tank:?}");
+    assert!(!tank.outputs_safe, "the speed is a computed value");
     p.runtime.shutdown().await;
 }
 
@@ -1405,7 +1443,10 @@ async fn an_older_module_is_refused_a_configuration_it_cannot_run_and_says_why()
     );
     for (config, has) in [
         (&two, "runtime 'tank' has 2 programs"),
-        (&slower, "runtime 'tank' has task 'f' of kind cyclic"),
+        (
+            &slower,
+            "runtime 'tank' has task 'f' of kind cyclic with interval_ms 50, not its program's 20",
+        ),
     ] {
         config.validate().unwrap();
         // The check a save makes: the module is never asked.
