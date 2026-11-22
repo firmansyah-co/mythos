@@ -59,3 +59,7 @@ clone it guards neither until you opt in.
 - A PR carries one slice and a verification receipt.
 - Check `git diff --stat origin/dev...HEAD` before opening one. A PR that deletes
   merged work is refused, not reviewed.
+- `dev` merges through a **merge queue**: after opening the PR, enable auto-merge on it
+  (the two commands are in [`CONTRIBUTING.md`](CONTRIBUTING.md) §5) and it merges by itself when
+  its checks pass. Do not rebase a PR only to catch up with `dev`, and do not call the merge
+  API: it is refused.
