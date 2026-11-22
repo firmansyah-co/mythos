@@ -8,7 +8,7 @@
 use driver_modbus::sim::ModbusSimServer;
 use mythos_core::io::{DriverRegistry, IoConfig, IoRuntime, IoStatusHandle, WriteError};
 use mythos_core::runtimes::{
-    BusTags, RuntimeEnv, RuntimeStates, RuntimeStatus, RuntimesConfig, TagSource,
+    BusTags, ForceAsk, RuntimeEnv, RuntimeStates, RuntimeStatus, RuntimesConfig, TagSource,
 };
 use mythos_core::tag::TagCatalog;
 use mythos_logic_compiler::{compile, TargetProfile};
@@ -823,7 +823,12 @@ async fn a_program_that_does_not_load_or_names_a_variable_it_lacks_is_refused_by
 async fn a_program_that_publishes_no_tag_runs_and_writes_its_outputs() {
     // Outputs only: nothing of the program is a tag of its own.
     let mut outputs_only = runtimes(TANK, true);
-    outputs_only.instances[0].program.published.clear();
+    outputs_only.instances[0]
+        .program
+        .as_mut()
+        .unwrap()
+        .published
+        .clear();
     let p = plant_running(outputs_only, 20).await;
     p.drive_is("the pump runs at 300", 1, 300).await;
     // The drive is written by a scan, but the runtime's status is a report of its own that
@@ -845,7 +850,7 @@ async fn a_program_that_publishes_no_tag_runs_and_writes_its_outputs() {
 #[tokio::test]
 async fn a_program_bound_to_nothing_at_all_still_scans() {
     let mut unbound = runtimes(TANK, true);
-    let program = &mut unbound.instances[0].program;
+    let program = unbound.instances[0].program.as_mut().unwrap();
     program.inputs.clear();
     program.outputs.clear();
     program.published.clear();
@@ -1034,5 +1039,429 @@ async fn a_runtime_module_that_gives_no_values_says_so_and_runs_on() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(p.tank().mode, "run");
     assert_eq!(p.drive.holding(1).await, Some(300));
+    p.runtime.shutdown().await;
+}
+
+// -----------------------------------------------------------------------------
+// Several programs in tasks of their own (ADR-013 §2.19, C8b)
+// -----------------------------------------------------------------------------
+
+/// The speed half of the tank, in a program of its own.
+const SPEEDS: &str = "
+PROGRAM Speeds
+VAR_INPUT level : INT; level_ok : BOOL; setpoint : INT := 50; END_VAR
+VAR_OUTPUT speed : INT; END_VAR
+VAR runs : DINT; END_VAR
+  runs := runs + 1;
+  IF level_ok AND (level < setpoint) THEN
+    speed := (setpoint - level) * 10;
+  ELSE
+    speed := 0;
+  END_IF;
+END_PROGRAM
+";
+
+/// As SPEEDS, but it divides by the level once the level is known.
+const SPEEDS_DIVIDE: &str = "
+PROGRAM Speeds
+VAR_INPUT level : INT; level_ok : BOOL; setpoint : INT := 50; END_VAR
+VAR_OUTPUT speed : INT; END_VAR
+VAR runs : DINT; END_VAR
+  runs := runs + 1;
+  IF level_ok THEN
+    speed := 1000 / level;
+  END_IF;
+END_PROGRAM
+";
+
+/// The run half of the tank, in a program of its own.
+const RUNS: &str = "
+PROGRAM Runs
+VAR_INPUT level : INT; level_ok : BOOL; END_VAR
+VAR_OUTPUT pump : BOOL; END_VAR
+VAR runs : DINT; END_VAR
+  runs := runs + 1;
+  pump := level_ok AND (level < 50);
+END_PROGRAM
+";
+
+/// One program of the runtime `tank`, as JSON, with its bindings.
+fn program_json(source: &str, version: &str, outputs: Value, published: Value) -> Value {
+    let compiled = compile(source, &TargetProfile::pc()).unwrap_or_else(|d| panic!("{d:?}"));
+    json!({
+        "name": compiled.name,
+        "version": version,
+        "interval_ms": 20,
+        "code": hex::encode(&compiled.bytecode),
+        "symbols": compiled.symbols,
+        "inputs": [
+            {"variable": "level", "tag": LEVEL},
+            {"variable": "level_ok", "tag": LEVEL, "of": "good"}
+        ],
+        "outputs": outputs,
+        "published": published
+    })
+}
+
+/// The runtime `tank` in the VM module: `speeds` drives the speed every 20 ms at priority 1
+/// (task `fast`), RUNS the pump every 50 ms at priority 5 (task `slow`).
+fn two_programs(speeds: &str) -> RuntimesConfig {
+    serde_json::from_value(json!({"instances": [{
+        "id": "tank", "module": "vm", "run": true,
+        "programs": [
+            program_json(speeds, "s-1",
+                json!([{"variable": "speed", "tag": SPEED, "safe": SAFE_SPEED}]),
+                json!([{"variable": "runs", "tag": T_SCANS}])),
+            program_json(RUNS, "r-1",
+                json!([{"variable": "pump", "tag": PUMP, "safe": false}]),
+                json!([{"variable": "pump", "tag": T_PUMP}]))
+        ],
+        "tasks": [
+            {"name": "fast", "kind": {"type": "cyclic", "interval_ms": 20}, "priority": 1, "programs": ["Speeds"]},
+            {"name": "slow", "kind": {"type": "cyclic", "interval_ms": 50}, "priority": 5, "programs": ["Runs"]}
+        ]
+    }]}))
+    .unwrap()
+}
+
+/// The stubborn module (which says nothing of tasks: an older module) given `instance`'s
+/// programs and tasks.
+fn stubborn_with(programs: Value, tasks: Value) -> RuntimesConfig {
+    let mut instance = json!({"id": "tank", "module": "stubborn", "run": true, "tasks": tasks});
+    if programs.as_array().is_some_and(|p| p.len() == 1) {
+        instance["program"] = programs[0].clone();
+    } else {
+        instance["programs"] = programs;
+    }
+    serde_json::from_value(json!({ "instances": [instance] })).unwrap()
+}
+
+fn stubborn_program(name: &str, tag: &str) -> Value {
+    json!({
+        "name": name, "version": "1", "interval_ms": 20, "code": "",
+        "outputs": [{"variable": "x", "tag": tag, "safe": SAFE_SPEED}]
+    })
+}
+
+/// A file of today, as the server writes it (`to_vec_pretty`): the fields of the types in their
+/// order, and the keys of `symbols`, which the core holds as an opaque JSON value, sorted.
+const FILE_OF_TODAY: &str = r#"{
+  "instances": [
+    {
+      "id": "tank",
+      "module": "vm",
+      "run": true,
+      "program": {
+        "name": "Tank",
+        "version": "v1",
+        "interval_ms": 20,
+        "code": "00ff",
+        "symbols": [
+          {
+            "offset": 0,
+            "path": "level",
+            "type": "INT"
+          }
+        ],
+        "inputs": [
+          {
+            "variable": "level",
+            "tag": "external.Plant.LT1.level",
+            "of": "value"
+          }
+        ],
+        "outputs": [
+          {
+            "variable": "speed",
+            "tag": "external.Plant.P1.speed",
+            "safe": 7
+          }
+        ],
+        "published": [
+          {
+            "variable": "setpoint",
+            "tag": "internal.Plant.Tank.setpoint",
+            "writable": true
+          }
+        ]
+      }
+    }
+  ]
+}"#;
+
+#[test]
+fn a_runtimes_file_of_today_round_trips_byte_for_byte() {
+    let config: RuntimesConfig = serde_json::from_str(FILE_OF_TODAY).unwrap();
+    config.validate().unwrap();
+    let instance = &config.instances[0];
+    assert!(instance.programs.is_empty() && instance.tasks.is_empty());
+    assert!(instance.runs_as_today());
+    assert_eq!(instance.program_key(), "Tank");
+    assert_eq!(
+        String::from_utf8(serde_json::to_vec_pretty(&config).unwrap()).unwrap(),
+        FILE_OF_TODAY,
+        "written back byte for byte"
+    );
+    // The configuration its module is started with is the instance of today, as JSON text.
+    let today: Value = serde_json::from_str(FILE_OF_TODAY).unwrap();
+    let connection = &config.connections()[0];
+    assert_eq!(
+        serde_json::to_string(&connection.config).unwrap(),
+        serde_json::to_string(&today["instances"][0]).unwrap()
+    );
+    assert_eq!(connection.poll_interval_ms, 20);
+}
+
+#[tokio::test]
+async fn the_status_of_a_runtime_of_today_has_exactly_todays_keys() {
+    let p = plant(TANK, 20, true).await;
+    p.drive_is("the pump runs at 300", 1, 300).await;
+    p.until("it reports its scans", |s| {
+        s.tank
+            .as_ref()
+            .is_some_and(|t| t.scans.is_some_and(|n| n > 0))
+    })
+    .await;
+    let status = serde_json::to_value(p.tank()).unwrap();
+    let mut keys: Vec<&str> = status
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    let mut today = vec![
+        "id",
+        "module",
+        "program",
+        "version",
+        "interval_ms",
+        "mode",
+        "reason",
+        "scans",
+        "last_scan_us",
+        "max_scan_us",
+        "overruns",
+        "outputs_safe",
+        "outputs",
+        "pid",
+        "restarts",
+        "forced",
+        "forced_tags",
+    ];
+    today.sort_unstable();
+    assert_eq!(keys, today, "{status}");
+    assert_eq!(status["interval_ms"], json!(20), "a number, as today");
+    assert_eq!(
+        status["outputs"][1]["variable"], "speed",
+        "named by its path"
+    );
+    p.runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn two_programs_in_two_tasks_drive_their_outputs_through_one_runtime() {
+    let p = plant_running(two_programs(SPEEDS), 20).await;
+    // Speeds commands 300, Runs the pump: one module process, two tasks.
+    p.drive_is("the pump runs at 300", 1, 300).await;
+    p.until("the pump tag is TRUE and GOOD", |s| {
+        s.pump == (Some(json!(true)), true)
+    })
+    .await;
+    p.until("both tasks have run", |s| {
+        s.tank
+            .as_ref()
+            .is_some_and(|t| t.tasks.len() == 2 && t.tasks.iter().all(|k| k.runs > 0))
+    })
+    .await;
+    let tank = p.tank();
+    assert_eq!(tank.mode, "run", "{tank:?}");
+    assert_eq!(
+        (tank.program.as_str(), tank.version.as_str()),
+        ("Speeds, Runs", "s-1, r-1")
+    );
+    assert_eq!(tank.interval_ms, Some(20), "its fastest cyclic task's");
+    assert_eq!(
+        tank.programs
+            .iter()
+            .map(|p| (p.name.as_str(), p.version.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("Speeds", "s-1"), ("Runs", "r-1")]
+    );
+    let named: Vec<&str> = tank.tasks.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(named, vec!["fast", "slow"], "{tank:?}");
+    assert_eq!(tank.tasks[0].programs, vec!["Speeds".to_string()]);
+    assert_eq!(tank.tasks[1].priority, 5);
+    assert_eq!(
+        tank.outputs
+            .iter()
+            .map(|o| (o.tag.as_str(), o.variable.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(SPEED, "Speeds.speed"), (PUMP, "Runs.pump")],
+        "each output named by its program"
+    );
+    assert!(tank.scans.is_some_and(|n| n > 0), "{tank:?}");
+
+    // Each program's variables, named by their program; a bare path names none.
+    let reply = p
+        .watched_until(
+            "Speeds has seen the level",
+            &["speeds.level", "Runs.pump", "level"],
+            |r| value(r, "speeds.level").value == Some(json!(20)),
+        )
+        .await;
+    assert_eq!(value(&reply, "Runs.pump").value, Some(json!(true)));
+    let bare = value(&reply, "level");
+    assert!(
+        bare.error
+            .as_deref()
+            .unwrap_or("")
+            .contains("name the program first"),
+        "{bare:?}"
+    );
+
+    // A force names its program, and marks the tags of that program's variable alone.
+    let forced = p
+        .states
+        .force(
+            "tank",
+            ForceAsk::Force {
+                variable: "runs.pump".to_string(),
+                value: json!(false),
+            },
+        )
+        .unwrap()
+        .await
+        .unwrap()
+        .expect("a variable of a running program is forced");
+    assert_eq!(forced.forced.len(), 1, "{forced:?}");
+    p.drive_is("the pump forced off, the speed still 300", 0, 300)
+        .await;
+    p.until("the forced tags are those bound to Runs.pump", |s| {
+        s.tank
+            .as_ref()
+            .is_some_and(|t| t.forced_tags == vec![PUMP.to_string(), T_PUMP.to_string()])
+    })
+    .await;
+
+    // The level changes: each program follows it in its own task.
+    p.sensors.set_input(0, 70).await;
+    p.drive_is("the pump stops and so does the speed", 0, 0)
+        .await;
+    p.runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_fault_in_one_program_puts_every_output_of_the_runtime_safe() {
+    let p = plant_running(two_programs(SPEEDS_DIVIDE), 4).await;
+    p.drive_is("1000 / 4, the pump on", 1, 250).await;
+
+    // Speeds divides by zero. Runs did nothing wrong; its output goes safe all the same.
+    p.sensors.set_input(0, 0).await;
+    p.drive_is("faulted: both outputs at their safe values", 0, SAFE_SPEED)
+        .await;
+    p.until("it reports the fault with safe outputs", |s| {
+        s.mode() == "fault" && s.tank.as_ref().is_some_and(|t| t.outputs_safe)
+    })
+    .await;
+    let reason = p.tank().reason.unwrap_or_default();
+    assert!(
+        reason.contains("task 'fast'")
+            && reason.contains("program 'Speeds'")
+            && reason.contains("division by zero"),
+        "{reason}"
+    );
+    // It stays so: no program of the runtime writes until an engineer runs it again.
+    p.sensors.set_input(0, 5).await;
+    for _ in 0..20 {
+        assert_eq!(
+            (p.drive.holding(0).await, p.drive.holding(1).await),
+            (Some(0), Some(SAFE_SPEED))
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(p.tank().mode, "fault");
+    assert!(p.states.command("tank", true));
+    p.drive_is("run again: 1000 / 5, the pump on", 1, 200).await;
+    p.runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_older_module_is_refused_a_configuration_it_cannot_run_and_says_why() {
+    let mut p = plant(TANK, 20, true).await;
+    p.drive_is("the pump runs at 300", 1, 300).await;
+
+    let older = "the runtime module 'stubborn' (version 0.0.0) runs one program in one cyclic task and does not say it runs tasks: install a newer build of it";
+    let two = stubborn_with(
+        json!([stubborn_program("a", SPEED), stubborn_program("b", PUMP)]),
+        json!([
+            {"name": "f", "kind": {"type": "cyclic", "interval_ms": 20}, "priority": 1, "programs": ["a"]},
+            {"name": "s", "kind": {"type": "cyclic", "interval_ms": 50}, "priority": 5, "programs": ["b"]}
+        ]),
+    );
+    let slower = stubborn_with(
+        json!([stubborn_program("a", SPEED)]),
+        json!([{"name": "f", "kind": {"type": "cyclic", "interval_ms": 50}, "priority": 1, "programs": ["a"]}]),
+    );
+    for (config, has) in [
+        (&two, "runtime 'tank' has 2 programs"),
+        (&slower, "runtime 'tank' has task 'f' of kind cyclic"),
+    ] {
+        config.validate().unwrap();
+        // The check a save makes: the module is never asked.
+        let connection = &config.connections()[0];
+        let driver = p
+            .registry
+            .create(&connection.driver)
+            .expect("stubborn is a runtime");
+        let said = driver
+            .describe_config(&connection.config)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains(&format!("{has}; {older}")), "{said}");
+    }
+
+    // Loaded all the same, it is not started: the start says the same.
+    let report = p
+        .runtime
+        .apply(
+            config((p.sensors.port(), p.drive.port()), &two),
+            None,
+            &p.registry,
+        )
+        .await;
+    let failed = report
+        .failed
+        .iter()
+        .find(|(id, _)| id == "runtime:tank")
+        .map(|(_, why)| why.clone())
+        .unwrap_or_default();
+    assert!(failed.contains(older), "{report:?}");
+    assert!(
+        p.states.snapshot().iter().all(|s| s.module != "stubborn"),
+        "no stubborn runtime runs"
+    );
+    p.runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_older_module_runs_one_written_out_cyclic_task() {
+    // Written out exactly as its implied task, at a priority of its own: it runs as today, so
+    // the module that knows no tasks is given it.
+    let config = stubborn_with(
+        json!([stubborn_program("stubborn", SPEED)]),
+        json!([{"name": "main", "kind": {"type": "cyclic", "interval_ms": 20}, "priority": 3, "programs": ["stubborn"]}]),
+    );
+    assert!(config.instances[0].runs_as_today());
+    let p = plant_running(config, 20).await;
+    p.until("it commands 300", |s| s.speed == Some(300)).await;
+    let tank = p.tank();
+    assert_eq!(tank.mode, "run");
+    assert_eq!(tank.interval_ms, Some(20));
+    assert!(
+        tank.tasks.is_empty() && tank.programs.is_empty(),
+        "a module that says nothing of tasks reports none: {tank:?}"
+    );
     p.runtime.shutdown().await;
 }

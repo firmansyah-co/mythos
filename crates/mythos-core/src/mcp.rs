@@ -430,7 +430,7 @@ fn watch_body() -> Value {
                 "minItems": 1,
                 "maxItems": crate::runtimes::WATCH_LIMIT,
                 "items": { "type": "string" },
-                "description": "Variable names as the program declares them: level, pump.running, hist[2]"
+                "description": "Variable names as the program declares them: level, pump.running, hist[2]. In a runtime of several programs, the program first: tank.level, tank.hist[2]"
             }
         }
     })
@@ -443,7 +443,7 @@ fn force_body() -> Value {
         "properties": {
             "variable": {
                 "type": "string",
-                "description": "A variable as the program declares it: level, pump.running, hist[2]"
+                "description": "A variable as the program declares it: level, pump.running, hist[2]. In a runtime of several programs, the program first: tank.level"
             },
             "value": {
                 "type": ["number", "boolean"],
@@ -459,13 +459,56 @@ fn release_body() -> Value {
         "properties": {
             "variable": {
                 "type": "string",
-                "description": "The forced variable to release; leave it out to release every one"
+                "description": "The forced variable to release, named as it was forced; leave it out to release every one"
             }
         }
     })
 }
 
 fn runtimes_config_body() -> Value {
+    let program = json!({
+        "type": "object",
+        "required": ["name", "version", "interval_ms", "code"],
+        "properties": {
+            "name": { "type": "string", "description": "In a runtime of several programs, no '.', '[', ']' or spaces" },
+            "version": { "type": "string" },
+            "interval_ms": { "type": "integer", "minimum": 1, "description": "The interval of its implied cyclic task; not used when tasks are given" },
+            "code": { "type": "string", "description": "The compiled program, hex" },
+            "symbols": { "description": "The compiler's symbol table" },
+            "inputs": { "type": "array", "items": { "type": "object", "required": ["variable", "tag"], "properties": {
+                "variable": { "type": "string" }, "tag": { "type": "string" },
+                "of": { "type": "string", "enum": ["value", "good"], "description": "value (default), or good: a BOOL that says whether the tag is current" } } } },
+            "outputs": { "type": "array", "items": { "type": "object", "required": ["variable", "tag", "safe"], "properties": {
+                "variable": { "type": "string" }, "tag": { "type": "string" },
+                "safe": { "type": ["number", "boolean"], "description": "What the tag is written whenever the program is not running" } } } },
+            "published": { "type": "array", "items": { "type": "object", "required": ["variable", "tag"], "properties": {
+                "variable": { "type": "string" }, "tag": { "type": "string", "description": "Starts with internal." },
+                "writable": { "type": "boolean" } } } }
+        }
+    });
+    let task = json!({
+        "type": "object",
+        "required": ["name", "kind", "priority", "programs"],
+        "additionalProperties": false,
+        "properties": {
+            "name": { "type": "string", "description": "Letters, digits, - and _" },
+            "kind": {
+                "type": "object",
+                "required": ["type"],
+                "description": "cyclic: every interval_ms, first phase_ms after RUN; cycle: again as soon as it ends, no sooner than min_cycle_ms after it last began; startup: once at every change to RUN, before any other task; event: at each rising edge of the BOOL tag, which a program of the runtime reads",
+                "properties": {
+                    "type": { "type": "string", "enum": ["cyclic", "cycle", "startup", "event"] },
+                    "interval_ms": { "type": "integer", "minimum": 1 },
+                    "phase_ms": { "type": "integer", "minimum": 0 },
+                    "min_cycle_ms": { "type": "integer", "minimum": 0 },
+                    "tag": { "type": "string" }
+                }
+            },
+            "priority": { "type": "integer", "minimum": 0, "maximum": 31, "description": "0 is the highest" },
+            "watchdog_ms": { "type": "integer", "minimum": 1, "description": "How long it may owe a run before the runtime is put in fault; left out, ten intervals and at least 2 s for a cyclic or cycle task, 2 s for the others" },
+            "programs": { "type": "array", "items": { "type": "string" }, "description": "Names of the runtime's programs, in the order they run; each program is in exactly one task" }
+        }
+    });
     json!({
         "type": "object",
         "required": ["instances"],
@@ -475,31 +518,15 @@ fn runtimes_config_body() -> Value {
                 "type": "array",
                 "items": {
                     "type": "object",
-                    "required": ["id", "module", "run", "program"],
+                    "required": ["id", "module", "run"],
+                    "description": "One runtime: program, or programs with tasks; never both.",
                     "properties": {
                         "id": { "type": "string", "description": "Letters, digits, - and _" },
                         "module": { "type": "string", "description": "A runtime module's 'provides', for example vm" },
                         "run": { "type": "boolean", "description": "Whether it is put in RUN when loaded" },
-                        "program": {
-                            "type": "object",
-                            "required": ["name", "version", "interval_ms", "code"],
-                            "properties": {
-                                "name": { "type": "string" },
-                                "version": { "type": "string" },
-                                "interval_ms": { "type": "integer", "minimum": 1 },
-                                "code": { "type": "string", "description": "The compiled program, hex" },
-                                "symbols": { "description": "The compiler's symbol table" },
-                                "inputs": { "type": "array", "items": { "type": "object", "required": ["variable", "tag"], "properties": {
-                                    "variable": { "type": "string" }, "tag": { "type": "string" },
-                                    "of": { "type": "string", "enum": ["value", "good"], "description": "value (default), or good: a BOOL that says whether the tag is current" } } } },
-                                "outputs": { "type": "array", "items": { "type": "object", "required": ["variable", "tag", "safe"], "properties": {
-                                    "variable": { "type": "string" }, "tag": { "type": "string" },
-                                    "safe": { "type": ["number", "boolean"], "description": "What the tag is written whenever the program is not running" } } } },
-                                "published": { "type": "array", "items": { "type": "object", "required": ["variable", "tag"], "properties": {
-                                    "variable": { "type": "string" }, "tag": { "type": "string", "description": "Starts with internal." },
-                                    "writable": { "type": "boolean" } } } }
-                            }
-                        }
+                        "program": program,
+                        "programs": { "type": "array", "items": program, "description": "Several programs in one runtime module process" },
+                        "tasks": { "type": "array", "items": task, "description": "The tasks that run the programs; left out, one program runs cyclic at its interval_ms" }
                     }
                 }
             }
@@ -1152,7 +1179,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "list_runtimes",
         title: "List the runtimes of this node",
-        description: "Every program this node executes: its mode (run, stop, fault, or unreachable when its module does not answer) and why, scan count and times (null when nothing is known: the module does not answer, or no scan has run; never 0 in their place), and each output with what the device last confirmed and whether it is at its safe value. Also the runtime modules found, each with the target profile a program is compiled for.",
+        description: "Every program this node executes: its mode (run, stop, fault, or unreachable when its module does not answer) and why, scan count and times (null when nothing is known: the module does not answer, or no scan has run; never 0 in their place), and each output with what the device last confirmed and whether it is at its safe value. A runtime with tasks written out also lists its programs with their versions and each task with its runs, overruns, preemptions and run times; its interval_ms is that of its fastest cyclic task, null when it has none. Also the runtime modules found, each with the target profile a program is compiled for.",
         method: "GET",
         path: "/api/v1/runtimes",
         query: &[],
@@ -1196,7 +1223,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "watch_runtime",
         title: "Read a program's variables",
-        description: "The values of a running program's variables as its last scan left them: any variable, bound to a tag or not, and one element of an array as name[2] or name[1,3]. It changes nothing in the program. Each value comes with its type; a variable the program does not have, or one with no single value (a whole array, a structure), has an error instead. 'state' says which program and version answered and whether it is in run: values read from a stopped or faulted program are what it stopped with. 'age_ms' is how long ago the runtime was read, and 'state.scan_age_us' how long before that the program last completed a scan (absent before its first scan, or from a module that does not say): a program that has stopped scanning still answers in run, with its last values and a scan age that grows, so values are current only while the scan age is within two of the program's intervals (list_runtimes: interval_ms) plus its longest scan (state.max_scan_us). 'fresh_ms' is how old an answer may be and still be given at once. The first call waits for the runtime's next exchange; calls within a few seconds of each other answer at once.",
+        description: "The values of a running program's variables as its last scan left them: any variable, bound to a tag or not, and one element of an array as name[2] or name[1,3]. It changes nothing in the program. Each value comes with its type; a variable the program does not have, or one with no single value (a whole array, a structure), has an error instead. 'state' says which program and version answered and whether it is in run: values read from a stopped or faulted program are what it stopped with. 'age_ms' is how long ago the runtime was read, and 'state.scan_age_us' how long before that the program last completed a scan (absent before its first scan, from a module that does not say, and from a runtime of several tasks, whose state.tasks give each task's run_age_us instead): a program that has stopped scanning still answers in run, with its last values and a scan age that grows, so values are current only while the scan age is within two of the program's intervals (list_runtimes: interval_ms) plus its longest scan (state.max_scan_us). 'fresh_ms' is how old an answer may be and still be given at once. The first call waits for the runtime's next exchange; calls within a few seconds of each other answer at once.",
         method: "POST",
         path: "/api/v1/runtimes/:runtime/watch",
         query: &[],
@@ -1240,7 +1267,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "save_runtimes_config",
         title: "Save a project's runtimes",
-        description: "Check and save the programs a project runs. Each instance names a runtime module (list_runtimes shows them), whether to run at once, and a program: its code and symbols as the logic compiler made them, the tags read into variables (inputs), the variables written to field tags with the safe value each tag takes whenever the program is not running (outputs), and the variables published as tags starting with internal. (published; writable makes one a setpoint an operator may write). The module loads each program to check it; anything that does not load is refused and nothing is saved. For the active project the runtimes are then made to match: 'applied' true says the configuration was put in force, not that every program started. 'changes.failed' lists each instance that did not start, with why; read list_runtimes for what runs. A new build of a program in run replaces it online: it takes over every variable of the same name, type and size (RETAIN or not) and scans on, its outputs never going to their safe values; start=cold starts every program it starts or replaces from its initial values instead, RETAIN ones included. 'changes.runtimes' says for each how it started: start online (with carried, the count, and dropped and initialized, the variables that did not carry over and why), warm (RETAIN values kept, the rest initial; why says why not online) or cold. Forces are released by a load either way.",
+        description: "Check and save the programs a project runs. Each instance names a runtime module (list_runtimes shows them), whether to run at once, and a program: its code and symbols as the logic compiler made them, the tags read into variables (inputs), the variables written to field tags with the safe value each tag takes whenever the program is not running (outputs), and the variables published as tags starting with internal. (published; writable makes one a setpoint an operator may write). A runtime of several programs gives them in programs instead of program, and tasks that say which task runs each (cyclic, cycle, startup or event, at a priority from 0, the highest, to 31); its variables are then named program.variable. A runtime module that does not say it runs tasks is refused such a runtime. The module loads each program to check it; anything that does not load is refused and nothing is saved. For the active project the runtimes are then made to match: 'applied' true says the configuration was put in force, not that every program started. 'changes.failed' lists each instance that did not start, with why; read list_runtimes for what runs. A new build of a program in run replaces it online: it takes over every variable of the same name, type and size (RETAIN or not) and scans on, its outputs never going to their safe values; start=cold starts every program it starts or replaces from its initial values instead, RETAIN ones included. 'changes.runtimes' says for each how it started: start online (with carried, the count, and dropped and initialized, the variables that did not carry over and why), warm (RETAIN values kept, the rest initial; why says why not online) or cold. Forces are released by a load either way.",
         method: "PUT",
         path: "/api/v1/projects/:id/runtimes",
         query: &[(
