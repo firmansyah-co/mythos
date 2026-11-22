@@ -271,18 +271,39 @@ fn unpack(archive: &Path, into: &Path, name: &str) -> Result<(), InstallError> {
 /// Run `mythos --version` from the new install. A bundle built for another platform, or one
 /// that is damaged, fails here and is never made current. Returns what it printed.
 fn check_runs(mythos: &Path) -> Result<String, InstallError> {
+    check_runs_within(mythos, RUN_CHECK_TIMEOUT)
+}
+
+/// [`check_runs`], with the time it may take in all.
+///
+/// **A new `mythos` that is busy is waited for.** The file was written a moment ago. A process
+/// this one started meanwhile (the server starting a module, another thread running a command)
+/// was forked with the descriptor the file was written through and holds it until it executes
+/// its own program, and until then the system refuses to execute the file ("Text file busy").
+/// That ends by itself within that process's start, so the check tries again, inside its own
+/// time, and says so if it does not end. Seen as a failed update twice on 2026-11-22, in tests
+/// that install from several threads.
+fn check_runs_within(mythos: &Path, within: Duration) -> Result<String, InstallError> {
     let failed = |reason: String| InstallError::DoesNotRun {
         path: mythos.display().to_string(),
         reason,
     };
-    let mut child = Command::new(mythos)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| failed(e.to_string()))?;
-    let deadline = Instant::now() + RUN_CHECK_TIMEOUT;
+    let deadline = Instant::now() + within;
+    let mut child = loop {
+        match Command::new(mythos)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => break child,
+            Err(e) if is_busy(&e) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(failed(e.to_string())),
+        }
+    };
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -290,9 +311,7 @@ fn check_runs(mythos: &Path) -> Result<String, InstallError> {
         if Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(failed(format!(
-                "no answer to --version within {RUN_CHECK_TIMEOUT:?}"
-            )));
+            return Err(failed(format!("no answer to --version within {within:?}")));
         }
         std::thread::sleep(Duration::from_millis(20));
     };
@@ -315,6 +334,14 @@ fn check_runs(mythos: &Path) -> Result<String, InstallError> {
         return Err(failed("--version printed nothing".into()));
     }
     Ok(reported)
+}
+
+/// Whether starting a program failed because its file is open for writing somewhere (ETXTBSY,
+/// 26 on Linux, macOS and the BSDs; Linux is where it was seen, macOS executes such a file).
+/// By its number: `ErrorKind::ExecutableFileBusy` is newer than the workspace's minimum Rust.
+/// Windows has no such refusal.
+fn is_busy(error: &std::io::Error) -> bool {
+    cfg!(unix) && error.raw_os_error() == Some(26)
 }
 
 /// The link that names the current version.
@@ -390,5 +417,63 @@ mod tests {
             Some("def456")
         );
         assert_eq!(checksum_in(listing, "mythos-0.2.0.zip"), None);
+    }
+
+    /// A program that answers `--version`, in a directory of its own, and a descriptor open
+    /// for writing on it: while that is held, Linux refuses to execute the file. Linux only:
+    /// macOS executes a file that is open for writing (its runner ran both tests' program at
+    /// once), so there is nothing to wait out there.
+    #[cfg(target_os = "linux")]
+    fn busy_program(name: &str) -> (PathBuf, PathBuf, fs::File) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mythos-update-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("mythos");
+        fs::write(&program, "#!/bin/sh\necho 9.9.9\n").unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        let held = fs::OpenOptions::new().write(true).open(&program).unwrap();
+        (dir, program, held)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_new_mythos_that_is_busy_for_a_moment_is_run_once_it_is_free() {
+        let (dir, program, held) = busy_program("busy-for-a-moment");
+        let started = Instant::now();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(held);
+        });
+        let answer = check_runs_within(&program, Duration::from_secs(20));
+        let waited = started.elapsed();
+        release.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(answer.unwrap(), "9.9.9");
+        assert!(
+            waited >= Duration::from_millis(300),
+            "it ran while the file was still held for writing: {waited:?}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_new_mythos_that_stays_busy_is_refused_with_the_reason_when_its_time_is_over() {
+        let (dir, program, held) = busy_program("stays-busy");
+        let started = Instant::now();
+        let answer = check_runs_within(&program, Duration::from_millis(300));
+        let waited = started.elapsed();
+        drop(held);
+        let _ = fs::remove_dir_all(&dir);
+        match answer {
+            Err(InstallError::DoesNotRun { reason, .. }) => {
+                assert!(reason.contains("busy"), "{reason}")
+            }
+            other => panic!("not refused as busy: {other:?}"),
+        }
+        assert!(
+            waited >= Duration::from_millis(300) && waited < Duration::from_secs(5),
+            "{waited:?}"
+        );
     }
 }
