@@ -1438,6 +1438,125 @@ mod tests {
         assert_eq!(g.mode, RuntimeMode::Run);
     }
 
+    /// Programs A and B in task `t`, in that order, and C in task `u`, each declaring block
+    /// `S` of members `n` (A writes it) and `m` (B writes it); C writes neither.
+    fn three_sharing() -> (Layout, Vec<Work>) {
+        use mythos_logic_compiler::{check_project, compile_sources, DataBlock, Sources};
+        let types = "TYPE T : STRUCT n : DINT; m : DINT; END_STRUCT; END_TYPE";
+        let library = [("types.st", types)];
+        let blocks = [DataBlock { name: "S", ty: "T" }];
+        let program = |source: &str| {
+            let c = compile_sources(
+                &Sources {
+                    st: Some(("main.st", source)),
+                    library: &library,
+                    data: &blocks,
+                    ..Default::default()
+                },
+                &mythos_logic_compiler::TargetProfile::pc(),
+            )
+            .unwrap_or_else(|d| panic!("{d:?}"));
+            json!({"name": c.name, "version": "1", "interval_ms": 10,
+                "code": hex::encode(&c.bytecode), "symbols": c.symbols, "data": c.data})
+        };
+        let l = check_project(&Sources {
+            library: &library,
+            data: &blocks,
+            ..Default::default()
+        })
+        .unwrap_or_else(|d| panic!("{d:?}"))
+        .remove(0);
+        let members: Vec<Value> = l
+            .members
+            .iter()
+            .map(|m| json!({"name": m.name, "type": m.ty, "offset": m.offset, "size": m.size}))
+            .collect();
+        let config = json!({
+            "data": [{"name": l.name, "type": l.ty, "layout": l.layout, "size": l.size,
+                      "members": members}],
+            "programs": [
+                program("PROGRAM A VAR_EXTERNAL S : T; END_VAR S.n := 1; END_PROGRAM"),
+                program("PROGRAM B VAR x : DINT; END_VAR VAR_EXTERNAL S : T; END_VAR S.m := 1; END_PROGRAM"),
+                program("PROGRAM C VAR y : DINT; z : DINT; END_VAR VAR_EXTERNAL S : T; END_VAR y := S.n + S.m; END_PROGRAM"),
+            ],
+            "tasks": [
+                {"name": "t", "kind": {"type": "cyclic", "interval_ms": 10}, "priority": 1,
+                 "programs": ["A", "B"]},
+                {"name": "u", "kind": {"type": "cyclic", "interval_ms": 10}, "priority": 2,
+                 "programs": ["C"]},
+            ],
+        });
+        let layout = crate::plan(&config)
+            .map_err(|e| e.to_string())
+            .unwrap()
+            .layout;
+        let work = layout
+            .plans
+            .iter()
+            .map(|p| Work {
+                memory: vec![0u8; p.memory_size],
+                stack: Vec::new(),
+                calls: Vec::new(),
+            })
+            .collect();
+        (layout, work)
+    }
+
+    #[test]
+    fn a_program_takes_in_only_what_it_does_not_write_and_the_task_hands_out_at_its_end() {
+        let (layout, mut work) = three_sharing();
+        let (a, b, c) = (0, 1, 2);
+        assert_eq!(layout.blocks[0].writer, [Some((a, 0)), Some((b, 0))]);
+        let mut g = Shared::new(&layout, Vec::new());
+        g.restart(&layout, true).unwrap();
+        let get = |work: &[Work], p: usize, i: usize| -> Vec<u8> {
+            work[p].memory[layout.member_range(p, 0, i)].to_vec()
+        };
+        let set = |work: &mut [Work], p: usize, i: usize, v: i32| {
+            work[p].memory[layout.member_range(p, 0, i)].copy_from_slice(&v.to_le_bytes());
+        };
+        // The master: n = 1, m = 2. Every working memory holds other values.
+        g.blocks[0]
+            .master
+            .as_mut()
+            .unwrap()
+            .copy_from_slice(&[1i32.to_le_bytes(), 2i32.to_le_bytes()].concat());
+        for p in [a, b, c] {
+            set(&mut work, p, 0, 100 + p as i32);
+            set(&mut work, p, 1, 200 + p as i32);
+        }
+        // A begins: it keeps its own n; m it takes from the master (B, its writer, comes
+        // later in the task).
+        g.hand_in(&layout, a, &mut work);
+        assert_eq!(get(&work, a, 0), 100i32.to_le_bytes());
+        assert_eq!(get(&work, a, 1), 2i32.to_le_bytes());
+        // A ends, B begins: n from A's working memory, its own m kept.
+        g.hand_in(&layout, b, &mut work);
+        assert_eq!(get(&work, b, 0), 100i32.to_le_bytes());
+        assert_eq!(get(&work, b, 1), 201i32.to_le_bytes());
+        // Nothing has reached the master yet. C, of another task, takes both from it.
+        assert_eq!(
+            g.blocks[0].master.as_deref().unwrap(),
+            &[1i32.to_le_bytes(), 2i32.to_le_bytes()].concat()[..]
+        );
+        g.hand_in(&layout, c, &mut work);
+        assert_eq!(get(&work, c, 0), 1i32.to_le_bytes());
+        assert_eq!(get(&work, c, 1), 2i32.to_le_bytes());
+        // Task t ends: each of its programs hands out what it writes, and only that.
+        g.hand_out(&layout, 0, &mut work);
+        assert_eq!(
+            g.blocks[0].master.as_deref().unwrap(),
+            &[100i32.to_le_bytes(), 201i32.to_le_bytes()].concat()[..]
+        );
+        // Task u's end hands out nothing: C writes no member.
+        set(&mut work, c, 0, -1);
+        g.hand_out(&layout, 1, &mut work);
+        assert_eq!(
+            g.blocks[0].master.as_deref().unwrap(),
+            &[100i32.to_le_bytes(), 201i32.to_le_bytes()].concat()[..]
+        );
+    }
+
     #[test]
     fn a_task_owes_its_next_run_from_when_it_is_due() {
         let cyclic = Kind::Cyclic {
