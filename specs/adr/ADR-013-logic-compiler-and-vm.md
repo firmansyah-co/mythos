@@ -2362,3 +2362,4 @@ edit the same lines. `scripts/check-adr-evidence.sh` fails if a file is not list
 - **L3d-3** (the Sequential Function Chart editor, 2026-11-22): [`20-l3d-3.md`](ADR-013-evidence/20-l3d-3.md)
 - **Stale watch** (only current values drawn live, found in review of L3d-2, 2026-11-22): [`21-stale-watch.md`](ADR-013-evidence/21-stale-watch.md)
 - **SD, SL and P0** (the three qualifiers refused until the owner decided, 2026-11-22: taken as Table 59 names them, §2.17): [`22-sd-sl-and-p0.md`](ADR-013-evidence/22-sd-sl-and-p0.md)
+- **C8a** (the VM's part of task configuration: a run suspended and resumed, the scheduler core, 2026-11-22): [`23-c8a.md`](ADR-013-evidence/23-c8a.md)
