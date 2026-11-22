@@ -79,3 +79,25 @@ Corollary: **a grep hit is not a finding.** A match may be a comment above delet
 a doc comment, or a fixture. Open the surrounding lines and the definition before labelling
 anything `LIVE` — and if the severity is `LIVE` or `CRITICAL`, record what you opened to
 establish reachability.
+
+---
+
+## 4. The local gate's summary, and the mutation check
+
+`./scripts/check.sh` (`--rust`, `--frontend` or the default `--all`) runs every gate and, at the
+end, writes `target/check-summary.txt` and prints the same text last. It is about 30 lines: one
+line per gate with PASS or FAIL, the failing test names and test binaries, the totals, the commit
+and whether the tree was dirty. A gate that could not run (a tool or directory missing) is a FAIL
+with its reason. When there are more failures than fit, the summary says how many it left out.
+Each gate's full output is in `target/check-logs/`. Paste the summary; read the log only for the
+failure you are fixing. The Rust tests run with `--no-fail-fast`, so one failing test binary does
+not hide the ones after it.
+
+`scripts/mutation-check.py SPEC.json` replaces the throwaway scripts written for rule 2. The spec
+names the test command and, for each mutation, a file and exact text to replace (see the top of the
+script and `scripts/examples/mutation-check.example.json`). It works on a copy of `HEAD` under
+`target/mutation/`, never on your working tree. It runs the baseline, then each mutation, then the
+baseline again, and prints a table of what went red, with the test names. It exits 0 only when both
+baselines are green and every mutation is red. A mutation whose text is not found, that does not
+compile, or that the tests let through is reported as such, never counted as red. Pass `--keep` to
+keep the copy.
