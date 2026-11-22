@@ -54,8 +54,10 @@ Everything that runs today, piece by piece, with where it lives in the tree. Thi
   doubt: SD starts only when every delay is over, SL ends at the first limit that is over. An
   action that is itself a chart or is written in IL is refused. The FBD editor lays each network out itself (standard FBD): free placement,
   an explicit execution order and lines drawn back are a later CFC mode.
-- **Task configuration per runtime** (cyclic, event and priority tasks): each program has its own
-  interval today.
+- **Task configuration from the logic module and the workbench.** A runtime runs several
+  programs in tasks with priorities (the Runtimes row above), configured in `runtimes.json` over
+  the API and MCP; the logic module builds one runtime per program, each with its own interval,
+  and the workbench has no task editor.
 - **Writes to field devices from the HMI.** The API has one (`PUT /api/v1/tags/<uri>/value`,
   see the table above); no screen element writes yet.
 - **Alarms, historian, recipes, discovery of field devices, disaster recovery.** (MythOS nodes

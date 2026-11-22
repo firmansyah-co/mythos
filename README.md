@@ -10,7 +10,7 @@
   <a href="https://github.com/firmansyah-co/mythos/actions/workflows/ci.yml"><img src="https://github.com/firmansyah-co/mythos/actions/workflows/ci.yml/badge.svg?branch=dev" alt="CI" /></a>
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/license-MPL--2.0-blue" alt="License: MPL-2.0" /></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-informational" alt="Linux, macOS, Windows" />
-  <img src="https://img.shields.io/badge/IEC%2061131--3-ST%20%7C%20LD%20%7C%20FBD-orange" alt="IEC 61131-3: ST, LD, FBD" />
+  <img src="https://img.shields.io/badge/IEC%2061131--3-ST%20%7C%20LD%20%7C%20FBD%20%7C%20SFC-orange" alt="IEC 61131-3: ST, LD, FBD, SFC" />
   <img src="https://img.shields.io/badge/AI%20agents-MCP-8A2BE2" alt="Model Context Protocol" />
   <img src="https://img.shields.io/badge/status-early%20development-yellow" alt="Early development" />
 </p>
@@ -35,12 +35,13 @@ action the workbench can take is also available to AI agents over the Model Cont
 ## Highlights
 
 - **IEC 61131-3 control logic, our own compiler.** Write programs in Structured Text, Ladder
-  Diagram or Function Block Diagram. The compiler produces bytecode for a portable `no_std`
-  virtual machine. That VM runs on a PC and, in CI, inside emulated ESP32-C3 and RP2040
-  microcontrollers, and gives the same result scan by scan.
+  Diagram, Function Block Diagram or Sequential Function Chart. The compiler produces bytecode
+  for a portable `no_std` virtual machine. That VM runs on a PC and, in CI, inside emulated
+  ESP32-C3 and RP2040 microcontrollers, and gives the same result scan by scan.
 - **A workbench that feels like an engineering tool.** You get a project tree, editors, task
-  cards, an inspector with diagnostics and a portal, all in the browser. The Ladder editor
-  follows TIA Portal's workflow: instruction palette, favourites, networks, drag and drop.
+  cards, an inspector with diagnostics and a portal, all in the browser. The Ladder and Function
+  Block Diagram editors follow TIA Portal's workflow: instruction palette, favourites, networks,
+  drag and drop. The chart editor follows S7-GRAPH's sequence editor.
 - **Live and honest.** Values stream to the workbench every 100 ms with their quality. A value
   MythOS does not have is shown as `UNKNOWN` or `NOT MEASURED`, never as a guess. A forced variable
   is marked `FORCED` everywhere it appears.
@@ -48,7 +49,11 @@ action the workbench can take is also available to AI agents over the Model Cont
   program is not running (stopped, faulted, its process gone or unloaded), the output is written
   its safe value until the device confirms it. RETAIN variables, a watchdog and online change
   without a bump are built in.
-- **Modules all the way down.** Drivers, the HMI, logic, discovery and runtimes are processes.
+- **Tasks and shared data without a shared memory area.** A runtime runs several programs in
+  tasks with priorities, and a higher task preempts a lower one inside the VM. Programs share
+  data blocks of your own types: each program has its own copy, each member has one writer, and
+  a block is handed over whole at the end of a task's run.
+- **Modules all the way down.** Drivers, the HMI, logic, data, discovery and runtimes are processes.
   Settings → Modules installs a module from a checked package, disables it, enables it and
   removes it. A new build of a running module is swapped in without its tags stopping.
 - **AI-native.** `POST /mcp` serves the Model Context Protocol. Every HTTP route is a tool,
@@ -85,7 +90,7 @@ flowchart LR
     Bus[("Tag bus<br/>shared memory")]
     Server <--> Bus
     Server -- "JSON lines" --> Drv["Driver modules<br/>(Modbus TCP)"]
-    Server -- "JSON lines" --> Svc["Service modules<br/>HMI · Logic · Discovery"]
+    Server -- "JSON lines" --> Svc["Service modules<br/>HMI · Logic · Data · Discovery"]
     Server -- "JSON lines" --> RT["Runtime modules<br/>logic VM"]
   end
   Drv <--> Field["Field devices"]
@@ -95,8 +100,9 @@ flowchart LR
 The design is recorded in the [architecture decisions](specs/adr/). The ones that shape it most
 are [ADR-010](specs/adr/ADR-010-modules-are-processes.md) (modules are processes),
 [ADR-011](specs/adr/ADR-011-the-core-and-service-modules.md) (the core and service modules),
-[ADR-012](specs/adr/ADR-012-nodes-discovery-and-plant-projects.md) (nodes and plants) and
-[ADR-013](specs/adr/ADR-013-logic-compiler-and-vm.md) (the logic compiler and VM).
+[ADR-012](specs/adr/ADR-012-nodes-discovery-and-plant-projects.md) (nodes and plants),
+[ADR-013](specs/adr/ADR-013-logic-compiler-and-vm.md) (the logic compiler and VM) and
+[ADR-014](specs/adr/ADR-014-data-blocks-and-the-data-module.md) (data blocks and the data module).
 
 ## Quick start
 
@@ -135,7 +141,9 @@ module and verifying a change.
 | Area | What you can do today |
 | :--- | :--- |
 | Field I/O | Configure Modbus TCP connections in a form drawn from the driver's own schema. Read registers as typed, scaled values with quality, and write a value to a writable tag. |
-| Control logic | Write, check, bind, build and load programs in Structured Text and Ladder Diagram, and load and watch Function Block Diagram programs. Then run, stop, watch and force them, with RETAIN, a watchdog and online change. |
+| Control logic | Write, check, bind, build and load programs in Structured Text, Ladder Diagram, Function Block Diagram and Sequential Function Chart, each with its editor and its live view. Then run, stop, watch and force them, with RETAIN, a watchdog and online change. Keep functions and function blocks that programs share in a project's library (over the API and MCP). |
+| Tasks | Run several programs in one runtime, in tasks of four kinds (cycle, cyclic, startup, event) with priorities and preemption, each task with its own process image and watchdog. Configured over the API and MCP: the workbench has no task editor yet. |
+| Data | Declare your own types and data blocks, and share a block between the programs of a runtime. Every change is checked with the compiler before it is saved. Made over the API and MCP: the workbench has no editor for them yet. |
 | HMI | Draw screens with text and I/O fields bound to tags, release them, and open the full-window operator runtime. |
 | Modules | Install, disable, enable, remove and hot-swap drivers, service modules and runtimes. |
 | Nodes and plants | Run a node as a workstation, edge or server, discover and pair nodes, download and compare a plant's devices, and read tags across them. |
@@ -147,7 +155,12 @@ where it lives in the tree.
 ## What is not built yet
 
 - Drivers other than Modbus TCP (Modbus RTU, OPC UA, MQTT, …) and a device catalog for every protocol.
-- A Function Block Diagram editor, Sequential Function Charts, and task configuration per runtime.
+- Editors in the workbench for tasks, user types, data blocks and the library. Building several
+  programs into one runtime from the workbench: two programs that share a data block run in a
+  runtime composed over the API today.
+- Drawing and editing a chart's actions and conditions written in LD or FBD, and a CFC mode for FBD.
+  Instruction List is not planned.
+- Data blocks shared between runtimes and between devices.
 - Alarms, historian, trends and recipes. HMI graphics, faceplates on screens, and writes from a screen.
 - A published release: `mythos update` and the one-line installers have nothing to install yet.
 
@@ -169,7 +182,8 @@ then OPC UA.
 
 Read [`CLAUDE.md`](CLAUDE.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md) first. Work goes on a
 branch cut from `dev`, one slice per pull request, and every claim in a pull request carries the
-output that proves it. `./scripts/check.sh` runs the same gate as CI.
+output that proves it. `./scripts/check.sh` runs the same gate as CI, and a pull request merges
+into `dev` through a merge queue.
 
 ## License
 
