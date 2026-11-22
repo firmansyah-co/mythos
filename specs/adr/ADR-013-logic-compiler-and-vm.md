@@ -2174,7 +2174,8 @@ follows from them. Today a runtime runs one program on one interval (§2.6, "As 
 - **Not in C8, by name:** CONFIGURATION, RESOURCE, TASK and `PROGRAM … WITH` written as text
   (the configuration is data of the project; reading and writing the standard's text for it
   can come with an importer); VAR_GLOBAL and data shared between programs, which is what makes
-  preemption a question of consistency, and gets its own decision; an event from a variable;
+  preemption a question of consistency, and gets its own decision
+  ([ADR-014](ADR-014-data-blocks-and-the-data-module.md)); an event from a variable;
   a real-time mode of the operating system (§3, Later).
 
 **Slices**, each leaving `dev` working:
@@ -2230,6 +2231,9 @@ Two tracks. The core path comes first because Adrian asked for logic that runs e
   the highest; a task of higher priority preempts one of lower in the VM; each task has its
   process image. In four slices: **C8a** (done) the VM (a run suspended and resumed, the scheduler),
   **C8b** (done) the runtime module and the core, **C8c** the logic module, **C8d** the workbench.
+  Between C8b and C8d: data blocks and user types shared between programs
+  ([ADR-014](ADR-014-data-blocks-and-the-data-module.md) §4, slices D1 to D4), since the
+  workbench of C8d is built once for tasks and for data.
 
 **After L3 and C8** (the owner, 2026-11-18; `specs/tasks.md`, "Long-term horizons"): alarms and
 the historian, then the foundation for IEC 62443, then an OPC UA server, each as modules.
