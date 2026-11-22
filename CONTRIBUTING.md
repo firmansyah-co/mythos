@@ -101,3 +101,51 @@ baseline again, and prints a table of what went red, with the test names. It exi
 baselines are green and every mutation is red. A mutation whose text is not found, that does not
 compile, or that the tests let through is reported as such, never counted as red. Pass `--keep` to
 keep the copy.
+
+## 5. `dev` merges through a merge queue
+
+Since 2026-11-22 (#181, #183) a pull request into `dev` is not merged by hand. The four required
+checks stay; what went away is the rule that a branch must be up to date with `dev` before it may
+merge, and with it the round of "rebase, wait for the whole suite again" for every pull request
+that was open when another one merged.
+
+**What to do.** Open the pull request, then ask GitHub to merge it when it is ready:
+
+```bash
+gh pr create --base dev --title "..." --body-file body.md
+gh api graphql -f id="$(gh pr view --json id --jq .id)" -f query='
+  mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId } }'
+```
+
+When the required checks pass, the pull request enters the queue by itself. Nobody rebases it and
+nobody presses merge. To take it out again: the mutation `dequeuePullRequest(input: {id: $id})`.
+The direct call `PUT /repos/{owner}/{repo}/pulls/{n}/merge` is refused on `dev`.
+
+**What the queue does.** It puts the pull request on top of `dev` and of whatever is ahead of it
+in the queue, runs the CI workflow on that commit (the `merge_group` event), and moves `dev` to
+that very commit when the required checks pass. The squash commit takes the pull request's title.
+
+- A pull request that **contained `dev`** when it entered: the commit has the tree its own run
+  tested, so the suites are skipped and it merges within about a minute. Measured on #183: 52 s
+  from the last check to the merge; the queue's run took 11 s.
+- A pull request that was **behind `dev`**, or behind another one in the queue: the whole suite
+  runs on the new commit. Measured on #182: 13 min in the queue.
+- A red run in the queue takes the pull request out of it. It stays open.
+
+`scripts/ci-already-verified.sh` decides which of the two it is, from GitHub and never by
+assumption; `scripts/test-ci-scripts.sh` tests it.
+
+**The local hook is unchanged.** `.githooks/pre-commit` still refuses a commit from a branch that
+is behind `origin/dev`. Rebase when you have a commit to make; do not rebase a pull request that
+is only waiting.
+
+**A required check must be a job with a fixed name.** A job with a `matrix` that is skipped by its
+`if:` reports its name with the expression in it (`Rust Workspace on ${{ matrix.os }}`), so a
+required check named after a matrix value never reports and the queue waits for it until its
+timeout. This stopped the first pull request put into the queue (#182). The Windows and macOS
+suites are therefore two jobs that share `.github/actions/rust-workspace-suite`.
+
+**After a merge** the rule of section 1 holds as before: the pull request's merged state is the
+signal. When the pull request contained `dev`, the tree of `origin/dev` equals the tree of its
+head (`git rev-parse origin/dev^{tree} <head>^{tree}`); when it was behind, the commit on `dev` is
+the one the queue's run tested, and there is no head tree to compare with.
