@@ -1194,6 +1194,12 @@ mod tests {
             "task name 't' is used more than once"
         );
         let mut high = task("t", cyclic(1), &["a"]);
+        high.priority = 31;
+        assert_eq!(
+            check_tasks(&[&a], std::slice::from_ref(&high)),
+            Ok(()),
+            "the lowest"
+        );
         high.priority = 32;
         assert_eq!(
             check(&[&a], &[high]),
