@@ -76,6 +76,54 @@ expect "a commit pushed without a pull request is not verified" "verified=false"
 verified_world 8; rm "$FIXTURES/$(printf '%s' "repos/$R/compare/$PARENT...$HEAD" | tr -c 'A-Za-z0-9._-' '_')"
 expect "an answer that cannot be had is not verified" "verified=false" "$V" $R $SHA ci.yml
 
+# The merge queue: the commit it made for an open pull request, asked with the ref of its group.
+QREF="refs/heads/gh-readonly-queue/dev/pr-7-$PARENT"
+QRUNS="repos/$R/actions/workflows/ci.yml/runs?head_sha=$SHA&event=merge_group&per_page=100"
+queued_world() { # a queued pull request that contained everything ahead of it, tested and passed
+    verified_world "q$1"
+    rm "$FIXTURES/$(printf '%s' "repos/$R/commits/$SHA/pulls" | tr -c 'A-Za-z0-9._-' '_')"
+    put "repos/$R/pulls/7" "{\"number\":7,\"state\":\"open\",\"base\":{\"ref\":\"dev\"},\"head\":{\"sha\":\"$HEAD\",\"ref\":\"feat/x\",\"repo\":{\"full_name\":\"$R\"}}}"
+}
+queue_run() { # status, conclusion, branch, sha: the merge_group runs GitHub lists for $SHA
+    put "$QRUNS" "{\"workflow_runs\":[{\"run_number\":3,\"status\":\"$1\",\"conclusion\":$2,\"head_branch\":\"$3\",\"head_sha\":\"$4\",\"head_repository\":{\"full_name\":\"$R\"},\"html_url\":\"q\"}]}"
+}
+queued_world 1
+expect "in the queue, a tree its pull request tested and passed is verified" "verified=true" "$V" $R $SHA ci.yml "$QREF"
+queued_world 2; put "repos/$R/git/commits/$HEAD" '{"tree":{"sha":"T2"}}'
+expect "in the queue, a tree that dev changed is not verified" "verified=false" "$V" $R $SHA ci.yml "$QREF"
+queued_world 3; put "repos/$R/compare/$PARENT...$HEAD" '{"behind_by":1}'
+expect "in the queue, a pull request put on another one is not verified" "verified=false" "$V" $R $SHA ci.yml "$QREF"
+queued_world 4; put "repos/$R/pulls/7" "{\"number\":7,\"state\":\"closed\",\"base\":{\"ref\":\"dev\"},\"head\":{\"sha\":\"$HEAD\",\"ref\":\"feat/x\",\"repo\":{\"full_name\":\"$R\"}}}"
+expect "in the queue, a pull request that is not open is not verified" "verified=false" "$V" $R $SHA ci.yml "$QREF"
+queued_world 5; put "repos/$R/pulls/7" "{\"number\":7,\"state\":\"open\",\"base\":{\"ref\":\"rc\"},\"head\":{\"sha\":\"$HEAD\",\"ref\":\"feat/x\",\"repo\":{\"full_name\":\"$R\"}}}"
+expect "in the queue, a pull request into another base is not verified" "verified=false" "$V" $R $SHA ci.yml "$QREF"
+queued_world 6
+expect "a queue ref of another branch is not verified" "verified=false" "$V" $R $SHA ci.yml "refs/heads/gh-readonly-queue/rc/pr-7-$PARENT"
+queued_world 7; cp "$FIXTURES/$(printf '%s' "repos/$R/pulls/7" | tr -c 'A-Za-z0-9._-' '_')" "$FIXTURES/$(printf '%s' "repos/$R/pulls/x7" | tr -c 'A-Za-z0-9._-' '_')"
+expect "a queue ref with no pull request number is not verified" "verified=false" "$V" $R $SHA ci.yml "refs/heads/gh-readonly-queue/dev/pr-x7-$PARENT"
+queued_world 8; put "repos/$R/actions/workflows/ci.yml/runs?head_sha=$HEAD&event=pull_request&status=success&per_page=100" '{"workflow_runs":[]}'
+expect "in the queue, a head with no passed run is not verified" "verified=false" "$V" $R $SHA ci.yml "$QREF"
+queued_world 9; put "repos/$R/git/commits/$HEAD" '{"tree":{"sha":"T2"}}'; queue_run completed '"success"' "gh-readonly-queue/dev/pr-7-$PARENT" $SHA
+expect "in the queue, a run of the queue does not verify its own commit" "verified=false" "$V" $R $SHA ci.yml "$QREF"
+
+# On dev after the queue merged: the commit is the one the queue's run tested.
+landed_world() { # a merge whose tree is NOT the one its pull request tested: dev had moved
+    verified_world "l$1"; put "repos/$R/git/commits/$HEAD" '{"tree":{"sha":"T2"}}'
+}
+export CI_VERIFIED_QUEUE_WAIT=0 CI_VERIFIED_QUEUE_TRIES=2
+landed_world 1; queue_run completed '"success"' "gh-readonly-queue/dev/pr-7-$PARENT" $SHA
+expect "on dev, the commit the queue tested and passed is verified" "verified=true" "$V" $R $SHA ci.yml
+landed_world 2; queue_run completed '"failure"' "gh-readonly-queue/dev/pr-7-$PARENT" $SHA
+expect "on dev, a queue run that did not pass does not verify it" "verified=false" "$V" $R $SHA ci.yml
+landed_world 3; queue_run completed '"success"' "gh-readonly-queue/dev/pr-7-$PARENT" other
+expect "on dev, a queue run of another commit does not verify it" "verified=false" "$V" $R $SHA ci.yml
+landed_world 4; queue_run completed '"success"' "feat/x" $SHA
+expect "on dev, a run that is not of the queue of dev does not verify it" "verified=false" "$V" $R $SHA ci.yml
+landed_world 5; queue_run in_progress null "gh-readonly-queue/dev/pr-7-$PARENT" $SHA
+expect "on dev, a queue run that has not ended does not verify it" "verified=false" "$V" $R $SHA ci.yml
+verified_world l6; queue_run completed '"failure"' "gh-readonly-queue/dev/pr-7-$PARENT" $SHA
+expect "on dev, a tree its pull request tested is verified whatever the queue's run says" "verified=true" "$V" $R $SHA ci.yml
+
 # ---- ci-rerun-unacquired.sh -------------------------------------------------------------------
 NOTE='[{"message":"The job was not acquired by Runner of type hosted even after multiple attempts"}]'
 rerun_world() { # a failed first attempt whose only unfinished job was never acquired

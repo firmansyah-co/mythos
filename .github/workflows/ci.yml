@@ -10,33 +10,51 @@ on:
   # workflow at all for a PR opened against any other base (a stacked PR shows an
   # empty check list, not a failing one), so review verdicts were being issued on
   # code nothing had ever compiled. dev/rc/release remain gated by the push filter
-  # above plus their required status checks with strict=true, so merged content is
-  # still gated at the branch boundary; this only closes the PR-review blind spot.
+  # above plus their required status checks (on dev through its merge queue, below; on rc and
+  # release on a branch that is up to date), so merged content is still gated at the branch
+  # boundary; this only closes the PR-review blind spot.
   pull_request:
+  # THE MERGE QUEUE OF dev (the owner's decision, 2026-11-22).
+  #
+  # Until then dev required its checks on a branch that was up to date with it: of several pull
+  # requests open at once only one could merge, and each of the others had to be rebased and
+  # wait for the whole suite again, once for every merge ahead of it. With the queue a pull
+  # request that passed its checks is put on top of dev and of whatever is ahead of it in the
+  # queue, GitHub runs this workflow on that commit (the `merge_group` event), and dev moves to
+  # it when the required checks pass. Nobody rebases, and what lands was tested as it lands.
+  #
+  # Without this trigger the queue would wait for checks that never come.
+  merge_group:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # A PUSH TO dev DOES NOT RUN THE SUITE AGAIN ON A TREE ITS PULL REQUEST ALREADY PASSED.
+  # THE SUITE DOES NOT RUN AGAIN ON A TREE ITS PULL REQUEST ALREADY PASSED.
   #
-  # dev requires its checks on a branch that is up to date with it, so the pull request run and
-  # the push run that follows the merge tested the same tree: over the 100 runs measured on
-  # 2026-11-16, 15 of the 37 CI runs were that repeat, and all eight merges checked by hand had
-  # the tree of their pull request's head. The repeat also took the shared runner from the next
-  # pull request, and two full suites at once is what makes the SHM latency gate miss its bound.
+  # In the merge queue: a pull request that contained everything ahead of it (dev did not move,
+  # and nothing is before it in the queue) gets a commit with the very tree its own run tested.
+  # The suites are skipped for it, a skipped required check counts as passed, and the queue
+  # merges it at once: a pull request alone is not tested twice. When dev moved or another pull
+  # request is ahead, the tree is a new one and the whole suite runs on it.
+  #
+  # On a push to dev: the push that follows a merge is the commit the queue tested, or a tree
+  # its pull request tested. Over the 100 runs measured on 2026-11-16, 15 of the 37 CI runs
+  # were that repeat, and all eight merges checked by hand had the tree of their pull request's
+  # head.
   #
   # scripts/ci-already-verified.sh establishes it from GitHub for this very commit (same tree,
-  # head contained dev, a passed run of that head) and answers false for anything else, so a
-  # direct push or a merge of a branch that was behind still gets the whole suite. On a pull
-  # request, and on rc and release, this job does not run and the suites always do.
+  # head contained what it was put on, a passed run of that head; or, on dev, a passed run of
+  # the queue for this commit) and answers false for anything else, so a direct push or a pull
+  # request that was behind still gets the whole suite. On a pull request, and on rc and
+  # release, this job does not run and the suites always do.
   #
   # It runs on a hosted runner so that deciding to do nothing does not start a runner here.
   # `!cancelled()` on the suites: if this job cannot run or fails, they run.
   already-verified:
     name: Was this tree already verified on its pull request?
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/dev') || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -54,7 +72,9 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./scripts/ci-already-verified.sh "$GITHUB_REPOSITORY" "$GITHUB_SHA" ci.yml
+          # The ref of the merge group in the queue; empty on a push.
+          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
+        run: ./scripts/ci-already-verified.sh "$GITHUB_REPOSITORY" "$GITHUB_SHA" ci.yml "$QUEUE_REF"
 
   # THE LINUX SUITE RUNS ON GITHUB'S HOSTED RUNNER (the owner's decision, 2026-11-22).
   #
