@@ -2106,7 +2106,7 @@ settled before the step that needs it:
 - F3. **The network link**: the program replaced and the program watched over WiFi or
   Ethernet, as a `runtime` module. Needs the decisions 1 and 2 above.
 
-### 2.19 Task configuration (C8; designed, nothing of it is built)
+### 2.19 Task configuration (C8; C8a and C8b are built, C8c and C8d are not)
 
 The owner's decisions (2026-11-18: "program bisa di bind ke runtime tertentu (cyclic / timed /
 event)"; "kita ikut bahasa dan fitur siemens, tapi jangan dipisah per OB tapi dibuat settingan
