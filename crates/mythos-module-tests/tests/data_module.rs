@@ -274,6 +274,25 @@ async fn types_and_blocks_are_made_listed_and_deleted_through_the_server() {
         "data block 'Other': there is no type Nope"
     );
 
+    // A type source the project does not check with is refused too, and the stored one stays.
+    let refused = rig
+        .eng(
+            "PUT",
+            &recipe,
+            Some(json!({ "source": RECIPE.replace("REAL", "Nope") })),
+            400,
+        )
+        .await;
+    assert_eq!(
+        refused["error"],
+        "with this source the project's types and data blocks do not check, and nothing was saved"
+    );
+    assert_eq!(
+        std::fs::read_to_string(rig.project.join("data").join("types").join("RecipeData.st"))
+            .unwrap(),
+        RECIPE
+    );
+
     // The other project has none of it.
     let (status, other) = rig
         .send(
