@@ -46,7 +46,7 @@ impl Rng {
     }
     /// TRUE one time in `n`.
     fn one_in(&mut self, n: u64) -> bool {
-        self.next() % n == 0
+        self.next().is_multiple_of(n)
     }
 }
 

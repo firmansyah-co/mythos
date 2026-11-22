@@ -59,12 +59,7 @@ impl Timekeeper {
 
 /// Drive a future of the engine to its end: its calls never wait on anything.
 fn finish<T>(future: impl std::future::Future<Output = T>) -> T {
-    struct Nothing;
-    impl std::task::Wake for Nothing {
-        fn wake(self: Arc<Self>) {}
-    }
-    let waker = std::task::Waker::from(Arc::new(Nothing));
-    let mut context = std::task::Context::from_waker(&waker);
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
     let mut future = std::pin::pin!(future);
     loop {
         if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut context) {
