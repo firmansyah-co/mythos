@@ -18,8 +18,13 @@ runs:
       with:
         components: clippy
 
+    # Restored from the cache the job `cargo-cache` of ci.yml keeps for dev; a pull request and
+    # an entry of the merge queue save none.
     - name: Cache Cargo Build
       uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: suite
+        save-if: ${{ github.event_name == 'push' }}
 
     - name: Cargo Clippy Audit
       shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}

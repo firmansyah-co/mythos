@@ -113,8 +113,12 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Restored from the cache `cargo-cache` below keeps for dev; a pull request saves none.
       - name: Cache Cargo Build
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: suite
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Cargo Format Check
         run: cargo fmt --all -- --check
@@ -125,6 +129,59 @@ jobs:
       # --no-fail-fast: a failure in one test binary must not hide what the others say.
       - name: Run All Workspace Tests
         run: cargo test --workspace --no-fail-fast
+
+  # THE CARGO CACHE IS KEPT BY dev, AND PULL REQUESTS ONLY READ IT.
+  #
+  # Measured on the pull request run 45021219674 (2026-11-22): the Linux suite found no cache at
+  # all and built every dependency; Windows and macOS restored an old one that did not match,
+  # and then spent 173 s and 66 s saving a new one after the tests, time the required check
+  # waits for. A cache saved by a pull request can be read by that pull request alone, each is
+  # about 1 GB for each system, and the repository may keep 10 GB: they pushed each other out.
+  # No run on dev saved one, because a push to dev does not run the suites again (above).
+  #
+  # So this job, on every push to dev, on each system: if there is no cache for this Cargo.lock
+  # and these manifests, it builds what the suites build (the lints and the test binaries, not
+  # run) and saves the dependencies. dev is the default branch, so every pull request and every
+  # entry of the merge queue can read it. The suites save nothing on a pull request or in the
+  # queue (`save-if`), under the same `shared-key`.
+  #
+  # It holds no branch and is not a required check. If it fails, the suites are slower.
+  # What it saves a pull request is NOT MEASURED until one has run after it.
+  cargo-cache:
+    name: Cargo Cache of dev on ${{ matrix.os }}
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Build Tools & Linker
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends $(tr '\n' ' ' < ci/runner/packages.txt)
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Restore the cache, and save it at the end if there was none for these manifests
+        id: cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: suite
+
+      - name: Build what the suites build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cargo clippy --workspace --all-targets
+          cargo test --workspace --no-run
 
   # THE SHM LATENCY NUMBERS ARE REPORTED HERE, NOT ENFORCED (the owner's decision, 2026-11-22).
   #
@@ -153,8 +210,11 @@ jobs:
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # A release build, so a cache of its own; a pull request saves none (see `cargo-cache`).
       - name: Cache Cargo Build
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
 
       # TSK-002's "< 300 ns atomic swap" (50 ns until the owner raised it on 2026-11-17) and the
       # 300 ns tag read of NFR-001 and SYS-REQ-002 (the best of five rounds of 1,000,000 reads,
