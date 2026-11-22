@@ -20,6 +20,7 @@ members = [
     "plugins/discovery",
     "plugins/runtime-vm",
     "plugins/logic",
+    "plugins/data",
     "src-tauri",
 ]
 

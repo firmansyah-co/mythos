@@ -108,7 +108,8 @@ cd mythos
 
 # the server, the CLI and every module
 cargo build --bin mythos-server --bin mythos --bin mythos-module-modbus --bin mythos-module-hmi \
-  --bin mythos-module-logic --bin mythos-module-runtime-vm --bin mythos-module-discovery
+  --bin mythos-module-logic --bin mythos-module-runtime-vm --bin mythos-module-discovery \
+  --bin mythos-module-data
 (cd frontend && pnpm install --frozen-lockfile && pnpm build)
 
 MYTHOS_STORAGE_ROOT="$PWD/.mythos-data" \
