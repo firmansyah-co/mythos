@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Check, CirclePlay, CircleStop, Download, Plus, Save, Trash2, Undo2, Upload } from 'lucide-react';
 import type { DiagnosticsPanel } from '@mythos/workbench-sdk';
-import { host, mayEngineer, type Diagnostic, type NotCarried, type RuntimeLoad, type RuntimeStatus } from './bridge';
+import { host, mayEngineer, useController, type Diagnostic, type NotCarried, type RuntimeLoad, type RuntimeStatus } from './bridge';
 import { draw } from './draw';
 import { WITHHELD } from './library';
 import { describeStart, usePrograms } from './programs';
@@ -16,6 +16,7 @@ import { RUNTIMES_POLL_MS } from './ProgramEditor';
 import {
   deleteRuntimeQuestion,
   describeLoad,
+  elsewhereOf,
   heldBy,
   loadedIds,
   kindOf,
@@ -616,7 +617,11 @@ function ProgramVersion({ name, version, here }: { name: string; version: string
   const mine = here?.byName[name.toLowerCase()];
   const compared =
     mine === undefined
-      ? 'not known: nothing of it was built or checked here'
+      ? here === null
+        ? 'not known: nothing of it was built or checked here'
+        : here.of === 'build'
+          ? `not known: the last build here has no program ${name}`
+          : `not known: the last check here names no program ${name} (a check names each program by its name in the project, the controller by the PROGRAM its source declares)`
       : mine === version
         ? `the same as the one ${here?.of === 'build' ? 'built' : 'checked'} here`
         : `another version than the one ${here?.of === 'build' ? 'built' : 'checked'} here (${mine})`;
@@ -705,6 +710,8 @@ function LoadResult({ loaded }: { loaded: LoadAnswer }) {
           </p>
         ))}
         {answer.applied &&
+          answer.changes !== null &&
+          answer.changes !== undefined &&
           ids
             .filter((r) => !failed.some(([failedId]) => failedId === `runtime:${r}`))
             .map((r) => <StartOf key={r} id={r} load={answer.changes?.runtimes?.find((l) => l.runtime === r) ?? null} />)}
@@ -733,20 +740,25 @@ function LoadResult({ loaded }: { loaded: LoadAnswer }) {
  * its runtimes the program editor makes. NOT LOADED only after a reading that succeeded; what was
  * read before a reading failed is shown as last known; no task figure is shown here.
  */
-function StatusCard({ id }: { id: string }) {
+function StatusCard({ id, configured }: { id: string; configured: boolean }) {
   const view = usePrograms((s) => s.runtimes);
   const doc = useRuntimes((s) => s.docs[id]);
+  const projectId = useRuntimes((s) => s.projectId);
+  const active = useController((s) => s.activeProjectId);
   const { command, unload } = useRuntimes.getState();
   const may = mayEngineer();
   const known = view.runtimes !== null && view.error === null;
-  const runtime = view.runtimes?.find((r) => r.id === id);
+  // The controller lists the runtimes of the project it runs: when that is another project, a
+  // runtime of this id it lists is that project's, never this one, which is then not loaded.
+  const elsewhere = elsewhereOf(active, projectId);
+  const runtime = elsewhere === null ? view.runtimes?.find((r) => r.id === id) : undefined;
   const busy = doc?.busy !== null && doc?.busy !== undefined;
   const runs = runtime === undefined ? [] : runsOf(runtime);
   const listed = runs.length === 0 ? 'no program it names' : runs.join(', ');
   return (
     <section className="logic-panel" data-testid="runtime-status" aria-label="Runtime">
       <p>
-        {known || runtime !== undefined ? (
+        {known || runtime !== undefined || elsewhere !== null ? (
           <span className={`badge badge--${runtime === undefined ? 'neutral' : (MODE_TONE[runtime.mode] ?? 'neutral')}`} data-testid="runtime-status-mode">
             {runtime === undefined ? 'NOT LOADED' : runtime.mode.toUpperCase()}
           </span>
@@ -767,9 +779,13 @@ function StatusCard({ id }: { id: string }) {
         )}
       </p>
       <p className="muted" data-testid="runtime-status-why">
-        {runtime === undefined
+        {elsewhere !== null
+          ? `Runtime ${id} of this project is not loaded: ${elsewhere}, and a runtime ${id} it lists is that project's, not this one.`
+          : runtime === undefined
           ? known
-            ? `The controller lists no runtime ${id}: it is configured, not loaded.`
+            ? configured
+              ? `The controller lists no runtime ${id}: it is configured, not loaded.`
+              : `The controller lists no runtime ${id}: it is not loaded.`
             : view.runtimes === null
               ? `Whether the controller runs runtime ${id} is not known: ${view.error ?? 'its runtimes have not been read yet'}.`
               : `Whether the controller runs runtime ${id} is not known: its runtimes can no longer be read (${view.error}).`
@@ -777,6 +793,11 @@ function StatusCard({ id }: { id: string }) {
             ? `As the controller lists it.`
             : `The controller's runtimes can no longer be read (${view.error}), so this is what was last known, not what is.`}
       </p>
+      {active === undefined && (
+        <p className="muted" data-testid="runtime-status-project">
+          Which project the controller runs is not known yet: what it lists is shown as this project's.
+        </p>
+      )}
       {runtime?.reason && (
         <p className="form__error" data-testid="runtime-status-reason">
           {runtime.reason}
@@ -874,12 +895,19 @@ export function RuntimeEditor({ id, onClose }: { id: string; onClose: (id: strin
     return () => clearInterval(timer);
   }, [readRuntimes]);
 
+  // The card is shown once the runtime was read, also when the module could not be read: what the
+  // controller runs, and Stop, do not depend on the module's file. Not for a program running alone,
+  // whose own editor shows it.
   const configuredHere = doc !== undefined && doc.phase === 'ready';
+  const carded = doc !== undefined && (doc.phase === 'ready' || doc.phase === 'unreadable');
   useEffect(() => {
-    if (!configuredHere) return undefined;
-    host().setTaskCard(RUNTIME_STATUS_OWNER, { title: 'Runtime', mount: (card) => draw(card, <StatusCard id={id} />) });
+    if (!carded) return undefined;
+    host().setTaskCard(RUNTIME_STATUS_OWNER, {
+      title: 'Runtime',
+      mount: (card) => draw(card, <StatusCard id={id} configured={configuredHere} />),
+    });
     return () => host().setTaskCard(RUNTIME_STATUS_OWNER, null);
-  }, [configuredHere, id]);
+  }, [carded, configuredHere, id]);
 
   const mount = useMemo<DiagnosticsPanel['mount']>(() => (panel) => draw(panel, <CheckCard id={id} />), [id]);
   const count = problemCount(doc);

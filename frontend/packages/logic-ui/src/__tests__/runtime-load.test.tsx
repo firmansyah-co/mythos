@@ -16,6 +16,7 @@ import {
   byTestId,
   click,
   doing,
+  emit,
   endTest,
   entryOf,
   paneOf,
@@ -352,6 +353,201 @@ describe('loading a configured runtime', () => {
     expect(container.querySelector('[data-testid="runtime-start"][data-runtime="Line"]')).toBeNull();
   });
 
+  it("the project's runtimes saved by someone else while the question was open are not overwritten", async () => {
+    const spare = { id: 'Spare', module: 'vm', run: true, program: { name: 'Spare', built_from: 'Spare', version: 'v1' } };
+    const backend = plant({ config: { instances: [spare] } });
+    const { calls, container } = await opened(backend);
+    const agent = { id: 'Mixer', module: 'vm', run: true, program: { name: 'Mixer', built_from: 'Mixer', version: 'v-agent' } };
+    const asked = answering(calls, () => {
+      // While the engineer reads the question, an agent loads Mixer into the project's runtimes.
+      backend.config = { instances: [spare, agent] };
+      return true;
+    });
+    await load(container);
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.question).not.toContain('Mixer');
+    expect(coreSaves(calls)).toEqual([]);
+    expect(backend.config).toEqual({ instances: [spare, agent] });
+    expect(byTestId(container, 'load-refused')?.querySelector('p')?.textContent).toBe(
+      "The project's runtimes were changed by someone else while the question was open, so nothing was loaded: what was asked is no longer what would be sent. Load again to be asked about what is there now."
+    );
+    expect(byTestId(container, 'runtime-loaded')).toBeNull();
+  });
+
+  it("the project's runtimes that cannot be read again after the question are not overwritten", async () => {
+    const backend = plant();
+    const { calls, container } = await opened(backend);
+    let reads = 0;
+    backend.intercept = (call) => {
+      if (call.method !== 'GET' || !/\/projects\/plant\/runtimes$/.test(call.path)) return undefined;
+      reads += 1;
+      // The read before the question answers; the one after it does not.
+      return reads === 2 ? Response.json({ error: 'the storage is busy' }, { status: 500, statusText: 'Internal Server Error' }) : undefined;
+    };
+    answering(calls, true);
+    await load(container);
+
+    expect(reads).toBe(2);
+    expect(coreSaves(calls)).toEqual([]);
+    expect(byTestId(container, 'load-refused')?.querySelector('p')?.textContent).toBe(
+      "The project's runtimes could not be read again after the question, so nothing was loaded."
+    );
+    expect(byTestId(container, 'load-refused-error')?.textContent).toBe('the storage is busy');
+  });
+
+  it('a program whose source declares another PROGRAM name is found where it runs, under that name', async () => {
+    // Line runs Tank alone; Tank's source declares PROGRAM Main, and the controller lists it so.
+    const backend = plant({
+      programs: [{ entry: entryOf('Tank'), source: 'PROGRAM Main\nEND_PROGRAM\n' }, program('Pump'), program('Mixer'), program('Spare')],
+      configured: [{ id: 'Line', programs: ['Tank'] }],
+      runtimes: listing(runtimeOf('Line', { program: 'Main', version: 'v-old', programs: [{ name: 'Main', version: 'v-old' }] })),
+    });
+    const { calls, container } = await opened(backend);
+    const asked = answering(calls, true);
+    await load(container);
+
+    expect(asked[0]?.question).toContain('- Tank: version v-Tank to load; runs now: version v-old in runtime Line');
+    // The module names the instance's program by the PROGRAM declared, and its task's too.
+    const sent = (coreSaves(calls)[0]?.body as { instances: Array<{ program?: { name: string; built_from: string }; tasks?: Array<{ programs: string[] }> }> })
+      .instances[0];
+    expect(sent?.program).toMatchObject({ name: 'Main', built_from: 'Tank' });
+    expect(sent?.tasks?.[0]?.programs).toEqual(['Main']);
+
+    // Once the controller runs the build made here, it is called the same.
+    backend.runtimes = listing(runtimeOf('Line', { program: 'Main', version: 'v-Tank', programs: [{ name: 'Main', version: 'v-Tank' }] }));
+    await doing(() => usePrograms.getState().readRuntimes());
+    expect(texts(card(container), 'runtime-program-compare')).toEqual(['the same as the one built here']);
+  });
+
+  it('the question says whether each runtime it starts or restarts is put in RUN or loaded in STOP', async () => {
+    // Old is in STOP (an operator stopped it); its configuration says it runs when loaded.
+    const old = { id: 'Old', module: 'vm', run: true, programs: [{ name: 'Mixer', built_from: 'Mixer' }, { name: 'Tank', built_from: 'Tank' }] };
+    const backend = plant({
+      configured: [{ ...LINE, run: false }, { id: 'Old', programs: ['Mixer'] }],
+      config: { instances: [old] },
+      runtimes: listing(runtimeOf('Old', { program: 'Mixer, Tank', mode: 'stop', programs: [{ name: 'Mixer', version: 'a' }, { name: 'Tank', version: 'b' }] })),
+    });
+    const { calls, container } = await opened(backend);
+    const asked = answering(calls, true);
+    await load(container);
+
+    const question = asked[0]?.question ?? '';
+    expect(question).toContain(
+      'Runtime Line: It is loaded in STOP (the controller does not list it now), and writes no output until it is put in RUN.'
+    );
+    expect(question).toContain(
+      "Runtime Old gives up the moved program: it is built again from the project's saved programs and restarts warm (not the same programs). It ran Mixer, Tank; it will run Mixer (version v-Mixer). It is put in RUN (it is in STOP now), and its programs write their outputs."
+    );
+  });
+
+  it('a rebuilt runtime that now runs a program running alone takes that one out, and one built before 0.8.0 is said', async () => {
+    const old = { id: 'Old', module: 'vm', run: true, programs: [{ name: 'Mixer', built_from: 'Mixer' }, { name: 'Tank', built_from: 'Tank' }] };
+    // Spare runs alone under its own id; Legacy, built before 0.8.0, runs a PROGRAM Spare under another id.
+    const spare = { id: 'Spare', module: 'vm', run: true, program: { name: 'Spare', built_from: 'Spare' } };
+    const legacy = { id: 'Legacy', module: 'vm', run: true, program: { name: 'Spare' } };
+    const backend = plant({ configured: [LINE, { id: 'Old', programs: ['Mixer', 'Spare'] }], config: { instances: [old, spare, legacy] } });
+    const { calls, container } = await opened(backend);
+    const asked = answering(calls, true);
+    await load(container);
+
+    expect(asked).toHaveLength(1);
+    const question = asked[0]?.question ?? '';
+    expect(question).toContain('Taken out, replaced by runtime Old: Spare (ran Spare).');
+    expect(question).toContain(
+      'Runtime Legacy may also run Spare, which runtime Old will run too (built before 0.8.0, not compared by the core). It is kept.'
+    );
+    // One save the core takes: Spare alone out, the rebuilt Old with Spare in.
+    expect(sentIds(coreSaves(calls)[0])).toEqual(['Legacy', 'Line', 'Old']);
+    expect(byTestId(container, 'load-refused')).toBeNull();
+    expect(sentIds({ method: 'PUT', path: '', body: backend.config })).toEqual(['Legacy', 'Line', 'Old']);
+  });
+
+  it('a runtime built again whose program another configured runtime holds builds that one too, once', async () => {
+    // Line takes Tank from Old; Old now runs Mixer, which Third still holds; Third now runs Spare.
+    const old = { id: 'Old', module: 'vm', run: true, programs: [{ name: 'Tank', built_from: 'Tank' }] };
+    const third = { id: 'Third', module: 'vm', run: true, programs: [{ name: 'Mixer', built_from: 'Mixer' }, { name: 'Spare', built_from: 'Spare' }] };
+    const backend = plant({
+      configured: [LINE, { id: 'Old', programs: ['Mixer'] }, { id: 'Third', programs: ['Spare'] }],
+      config: { instances: [old, third] },
+    });
+    const { calls, container } = await opened(backend);
+    const asked = answering(calls, true);
+    calls.length = 0;
+    await load(container);
+
+    expect(writes(calls)).toEqual([
+      'POST /projects/plant/logic/runtimes/Line/check',
+      'POST /projects/plant/logic/runtimes/Line/build',
+      'POST /projects/plant/logic/runtimes/Old/build',
+      'POST /projects/plant/logic/runtimes/Third/build',
+      'PUT /projects/plant/runtimes',
+    ]);
+    expect(asked[0]?.question).toContain('Runtime Third gives up the moved program');
+    expect(sentIds(coreSaves(calls)[0])).toEqual(['Line', 'Old', 'Third']);
+    expect(byTestId(container, 'load-refused')).toBeNull();
+  });
+
+  it('Load cold asks first, sends the save with start=cold, and says each rebuilt runtime restarts cold', async () => {
+    const old = { id: 'Old', module: 'vm', run: true, programs: [{ name: 'Mixer', built_from: 'Mixer' }, { name: 'Tank', built_from: 'Tank' }] };
+    const backend = plant({ configured: [LINE, { id: 'Old', programs: ['Mixer'] }], config: { instances: [old] } });
+    const { calls, container } = await opened(backend);
+    const cold = async () => {
+      click(byTestId(container, 'runtime-load-cold'));
+      await settle();
+      await until('the load ends', () => useRuntimes.getState().docs.Line?.busy === null);
+      await settle();
+    };
+
+    // Cancelled at the first question: nothing is built or sent.
+    let asked = answering(calls, false);
+    calls.length = 0;
+    await cold();
+    expect(asked.map((a) => a.question)).toEqual([
+      'Load runtime Line cold? Every runtime this load starts or replaces starts from its initial values, RETAIN variables included, and nothing they hold is carried over. The draft is saved first if it has changes, and what the load will change is asked before anything is loaded.',
+    ]);
+    expect(writes(calls)).toEqual([]);
+
+    asked = answering(calls, true);
+    calls.length = 0;
+    await cold();
+    expect(asked).toHaveLength(2);
+    expect(asked[1]?.savesBefore).toBe(0);
+    const question = asked[1]?.question ?? '';
+    expect(question).toContain('Load runtime Line cold? Every runtime this save starts or replaces starts from its initial values, RETAIN variables included.');
+    expect(question).toContain('Runtime Old gives up the moved program: it is built again from the project\'s saved programs and restarts cold (not the same programs).');
+    expect(coreSaves(calls).map((c) => c.path)).toEqual(['/api/v1/projects/plant/runtimes?start=cold']);
+    expect(sentIds(coreSaves(calls)[0])).toEqual(['Line', 'Old']);
+  });
+
+  it('an applied save the controller says nothing more of does not say how any runtime started', async () => {
+    const backend = plant({ fieldIoOff: true });
+    const { calls, container } = await opened(backend);
+    answering(calls, true);
+    await load(container);
+
+    expect(byTestId(container, 'runtime-loaded-said')?.textContent).toBe(
+      "Saved into the project's runtimes. The controller said nothing of what it started or stopped, as it answers while its field I/O is not running, so nothing is said here of how any runtime started. Whether each runtime runs is on its card, as the controller lists it."
+    );
+    expect(texts(container, 'runtime-start-said')).toEqual([]);
+  });
+
+  it('the fake core answers as the core does: commands of an unlisted runtime, and what validate refuses', async () => {
+    const backend = plant({ runtimes: listing(runtimeOf('Line')) });
+    server(backend);
+    const post = (path: string, body?: unknown) =>
+      fetch(path, { method: body === undefined ? 'POST' : 'PUT', ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const stopped = await post('/api/v1/runtimes/Gone/stop');
+    expect([stopped.status, ((await stopped.json()) as { error: string }).error]).toEqual([404, "no runtime 'Gone' is loaded on this node"]);
+    expect((await post('/api/v1/runtimes/Line/stop')).status).toBe(200);
+    const refusedWith = async (instances: unknown[]) => ((await (await post('/api/v1/projects/plant/runtimes', { instances })).json()) as { error?: string }).error;
+    const a = { id: 'A', module: 'vm', run: true, program: { name: 'A', outputs: [{ tag: 'plc1.valve' }] } };
+    expect(await refusedWith([a, { ...a }])).toBe("runtime id 'A' is used more than once");
+    expect(await refusedWith([{ ...a, programs: [{ name: 'B' }] }])).toBe("runtime 'A': give program or programs, not both");
+    expect(await refusedWith([a, { ...a, id: 'B' }])).toBe("plc1.valve is an output of both 'A' and 'B': one tag has one writer");
+    expect(backend.config).toEqual({ instances: [] });
+  });
+
   it('a load into a project the controller does not run says nothing was started', async () => {
     const backend = plant({ applied: false });
     const { calls, container } = await opened(backend);
@@ -459,6 +655,59 @@ describe('the runtime card', () => {
     await doing(() => usePrograms.getState().readRuntimes());
     expect(enabled('runtime-card-stop')).toBe(false);
     expect(enabled('runtime-card-run')).toBe(false);
+  });
+
+  it("another project's runtime of the same id is not shown as this one, and the question says this project runs nowhere", async () => {
+    const backend = plant({
+      active: 'other',
+      runtimes: listing(runtimeOf('Line', { program: 'Tank, Pump', mode: 'run', programs: [{ name: 'Tank', version: 'x' }, { name: 'Pump', version: 'y' }] })),
+    });
+    const { calls, container } = await opened(backend);
+    const at = card(container);
+    expect(mode(container)).toBe('NOT LOADED');
+    expect(byTestId(at, 'runtime-status-why')?.textContent).toBe(
+      "Runtime Line of this project is not loaded: the controller runs another project (other), and a runtime Line it lists is that project's, not this one."
+    );
+    expect(byTestId(at, 'runtime-status-version')).toBeNull();
+    expect(texts(at, 'runtime-program')).toEqual([]);
+    expect(byTestId(at, 'runtime-status-project')).toBeNull();
+    for (const command of ['runtime-card-run', 'runtime-card-stop', 'runtime-card-unload']) {
+      expect((byTestId(at, command) as HTMLButtonElement | null)?.disabled).toBe(true);
+    }
+
+    const asked = answering(calls, true);
+    await load(container);
+    expect(asked[0]?.question).toContain('- Tank: version v-Tank to load; runs now: none: the controller runs another project (other)');
+    expect(byTestId(container, 'runtime-loaded-said')?.textContent).toBe(
+      "Saved into the project's runtimes. The controller runs another project, so nothing was started."
+    );
+  });
+
+  it('Stop stays on the card when the module can no longer be read', async () => {
+    const backend = plant({ runtimes: listing(runtimeOf('Line', { program: 'Tank, Pump', mode: 'run' })) });
+    const { calls, container } = await opened(backend);
+    expect(byTestId(card(container), 'runtime-card-stop')).not.toBeNull();
+    backend.configured = 'fails';
+    emit('LOGIC_RUNTIMES_CHANGED', { project: 'plant', runtime: 'Line', what: 'saved' });
+    await until('the read fails', () => byTestId(container, 'runtime-read-error') !== null);
+    await settle();
+
+    expect(mode(container)).toBe('RUN');
+    // Which project the controller runs was never read here: said, not assumed.
+    expect(byTestId(card(container), 'runtime-status-project')?.textContent).toBe(
+      "Which project the controller runs is not known yet: what it lists is shown as this project's."
+    );
+    const stop = byTestId(card(container), 'runtime-card-stop') as HTMLButtonElement | null;
+    expect(stop?.disabled).toBe(false);
+    calls.length = 0;
+    click(stop);
+    await settle();
+    expect(writes(calls)).toEqual(['POST /runtimes/Line/stop']);
+
+    // Not listed: what is not known of the module is not said ("configured").
+    backend.runtimes = listing();
+    await reread();
+    expect(byTestId(card(container), 'runtime-status-why')?.textContent).toBe('The controller lists no runtime Line: it is not loaded.');
   });
 
   it('Unload sends the configuration without the runtime', async () => {

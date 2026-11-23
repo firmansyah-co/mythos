@@ -303,30 +303,94 @@ export function mayAlsoRun(kept: readonly Instance[], built: Instance): Array<{ 
     .map((instance) => ({ instance, programs: named(instance) }));
 }
 
-/** The controller's runtimes as last read (`GET /api/v1/runtimes`), or why they could not be. */
+/**
+ * The controller's runtimes as last read (`GET /api/v1/runtimes`), or why they could not be. They
+ * are the runtimes of the project the controller runs: `elsewhere` says, in words, that it runs
+ * another project or none, so that none of them is this project's.
+ */
 export interface StatusView {
   runtimes: RuntimeStatus[] | null;
   error: string | null;
+  elsewhere?: string | null;
 }
 
 /**
- * The version of program `program` the controller runs now, and in which runtime, in words that
- * claim no more than was read: "not known" when the runtimes could not be read, "last known" when
- * what is shown was read before a read that failed.
+ * Why the runtimes the controller lists are not project `projectId`'s, from the project the
+ * workbench last read as active; `null` when they are, or when which one is active is not known.
  */
-export function runningOf(status: StatusView, program: string): string {
+export function elsewhereOf(active: string | null | undefined, projectId: string | null): string | null {
+  if (active === undefined || projectId === null || active === projectId) return null;
+  return active === null ? 'the controller runs no project' : `the controller runs another project (${active})`;
+}
+
+/**
+ * The name the core lists program `entry` of `instance` under: the PROGRAM its source declares,
+ * which the logic module names the instance's program by (`runtime_program`); the project name
+ * when the instance does not say which project program each of its programs is a build of.
+ */
+export function listedNameOf(instance: Instance, entry: string): string {
+  return programsOf(instance).find((p) => typeof p.built_from === 'string' && sameId(p.built_from, entry))?.name ?? entry;
+}
+
+/**
+ * The version of project program `program` the controller runs now, and in which runtime, in
+ * words that claim no more than was read: "not known" when the runtimes could not be read, "last
+ * known" when what is shown was read before a read that failed, "none" only after a good read of
+ * the runtimes of this very project. It is looked for where it is loaded into (`built`, by the
+ * PROGRAM name the build gives it), where the project's saved runtimes (`saved`) say a build of it
+ * is, and, for an instance that does not say, under the id it runs alone.
+ */
+export function runningOf(status: StatusView, saved: readonly Instance[], built: Instance, program: string): string {
+  if (status.elsewhere) return `none: ${status.elsewhere}`;
   if (status.runtimes === null) return `not known (${status.error ?? 'the runtimes have not been read'})`;
-  for (const runtime of status.runtimes) {
-    const entry = Array.isArray(runtime.programs)
-      ? runtime.programs.find((p) => sameId(p.name, program))
-      : sameId(runtime.id, program)
-        ? { name: runtime.program, version: runtime.version }
+  const last = status.error === null ? '' : ', last known';
+  /** Runtime `runtime`'s program listed as `name`: its version, or `undefined`. */
+  const versionIn = (runtime: RuntimeStatus, name: string): string | undefined =>
+    Array.isArray(runtime.programs)
+      ? runtime.programs.find((p) => sameId(p.name, name))?.version
+      : sameId(runtime.program, name)
+        ? runtime.version
         : undefined;
-    if (entry !== undefined) {
-      return `version ${entry.version} in runtime ${runtime.id}${status.error === null ? '' : ', last known'}`;
-    }
+  // In the runtime it is loaded into, unless the saved instance of that id says its program of
+  // that PROGRAM name is a build of another project program.
+  const here = status.runtimes.find((r) => r.id === built.id);
+  const as = listedNameOf(built, program);
+  const there = saved.find((i) => i.id === built.id);
+  const other = there === undefined ? undefined : programsOf(there).find((p) => sameId(p.name, as));
+  const another = typeof other?.built_from === 'string' && !sameId(other.built_from, program);
+  const inHere = here === undefined || another ? undefined : versionIn(here, as);
+  if (here !== undefined && inHere !== undefined) return `version ${inHere} in runtime ${here.id}${last}`;
+  // Where the project's saved runtimes say a build of it is.
+  for (const holder of saved) {
+    if (!programsOf(holder).some((p) => typeof p.built_from === 'string' && sameId(p.built_from, program))) continue;
+    const runtime = status.runtimes.find((r) => r.id === holder.id);
+    const version = runtime === undefined ? undefined : versionIn(runtime, listedNameOf(holder, program));
+    if (runtime !== undefined && version !== undefined) return `version ${version} in runtime ${runtime.id}${last}`;
   }
+  // Alone, under its own name, by an instance that does not say what it is a build of.
+  const alone = status.runtimes.find((r) => !Array.isArray(r.programs) && sameId(r.id, program));
+  if (alone !== undefined) return `version ${alone.version} in runtime ${alone.id}${last}`;
   return status.error === null ? 'none: the controller runs no build of it' : `not known (${status.error})`;
+}
+
+/**
+ * Whether runtime `instance` runs once this load starts or restarts it, from its own `run` (the
+ * core puts an instance in RUN when it starts only when `run` is set, and loads it in STOP
+ * otherwise), with the mode the controller lists it in now when that is known.
+ */
+export function modeAfter(instance: Instance, status: StatusView): string {
+  const listed = status.elsewhere || status.runtimes === null ? undefined : status.runtimes.find((r) => r.id === instance.id);
+  const now =
+    status.elsewhere || status.runtimes === null
+      ? ''
+      : listed !== undefined
+        ? ` (it is in ${listed.mode.toUpperCase()} now${status.error === null ? '' : ', last known'})`
+        : status.error === null
+          ? ' (the controller does not list it now)'
+          : '';
+  if (instance.run === true) return `It is put in RUN${now}, and its programs write their outputs.`;
+  if (instance.run === false) return `It is loaded in STOP${now}, and writes no output until it is put in RUN.`;
+  return `Whether it is put in RUN is not known: its build does not say${now}.`;
 }
 
 /** What a load of a configured runtime will send to the core, and what it changes. */
@@ -336,42 +400,77 @@ export interface LoadPlan {
   build: RuntimeBuild;
   /** The instances to send, in order: every one kept as it was read, then the new ones. */
   instances: Instance[];
-  /** The saved instances of this id or of an id in `replaces`: taken out, replaced by the new one. */
-  replaced: Instance[];
-  /** Holders of a program of the new instance that are not configured runtimes: taken out whole. */
+  /**
+   * The saved instances of an id an instance put in replaces (its own, or one its programs ran
+   * under alone), each with the runtime that replaces it.
+   */
+  replaced: Array<{ instance: Instance; by: string }>;
+  /** Holders of a program of an instance put in that are not configured runtimes: taken out whole. */
   takenOut: Instance[];
   /** Holders that are configured runtimes, each with what its new build runs instead. */
   rebuilt: Array<{ before: Instance; build: RuntimeBuild }>;
-  /** Instances kept that may also run a program of the new instance (built before 0.8.0). */
-  mayAlsoRun: Array<{ instance: Instance; programs: string[] }>;
+  /**
+   * Instances kept that may also run a program of an instance put in (`beside`), built before
+   * 0.8.0: they do not say what they are a build of, so neither the core nor this UI compares them.
+   */
+  mayAlsoRun: Array<{ instance: Instance; programs: string[]; beside: string }>;
   /** For each program of the new build, by its name, the version the controller runs now. */
   running: Array<{ name: string; version: string; runs: string }>;
+  /** For this runtime, then each rebuilt one: whether it is put in RUN, in words. */
+  modes: Record<string, string>;
 }
 
 /**
  * The plan of a load of `build` into the core's saved configuration `saved`: this id and the ids
  * in `replaces` replaced, each holder of one of its programs (by `built_from`, without case) taken
- * out, and put back as `rebuilt` gives it when it is a configured runtime; everything else sent
- * back untouched, in its order.
+ * out, and put back as `rebuilt` gives it when it is a configured runtime; and the same again for
+ * each runtime put back, whose own `replaces` and holders are taken out too (the core refuses a
+ * program in two runtimes of one save); everything else sent back untouched, in its order.
  */
 export function planLoad(saved: readonly Instance[], build: RuntimeBuild, rebuilt: readonly RuntimeBuild[], cold: boolean, status: StatusView): LoadPlan {
   const built = build.instance;
-  const replaces = build.replaces;
-  const holderList = holdersOf(saved, built, replaces);
+  // Each instance put in, with the saved one it is a new build of; each is taken apart in turn.
+  const putIn: Array<{ build: RuntimeBuild; before: Instance | null }> = [{ build, before: null }];
+  const out = new Set<string>(saved.filter((other) => other.id === built.id).map((other) => other.id));
+  const replaced: Array<{ instance: Instance; by: string }> = saved
+    .filter((other) => other.id === built.id)
+    .map((instance) => ({ instance, by: built.id }));
+  const holderList: Instance[] = [];
+  const takenOut: Instance[] = [];
+  for (let at = 0; at < putIn.length; at += 1) {
+    const step = putIn[at];
+    if (step === undefined) break;
+    const mine = step.build.instance;
+    for (const other of saved) {
+      if (out.has(other.id) || !step.build.replaces.includes(other.id)) continue;
+      out.add(other.id);
+      replaced.push({ instance: other, by: mine.id });
+    }
+    const rest = saved.filter((other) => !out.has(other.id));
+    for (const holder of holdersOf(rest, mine, step.build.replaces)) {
+      out.add(holder.id);
+      holderList.push(holder);
+      const again = rebuilt.find((b) => sameId(b.instance.id, holder.id));
+      if (again === undefined) takenOut.push(holder);
+      else putIn.push({ build: again, before: holder });
+    }
+  }
+  const replaces = putIn.flatMap((step) => step.build.replaces);
   const holders = new Set(holderList.map((h) => h.id));
   const kept = saved.filter((other) => other.id !== built.id && !replaces.includes(other.id) && !holders.has(other.id));
-  const pairs = holderList.map((before) => ({ before, build: rebuilt.find((b) => sameId(b.instance.id, before.id)) }));
-  const again = pairs.flatMap((p) => (p.build === undefined ? [] : [{ before: p.before, build: p.build }]));
+  const again = putIn.flatMap((step) => (step.before === null ? [] : [{ before: step.before, build: step.build }]));
+  const instances = putIn.map((step) => step.build.instance);
   return {
     runtime: built.id,
     cold,
     build,
-    instances: [...kept, built, ...again.map((p) => p.build.instance)],
-    replaced: saved.filter((other) => other.id === built.id || replaces.includes(other.id)),
-    takenOut: pairs.filter((p) => p.build === undefined).map((p) => p.before),
+    instances: [...kept, ...instances],
+    replaced,
+    takenOut,
     rebuilt: again,
-    mayAlsoRun: mayAlsoRun(kept, built),
-    running: build.programs.map((p) => ({ name: p.name, version: p.version, runs: runningOf(status, p.name) })),
+    mayAlsoRun: instances.flatMap((instance) => mayAlsoRun(kept, instance).map((m) => ({ ...m, beside: instance.id }))),
+    running: build.programs.map((p) => ({ name: p.name, version: p.version, runs: runningOf(status, saved, built, p.name) })),
+    modes: Object.fromEntries(instances.map((instance) => [instance.id, modeAfter(instance, status)])),
   };
 }
 
@@ -395,18 +494,25 @@ export function loadQuestion(plan: LoadPlan): string {
   );
   lines.push(`Runtime ${plan.runtime} will run:`);
   for (const p of plan.running) lines.push(`- ${p.name}: version ${p.version} to load; runs now: ${p.runs}`);
-  for (const i of plan.replaced) lines.push(`Taken out, replaced by runtime ${plan.runtime}: ${i.id} (ran ${namesOf(i)}).`);
+  const mode = plan.modes[plan.runtime];
+  if (mode !== undefined) lines.push(`Runtime ${plan.runtime}: ${mode}`);
+  for (const r of plan.replaced) lines.push(`Taken out, replaced by runtime ${r.by}: ${r.instance.id} (ran ${namesOf(r.instance)}).`);
   for (const i of plan.takenOut) {
     lines.push(`Taken out whole, as it is not a configured runtime: ${i.id} (ran ${namesOf(i)}). Its outputs go to their safe values.`);
   }
   for (const r of plan.rebuilt) {
     const now = r.build.programs.map((p) => `${p.name} (version ${p.version})`).join(', ');
+    const after = plan.modes[r.build.instance.id];
     lines.push(
-      `Runtime ${r.before.id} gives up the moved program: it is built again from the project's saved programs and restarts ${plan.cold ? 'cold' : 'warm'} (not the same programs). It ran ${namesOf(r.before)}; it will run ${now === '' ? 'no program' : now}.`
+      `Runtime ${r.before.id} gives up the moved program: it is built again from the project's saved programs and restarts ${plan.cold ? 'cold' : 'warm'} (not the same programs). It ran ${namesOf(r.before)}; it will run ${now === '' ? 'no program' : now}.${after === undefined ? '' : ` ${after}`}`
     );
   }
   for (const m of plan.mayAlsoRun) {
-    lines.push(`Runtime ${m.instance.id} may also run ${m.programs.join(', ')} (built before 0.8.0, not compared by the core). It is kept.`);
+    lines.push(
+      m.beside === plan.runtime
+        ? `Runtime ${m.instance.id} may also run ${m.programs.join(', ')} (built before 0.8.0, not compared by the core). It is kept.`
+        : `Runtime ${m.instance.id} may also run ${m.programs.join(', ')}, which runtime ${m.beside} will run too (built before 0.8.0, not compared by the core). It is kept.`
+    );
   }
   return lines.join('\n');
 }
@@ -424,6 +530,11 @@ export const loadedIds = (plan: LoadPlan): string[] => [plan.runtime, ...plan.re
 export function describeLoad(loaded: LoadAnswer): string {
   const { plan, answer } = loaded;
   if (!answer.applied) return "Saved into the project's runtimes. The controller runs another project, so nothing was started.";
+  if (answer.changes === null || answer.changes === undefined) {
+    // What the core answers when its field I/O is not running (io/manager.rs `reload_with`):
+    // applied, with no word of anything started or stopped. Nothing is said to have started.
+    return "Saved into the project's runtimes. The controller said nothing of what it started or stopped, as it answers while its field I/O is not running, so nothing is said here of how any runtime started. Whether each runtime runs is on its card, as the controller lists it.";
+  }
   const failed = (answer.changes?.failed ?? []).filter(([id]) => loadedIds(plan).some((r) => id === `runtime:${r}`));
   return failed.length > 0
     ? "Saved into the project's runtimes and applied, but the controller did not start everything it was given:"

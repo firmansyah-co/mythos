@@ -10,7 +10,8 @@ import { canonical, usePrograms } from './programs';
 import {
   api,
   bodyOf,
-  holdersOf,
+  elsewhereOf,
+  listedNameOf,
   loadQuestion,
   planLoad,
   sameId,
@@ -24,7 +25,7 @@ import {
   type RuntimesChanged,
   type RuntimesList,
 } from './runtimes';
-import { api as core, problemsOf, type ApplyAnswer, type ConfigProblem, type RuntimesAnswer } from './bridge';
+import { api as core, problemsOf, useController, type ApplyAnswer, type ConfigProblem, type RuntimesAnswer } from './bridge';
 
 /** Why a load, a command or an unload stopped: in this UI's words, then the refuser's own. */
 export interface Stopped {
@@ -35,7 +36,11 @@ export interface Stopped {
   problems: ConfigProblem[] | null;
 }
 
-/** The versions of the runtime's programs last built or checked ok here, by program name in lower case. */
+/**
+ * The versions of the runtime's programs last built or checked ok here, in lower case by the name
+ * the controller lists each under: for a build, the PROGRAM name its instance gives it; for a
+ * check, which does not give that name, the program's name in the project.
+ */
 export interface VersionsHere {
   of: 'build' | 'check';
   byName: Record<string, string>;
@@ -132,10 +137,10 @@ export interface RuntimesState {
   unload(id: string): Promise<boolean>;
 }
 
-/** The versions of a build's programs, by name in lower case. */
+/** The versions of a build's programs, in lower case by the PROGRAM name the controller lists each under. */
 const versionsOfBuild = (build: RuntimeBuild): VersionsHere => ({
   of: 'build',
-  byName: Object.fromEntries(build.programs.map((p) => [p.name.toLowerCase(), p.version])),
+  byName: Object.fromEntries(build.programs.map((p) => [listedNameOf(build.instance, p.name).toLowerCase(), p.version])),
 });
 /** The versions of an ok check's programs, by name in lower case; `null` when it gives none. */
 const versionsOfCheck = (check: RuntimeCheck): VersionsHere | null =>
@@ -342,22 +347,35 @@ export const useRuntimes = create<RuntimesState>((set, get) => {
     if (gone()) return false;
     // Each other instance that holds one of its programs: a configured runtime is built again
     // by the module, without the program, and goes into the same save; any other is taken out.
-    const holders = holdersOf(saved, build.instance, build.replaces);
+    // A runtime built again may itself now run a program another instance holds: the same
+    // again for it, each configured runtime built once.
+    const view = usePrograms.getState().runtimes;
+    const status = { runtimes: view.runtimes, error: view.error, elsewhere: elsewhereOf(useController.getState().activeProjectId, projectId) };
     const rebuilt: RuntimeBuild[] = [];
-    if (holders.length > 0) {
-      let list: RuntimesList;
-      try {
-        list = await api.list(projectId);
-      } catch (cause) {
-        return refuse(
-          `${holders.map((h) => h.id).join(', ')} ${holders.length === 1 ? 'holds' : 'hold'} a program of ${id}, and whether each is a configured runtime is not known: the configured runtimes could not be read. Nothing was loaded.`,
-          cause
-        );
+    const tried = new Set<string>();
+    let list: RuntimesList | null = null;
+    for (;;) {
+      const holders = planLoad(saved, build, rebuilt, cold, status).takenOut;
+      if (holders.length === 0) break;
+      if (list === null) {
+        try {
+          list = await api.list(projectId);
+        } catch (cause) {
+          return refuse(
+            `${holders.map((h) => h.id).join(', ')} ${holders.length === 1 ? 'holds' : 'hold'} a program of ${id}, and whether each is a configured runtime is not known: the configured runtimes could not be read. Nothing was loaded.`,
+            cause
+          );
+        }
+        if (gone()) return false;
       }
-      if (gone()) return false;
-      for (const holder of holders) {
-        const entry = list.runtimes.find((r) => sameId(r.id, holder.id));
-        if (entry === undefined) continue;
+      const configured = list.runtimes;
+      const toBuild = holders.flatMap((holder) => {
+        const entry = configured.find((r) => sameId(r.id, holder.id));
+        return entry === undefined || tried.has(entry.id.toLowerCase()) ? [] : [{ holder, entry }];
+      });
+      if (toBuild.length === 0) break;
+      for (const { holder, entry } of toBuild) {
+        tried.add(entry.id.toLowerCase());
         try {
           rebuilt.push(await api.build(projectId, entry.id));
         } catch (cause) {
@@ -366,10 +384,25 @@ export const useRuntimes = create<RuntimesState>((set, get) => {
         if (gone()) return false;
       }
     }
-    const view = usePrograms.getState().runtimes;
-    const plan = planLoad(saved, build, rebuilt, cold, { runtimes: view.runtimes, error: view.error });
+    const plan = planLoad(saved, build, rebuilt, cold, status);
     if (!window.confirm(loadQuestion(plan))) return false;
     if (gone()) return false;
+    // The question was about the project's runtimes as read before it. Another client (an agent,
+    // another workbench, a program's Load) may have saved them while it was open: sending the plan
+    // then would put back what was read, taking out or setting back what that client saved,
+    // unasked. They are read again, and nothing is sent unless they are what was read.
+    let now: Instance[];
+    try {
+      now = (await api.config(projectId)).config?.instances ?? [];
+    } catch (cause) {
+      return refuse("The project's runtimes could not be read again after the question, so nothing was loaded.", cause);
+    }
+    if (gone()) return false;
+    if (canonical(now) !== canonical(saved)) {
+      return refuse(
+        "The project's runtimes were changed by someone else while the question was open, so nothing was loaded: what was asked is no longer what would be sent. Load again to be asked about what is there now."
+      );
+    }
     let answer: ApplyAnswer;
     try {
       answer = await api.setInstances(projectId, plan.instances, cold);

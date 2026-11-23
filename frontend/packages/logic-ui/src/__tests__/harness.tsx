@@ -30,7 +30,8 @@ export {
   typeInto,
   unmountAll,
 } from '../../../ui-shell/src/__tests__/harness';
-export { useController } from '../../../ui-shell/src/data/controller';
+import { useController } from '../../../ui-shell/src/data/controller';
+export { useController };
 export { useSession } from '../../../ui-shell/src/data/session';
 export { useTelemetry } from '../../../ui-shell/src/data/telemetry';
 export { useWorkbench as useShell } from '../../../ui-shell/src/data/workbench';
@@ -145,8 +146,22 @@ export interface Backend {
   runtimeEvents?: boolean;
   /** A runtime's check of each of its programs; left out, every program compiles with no problem. */
   checkRuntimeProgram?: (name: string) => Omit<ProgramCheck, 'name'>;
-  /** Whether saving the runtimes applies them (the project is the active one). */
+  /**
+   * Whether saving the runtimes applies them (the project is the active one). Left out: applied
+   * when `active` is left out or names the project saved.
+   */
   applied?: boolean;
+  /**
+   * The project the controller runs, as the workbench's controller poll reads it; `null`, none.
+   * Given, the workbench is told so when `server` starts. The core lists the runtimes of that
+   * project only: `runtimes` is then that project's list.
+   */
+  active?: string | null;
+  /**
+   * The controller's field I/O is not running: an applied save of the runtimes answers
+   * `changes: null` (`reload_with` → `idle` in crates/mythos-core/src/io/manager.rs).
+   */
+  fieldIoOff?: boolean;
   /**
    * What the core's I/O manager finds wrong with a configuration it is asked to save
    * (`check_runtimes`); any makes the save a 400 `{error, problems}`. Left out, none.
@@ -686,8 +701,45 @@ function runtimesRoute(backend: Backend, projectId: string, method: string, id: 
     const first = runtimeProblemsOf(backend, file, at, false)[0];
     if (first) return refusal(first[0], first[1]);
     const members = membersOf(backend, runtime);
+    const several = members.length > 1;
+    // `runtime_program`: each program named by the PROGRAM its source declares, `built_from` its
+    // name in the project; `naming_problem` refuses a declared name that differs only in a
+    // runtime of several programs.
+    const declared = (name: string) => {
+      const source = backend.programs.find((e) => e.entry.name === name)?.source ?? '';
+      return declaredOf(source) ?? name;
+    };
+    for (const name of members) {
+      if (several && declared(name).toLowerCase() !== name.toLowerCase()) {
+        return refusal(
+          400,
+          `runtime '${runtime.id}': program '${name}' declares PROGRAM ${declared(name)} in its source; in a runtime of several programs its variables are named ${name}.<variable>, so its PROGRAM must be named ${name}`
+        );
+      }
+    }
     const built = members.map((name) => ({ name, version: `v-${name}`, code_size: 12, memory_size: 4 }));
-    const wire = members.map((name) => ({ name, built_from: name, version: `v-${name}`, published: [] }));
+    const wire = members.map((name) => {
+      const entry = backend.programs.find((e) => e.entry.name === name)?.entry;
+      return {
+        name: declared(name),
+        built_from: name,
+        version: `v-${name}`,
+        interval_ms: entry?.interval_ms ?? 0,
+        code: '00',
+        symbols: [],
+        inputs: entry?.inputs ?? [],
+        outputs: entry?.outputs ?? [],
+        published: entry?.published ?? [],
+      };
+    });
+    // `emitted_tasks`: each task names its programs by their declared PROGRAM.
+    const tasks = runtime.tasks.map((t) => ({
+      ...t,
+      programs: t.programs.map((p) => {
+        const member = members.find((m) => m.toLowerCase() === p.toLowerCase());
+        return member === undefined ? p : declared(member);
+      }),
+    }));
     return Response.json({
       version: `rt-${members.join('-')}`,
       warnings: backend.warnings ?? [],
@@ -697,7 +749,7 @@ function runtimesRoute(backend: Backend, projectId: string, method: string, id: 
         id: runtime.id,
         module: runtime.module,
         run: runtime.run,
-        tasks: runtime.tasks,
+        tasks,
         ...(wire.length === 1 ? { program: wire[0] } : { programs: wire }),
       },
     });
@@ -709,6 +761,7 @@ function runtimesRoute(backend: Backend, projectId: string, method: string, id: 
 export function server(backend: Backend): Call[] {
   const calls: Call[] = [];
   let builds = 0;
+  if (backend.active !== undefined) useController.setState({ activeProjectId: backend.active });
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -726,7 +779,14 @@ export function server(backend: Backend): Call[] {
           ? failure(500, 'the runtimes cannot be read')
           : Response.json(backend.runtimes);
       }
-      if (/\/api\/v1\/runtimes\/[^/]+\/(run|stop)$/.test(path)) return Response.json({});
+      const commanded = /\/api\/v1\/runtimes\/([^/]+)\/(run|stop)$/.exec(path);
+      if (commanded) {
+        // `command` (crates/mythos-core/src/api/runtimes.rs): only a runtime the core lists.
+        const id = decodeURIComponent(commanded[1] ?? '');
+        const listed = typeof backend.runtimes !== 'object' || backend.runtimes.runtimes.some((r) => r.id === id);
+        if (!listed) return refusal(404, `no runtime '${id}' is loaded on this node`);
+        return Response.json({ id, asked: commanded[2] });
+      }
       if (/\/api\/v1\/runtimes\/[^/]+\/(force|release)$/.test(path)) {
         return Response.json({ id: path.split('/').at(-2), state: { mode: 'run', forced: [] } });
       }
@@ -740,11 +800,43 @@ export function server(backend: Backend): Call[] {
         if (method === 'GET') return Response.json({ config: backend.config ?? null });
         const sent = body as NonNullable<Backend['config']>;
         const instances = sent.instances ?? [];
-        // `RuntimesConfig::validate` (crates/mythos-core/src/runtimes.rs), its one-program rule
-        // word for word: only between programs that both say which project program they are.
+        // `RuntimesConfig::validate` (crates/mythos-core/src/runtimes.rs), word for word, for the
+        // rules modelled here: the id, an id used twice, the module, `program` and `programs`
+        // together, one program in one runtime (only between programs that both say which project
+        // program they are), and one writer and one publisher of a tag. Not modelled: the
+        // instance's own task, data and binding rules (`check_tasks`, `check_data`).
         const seen = new Map<string, [string, string]>();
+        const ids = new Set<string>();
+        const outputs = new Map<string, string>();
+        const publishers = new Map<string, string>();
         for (const instance of instances) {
-          const programs = (instance.program ? [instance.program] : ((instance.programs as unknown[] | undefined) ?? [])) as Array<{ built_from?: string }>;
+          const id = String(instance.id);
+          if (runtimeIdProblem(id) !== null) return refusal(400, runtimeIdProblem(id) as string);
+          if (ids.has(id)) return refusal(400, `runtime id '${id}' is used more than once`);
+          ids.add(id);
+          if (typeof instance.module !== 'string' || instance.module.trim() === '') return refusal(400, `runtime '${id}' names no module`);
+          if (instance.program && Array.isArray(instance.programs) && instance.programs.length > 0) {
+            return refusal(400, `runtime '${id}': give program or programs, not both`);
+          }
+          const programs = (instance.program ? [instance.program] : ((instance.programs as unknown[] | undefined) ?? [])) as Array<{
+            name?: string;
+            built_from?: string;
+            outputs?: Array<{ tag: string }>;
+            published?: Array<{ tag: string }>;
+          }>;
+          for (const program of programs) {
+            const owner = programs.length > 1 ? `${id}/${String(program.name)}` : id;
+            for (const o of program.outputs ?? []) {
+              const other = outputs.get(o.tag);
+              if (other !== undefined) return refusal(400, `${o.tag} is an output of both '${other}' and '${owner}': one tag has one writer`);
+              outputs.set(o.tag, owner);
+            }
+            for (const b of program.published ?? []) {
+              const other = publishers.get(b.tag);
+              if (other !== undefined) return refusal(400, `${b.tag} is published by both '${other}' and '${owner}'`);
+              publishers.set(b.tag, owner);
+            }
+          }
           for (const program of programs) {
             if (typeof program.built_from !== 'string') continue;
             const first = seen.get(program.built_from.toLowerCase());
@@ -765,12 +857,16 @@ export function server(backend: Backend): Call[] {
           );
         }
         backend.config = sent;
-        const applied = backend.applied ?? true;
+        const saving = decodeURIComponent(/\/projects\/([^/]+)\/runtimes/.exec(path)?.[1] ?? '');
+        const applied = backend.applied ?? (backend.active === undefined || backend.active === saving);
         const cold = path.endsWith('?start=cold');
         return Response.json({
           config: backend.config,
           applied,
-          changes: applied ? { started: [], failed: backend.failedToStart ?? [], runtimes: backend.starts?.(instances, cold) ?? [] } : null,
+          changes:
+            applied && !backend.fieldIoOff
+              ? { started: [], failed: backend.failedToStart ?? [], runtimes: backend.starts?.(instances, cold) ?? [] }
+              : null,
         });
       }
 
