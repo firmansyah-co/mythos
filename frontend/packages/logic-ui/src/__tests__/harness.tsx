@@ -1,14 +1,18 @@
 // The logic UI under test runs against the workbench's real host (`createHost`), so what is
 // proven here is the module as the workbench activates it, not against a stand-in. The
 // controller is a fake `fetch` that keeps programs and runtimes the way the logic module and
-// the core do, and records every call.
+// the core do, and the library's five routes literally as plugins/logic/src/lib.rs answers them
+// (statuses, bodies, the stored spelling, the name rule's words), with a stand-in for the
+// compiler that a test sets; it records every call. The stream's events are sent by the test
+// through `emit`: the one part of the host replaced, since happy-dom has no event stream.
 
 import { act, type ReactElement } from 'react';
 import { vi } from 'vitest';
 import { activate, MODULE_ID } from '../entry';
 import { useLdPalette } from '../LdInstructions';
 import { usePrograms } from '../programs';
-import type { CheckResult, ProgramEntry, RuntimesAnswer, RuntimeStatus, WatchAnswer, WatchedValue } from '../bridge';
+import type { CheckResult, Diagnostic, ProgramEntry, RuntimesAnswer, RuntimeStatus, WatchAnswer, WatchedValue } from '../bridge';
+import type { LibraryCheck } from '../library';
 import { createHost } from '../../../ui-shell/src/modules/host';
 import { render as renderShell, resetStores as resetShell, unmountAll } from '../../../ui-shell/src/__tests__/harness';
 import { ModuleMount } from '../../../ui-shell/src/modules/ModuleMount';
@@ -29,8 +33,17 @@ export { useController } from '../../../ui-shell/src/data/controller';
 export { useSession } from '../../../ui-shell/src/data/session';
 export { useTelemetry } from '../../../ui-shell/src/data/telemetry';
 export { useWorkbench as useShell } from '../../../ui-shell/src/data/workbench';
+export { useModuleUi } from '../../../ui-shell/src/modules/registry';
 
 let deactivate: (() => void) | null = null;
+const listeners = new Map<string, Set<(data: unknown) => void>>();
+
+/** Send `name` with `data` on the stream, as the controller does after a module's write. */
+export function emit(name: string, data: unknown): void {
+  act(() => {
+    for (const listener of listeners.get(name) ?? []) listener(data);
+  });
+}
 
 /** Every panel of one pane, each under its owner, drawn as the workbench draws them. */
 function PaneOf({ pane, panels }: { pane: string; panels: Record<string, Owned<Panel>> }) {
@@ -87,7 +100,19 @@ export function resetStores(): void {
   resetShell();
   useLdPalette.setState({ place: null, own: [] });
   useLdPalette.getState().reread();
-  deactivate = activate(createHost(MODULE_ID));
+  listeners.clear();
+  const real = createHost(MODULE_ID);
+  deactivate = activate({
+    ...real,
+    events: {
+      subscribe: (name, listener) => {
+        let set = listeners.get(name);
+        if (!set) listeners.set(name, (set = new Set()));
+        set.add(listener);
+        return () => set.delete(listener);
+      },
+    },
+  });
 }
 
 export interface Call {
@@ -117,8 +142,17 @@ export interface Backend {
    * `'hangs'` never answers, as a request left hanging.
    */
   watch?: ((variables: string[]) => WatchAnswer) | 'fails' | 'hangs';
-  /** Answer a call before the fake does, to make one fail. */
-  intercept?: (call: Call) => Response | undefined;
+  /** Answer a call before the fake does, to make one fail: a response, or one that comes later. */
+  intercept?: (call: Call) => Response | Promise<Response> | undefined;
+  /** The project's library by stem: each source's text, or `{ unreadable }`, a file that is not UTF-8. */
+  library?: Record<string, string | { unreadable: string }>;
+  /**
+   * The compiler's answer for the library's sources, by file (`logic/library/<stem>.st`), once the
+   * module found nothing it refuses first; left out, every library checks.
+   */
+  compileLibrary?: (sources: Record<string, string>) => LibraryCheck;
+  /** What the file holds after a save of `source`: by default `source`. */
+  libraryStores?: (source: string) => string;
 }
 
 export const entryOf = (name: string, over: Partial<ProgramEntry> = {}): ProgramEntry => ({
@@ -246,6 +280,91 @@ export const sfcOf = (name: string) =>
 const failure = (status: number, error: string) =>
   new Response(JSON.stringify({ error }), { status, statusText: status === 500 ? 'Internal Server Error' : 'Bad Request' });
 
+const STATUS: Record<number, string> = { 400: 'Bad Request', 404: 'Not Found', 409: 'Conflict', 500: 'Internal Server Error' };
+/** A refusal of the library's routes, with the status text the status has. */
+const refusal = (status: number, error: string) => Response.json({ error }, { status, statusText: STATUS[status] ?? '' });
+
+const DEVICE_NAMES = ['CON', 'PRN', 'AUX', 'NUL', ...[...'0123456789'].flatMap((d) => [`COM${d}`, `LPT${d}`])];
+
+/** The module's `library_name_problem`, its messages word for word. */
+export function libraryNameProblem(name: string): string | null {
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name) || name.length > 64) {
+    return `'${name}' is not a library source name: a letter, then letters, digits or _, at most 64`;
+  }
+  if (DEVICE_NAMES.some((d) => d.toUpperCase() === name.toUpperCase())) {
+    return `'${name}' cannot be a library source name: it is a device name on Windows (CON, PRN, AUX, NUL, COM0 to COM9, LPT0 to LPT9)`;
+  }
+  return null;
+}
+
+/** The logic module's library routes over `backend.library`, as `library()` in plugins/logic/src/lib.rs. */
+function libraryRoute(backend: Backend, method: string, param: string | undefined, body: unknown): Response {
+  const library = (backend.library ??= {});
+  const bytes = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  const names = () => Object.keys(library).sort(bytes);
+  // `stored_library_name`: the exact spelling, else one that differs only in ASCII case.
+  const stored = (name: string) =>
+    names().find((n) => n === name) ?? names().find((n) => n.toUpperCase() === name.toUpperCase());
+  const otherSpelling = (existing: string) =>
+    refusal(409, `the project already has a library source '${existing}'; names that differ only in case are one name`);
+
+  // A route is matched by its method first: only a POST to `check` is the check.
+  if (method === 'POST' && param === 'check') {
+    const given = (body ?? {}) as { name?: string; source?: string };
+    const sources = { ...library };
+    if (given.name !== undefined && given.source !== undefined) {
+      const problem = libraryNameProblem(given.name);
+      if (problem !== null) return refusal(400, problem);
+      const existing = stored(given.name);
+      if (existing !== undefined && existing !== given.name) return otherSpelling(existing);
+      sources[given.name] = given.source;
+    } else if (given.name !== undefined || given.source !== undefined) {
+      return refusal(400, 'give both name and source, or neither');
+    }
+    // `library_refusals` first: a source that is not text is said, and the compiler is not run.
+    const unreadable: Diagnostic[] = Object.keys(sources)
+      .sort(bytes)
+      .flatMap((stem) => {
+        const text = sources[stem];
+        if (typeof text === 'string') return [];
+        const file = `logic/library/${stem}.st`;
+        return [{ line: 0, col: 0, end_line: 0, end_col: 0, message: `${file} cannot be read as a library source: ${text?.unreadable}`, source: file }];
+      });
+    if (unreadable.length > 0) return Response.json({ ok: false, diagnostics: unreadable });
+    const texts = Object.fromEntries(Object.entries(sources).map(([stem, text]) => [`logic/library/${stem}.st`, text as string]));
+    return Response.json(backend.compileLibrary?.(texts) ?? { ok: true, diagnostics: [] });
+  }
+  if (param !== undefined) {
+    const problem = libraryNameProblem(param);
+    if (problem !== null) return refusal(400, problem);
+  }
+  if (param === undefined && method === 'GET') return Response.json({ sources: names().map((name) => ({ name })) });
+  if (param === undefined) return refusal(404, `the logic module has no route ${method} /library`);
+  if (method === 'GET') {
+    const stem = stored(param);
+    if (stem === undefined) return refusal(404, `the project has no library source '${param}'`);
+    const text = library[stem];
+    if (typeof text !== 'string') return refusal(500, `/projects/plant/logic/library/${stem}.st: ${text?.unreadable}`);
+    return Response.json({ name: stem, source: text });
+  }
+  if (method === 'PUT') {
+    const source = (body as { source?: unknown } | undefined)?.source;
+    if (typeof source !== 'string') return refusal(400, 'the body is not what this route takes: missing field `source`');
+    const existing = stored(param);
+    if (existing !== undefined && existing !== param) return otherSpelling(existing);
+    // Any text is written: the module checks nothing of it.
+    library[param] = backend.libraryStores?.(source) ?? source;
+    return Response.json({ name: param, created: existing === undefined });
+  }
+  if (method === 'DELETE') {
+    const stem = stored(param);
+    if (stem === undefined) return refusal(404, `the project has no library source '${param}'`);
+    delete library[stem];
+    return Response.json({ deleted: stem });
+  }
+  return refusal(404, `the logic module has no route ${method} /library/:name`);
+}
+
 /** A controller with `backend`'s programs. Returns the calls made to it, in order. */
 export function server(backend: Backend): Call[] {
   const calls: Call[] = [];
@@ -283,6 +402,9 @@ export function server(backend: Backend): Call[] {
         const applied = backend.applied ?? true;
         return Response.json({ config: backend.config, applied, changes: applied ? { started: [] } : null });
       }
+
+      const library = /^\/api\/v1\/projects\/[^/]+\/logic\/library(?:\/([^/]+))?$/.exec(path);
+      if (library) return libraryRoute(backend, method, library[1] === undefined ? undefined : decodeURIComponent(library[1]), body);
 
       if (/\/projects\/[^/]+\/logic\/runtimes$/.test(path) && method === 'GET') {
         if (backend.configured === 'fails') {
