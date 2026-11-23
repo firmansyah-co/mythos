@@ -7,7 +7,7 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { ChevronDown, ChevronRight, FileCode2, LayoutGrid, Plus, Square, Type } from 'lucide-react';
 import { mayEngineer, useProject } from './bridge';
-import { goneBlocks } from './model';
+import { goneBlocks, sameName } from './model';
 import { anyBlockDirty, anyDirty, isBlockDirty, isDirty, savedBlock, useData } from './store';
 
 interface NodeProps {
@@ -56,6 +56,13 @@ function TreeNode({ depth, icon, label, mark, expanded, onToggle, onOpen, testId
   );
 }
 
+/** The mark of a new type or block that has never been saved: its editor may be closed, its text is kept. */
+const newMark = (
+  <span className="tree__mark tree__mark--warn" title="Not saved yet">
+    *
+  </span>
+);
+
 const unsavedMark = (
   <span className="tree__mark tree__mark--warn" title="Unsaved changes">
     *
@@ -84,7 +91,7 @@ function AddRow({ label, field, testId, onName }: { label: string; field: string
         aria-selected={false}
         tabIndex={0}
         data-testid={testId}
-        className="tree__node tree__node--action"
+        className="tree__node"
         style={{ paddingLeft: 6 + 3 * 16 }}
         onClick={() => setName('')}
         onKeyDown={(event) => event.key === 'Enter' && setName('')}
@@ -93,15 +100,16 @@ function AddRow({ label, field, testId, onName }: { label: string; field: string
         <span className="tree__icon">
           <Plus size={14} />
         </span>
-        <span className="tree__label">{label}</span>
+        <span className="tree__label muted">{label}</span>
       </div>
     );
   }
 
   return (
-    <div className="tree__node tree__node--input" style={{ paddingLeft: 6 + 3 * 16 }}>
+    <div className="tree__node" style={{ paddingLeft: 6 + 3 * 16 }}>
       <span className="tree__twisty" />
       <input
+        className="data-tree__input"
         autoFocus
         aria-label={field}
         placeholder={field}
@@ -165,9 +173,11 @@ export function DataTree({ openType, openBlock }: { openType: (name: string) => 
               field="Type name"
               testId="tree-add-type"
               onName={(name) => {
-                // A name the module lists is opened as it is; any other starts a new type.
-                if (!types.includes(name)) openNew(name);
-                openType(name);
+                // A name the module lists, in any case (the module's names are one name in any
+                // case), is opened as it is stored; any other starts a new type.
+                const listed = types.find((t) => t === name) ?? types.find((t) => sameName(t, name));
+                if (listed === undefined) openNew(name);
+                openType(listed ?? name);
               }}
             />
           )}
@@ -186,6 +196,20 @@ export function DataTree({ openType, openBlock }: { openType: (name: string) => 
                 />
               );
             })}
+          {open.types &&
+            Object.values(docs)
+              .filter((doc) => doc.isNew && !(types ?? []).some((t) => sameName(t, doc.name)))
+              .map((doc) => (
+                <TreeNode
+                  key={`new:${doc.name}`}
+                  depth={3}
+                  icon={<FileCode2 size={14} />}
+                  label={`${doc.name} (not saved yet)`}
+                  testId="tree-type-new"
+                  onOpen={() => openType(doc.name)}
+                  mark={newMark}
+                />
+              ))}
           {open.types && types === null && typesError === null && <p className="tree__note">Reading the user types…</p>}
           {open.types && typesError !== null && (
             <p className="tree__note" role="alert" data-testid="tree-data-error" data-list="types">
@@ -241,6 +265,20 @@ export function DataTree({ openType, openBlock }: { openType: (name: string) => 
                 />
               );
             })}
+          {open.blocks &&
+            Object.values(blockDocs)
+              .filter((doc) => doc.isNew && !(blocks ?? []).some((b) => sameName(b.name, doc.name)))
+              .map((doc) => (
+                <TreeNode
+                  key={`new:${doc.name}`}
+                  depth={3}
+                  icon={<Square size={14} />}
+                  label={`${doc.name} (not saved yet)`}
+                  testId="tree-block-new"
+                  onOpen={() => openBlock(doc.name)}
+                  mark={newMark}
+                />
+              ))}
           {open.blocks &&
             blocks !== null &&
             runtimes !== null &&

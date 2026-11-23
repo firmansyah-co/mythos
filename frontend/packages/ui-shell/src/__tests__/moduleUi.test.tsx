@@ -49,6 +49,9 @@ function controller(list: ModuleList) {
       if (path === '/api/v1/projects/plant/notes/refused') {
         return new Response(JSON.stringify(REFUSAL), { status: 400, statusText: 'Bad Request' });
       }
+      if (path === '/api/v1/projects/plant/notes/portal') {
+        return new Response('<html>captive portal</html>', { status: 200, statusText: 'OK' });
+      }
       if (path === '/api/v1/projects/plant/notes/garbled') {
         return new Response('<html>proxy error</html>', { status: 502, statusText: 'Bad Gateway' });
       }
@@ -391,6 +394,16 @@ describe('what a module registered, in the workbench', () => {
     expect(garbled?.message).toBe('502 Bad Gateway');
     expect(garbled?.status).toBe(502);
     expect(garbled?.body).toBeNull();
+    // An answer that is not JSON though its status is 2xx is still an `ApiRefusal`, as declared.
+    const portal = await host.api('/api/v1/projects/plant/notes/portal').then(
+      () => null,
+      (cause: unknown) => cause as ApiRefusal
+    );
+    expect(portal).toBeInstanceOf(Error);
+    expect(portal?.name).toBe('Error');
+    expect(portal?.message).toBe('200 OK: the answer is not JSON');
+    expect(portal?.status).toBe(200);
+    expect(portal && 'body' in portal ? portal.body : 'no body').toBeNull();
     expect(host.project()).toEqual({ id: 'plant', name: 'Plant A' });
   });
 });

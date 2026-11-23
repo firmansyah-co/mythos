@@ -127,7 +127,9 @@ export function createHost(module: string): WorkbenchHost {
         // The message as before, with the answer beside it (`ApiRefusal`): a module UI shows its
         // own module's reasons, which the message alone would lose.
         if (cause instanceof ApiError) throw Object.assign(new Error(cause.message), { status: cause.status, body: cause.body });
-        throw cause;
+        // Anything else is still an `ApiRefusal`, as the SDK declares: no status, no body.
+        const message = cause instanceof Error ? cause.message : String(cause);
+        throw Object.assign(new Error(message), { status: null, body: null });
       }
     },
 

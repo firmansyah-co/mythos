@@ -5,9 +5,10 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { Check, Save, Trash2 } from 'lucide-react';
 import type { DiagnosticsPanel } from '@mythos/workbench-sdk';
-import { host, mayEngineer, type Diagnostic } from './bridge';
+import { host, mayEngineer, WITHHELD, type Diagnostic } from './bridge';
 import { draw } from './draw';
 import { isOfThisType, layoutText, NOT_CHECKING, NOT_KNOWN, placeOf, sameText } from './model';
+import { StateReasons } from './reasons';
 import { isDirty, useData, type TypeDoc } from './store';
 
 /** The owner of this editor's panel in the Diagnostics tab. */
@@ -185,9 +186,12 @@ function BlocksOfType({ name }: { name: string }) {
   return (
     <>
       {blocksOk === false && (
-        <p className="muted editor__footnote" data-testid="type-blocks-not-known">
-          Layouts and sizes are {NOT_KNOWN}: {NOT_CHECKING}.
-        </p>
+        <>
+          <p className="muted editor__footnote" data-testid="type-blocks-not-known">
+            Layouts and sizes are {NOT_KNOWN}: {NOT_CHECKING}.
+          </p>
+          <StateReasons />
+        </>
       )}
       <table className="grid" aria-label={`Data blocks of type ${name}`}>
         <thead>
@@ -347,6 +351,7 @@ export function TypeEditor({ name, onRemoved }: { name: string; onRemoved: (name
       {refusal && (
         <div className="notice notice--bad" role="alert" data-testid={refusal.of === 'save' ? 'save-refused' : 'delete-refused'}>
           <p>{refusal.refusal.error}</p>
+          {refusal.refusal.withheld && <p data-testid="refusal-withheld">{WITHHELD}</p>}
           {refusal.refusal.diagnostics && (
             <p>
               <button type="button" className="btn btn--flat" onClick={() => host().showDiagnostics()}>

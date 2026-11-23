@@ -24,6 +24,7 @@ import {
   useSession,
   useShell,
   writes,
+  texts,
   type Backend,
   type Compiled,
 } from './harness';
@@ -150,6 +151,20 @@ describe('opening a user type', () => {
     expect(byTestId(container, 'type-read-error')).toBeNull();
     expect(source(container).value).toBe(RECIPE);
     expect(byTestId(container, 'type-unsaved')).toBeNull();
+    // The state did not check before (the file was not text), so the module answers `changed: null`.
+    expect(byTestId(container, 'save-changed')?.textContent).toBe(
+      'Which blocks changed is not known (the project did not check before this save).'
+    );
+  });
+
+  it("lists the module's reasons why the stored state does not check under the blocks of this type", async () => {
+    const { container } = await opened(recipe({ types: { Recipe: RECIPE, Other: { unreadable: 'not UTF-8' } } }));
+    expect(byTestId(container, 'type-blocks-not-known')?.textContent).toBe(
+      "Layouts and sizes are NOT KNOWN: the project's types and data blocks do not check."
+    );
+    expect(texts(container, 'state-reason')).toEqual([
+      "data/types/Other.st data/types/Other.st cannot be read as a type's source: it is not UTF-8 text",
+    ]);
   });
 
   it('a type that cannot be read for another reason says so in the module words, with nothing to edit', async () => {
@@ -201,6 +216,36 @@ describe('saving a user type', () => {
     );
     expect(byTestId(container, 'type-unsaved')?.textContent).toBe('UNSAVED');
     expect(doc().saved).toBeNull();
+  });
+
+  it("a refusal of a save made in a project closed since is not shown on the open project's type of the same name", async () => {
+    const put = held();
+    server({
+      types: { Recipe: RECIPE },
+      blocks: [],
+      intercept: (call) => (call.method === 'PUT' && call.path.includes('/projects/plant/') ? put.response : undefined),
+    });
+    useShell.setState({ project: project('plant'), view: 'project' });
+    await settle();
+    useShell.getState().openEditor(TYPE_EDITOR, 'Recipe');
+    const a = render(<TypeEditor name="Recipe" onRemoved={() => undefined} />);
+    await settle();
+    typeSource(a, `${RECIPE}(* a *)\n`);
+    click(byTestId(a, 'type-save'));
+    await settle();
+
+    // plant is closed and line2, which also has a type Recipe, is opened with that type's editor.
+    useShell.setState({ project: project('line2'), view: 'project' });
+    await settle();
+    const b = render(<TypeEditor name="Recipe" onRemoved={() => undefined} />);
+    await settle();
+    expect(source(b).value).toBe(RECIPE);
+
+    put.release(Response.json({ error: "plant's refusal: nothing was saved" }, { status: 400, statusText: 'Bad Request' }));
+    await settle();
+    expect(byTestId(b, 'save-refused')).toBeNull();
+    expect(doc().refusal).toBeNull();
+    expect(doc().busy).toBeNull();
   });
 
   it('changed null is not shown as no change', async () => {
@@ -480,6 +525,43 @@ describe('following changes made elsewhere', () => {
       'Recipe was deleted elsewhere since it was opened; saving makes it again.'
     );
     expect(useShell.getState().editors.map((e) => e.target)).toEqual(['Recipe']);
+  });
+
+  it("this save's own event heard while its text is read back is matched, so a later save elsewhere is read again", async () => {
+    const readBack = held();
+    let put = false;
+    let readBackSent = false;
+    const backend = recipe({
+      blocks: [],
+      intercept: (call) => {
+        if (call.method === 'PUT') put = true;
+        // The read-back after the PUT is held: the module's event of the save comes in that window.
+        if (put && !readBackSent && call.method === 'GET' && call.path.endsWith('/data/types/Recipe')) {
+          readBackSent = true;
+          return readBack.response;
+        }
+        return undefined;
+      },
+    });
+    const { container } = await opened(backend);
+    typeSource(container, RECIPE2);
+    click(byTestId(container, 'type-save'));
+    await settle();
+    expect(readBackSent).toBe(true);
+    changed();
+    readBack.release(Response.json({ name: 'Recipe', source: RECIPE2 }));
+    await settle();
+    expect(source(container).value).toBe(RECIPE2);
+    expect(byTestId(container, 'type-unsaved')).toBeNull();
+    expect(byTestId(container, 'type-elsewhere')).toBeNull();
+
+    // An agent saves the type with another text: this clean editor reads it again.
+    const theirs = `${RECIPE}(* agent *)\n`;
+    backend.types.Recipe = theirs;
+    changed();
+    await settle();
+    expect(source(container).value).toBe(theirs);
+    expect(doc().saved).toBe(theirs);
   });
 
   it('an event of another project is ignored, and this editor’s own save is not taken for another’s', async () => {

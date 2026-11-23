@@ -67,3 +67,14 @@
   text-align: left;
   white-space: normal;
 }
+
+/* The name field of an "Add new …" row of the tree: the row's height, the field's frame. */
+.data-tree__input {
+  flex: 1;
+  min-width: 0;
+  height: calc(var(--row-h) - var(--gap-1));
+  margin-right: var(--gap-2);
+  padding: 0 var(--gap-1);
+  border: 1px solid var(--c-focus);
+  border-radius: var(--radius);
+}

@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BlockEditor, deleteBlockQuestion, RUNTIMES_HEADING } from '../BlockEditor';
-import { DATA_CHANGED_EVENT } from '../bridge';
+import { DATA_CHANGED_EVENT, host, WITHHELD } from '../bridge';
 import { DataTree } from '../DataTree';
 import { BLOCK_EDITOR, TYPE_EDITOR, UNSAVED_BLOCKS_OWNER } from '../entry';
 import { useData } from '../store';
@@ -127,6 +127,8 @@ describe('what a block shows as saved', () => {
       "Members: NOT KNOWN: the project's types and data blocks do not check."
     );
     expect(allByTestId(container, 'block-member')).toEqual([]);
+    // The module's own reason is shown beside the NOT KNOWN, with its file and place.
+    expect(texts(container, 'state-reason')).toEqual([`data/types/Recipe.st 3:11 ${NOT_CHECK}`]);
     // Type and retain are answered whether or not the state checks.
     expect((byTestId(container, 'block-type') as HTMLSelectElement).value).toBe('Recipe');
     expect(radio(container, 'no').checked).toBe(true);
@@ -185,6 +187,48 @@ describe('saving a data block', () => {
     expect(radio(container, 'no').checked).toBe(true);
     expect(byTestId(container, 'block-layout')?.textContent).toBe('NOT KNOWN');
     expect(allByTestId(tree, 'tree-block').map((row) => row.querySelector('.tree__label')?.textContent)).toEqual(['Line1']);
+  });
+
+  it('a refusal from a workbench that does not hand over the answer says its reasons are not known', async () => {
+    const { container } = await opened(plant(), 'IF', true);
+    // A workbench older than `ApiRefusal`: it throws the message only.
+    const api = host().api.bind(host());
+    vi.spyOn(host(), 'api').mockImplementation(((path: string, init?: RequestInit) =>
+      api(path, init).catch((cause: unknown) => {
+        throw new Error((cause as Error).message);
+      })) as typeof api);
+    choose(container, 'Recipe');
+    click(radio(container, 'no'));
+    click(saveButton(container));
+    await settle();
+    const refused = byTestId(container, 'save-refused');
+    expect(byTestId(refused!, 'block-refusal-error')?.textContent).toBe(
+      "400 Bad Request: data block 'IF' does not check and was not saved"
+    );
+    expect(byTestId(refused!, 'refusal-withheld')?.textContent).toBe(WITHHELD);
+    expect(WITHHELD).toBe(
+      "This workbench did not hand over the module's whole answer: whether it gave reasons, and which, is not known here."
+    );
+    expect(allByTestId(refused!, 'block-refusal-diagnostic')).toEqual([]);
+  });
+
+  it('a refusal this workbench hands over whole does not say its reasons are withheld', async () => {
+    const { container } = await opened(plant(), 'IF', true);
+    choose(container, 'Recipe');
+    click(radio(container, 'no'));
+    click(saveButton(container));
+    await settle();
+    expect(byTestId(container, 'save-refused')).not.toBeNull();
+    expect(byTestId(container, 'refusal-withheld')).toBeNull();
+  });
+
+  it('the retain choice is a group named Retain', async () => {
+    const { container } = await opened(plant(), 'Line9', true);
+    const group = byTestId(container, 'block-retain');
+    expect(group?.tagName).toBe('FIELDSET');
+    const labelledBy = group?.getAttribute('aria-labelledby');
+    expect(labelledBy).toBeTruthy();
+    expect(document.getElementById(labelledBy!)?.textContent).toBe('Retain');
   });
 
   it('a new block has no retain chosen, and cannot be saved until one is', async () => {
@@ -256,6 +300,34 @@ describe('the comparison with the runtimes configuration', () => {
     );
     expect(byTestId(byTestId(container, 'runtime-row-press')!, 'runtime-verdict')?.textContent).toBe(
       "the saved layout is NOT KNOWN: the project's types and data blocks do not check, so nothing is compared"
+    );
+  });
+
+  it("a new block's row, while the project's block list cannot be read, says whether the project has it is NOT KNOWN", async () => {
+    let failBlocks = false;
+    const { container } = await opened(
+      plant({
+        blocks: [],
+        config: { instances: [{ id: 'press', data: [{ name: 'Line7', type: 'Recipe', layout: '0123456789abcdef', size: 4, members: [] }] }] },
+        intercept: (call) =>
+          failBlocks && call.method === 'GET' && call.path.endsWith('/data/blocks')
+            ? Response.json({ error: 'blocks.json: Permission denied' }, { status: 500, statusText: 'Internal Server Error' })
+            : undefined,
+      }),
+      'Line7',
+      true
+    );
+    expect(byTestId(byTestId(container, 'runtime-row-press')!, 'runtime-verdict')?.textContent).toBe(
+      'the project no longer has this data block'
+    );
+    failBlocks = true;
+    await act(async () => {
+      await useData.getState().readBlocks();
+    });
+    await settle();
+    expect(useData.getState().blocks).toBeNull();
+    expect(byTestId(byTestId(container, 'runtime-row-press')!, 'runtime-verdict')?.textContent).toBe(
+      'whether the project has this data block is NOT KNOWN: its data blocks are not read'
     );
   });
 

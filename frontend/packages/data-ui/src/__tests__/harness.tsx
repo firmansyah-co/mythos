@@ -164,7 +164,23 @@ export function server(backend: Backend): Call[] {
   const findStem = (name: string) => stems().find((s) => s === name) ?? stems().find((s) => s.toUpperCase() === name.toUpperCase());
   const readable = (types: Backend['types']) =>
     Object.fromEntries(Object.entries(types).filter((e): e is [string, string] => typeof e[1] === 'string'));
-  const compile = (types: Backend['types'], blocks: Backend['blocks']) => (backend.compile ?? compilesAll)(readable(types), blocks);
+  // What the module finds before its compiler, whatever stand-in a test sets: a type file that is
+  // not text makes the whole state not check, said of that file (plugins/data/src/tests.rs,
+  // a_type_file_that_is_not_text_does_not_check_and_its_own_routes_mend_it); a block of a type the
+  // project does not have is refused (a_block_is_refused_for_each_thing_the_compiler_refuses).
+  const compile = (types: Backend['types'], blocks: Backend['blocks']): Compiled => {
+    const unreadable = Object.keys(types)
+      .filter((stem) => typeof types[stem] !== 'string')
+      .map((stem) =>
+        diagnostic(`data/types/${stem}.st cannot be read as a type's source: it is not UTF-8 text`, 0, 0, `data/types/${stem}.st`)
+      );
+    if (unreadable.length > 0) return { ok: false, diagnostics: unreadable };
+    const untyped = blocks
+      .filter((b) => !Object.keys(types).some((stem) => stem.toUpperCase() === b.type.toUpperCase()))
+      .map((b) => diagnostic(`data block '${b.name}': there is no type ${b.type}`, 0, 0));
+    if (untyped.length > 0) return { ok: false, diagnostics: untyped };
+    return (backend.compile ?? compilesAll)(readable(types), blocks);
+  };
   const blocksJson = (blocks: Backend['blocks'], compiled: Compiled): BlockAnswer[] =>
     blocks.map((b) => {
       const laid = compiled.ok ? compiled.layouts[b.name] : undefined;

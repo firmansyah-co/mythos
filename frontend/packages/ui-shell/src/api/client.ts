@@ -487,8 +487,21 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
     }
     throw new ApiError(`${response.status} ${response.statusText}${detail}`, response.status, refusal);
   }
-  const text = await response.text();
-  return (text === '' ? null : JSON.parse(text)) as T;
+  // An answer that cannot be read, or is not JSON (a proxy's page), is thrown as an `ApiError`
+  // like a refusal, with its status: a module UI is promised an `ApiRefusal` for anything thrown.
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (cause) {
+    const why = cause instanceof Error ? cause.message : String(cause);
+    throw new ApiError(`${response.status} ${response.statusText}: the answer could not be read (${why})`, response.status);
+  }
+  if (text === '') return null as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError(`${response.status} ${response.statusText}: the answer is not JSON`, response.status);
+  }
 }
 
 /** A request whose success carries no body. Throws exactly as `request` does. */

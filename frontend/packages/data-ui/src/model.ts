@@ -27,6 +27,13 @@ export function placeOf(d: Diagnostic, type: string): string {
   return source === '' ? `${d.line}:${d.col} (no file named)` : `${source} ${d.line}:${d.col}`;
 }
 
+/** Where a diagnostic is, said without a type of reference: its file and place, or the whole. */
+export function whereOf(d: Diagnostic): string {
+  const source = d.source ?? '';
+  if (d.line === 0) return source === '' ? 'about the whole' : source;
+  return source === '' ? `${d.line}:${d.col}` : `${source} ${d.line}:${d.col}`;
+}
+
 /** A block's layout as answered, or NOT KNOWN when the answer has none (the state does not check). */
 export function layoutText(block: BlockAnswer): string {
   return block.layout ?? 'NOT KNOWN';
@@ -95,6 +102,9 @@ export function comparisonText(c: Comparison): string {
   if (c.differences.length === 0) return 'laid out as saved';
   return c.differences.map(differenceText).join('; ');
 }
+
+/** What a runtime's row says while the project's block list is not read: nothing is compared. */
+export const UNREAD_TEXT = `whether the project has this data block is ${NOT_KNOWN}: its data blocks are not read`;
 
 /** The block named `name` in a runtime's configuration, if it carries one. */
 export const carried = (instance: RuntimeInstance, name: string): RuntimeBlock | null =>

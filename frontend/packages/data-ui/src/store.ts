@@ -188,6 +188,13 @@ let blocksRead = 0;
 let runtimesRead = 0;
 // Echoes of block writes are counted apart from those of types: a block and a type may share a name.
 const blockKey = (name: string) => `block:${name.toUpperCase()}`;
+// The types whose write is sent and not answered yet: an event heard then may be that write's,
+// which only its answer tells. Once answered (its read-back may still be out), an event is
+// matched against the echoes at once.
+const unanswered = new Set<string>();
+// Which opening of a project this is: an answer to a request of an earlier one (the project was
+// closed, or another opened, while it was out) is dropped, even for an editor of the same name.
+let opening = 0;
 
 export const useData = create<DataState>((set, get) => {
   const patch = (name: string, change: Partial<TypeDoc>) =>
@@ -279,12 +286,13 @@ export const useData = create<DataState>((set, get) => {
 
   const reread = async (name: string) => {
     const projectId = get().projectId;
+    const at = opening;
     if (projectId === null || !get().docs[name]) return;
     const before = get().docs[name];
     if (before && before.phase !== 'ready') patch(name, { phase: 'reading' });
     try {
       const stored = await api.readType(projectId, name);
-      if (get().projectId !== projectId) return;
+      if (opening !== at) return;
       const doc = get().docs[name];
       if (!doc) return;
       // Typed while it was being read: kept, now measured against what is stored.
@@ -298,9 +306,25 @@ export const useData = create<DataState>((set, get) => {
         draft: keep ? doc.draft : stored.source,
       });
     } catch (cause) {
-      if (get().projectId !== projectId) return;
+      if (opening !== at) return;
       patch(name, { phase: 'unreadable', readError: refusalOf(cause), saved: null });
     }
+  };
+
+  /**
+   * After a save's read-back: an event heard while it was out, once this save's own echo was
+   * matched, was somebody else's write, and is followed now.
+   */
+  const afterReadBack = (name: string) => {
+    const later = get().docs[name]?.deferred ?? null;
+    if (later === null) return;
+    patch(name, { deferred: null });
+    if (later === 'deleted') {
+      // Not stored any more: the text shown is not saved, and saving makes the type again.
+      patch(name, { elsewhere: 'deleted', saved: null });
+      return;
+    }
+    follow(name, later);
   };
 
   return {
@@ -317,7 +341,9 @@ export const useData = create<DataState>((set, get) => {
     blockDocs: {},
 
     load: async (projectId) => {
+      opening += 1;
       echoes.clear();
+      unanswered.clear();
       set({
         projectId,
         types: null,
@@ -335,7 +361,9 @@ export const useData = create<DataState>((set, get) => {
     },
 
     reset: () => {
+      opening += 1;
       echoes.clear();
+      unanswered.clear();
       set({
         projectId: null,
         types: null,
@@ -418,14 +446,15 @@ export const useData = create<DataState>((set, get) => {
       if (projectId === null || !doc) return;
       const seq = doc.checkSeq + 1;
       const text = doc.draft;
+      const at = opening;
       patch(name, { checkSeq: seq, checking: true });
       try {
         const answer = await api.check(projectId, name, text);
         // An answer for an older text than the last one sent is not this text's.
-        if (get().docs[name]?.checkSeq !== seq) return;
+        if (opening !== at || get().docs[name]?.checkSeq !== seq) return;
         patch(name, { check: { text, answer }, checkError: null, checking: false });
       } catch (cause) {
-        if (get().docs[name]?.checkSeq !== seq) return;
+        if (opening !== at || get().docs[name]?.checkSeq !== seq) return;
         patch(name, { checkError: refusalOf(cause).error, checking: false });
       }
     },
@@ -435,24 +464,30 @@ export const useData = create<DataState>((set, get) => {
       const doc = get().docs[name];
       if (projectId === null || !doc || doc.busy !== null) return false;
       const sent = doc.draft;
+      const at = opening;
       patch(name, { busy: 'saving', refusal: null, saveAnswer: null });
+      unanswered.add(name);
       let answer;
       try {
         answer = await api.saveType(projectId, name, sent);
       } catch (cause) {
+        // Of a project closed since: nothing of it is drawn on what is open now.
+        if (opening !== at) return false;
+        unanswered.delete(name);
         // Refused: the typed text stays, unsaved, and nothing is taken as stored.
         patch(name, { busy: null, refusal: { of: 'save', refusal: refusalOf(cause) } });
         settled(name, false);
         return false;
       }
-      if (get().projectId !== projectId) return false;
+      if (opening !== at) return false;
+      unanswered.delete(name);
       blocksAnswered(answer.blocks);
       patch(name, { isNew: false, elsewhere: null, saveAnswer: { created: answer.created, changed: answer.changed } });
       settled(name, true);
       // The answer has no source: what is stored is read back, and that is what is shown as saved.
       try {
         const stored = await api.readType(projectId, name);
-        if (get().projectId !== projectId) return true;
+        if (opening !== at) return true;
         const now = get().docs[name];
         patch(name, {
           busy: null,
@@ -463,8 +498,10 @@ export const useData = create<DataState>((set, get) => {
           draft: now && now.draft !== sent ? now.draft : stored.source,
         });
       } catch (cause) {
+        if (opening !== at) return true;
         patch(name, { busy: null, phase: 'ready', readError: null, saved: null, readBack: refusalOf(cause).error });
       }
+      afterReadBack(name);
       if (answer.created) void get().readTypes();
       return true;
     },
@@ -473,16 +510,21 @@ export const useData = create<DataState>((set, get) => {
       const projectId = get().projectId;
       const doc = get().docs[name];
       if (projectId === null || !doc || doc.busy !== null) return false;
+      const at = opening;
       patch(name, { busy: 'deleting', refusal: null, saveAnswer: null });
+      unanswered.add(name);
       let answer;
       try {
         answer = await api.deleteType(projectId, name);
       } catch (cause) {
+        if (opening !== at) return false;
+        unanswered.delete(name);
         patch(name, { busy: null, refusal: { of: 'delete', refusal: refusalOf(cause) } });
         settled(name, false);
         return false;
       }
-      if (get().projectId !== projectId) return false;
+      if (opening !== at) return false;
+      unanswered.delete(name);
       settled(name, true);
       blocksAnswered(answer.blocks);
       drop(name);
@@ -509,17 +551,19 @@ export const useData = create<DataState>((set, get) => {
       const { type, retain } = chosen(doc, savedBlock(get(), name));
       // The module asks both, and so does this editor: nothing is chosen for the user.
       if (type === null || retain === null) return false;
+      const at = opening;
       patchBlock(name, { busy: 'saving', refusal: null, saveAnswer: null });
       let answer;
       try {
         answer = await api.saveBlock(projectId, name, type, retain);
       } catch (cause) {
+        if (opening !== at) return false;
         // Refused: what was chosen stays, unsaved; the compiler's reasons are shown.
         patchBlock(name, { busy: null, refusal: { of: 'save', refusal: refusalOf(cause) } });
         settledBlock(name, false);
         return false;
       }
-      if (get().projectId !== projectId) return false;
+      if (opening !== at) return false;
       blocksAnswered(answer.blocks); // R5: the module's list after the save, not this request
       patchBlock(name, {
         busy: null,
@@ -537,16 +581,18 @@ export const useData = create<DataState>((set, get) => {
       const projectId = get().projectId;
       const doc = get().blockDocs[name];
       if (projectId === null || !doc || doc.busy !== null) return false;
+      const at = opening;
       patchBlock(name, { busy: 'deleting', refusal: null, saveAnswer: null });
       let answer;
       try {
         answer = await api.deleteBlock(projectId, name);
       } catch (cause) {
+        if (opening !== at) return false;
         patchBlock(name, { busy: null, refusal: { of: 'delete', refusal: refusalOf(cause) } });
         settledBlock(name, false);
         return false;
       }
-      if (get().projectId !== projectId) return false;
+      if (opening !== at) return false;
       settledBlock(name, true);
       blocksAnswered(answer.blocks);
       dropBlock(name);
@@ -575,7 +621,7 @@ export const useData = create<DataState>((set, get) => {
       }
       const name = event.name;
       const doc = get().docs[name];
-      if (doc?.busy) {
+      if (doc?.busy && unanswered.has(name)) {
         // This editor's own write may be what it is about: decided once the write is answered.
         patch(name, { deferred: event.change });
         return null;
@@ -584,6 +630,11 @@ export const useData = create<DataState>((set, get) => {
       if (own > 0) {
         if (own === 1) echoes.delete(name);
         else echoes.set(name, own - 1);
+        return null;
+      }
+      if (doc?.busy) {
+        // Somebody else's write, heard while this editor's save is read back: followed after it.
+        patch(name, { deferred: event.change });
         return null;
       }
       const close = follow(name, event.change);

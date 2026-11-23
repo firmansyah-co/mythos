@@ -151,7 +151,10 @@ export interface DiagnosticsPanel extends Panel {
  * `Error` whose message says what was answered, with the answer itself beside it.
  */
 export interface ApiRefusal extends Error {
-  /** The HTTP status of the answer; `null` when there was no answer (the controller was not reached). */
+  /**
+   * The HTTP status of the answer (a 2xx too, when its body could not be read or is not JSON);
+   * `null` when there was no answer (the controller was not reached).
+   */
   status: number | null;
   /** The answer's body as JSON (`{ error, … }` from a module); `null` when it was not JSON, or there was none. */
   body: unknown;

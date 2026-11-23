@@ -3,10 +3,22 @@
 // each runtime of the project's runtimes configuration that carries it compares with it. What is
 // shown as saved is the module's last list, never what was chosen here.
 
-import { useEffect } from 'react';
+import { useEffect, useId } from 'react';
 import { RefreshCw, Save, Trash2 } from 'lucide-react';
-import { mayEngineer, type BlockAnswer, type Diagnostic } from './bridge';
-import { carried, compareBlock, comparisonText, layoutText, NOT_CHECKING, NOT_KNOWN, retainOf, sameName } from './model';
+import { mayEngineer, WITHHELD, type BlockAnswer, type RuntimeBlock } from './bridge';
+import {
+  carried,
+  compareBlock,
+  comparisonText,
+  layoutText,
+  NOT_CHECKING,
+  NOT_KNOWN,
+  retainOf,
+  sameName,
+  UNREAD_TEXT,
+  whereOf,
+} from './model';
+import { StateReasons } from './reasons';
 import { chosen, isBlockDirty, savedBlock, useData, type BlockDoc } from './store';
 
 /** Said before a block is deleted: the data module's own words for what follows (it never sees programs). */
@@ -15,13 +27,6 @@ export const deleteBlockQuestion = (name: string) =>
 
 /** The heading of the comparison: configured, which is not running. */
 export const RUNTIMES_HEADING = "Configured in the project's runtimes";
-
-/** Where a reason of the compiler is: a file and a place, or the whole. A block has no text of its own. */
-function whereOf(d: Diagnostic): string {
-  const source = d.source ?? '';
-  if (d.line === 0) return source === '' ? 'about the whole' : source;
-  return source === '' ? `${d.line}:${d.col}` : `${source} ${d.line}:${d.col}`;
-}
 
 /** Why the saved block's layout is not known, when it is not. */
 function whyNotKnown(saved: BlockAnswer | null, blocksOk: boolean | null): string {
@@ -36,6 +41,7 @@ function Choice({ doc, saved, may }: { doc: BlockDoc; saved: BlockAnswer | null;
   const editBlock = useData((state) => state.editBlock);
   const { type, retain } = chosen(doc, saved);
   const disabled = !may || doc.busy !== null;
+  const retainLabel = useId();
   // The types the module listed, and the chosen or saved one when the list lacks it.
   const options = [...(types ?? [])];
   for (const extra of [type, saved?.type ?? null]) {
@@ -69,8 +75,15 @@ function Choice({ doc, saved, may }: { doc: BlockDoc; saved: BlockAnswer | null;
           </span>
         )}
       </label>
-      <fieldset className="field data-block-form__retain" disabled={disabled} data-testid="block-retain">
-        <span className="field__label">Retain</span>
+      <fieldset
+        className="field data-block-form__retain"
+        disabled={disabled}
+        data-testid="block-retain"
+        aria-labelledby={retainLabel}
+      >
+        <span className="field__label" id={retainLabel}>
+          Retain
+        </span>
         <label className="settings__check">
           <input
             type="radio"
@@ -128,6 +141,7 @@ function Layout({ saved, dirty }: { saved: BlockAnswer | null; dirty: boolean })
           Layout, size and members are {NOT_KNOWN}: {why}.
         </p>
       )}
+      {!known && saved !== null && <StateReasons />}
       {saved?.members === undefined ? (
         <p className="muted editor__footnote" data-testid="block-members-unknown">
           Members: {NOT_KNOWN}: {why}.
@@ -166,7 +180,11 @@ function Runtimes({ name, saved }: { name: string; saved: BlockAnswer | null }) 
   const runtimes = useData((state) => state.runtimes);
   const runtimesError = useData((state) => state.runtimesError);
   const blocksOk = useData((state) => state.blocksOk);
+  const blocks = useData((state) => state.blocks);
   const readRuntimes = useData((state) => state.readRuntimes);
+  // While the project's blocks are not read, whether it has this one is not known: nothing is compared.
+  const verdict = (configured: RuntimeBlock) =>
+    blocks === null ? UNREAD_TEXT : comparisonText(compareBlock(saved, blocksOk === true, configured));
 
   let body;
   if (runtimesError !== null) {
@@ -207,7 +225,7 @@ function Runtimes({ name, saved }: { name: string; saved: BlockAnswer | null }) 
                   <td className="mono">{configured.type}</td>
                   <td className="mono">{configured.layout}</td>
                   <td>{retainOf(configured) ? 'retained' : 'not retained'}</td>
-                  <td data-testid="runtime-verdict">{comparisonText(compareBlock(saved, blocksOk === true, configured))}</td>
+                  <td data-testid="runtime-verdict">{verdict(configured)}</td>
                 </tr>
               ))}
             </tbody>
@@ -343,6 +361,7 @@ export function BlockEditor({ name, onRemoved }: { name: string; onRemoved: (nam
         <div className="notice notice--bad" role="alert" data-testid={refusal.of === 'save' ? 'save-refused' : 'delete-refused'}>
           <div>
             <p data-testid="block-refusal-error">{refusal.refusal.error}</p>
+            {refusal.refusal.withheld && <p data-testid="refusal-withheld">{WITHHELD}</p>}
             {refusal.refusal.diagnostics && (
               <ul className="data-diagnostics" aria-label="Why it was refused">
                 {refusal.refusal.diagnostics.map((d, index) => (

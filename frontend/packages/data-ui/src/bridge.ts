@@ -136,6 +136,12 @@ export interface Refusal {
   error: string;
   /** The compiler's reasons, when the answer gave them; `null` when it gave none. */
   diagnostics: Diagnostic[] | null;
+  /**
+   * The workbench threw without the answer beside it (no `body`: a workbench older than the
+   * `ApiRefusal` of SDK contract 1, which still says `sdk: 1`): whether the module gave reasons
+   * is then not known, and the screen says so rather than show none.
+   */
+  withheld: boolean;
 }
 
 /** What `host.api` threw, as a {@link Refusal}. */
@@ -143,12 +149,17 @@ export function refusalOf(cause: unknown): Refusal {
   const thrown = cause as Partial<ApiRefusal> | null;
   const message = cause instanceof Error ? cause.message : String(cause);
   const status = typeof thrown?.status === 'number' ? thrown.status : null;
+  const withheld = !(thrown !== null && typeof thrown === 'object' && 'body' in thrown);
   const body = thrown?.body;
   const record = body !== null && typeof body === 'object' ? (body as Record<string, unknown>) : null;
   const error = typeof record?.error === 'string' ? record.error : message;
   const diagnostics = Array.isArray(record?.diagnostics) ? (record.diagnostics as Diagnostic[]) : null;
-  return { status, error, diagnostics };
+  return { status, error, diagnostics, withheld };
 }
+
+/** Said beside a refusal whose answer the workbench did not hand over. */
+export const WITHHELD =
+  "This workbench did not hand over the module's whole answer: whether it gave reasons, and which, is not known here.";
 
 const dataOf = (projectId: string) => `/api/v1/projects/${encodeURIComponent(projectId)}/data`;
 const json = (method: string, body: unknown): RequestInit => ({

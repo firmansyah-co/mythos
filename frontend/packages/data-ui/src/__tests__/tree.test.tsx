@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataTree } from '../DataTree';
 import { BLOCK_EDITOR, TYPE_EDITOR } from '../entry';
+import { useData } from '../store';
 import { TypeEditor } from '../TypeEditor';
 import {
   allByTestId,
@@ -16,6 +17,7 @@ import {
   texts,
   timeScale,
   typeInput,
+  useModuleUi,
   useSession,
   useShell,
   writes,
@@ -191,6 +193,43 @@ describe('the Data section of the project tree', () => {
     press(tree.querySelector('input[aria-label="Data block name"]'), 'Enter');
     await settle();
     expect(useShell.getState().editors.map((e) => `${e.kind}:${e.target}`)).toEqual([`${BLOCK_EDITOR}:Line2`, `${BLOCK_EDITOR}:Line1`]);
+  });
+
+  it('"Add new type" with a listed name in another case opens the stored type, not a new one', async () => {
+    const { calls, tree } = await opened({ types: { Recipe: RECIPE }, blocks: [] });
+    click(byTestId(tree, 'tree-add-type'));
+    typeInput(tree.querySelector('input[aria-label="Type name"]'), 'recipe');
+    press(tree.querySelector('input[aria-label="Type name"]'), 'Enter');
+    await settle();
+    expect(useShell.getState().editors.map((e) => `${e.kind}:${e.target}`)).toEqual([`${TYPE_EDITOR}:Recipe`]);
+    expect(Object.keys(useData.getState().docs)).toEqual([]);
+    const editor = render(<TypeEditor name="Recipe" onRemoved={() => undefined} />);
+    await settle();
+    expect(byTestId(editor, 'type-new')).toBeNull();
+    expect((byTestId(editor, 'type-source') as HTMLTextAreaElement).value).toBe(RECIPE);
+    expect(writes(calls)).toEqual([]);
+  });
+
+  it('a new type or block whose editor was closed unsaved is listed as not saved yet, and opens again', async () => {
+    const { tree } = await opened({ types: {}, blocks: [] });
+    useData.getState().openNew('Draft1');
+    useData.getState().openNewBlock('Line9');
+    useShell.getState().openEditor(TYPE_EDITOR, 'Draft1');
+    useShell.getState().closeEditor(`${TYPE_EDITOR}:Draft1`);
+    await settle();
+    expect(useShell.getState().editors).toEqual([]);
+    // Unsaved work is still held, so closing the project asks: the tree shows where it is.
+    expect(useModuleUi.getState().unsaved['data-types']).toBe('org.mythos.data');
+    expect(texts(tree, 'tree-type-new')).toEqual(['Draft1 (not saved yet)*']);
+    expect(texts(tree, 'tree-block-new')).toEqual(['Line9 (not saved yet)*']);
+    expect(allByTestId(tree, 'tree-type')).toEqual([]);
+    expect(byTestId(tree, 'tree-types-empty')?.textContent).toBe('No user types yet.');
+    press(byTestId(tree, 'tree-type-new'), 'Enter');
+    press(byTestId(tree, 'tree-block-new'), 'Enter');
+    expect(useShell.getState().editors.map((e) => `${e.kind}:${e.target}`)).toEqual([
+      `${TYPE_EDITOR}:Draft1`,
+      `${BLOCK_EDITOR}:Line9`,
+    ]);
   });
 
   it('offers a viewer no row to add a type', async () => {
