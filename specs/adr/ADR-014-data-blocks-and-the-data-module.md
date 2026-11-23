@@ -17,11 +17,12 @@ ADR-013 (the logic compiler and VM; §2.19, task configuration).
 **What the owner decided, and what the author added.** The owner decided: no shared memory
 area; a data module in which user types and data blocks are made; a copy per program with one
 writer per member, handed over inside the runtime without an exchange; and the same between
-runtimes and between devices in the medium term. The author added, and the owner has not yet
-said yes or no to: when a hand-over is made (§2.3: a later program of the same task sees an
-earlier one's writes at once; other tasks see a task's run when the whole task run has ended); the library of function blocks and functions (§2.7); data blocks typed by a function
-block (§2.6); and tier 3 waiting for the security foundation (§2.4, §4). Each can be changed
-without undoing the rest.
+runtimes and between devices in the medium term. The author added: when a hand-over is made
+(§2.3: a later program of the same task sees an earlier one's writes at once; other tasks see
+a task's run when the whole task run has ended); the library of function blocks and functions
+(§2.7); data blocks typed by a function block (§2.6); and tier 3 waiting for the security
+foundation (§2.4, §4). The owner answered each on 2026-11-23: §2.9 holds his words and what
+follows from them.
 
 ## 1. Context
 
@@ -246,6 +247,43 @@ module is the one owner of the project's types (D3).
   (ADR-011), which is built (D4a, §6), and an editor for the project's library in the logic
   module's own UI, which is built (D4c, §6), and shows live values of a data block per runtime,
   which is not built (D4b).
+
+### 2.9 What the owner said of the author's additions (2026-11-23)
+
+The four points the author added (the paragraph before §1) were put to the owner. His answers,
+in his words, and what the author reads from each. Where a reading is the author's, it says so.
+
+1. **When a value is handed over.** "In the same runtime as instantly as possible. In the same
+   device as fast as the core. Between devices the network plus 100 ms of latency at most."
+   - *One runtime (tier 1, built).* The author's reading: §2.3 is this. A later program of the
+     same task sees a write at once; a program of another task sees it at the end of the
+     writer's task run, which is the earliest moment at which it cannot see half of a run. No
+     period of its own is added.
+   - *One device (tier 2, not built).* A value crosses between two runtimes at the speed at
+     which the core exchanges with them, with no slower period of its own. The figure is
+     NOT MEASURED; T2's design publishes it and tests it.
+   - *Between devices (tier 3, not built).* What MythOS adds to the network's own latency is at
+     most 100 ms. How it is measured is T3's design.
+2. **The library.** "As CODESYS and Arduino have it: a library is added to and removed from a
+   project, from a store or a custom endpoint." This is more than §2.7 builds. Built: the
+   project's own library sources and their editor (D4c). **Not built and not designed:**
+   library packages (a name, a version, the function blocks and functions they hold), the
+   places they come from (a store, an endpoint the user gives), adding one to and removing one
+   from a project, how a project records which version it uses, and how what is downloaded is
+   trusted. It gets its own design before any code. The author's reading: the project's own
+   sources stay, as the place of blocks written in the project.
+3. **Memory.** "A function block has memory, as a data block has. A function has none. A
+   program's memory is the program's own." §2.6 follows this: a data block typed by a function
+   block is that memory as an object of the project, and D5 stays in the order of work. The
+   author's reading: an instance declared inside a program stays in that program's memory, as
+   IEC 61131-3 has it, and is not made a data block by itself.
+4. **Tier 3 after the security foundation.** "We discuss this when IEC 61499 is about to be
+   implemented." So the order "T3 after IEC 62443" in §2.4 and §4 is the author's proposal and
+   is not decided.
+
+The owner also deferred all medium-term work on the same day (alarms and the historian, T2,
+IEC 62443, T3, OPC UA, firmware) until the application as it is has been tested by him. The
+order of §4 holds among those items; when they start is his to say.
 
 ## 3. Consequences
 
