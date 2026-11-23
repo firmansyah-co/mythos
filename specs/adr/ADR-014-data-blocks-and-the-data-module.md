@@ -1,7 +1,8 @@
 # ADR-014: Data Blocks, User Types and the Data Module
 
 - **Status**: ACCEPTED (design; of its slices D1, the compiler, D2, the runtime's hand-over of
-  a data block, and D3, the data module and the logic module's use of it, are built: §6)
+  a data block, D3, the data module and the logic module's use of it, and D4a, the workbench's
+  editors for user types and data blocks, are built: §6)
 - **Date**: 2026-11-22
 - **Requested by**: Adrian ("kalau aku mau ga area bersama gitu, tapi ada modul data (db) dimana
   kita bisa susun UDT dan sejenisnya"; "gimana biar hampir instant dan ga kena exchange
@@ -235,12 +236,14 @@ module is the one owner of the project's types (D3).
   task kinds, and the core refuses a configuration with data blocks to a module that does not
   declare them.
 - The **core** validates a runtime's configuration (one writer per member across the
-  runtime's programs, agreeing layout hashes), keeps retained values, and carries the live
-  values of data block members to the workbench the way it carries variables. A scalar member
-  can be bound to a tag like a published variable; a structure, array or STRING member cannot,
-  because a tag cannot hold it.
+  runtime's programs, agreeing layout hashes), keeps retained values, and gives the workbench
+  each member's writer from the configuration; the live values of a member are those of a
+  program's own copy, which the watch of that program's variables reads, and the core has no
+  route that reads a master copy. A scalar member can be bound to a tag like a published
+  variable; a structure, array or STRING member cannot, because a tag cannot hold it.
 - The **workbench** gets an editor for types and data blocks in the data module's own UI
-  (ADR-011), and shows live values of a data block per runtime.
+  (ADR-011), which is built (D4a, §6), and shows live values of a data block per runtime, which
+  is not built (D4b).
 
 ## 3. Consequences
 
@@ -270,10 +273,12 @@ Each is one slice, built through the workflow topology, with its own evidence fi
 | Slice | What | Depends on |
 |-------|------|------------|
 | D1 (done) | Compiler: several sources in one compilation; `VAR_EXTERNAL` against given data block declarations; the copy's address, the layout hash and the written members in the compiled program | — |
-| D2 (done) | Protocol, runtime module and core: data blocks in a runtime's configuration, master copies, hand-over at program start and task end, the one-writer and layout checks, retained blocks, live values | D1 (C8b is built) |
+| D2 (done) | Protocol, runtime module and core: data blocks in a runtime's configuration, master copies, hand-over at program start and task end, the one-writer and layout checks, retained blocks; a program's copy can be watched | D1 (C8b is built) |
 | D3 (done) | Data module: store, check, routes and MCP tools; the logic module builds with `<project>/data/` and its library | D1 |
 | C8c (done) | Logic module: runtimes and task configuration (ADR-013 §2.19) | D2, D3 |
-| D4 | Workbench: editor for types and data blocks, live values | D3 |
+| D4a (done) | Workbench: editor for user types and data blocks, in the data module's UI | D3 |
+| D4b | Workbench: live values of a data block, per runtime | C8d, and a change in the core so that two watchers of one runtime do not replace each other's list |
+| D4c | Workbench: the library editor (functions and function blocks), in the logic module's UI | C8c |
 | C8d | Workbench: tasks (ADR-013 §2.19) | C8c, D2 |
 | D5 | Data blocks typed by a function block (§2.6) | D2, D3 |
 | T2 | Tier 2: data segments between runtimes of one device | D2; after alarms and historian |
@@ -353,10 +358,24 @@ C8c the logic module's writes hold a lock between processes, as the data module'
 build reads without it, and a write by another process during a hot swap could give one build a
 torn view (LATENT, not reproduced).
 
-**Not built.** The editor for types, data blocks and the library (D4), D5, T2 and T3 are
+**D4a is built.** The data module ships a workbench UI of its own, `frontend/packages/data-ui`
+(`@mythos/data-ui`), which the shell loads from `modules-ui/org.mythos.data/` without a change to
+the module's manifest. The project tree has a section Data with User types and Data blocks. A
+user type is edited as its Structured Text, checked as a draft, saved and deleted; a data block
+is edited as a type and an explicit choice of retain, and shows the layout, size and members that
+the module answered, NOT KNOWN when the stored state does not check. A refused save shows the
+module's words and diagnostics, and what is shown as saved is what the module answered, read
+again after a type save. Each block is compared with the blocks that the open project's runtimes
+configuration carries, and the most a row says is "laid out as saved": an initial value is outside
+the layout hash, and a configuration is "configured", not "running". For this, a refusal thrown by
+`host.api` carries its status and body. The checks in a real browser are NOT VERIFIED
+(ADR-013 evidence, `30-d4a.md`). Not in D4a: rename, reorder, per-block initial values, nested
+members, where-used, and a revision check, so the last save wins (LATENT).
+
+**Not built.** The library editor (D4c), the live values of a data block (D4b), D5, T2 and T3 are
 not built. A runtime with data blocks is configured over the API and the MCP, the workbench
-having no editor for runtimes and tasks (C8d), and the data module is used over the API and the
-MCP only. A retained block that moves into a configured runtime loses its kept values, since the
-core keeps them per runtime id, and no warning of the build says so (only RETAIN variables are
+having no editor for runtimes and tasks (C8d). A retained block that moves into a configured
+runtime loses its kept values, since the core keeps them per runtime id, and no warning of the
+build says so (only RETAIN variables are
 warned about). `VAR_GLOBAL` stays refused, and so do `VAR_EXTERNAL` in a function block or function, a
 data block whose type is not a structure, and a per-block initial value.
