@@ -2,8 +2,13 @@
 # The one verification gate. If you are about to say "it passes", run this first
 # and paste what it printed.
 #
-# Usage: ./scripts/check.sh [--rust] [--frontend] [--all]
-#   default: --all
+# Usage: ./scripts/check.sh [--rust] [--frontend] [--all] [--windows]
+#   default: --all (the Rust and the frontend gates)
+#   --windows: only the lint of the whole workspace for Windows, from this machine. It is
+#     not part of --all: it needs a Rust with the standard library of x86_64-pc-windows-gnu
+#     and the C compiler x86_64-w64-mingw32-gcc, and without them it is a FAIL (not run),
+#     never a pass. Set MYTHOS_WINDOWS_TOOLCHAIN to a directory holding rustup/ and cargo/
+#     (a rustup installed apart from the system's Rust) to lint with that one.
 #   exit 0: every gate green; exit 1: at least one gate red or not run; exit 2: usage.
 #
 # When it finishes it writes target/check-summary.txt and prints the same text last:
@@ -23,8 +28,8 @@ declare -a gate_info=()    # per gate: totals lines (may be empty), newline-sepa
 declare -a gate_names=()   # per gate: failing names, newline-separated
 
 case "$MODE" in
-    --rust|--frontend|--all) ;;
-    *) echo "usage: $0 [--rust|--frontend|--all]"; exit 2 ;;
+    --rust|--frontend|--all|--windows) ;;
+    *) echo "usage: $0 [--rust|--frontend|--all|--windows]"; exit 2 ;;
 esac
 
 mkdir -p "$LOG_DIR"
@@ -171,6 +176,49 @@ run_frontend() {
     step "pnpm build" plain  bash -c "cd '$fe' && pnpm build"
 }
 
+# The lint for Windows, from a machine that is not one. A warning that only a Windows build
+# gives (an import or a variable used only under cfg(unix)) is an error in CI's Windows job;
+# this finds it before the push. The command is CI's own, for the GNU target: cfg(windows)
+# code is the same for both targets, code under cfg(target_env = "msvc") is not seen here.
+# It builds into its own directory: another Rust version in target/ would rebuild every
+# build script and proc macro of the ordinary gates, back and forth.
+WINDOWS_TARGET="x86_64-pc-windows-gnu"
+run_windows() {
+    local label="cargo clippy for Windows ($WINDOWS_TARGET)" reason="" libdir
+    local schema="$ROOT/src-tauri/gen/schemas/windows-schema.json" had_schema=0
+    if [ -n "${MYTHOS_WINDOWS_TOOLCHAIN:-}" ]; then
+        if [ -x "$MYTHOS_WINDOWS_TOOLCHAIN/cargo/bin/cargo" ]; then
+            export RUSTUP_HOME="$MYTHOS_WINDOWS_TOOLCHAIN/rustup" CARGO_HOME="$MYTHOS_WINDOWS_TOOLCHAIN/cargo"
+            export PATH="$MYTHOS_WINDOWS_TOOLCHAIN/cargo/bin:$PATH"
+        else
+            reason="MYTHOS_WINDOWS_TOOLCHAIN=$MYTHOS_WINDOWS_TOOLCHAIN has no cargo/bin/cargo"
+        fi
+    fi
+    if [ -z "$reason" ]; then
+        if ! command -v cargo >/dev/null; then
+            reason="cargo not installed"
+        elif ! command -v x86_64-w64-mingw32-gcc >/dev/null; then
+            reason="x86_64-w64-mingw32-gcc not installed (the C compiler a build script needs for Windows)"
+        else
+            libdir="$(rustc --print target-libdir --target "$WINDOWS_TARGET" 2>/dev/null || true)"
+            if [ -z "$libdir" ] || [ ! -d "$libdir" ]; then
+                reason="this Rust ($(rustc --version 2>/dev/null || echo unknown)) has no standard library for $WINDOWS_TARGET: rustup target add $WINDOWS_TARGET, or set MYTHOS_WINDOWS_TOOLCHAIN"
+            fi
+        fi
+    fi
+    if [ -n "$reason" ]; then
+        skip "$label" "$reason"
+        return 1
+    fi
+    [ -e "$schema" ] && had_schema=1
+    step "$label" plain env CARGO_TARGET_DIR="$ROOT/target/windows-lint" \
+        cargo clippy --workspace --all-targets --target "$WINDOWS_TARGET" -- -D warnings
+    # The desktop shell's build writes its schema for the target it is built for: a file of
+    # this run, not of the tree, unless it was there before.
+    [ "$had_schema" -eq 0 ] && rm -f "$schema"
+    return 0
+}
+
 # The summary: at most about MAX_LINES lines. Gate, totals and header lines are always
 # printed; failing names fill what is left, and any that do not fit are counted.
 write_summary() {
@@ -215,6 +263,7 @@ case "$MODE" in
     --rust)     run_rust ;;
     --frontend) run_frontend ;;
     --all)      run_rust; run_frontend ;;
+    --windows)  run_windows ;;
 esac
 
 write_summary

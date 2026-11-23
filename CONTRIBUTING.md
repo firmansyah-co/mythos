@@ -93,6 +93,16 @@ Each gate's full output is in `target/check-logs/`. Paste the summary; read the 
 failure you are fixing. The Rust tests run with `--no-fail-fast`, so one failing test binary does
 not hide the ones after it.
 
+`./scripts/check.sh --windows` lints the whole workspace for Windows from a machine that is not
+one (`cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings`, CI's
+own command for the GNU target). It finds what only a Windows build warns of, such as an import
+used only under `cfg(unix)`, before CI's Windows job does. It is not part of `--all`: it needs a
+Rust that has the standard library of that target and the C compiler `x86_64-w64-mingw32-gcc`,
+and without them it is a FAIL with the reason, never a pass. `MYTHOS_WINDOWS_TOOLCHAIN=<dir>`
+makes it use the rustup installed in `<dir>` (`<dir>/rustup`, `<dir>/cargo`) instead of the Rust
+on `PATH`. It builds into `target/windows-lint/`. Code under `cfg(target_env = "msvc")` is not
+seen by it; CI's Windows job stays the check of that target.
+
 `scripts/mutation-check.py SPEC.json` replaces the throwaway scripts written for rule 2. The spec
 names the test command and, for each mutation, a file and exact text to replace (see the top of the
 script and `scripts/examples/mutation-check.example.json`). It works on a copy of `HEAD` under
