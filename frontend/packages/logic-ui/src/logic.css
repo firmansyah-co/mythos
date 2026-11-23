@@ -232,6 +232,21 @@ button.logic-diagnostic:hover {
   margin: 0 0 6px;
 }
 
+/* The runtime editor (ADR-013 §2.19, C8d-1): the form scrolls under its toolbar, and a task's
+   programs are a plain list of rows. Layout only: its visual design is the owner's to lead. */
+
+.logic-runtime__form {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.logic-runtime__programs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
 /* A Sequential Function Chart (ADR-013 §2.8, L3d-2): the POU's own actions and transitions under
    the chart, each with its text; the document as text folded under them. Workbench tokens only;
    the visual design is the owner's to lead. */
