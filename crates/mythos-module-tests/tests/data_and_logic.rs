@@ -1567,11 +1567,24 @@ async fn a_program_of_the_project_made_active_never_carries_on_from_another_proj
     )
     .await;
     let first = rig.build("Main").await;
+    // As a program made before the making mark is built: named by its project name alone. Two
+    // such programs of one name in two projects differ in nothing but their project, so only
+    // the project keeps one from carrying on from the other. (Programs made since differ in
+    // their marks too, which would hide a core that forgot the project.)
+    let unmarked = |built: &Value| {
+        let mut instance = built["instance"].clone();
+        let mark = instance["program"]
+            .as_object_mut()
+            .expect("an instance of one program")
+            .remove("created");
+        assert!(mark.is_some(), "the build carries no making mark: {built}");
+        instance
+    };
     let applied = rig
         .eng(
             "PUT",
             CORE_RUNTIMES,
-            Some(json!({ "instances": [first["instance"]] })),
+            Some(json!({ "instances": [unmarked(&first)] })),
             200,
         )
         .await;
@@ -1629,7 +1642,7 @@ async fn a_program_of_the_project_made_active_never_carries_on_from_another_proj
     rig.eng(
         "PUT",
         "/api/v1/projects/other/runtimes",
-        Some(json!({ "instances": [second["instance"]] })),
+        Some(json!({ "instances": [unmarked(&second)] })),
         200,
     )
     .await;
