@@ -40,6 +40,28 @@ describe("the tags a project's programs publish", () => {
     expect(useProgramTags.getState().published).toEqual([SETPOINT, SPEED]);
   });
 
+  it('the tags of every program of a runtime of several programs are offered', async () => {
+    const LEVEL_SET = 'internal.Plant.Pump.level';
+    runtimes(() =>
+      Response.json({
+        config: {
+          instances: [
+            { id: 'alone', program: { published: [{ variable: 'x', tag: SETPOINT }] } },
+            {
+              id: 'Line',
+              programs: [
+                { name: 'Tank', published: [{ variable: 'speed', tag: SPEED }] },
+                { name: 'Pump', published: [{ variable: 'level', tag: LEVEL_SET }] },
+              ],
+            },
+          ],
+        },
+      })
+    );
+    await useProgramTags.getState().load('plant');
+    expect(useProgramTags.getState().published).toEqual([LEVEL_SET, SETPOINT, SPEED]);
+  });
+
   it('are none when the project has no runtimes', async () => {
     runtimes(() => Response.json({ config: null }));
     await useProgramTags.getState().load('plant');

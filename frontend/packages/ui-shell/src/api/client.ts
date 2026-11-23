@@ -569,7 +569,12 @@ export const api = {
     (
       await request<{
         config: {
-          instances?: Array<{ id: string; program?: { published?: Array<{ variable: string; tag: string }> } }>;
+          instances?: Array<{
+            id: string;
+            program?: { published?: Array<{ variable: string; tag: string }> };
+            /** A runtime of several programs (ADR-013 §2.19): each program as `program` is. */
+            programs?: Array<{ published?: Array<{ variable: string; tag: string }> }>;
+          }>;
         } | null;
       }>(`/api/v1/projects/${encodeURIComponent(projectId)}/runtimes`)
     ).config,

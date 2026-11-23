@@ -11,7 +11,7 @@ import { vi } from 'vitest';
 import { activate, MODULE_ID } from '../entry';
 import { useLdPalette } from '../LdInstructions';
 import { usePrograms } from '../programs';
-import type { CheckResult, Diagnostic, ProgramEntry, RuntimesAnswer, RuntimeStatus, WatchAnswer, WatchedValue } from '../bridge';
+import type { CheckResult, ConfigProblem, Diagnostic, ProgramEntry, RuntimeLoad, RuntimesAnswer, RuntimeStatus, WatchAnswer, WatchedValue } from '../bridge';
 import type { LibraryCheck } from '../library';
 import type { ProgramCheck, RuntimeEntry, TaskConfig } from '../runtimes';
 import { createHost } from '../../../ui-shell/src/modules/host';
@@ -143,6 +143,15 @@ export interface Backend {
   checkRuntimeProgram?: (name: string) => Omit<ProgramCheck, 'name'>;
   /** Whether saving the runtimes applies them (the project is the active one). */
   applied?: boolean;
+  /**
+   * What the core's I/O manager finds wrong with a configuration it is asked to save
+   * (`check_runtimes`); any makes the save a 400 `{error, problems}`. Left out, none.
+   */
+  configProblems?: (instances: Array<Record<string, unknown>>) => ConfigProblem[];
+  /** How the core says each runtime of an applied save began (`changes.runtimes`); left out, none. */
+  starts?: (instances: Array<Record<string, unknown>>, cold: boolean) => RuntimeLoad[];
+  /** What did not start, `[connection id, why]` (`changes.failed`); left out, none. */
+  failedToStart?: Array<[string, string]>;
   warnings?: string[];
   /**
    * What a watch of a runtime's variables answers; `'fails'`, or left out, answers 502;
@@ -630,9 +639,40 @@ export function server(backend: Backend): Call[] {
       }
       if (/\/projects\/[^/]+\/runtimes(\?start=cold)?$/.test(path)) {
         if (method === 'GET') return Response.json({ config: backend.config ?? null });
-        backend.config = body as Backend['config'];
+        const sent = body as NonNullable<Backend['config']>;
+        const instances = sent.instances ?? [];
+        // `RuntimesConfig::validate` (crates/mythos-core/src/runtimes.rs), its one-program rule
+        // word for word: only between programs that both say which project program they are.
+        const seen = new Map<string, [string, string]>();
+        for (const instance of instances) {
+          const programs = (instance.program ? [instance.program] : ((instance.programs as unknown[] | undefined) ?? [])) as Array<{ built_from?: string }>;
+          for (const program of programs) {
+            if (typeof program.built_from !== 'string') continue;
+            const first = seen.get(program.built_from.toLowerCase());
+            if (first) {
+              return refusal(
+                400,
+                `program '${first[0]}' of the project is in runtimes '${first[1]}' and '${String(instance.id)}'; a program runs in one runtime: take it out of one of them in the same save`
+              );
+            }
+            seen.set(program.built_from.toLowerCase(), [program.built_from, String(instance.id)]);
+          }
+        }
+        const problems = backend.configProblems?.(instances) ?? [];
+        if (problems.length > 0) {
+          return Response.json(
+            { error: 'the runtimes configuration has problems and was not saved', problems },
+            { status: 400, statusText: 'Bad Request' }
+          );
+        }
+        backend.config = sent;
         const applied = backend.applied ?? true;
-        return Response.json({ config: backend.config, applied, changes: applied ? { started: [] } : null });
+        const cold = path.endsWith('?start=cold');
+        return Response.json({
+          config: backend.config,
+          applied,
+          changes: applied ? { started: [], failed: backend.failedToStart ?? [], runtimes: backend.starts?.(instances, cold) ?? [] } : null,
+        });
       }
 
       const library = /^\/api\/v1\/projects\/[^/]+\/logic\/library(?:\/([^/]+))?$/.exec(path);

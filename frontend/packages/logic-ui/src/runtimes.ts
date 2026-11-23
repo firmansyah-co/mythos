@@ -5,7 +5,7 @@
 // shown. A runtime written here is "configured"; whether the controller runs it is the core's,
 // read elsewhere, and never said from this file.
 
-import { host, type Diagnostic, type RuntimesAnswer } from './bridge';
+import { host, type ApplyAnswer, type Diagnostic, type RuntimesAnswer, type RuntimeStatus } from './bridge';
 
 /** The runtime editor's kind; its target is the runtime's id. */
 export const RUNTIME_EDITOR = 'logic-runtime';
@@ -241,6 +241,183 @@ export function heldBy(runtimes: readonly RuntimeEntry[], id: string): Map<strin
   return held;
 }
 
+/** A task's kind as configured, in words: what the module stores, nothing assumed. */
+export function describeKind(kind: TaskKind | null): string {
+  if (kind === null) return 'UNKNOWN';
+  switch (kind.type) {
+    case 'cycle':
+      return typeof kind.min_cycle_ms === 'number' && kind.min_cycle_ms > 0
+        ? `cycle, at least ${kind.min_cycle_ms} ms from start to start`
+        : 'cycle, one run after another';
+    case 'cyclic':
+      return `cyclic, every ${kind.interval_ms === null ? 'UNKNOWN' : `${kind.interval_ms} ms`}${typeof kind.phase_ms === 'number' && kind.phase_ms > 0 ? `, phase ${kind.phase_ms} ms` : ''}`;
+    case 'startup':
+      return 'startup, once when the runtime starts';
+    case 'event':
+      return `event, at each rising edge of ${kind.tag}`;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Loading a configured runtime: the core's runtimes configuration it goes into (ADR-013 §2.19)
+// ---------------------------------------------------------------------------------------------
+
+/** The programs of an instance: its one `program`, or its `programs`. */
+export const programsOf = (i: Instance): RuntimeProgramWire[] => (i.program ? [i.program] : (i.programs ?? []));
+
+/** The other instances that hold a program of `built` by its project name (the core refuses both in one save). */
+export function holdersOf(saved: readonly Instance[], built: Instance, replaces: readonly string[]): Instance[] {
+  const mine = new Set(programsOf(built).flatMap((p) => (typeof p.built_from === 'string' ? [p.built_from.toLowerCase()] : [])));
+  return saved.filter(
+    (other) =>
+      other.id !== built.id &&
+      !replaces.includes(other.id) &&
+      programsOf(other).some((p) => typeof p.built_from === 'string' && mine.has(p.built_from.toLowerCase()))
+  );
+}
+
+/**
+ * The instances among `kept` built before the logic module said which project program each
+ * program is a build of (no `built_from`) whose PROGRAM name is one of `built`'s: they may run the
+ * same program. The core does not compare them, and neither does this UI: they are said, and kept.
+ */
+export function mayAlsoRun(kept: readonly Instance[], built: Instance): Array<{ instance: Instance; programs: string[] }> {
+  const names = new Set(programsOf(built).map((p) => p.name.toLowerCase()));
+  const named = (other: Instance) => programsOf(other).filter((p) => names.has(p.name.toLowerCase())).map((p) => p.name);
+  return kept
+    .filter((other) =>
+      programsOf(other).some((p) => p.built_from === undefined && names.has(p.name.toLowerCase()))
+    )
+    .map((instance) => ({ instance, programs: named(instance) }));
+}
+
+/** The controller's runtimes as last read (`GET /api/v1/runtimes`), or why they could not be. */
+export interface StatusView {
+  runtimes: RuntimeStatus[] | null;
+  error: string | null;
+}
+
+/**
+ * The version of program `program` the controller runs now, and in which runtime, in words that
+ * claim no more than was read: "not known" when the runtimes could not be read, "last known" when
+ * what is shown was read before a read that failed.
+ */
+export function runningOf(status: StatusView, program: string): string {
+  if (status.runtimes === null) return `not known (${status.error ?? 'the runtimes have not been read'})`;
+  for (const runtime of status.runtimes) {
+    const entry = Array.isArray(runtime.programs)
+      ? runtime.programs.find((p) => sameId(p.name, program))
+      : sameId(runtime.id, program)
+        ? { name: runtime.program, version: runtime.version }
+        : undefined;
+    if (entry !== undefined) {
+      return `version ${entry.version} in runtime ${runtime.id}${status.error === null ? '' : ', last known'}`;
+    }
+  }
+  return status.error === null ? 'none: the controller runs no build of it' : `not known (${status.error})`;
+}
+
+/** What a load of a configured runtime will send to the core, and what it changes. */
+export interface LoadPlan {
+  runtime: string;
+  cold: boolean;
+  build: RuntimeBuild;
+  /** The instances to send, in order: every one kept as it was read, then the new ones. */
+  instances: Instance[];
+  /** The saved instances of this id or of an id in `replaces`: taken out, replaced by the new one. */
+  replaced: Instance[];
+  /** Holders of a program of the new instance that are not configured runtimes: taken out whole. */
+  takenOut: Instance[];
+  /** Holders that are configured runtimes, each with what its new build runs instead. */
+  rebuilt: Array<{ before: Instance; build: RuntimeBuild }>;
+  /** Instances kept that may also run a program of the new instance (built before 0.8.0). */
+  mayAlsoRun: Array<{ instance: Instance; programs: string[] }>;
+  /** For each program of the new build, by its name, the version the controller runs now. */
+  running: Array<{ name: string; version: string; runs: string }>;
+}
+
+/**
+ * The plan of a load of `build` into the core's saved configuration `saved`: this id and the ids
+ * in `replaces` replaced, each holder of one of its programs (by `built_from`, without case) taken
+ * out, and put back as `rebuilt` gives it when it is a configured runtime; everything else sent
+ * back untouched, in its order.
+ */
+export function planLoad(saved: readonly Instance[], build: RuntimeBuild, rebuilt: readonly RuntimeBuild[], cold: boolean, status: StatusView): LoadPlan {
+  const built = build.instance;
+  const replaces = build.replaces;
+  const holderList = holdersOf(saved, built, replaces);
+  const holders = new Set(holderList.map((h) => h.id));
+  const kept = saved.filter((other) => other.id !== built.id && !replaces.includes(other.id) && !holders.has(other.id));
+  const pairs = holderList.map((before) => ({ before, build: rebuilt.find((b) => sameId(b.instance.id, before.id)) }));
+  const again = pairs.flatMap((p) => (p.build === undefined ? [] : [{ before: p.before, build: p.build }]));
+  return {
+    runtime: built.id,
+    cold,
+    build,
+    instances: [...kept, built, ...again.map((p) => p.build.instance)],
+    replaced: saved.filter((other) => other.id === built.id || replaces.includes(other.id)),
+    takenOut: pairs.filter((p) => p.build === undefined).map((p) => p.before),
+    rebuilt: again,
+    mayAlsoRun: mayAlsoRun(kept, built),
+    running: build.programs.map((p) => ({ name: p.name, version: p.version, runs: runningOf(status, p.name) })),
+  };
+}
+
+/** The names of the programs an instance runs, for a sentence. */
+const namesOf = (i: Instance): string => {
+  const names = programsOf(i).map((p) => p.name);
+  return names.length === 0 ? 'no program it names' : names.join(', ');
+};
+
+/**
+ * The question asked before a load sends anything to the core: every runtime it starts, restarts
+ * or takes out, and every program each runs, each program with the version it loads and the one
+ * that runs now.
+ */
+export function loadQuestion(plan: LoadPlan): string {
+  const lines: string[] = [];
+  lines.push(
+    plan.cold
+      ? `Load runtime ${plan.runtime} cold? Every runtime this save starts or replaces starts from its initial values, RETAIN variables included.`
+      : `Load runtime ${plan.runtime}? If it runs the same programs now it is changed online where it can be; otherwise it restarts warm.`
+  );
+  lines.push(`Runtime ${plan.runtime} will run:`);
+  for (const p of plan.running) lines.push(`- ${p.name}: version ${p.version} to load; runs now: ${p.runs}`);
+  for (const i of plan.replaced) lines.push(`Taken out, replaced by runtime ${plan.runtime}: ${i.id} (ran ${namesOf(i)}).`);
+  for (const i of plan.takenOut) {
+    lines.push(`Taken out whole, as it is not a configured runtime: ${i.id} (ran ${namesOf(i)}). Its outputs go to their safe values.`);
+  }
+  for (const r of plan.rebuilt) {
+    const now = r.build.programs.map((p) => `${p.name} (version ${p.version})`).join(', ');
+    lines.push(
+      `Runtime ${r.before.id} gives up the moved program: it is built again from the project's saved programs and restarts ${plan.cold ? 'cold' : 'warm'} (not the same programs). It ran ${namesOf(r.before)}; it will run ${now === '' ? 'no program' : now}.`
+    );
+  }
+  for (const m of plan.mayAlsoRun) {
+    lines.push(`Runtime ${m.instance.id} may also run ${m.programs.join(', ')} (built before 0.8.0, not compared by the core). It is kept.`);
+  }
+  return lines.join('\n');
+}
+
+/** What a load answered, as kept by the editor. */
+export interface LoadAnswer {
+  plan: LoadPlan;
+  answer: ApplyAnswer;
+}
+
+/** The ids of the runtimes a load put in: this one, then each rebuilt one. */
+export const loadedIds = (plan: LoadPlan): string[] => [plan.runtime, ...plan.rebuilt.map((r) => r.build.instance.id)];
+
+/** What a load did, in one sentence that claims only what the core answered. */
+export function describeLoad(loaded: LoadAnswer): string {
+  const { plan, answer } = loaded;
+  if (!answer.applied) return "Saved into the project's runtimes. The controller runs another project, so nothing was started.";
+  const failed = (answer.changes?.failed ?? []).filter(([id]) => loadedIds(plan).some((r) => id === `runtime:${r}`));
+  return failed.length > 0
+    ? "Saved into the project's runtimes and applied, but the controller did not start everything it was given:"
+    : "Saved into the project's runtimes and applied by the controller. Whether each runtime runs is on its card, as the controller lists it.";
+}
+
 const runtimesPath = (projectId: string) => `/api/v1/projects/${encodeURIComponent(projectId)}/logic/runtimes`;
 const json = (method: string, body: unknown): RequestInit => ({
   method,
@@ -259,10 +436,22 @@ export const api = {
   remove: (projectId: string, id: string) =>
     host().api<{ deleted: string }>(`${runtimesPath(projectId)}/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   /** Check runtime `id` with `body` put in, as a save would put it, against the stored rest. Writes nothing. */
-  check: (projectId: string, id: string, body: RuntimeBody) =>
+  check: (projectId: string, id: string, body: RuntimeBody | Record<string, never>) =>
     host().api<RuntimeCheck>(`${runtimesPath(projectId)}/${encodeURIComponent(id)}/check`, json('POST', body)),
   build: (projectId: string, id: string) =>
     host().api<RuntimeBuild>(`${runtimesPath(projectId)}/${encodeURIComponent(id)}/build`, { method: 'POST' }),
   /** The core's runtimes and installed modules (`GET /api/v1/runtimes`): here, the modules. */
   installed: () => host().api<RuntimesAnswer>('/api/v1/runtimes'),
+  /** The project's runtimes configuration as the core has it saved (`null`: none). */
+  config: (projectId: string) =>
+    host().api<{ config: { instances?: Instance[] } | null }>(`/api/v1/projects/${encodeURIComponent(projectId)}/runtimes`),
+  /**
+   * Save `instances`, exactly these in this order, as the project's runtimes configuration. With
+   * `cold`, every runtime it starts or replaces starts from its initial values.
+   */
+  setInstances: (projectId: string, instances: Instance[], cold = false) =>
+    host().api<ApplyAnswer>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/runtimes${cold ? '?start=cold' : ''}`,
+      json('PUT', { instances })
+    ),
 };

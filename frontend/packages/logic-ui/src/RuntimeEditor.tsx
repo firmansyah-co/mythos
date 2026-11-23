@@ -5,15 +5,18 @@
 // Nothing here says whether the controller runs the runtime: it is configured, nothing more.
 
 import { useEffect, useMemo, useRef } from 'react';
-import { ArrowDown, ArrowUp, Check, Plus, Save, Trash2, Undo2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, CirclePlay, CircleStop, Download, Plus, Save, Trash2, Undo2, Upload } from 'lucide-react';
 import type { DiagnosticsPanel } from '@mythos/workbench-sdk';
-import { host, mayEngineer, type Diagnostic } from './bridge';
+import { host, mayEngineer, type Diagnostic, type NotCarried, type RuntimeLoad, type RuntimeStatus } from './bridge';
 import { draw } from './draw';
 import { WITHHELD } from './library';
-import { usePrograms } from './programs';
+import { describeStart, usePrograms } from './programs';
+import { RUNTIMES_POLL_MS } from './ProgramEditor';
 import {
   deleteRuntimeQuestion,
+  describeLoad,
   heldBy,
+  loadedIds,
   kindOf,
   kindsOf,
   missingOf,
@@ -21,15 +24,24 @@ import {
   PROGRAM_EDITOR,
   TASK_KINDS,
   taskLabel,
+  type LoadAnswer,
   type ProgramCheck,
   type RuntimeEntry,
   type TaskConfig,
   type TaskKind,
 } from './runtimes';
-import { draftKey, hasChanges, useRuntimes, type RuntimeDoc } from './runtimestore';
+import { draftKey, hasChanges, useRuntimes, type RuntimeDoc, type Stopped, type VersionsHere } from './runtimestore';
 
 /** The owner of this editor's panel in the Diagnostics tab. */
 export const RUNTIME_DIAGNOSTICS_OWNER = 'logic-runtime-check';
+/** The owner of this editor's "Runtime" task card: what the controller says of the runtime. */
+export const RUNTIME_STATUS_OWNER = 'logic-runtime-status';
+
+const MODE_TONE: Record<string, string> = { run: 'good', stop: 'neutral', fault: 'bad', unreachable: 'bad' };
+
+/** The question asked before a cold load starts anything. */
+export const loadColdQuestion = (id: string) =>
+  `Load runtime ${id} cold? Every runtime this load starts or replaces starts from its initial values, RETAIN variables included, and nothing they hold is carried over. The draft is saved first if it has changes, and what the load will change is asked before anything is loaded.`;
 
 /** Said beside an empty watchdog: the protocol's default (crates/mythos-module/src/protocol.rs, `TaskConfig::watchdog_ms`). */
 export const WATCHDOG_DEFAULT =
@@ -542,10 +554,253 @@ function RuntimeForm({ doc, readOnly }: { doc: RuntimeDoc; readOnly: boolean }) 
   );
 }
 
+/** The programs a listed runtime runs, by name: its `programs`, else its joined `program`. */
+const runsOf = (runtime: RuntimeStatus): string[] =>
+  Array.isArray(runtime.programs) ? runtime.programs.map((p) => p.name) : runtime.program.split(', ').filter((n) => n !== '');
+
+/** One program of a listed runtime: the version that runs beside the one last built or checked here. */
+function ProgramVersion({ name, version, here }: { name: string; version: string; here: VersionsHere | null }) {
+  const mine = here?.byName[name.toLowerCase()];
+  const compared =
+    mine === undefined
+      ? 'not known: nothing of it was built or checked here'
+      : mine === version
+        ? `the same as the one ${here?.of === 'build' ? 'built' : 'checked'} here`
+        : `another version than the one ${here?.of === 'build' ? 'built' : 'checked'} here (${mine})`;
+  return (
+    <li data-testid="runtime-program" data-program={name}>
+      <span className="mono">{name}</span> · version <span className="mono">{version}</span>:{' '}
+      <span data-testid="runtime-program-compare">{compared}</span>
+    </li>
+  );
+}
+
+/** Why a command, an unload or a load stopped: these words, then the refuser's own. */
+function StoppedNotice({ stopped, testid }: { stopped: Stopped; testid: string }) {
+  const { refusal, problems } = stopped;
+  return (
+    <div className="notice notice--bad" role="alert" data-testid={testid}>
+      <div>
+        <p>{stopped.words}</p>
+        {refusal !== null && <p data-testid={`${testid}-error`}>{refusal.error}</p>}
+        {(refusal?.diagnostics ?? []).map((d, index) => (
+          <p key={index} className="mono" data-testid={`${testid}-diagnostic`}>
+            {placeOf(d)} {d.message}
+          </p>
+        ))}
+        {(problems ?? []).map((problem, index) => (
+          <p key={`p${index}`} data-testid={`${testid}-problem`}>
+            {problem.connection_id !== '' && <span className="mono">{problem.connection_id}: </span>}
+            {problem.message}
+          </p>
+        ))}
+        {refusal?.withheld && <p>{WITHHELD}</p>}
+      </div>
+    </div>
+  );
+}
+
+/** Each variable of a list, as `variable (why)`. */
+function Carried({ label, list, testid }: { label: string; list: NotCarried[]; testid: string }) {
+  if (list.length === 0) return null;
+  return (
+    <p>
+      {label}{' '}
+      {list.map((d, i) => (
+        <span key={d.variable} data-testid={testid}>
+          {i > 0 ? '; ' : ''}
+          <span className="mono">{d.variable}</span> ({d.why})
+        </span>
+      ))}
+      .
+    </p>
+  );
+}
+
+/** How one runtime of a load started, as the core said it. */
+function StartOf({ id, load }: { id: string; load: RuntimeLoad | null }) {
+  return (
+    <div data-testid="runtime-start" data-runtime={id}>
+      <p>
+        Runtime <span className="mono">{id}</span>: <span data-testid="runtime-start-said">{describeStart(load)}</span>
+      </p>
+      {load !== null && (
+        <>
+          <Carried label="Not carried over:" list={load.dropped} testid="runtime-dropped" />
+          <Carried label="From the initial value:" list={load.initialized} testid="runtime-initialized" />
+          <Carried label="Not given the value kept for it:" list={load.not_given ?? []} testid="runtime-not-given" />
+        </>
+      )}
+    </div>
+  );
+}
+
+/** What the core answered the last load made here: exactly what it said, nothing more. */
+function LoadResult({ loaded }: { loaded: LoadAnswer }) {
+  const { plan, answer } = loaded;
+  const ids = loadedIds(plan);
+  const failed = (answer.changes?.failed ?? []).filter(([failedId]) => ids.some((r) => failedId === `runtime:${r}`));
+  const builds = [plan.build, ...plan.rebuilt.map((r) => r.build)];
+  const projectProblems = builds.flatMap((b) => b.project_problems ?? []);
+  return (
+    <div className={`notice${failed.length > 0 ? ' notice--bad' : ''}`} data-testid="runtime-loaded">
+      <div>
+        <p data-testid="runtime-loaded-said">{describeLoad(loaded)}</p>
+        {failed.map(([failedId, why]) => (
+          <p key={failedId} data-testid="load-failed">
+            <span className="mono">{failedId}</span>: {why}
+          </p>
+        ))}
+        {answer.applied &&
+          ids
+            .filter((r) => !failed.some(([failedId]) => failedId === `runtime:${r}`))
+            .map((r) => <StartOf key={r} id={r} load={answer.changes?.runtimes?.find((l) => l.runtime === r) ?? null} />)}
+        {plan.takenOut.map((i) => (
+          <p key={i.id} data-testid="load-taken-out">
+            Taken out of the project's runtimes: <span className="mono">{i.id}</span>.
+          </p>
+        ))}
+        {builds.flatMap((b) => b.warnings).map((warning, index) => (
+          <p key={index} data-testid="build-warning">
+            {warning}
+          </p>
+        ))}
+        {projectProblems.map((d, index) => (
+          <p key={`pp${index}`} data-testid="load-project-problem">
+            <span className="mono">{placeOf(d)}</span> {d.message}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The "Runtime" task card: what the controller says of this runtime, from the same reading of
+ * its runtimes the program editor makes. NOT LOADED only after a reading that succeeded; what was
+ * read before a reading failed is shown as last known; no task figure is shown here.
+ */
+function StatusCard({ id }: { id: string }) {
+  const view = usePrograms((s) => s.runtimes);
+  const doc = useRuntimes((s) => s.docs[id]);
+  const { command, unload } = useRuntimes.getState();
+  const may = mayEngineer();
+  const known = view.runtimes !== null && view.error === null;
+  const runtime = view.runtimes?.find((r) => r.id === id);
+  const busy = doc?.busy !== null && doc?.busy !== undefined;
+  const runs = runtime === undefined ? [] : runsOf(runtime);
+  const listed = runs.length === 0 ? 'no program it names' : runs.join(', ');
+  return (
+    <section className="logic-panel" data-testid="runtime-status" aria-label="Runtime">
+      <p>
+        {known || runtime !== undefined ? (
+          <span className={`badge badge--${runtime === undefined ? 'neutral' : (MODE_TONE[runtime.mode] ?? 'neutral')}`} data-testid="runtime-status-mode">
+            {runtime === undefined ? 'NOT LOADED' : runtime.mode.toUpperCase()}
+          </span>
+        ) : (
+          <span className="badge badge--neutral" data-testid="runtime-status-mode">
+            UNKNOWN
+          </span>
+        )}{' '}
+        {!known && runtime !== undefined && (
+          <span className="badge badge--warn" data-testid="runtime-status-stale">
+            LAST KNOWN
+          </span>
+        )}{' '}
+        {runtime !== undefined && (
+          <span className="mono" data-testid="runtime-status-version">
+            {runtime.program} · version {runtime.version}
+          </span>
+        )}
+      </p>
+      <p className="muted" data-testid="runtime-status-why">
+        {runtime === undefined
+          ? known
+            ? `The controller lists no runtime ${id}: it is configured, not loaded.`
+            : view.runtimes === null
+              ? `Whether the controller runs runtime ${id} is not known: ${view.error ?? 'its runtimes have not been read yet'}.`
+              : `Whether the controller runs runtime ${id} is not known: its runtimes can no longer be read (${view.error}).`
+          : known
+            ? `As the controller lists it.`
+            : `The controller's runtimes can no longer be read (${view.error}), so this is what was last known, not what is.`}
+      </p>
+      {runtime?.reason && (
+        <p className="form__error" data-testid="runtime-status-reason">
+          {runtime.reason}
+        </p>
+      )}
+      {runtime !== undefined && Array.isArray(runtime.programs) && (
+        <ul className="logic-runtime__programs" aria-label="Programs it runs">
+          {runtime.programs.map((p) => (
+            <ProgramVersion key={p.name} name={p.name} version={p.version} here={doc?.versions ?? null} />
+          ))}
+        </ul>
+      )}
+      {may && (
+        <div className="logic-panel__actions">
+          <button
+            type="button"
+            className="btn"
+            disabled={busy || !known || runtime === undefined}
+            data-testid="runtime-card-run"
+            title="Put the runtime in RUN, every program it runs. From STOP or FAULT that is a warm restart."
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Put runtime ${id} in RUN? It runs ${listed}. From STOP or FAULT that is a warm restart: their RETAIN variables keep the values they had, the others take their initial values, and the programs write their outputs.`
+                )
+              ) {
+                void command(id, true);
+              }
+            }}
+          >
+            <CirclePlay size={13} aria-hidden /> Run
+          </button>
+          <button
+            type="button"
+            className="btn"
+            // Stop is the safe direction: neither a request unanswered nor a reading that failed
+            // takes it away, and it is not asked about.
+            disabled={runtime === undefined}
+            data-testid="runtime-card-stop"
+            title="Put the runtime in STOP, every program it runs. Their outputs are written their safe values."
+            onClick={() => void command(id, false)}
+          >
+            <CircleStop size={13} aria-hidden /> Stop
+          </button>
+          <button
+            type="button"
+            className="btn btn--flat"
+            disabled={busy || !known || runtime === undefined}
+            data-testid="runtime-card-unload"
+            title="Take the runtime out of the project's runtimes. The outputs of its programs are written their safe values."
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Take runtime ${id} out of the project's runtimes? It stops running ${listed}, and their outputs go to their safe values. Its configuration in the logic module is kept.`
+                )
+              ) {
+                void unload(id);
+              }
+            }}
+          >
+            <Upload size={13} aria-hidden /> Unload
+          </button>
+        </div>
+      )}
+      {doc?.commanded && doc.commanded.stopped === null && (
+        <p data-testid="runtime-commanded">{doc.commanded.words}</p>
+      )}
+      {doc?.commanded?.stopped && <StoppedNotice stopped={doc.commanded.stopped} testid="command-refused" />}
+    </section>
+  );
+}
+
 export function RuntimeEditor({ id, onClose }: { id: string; onClose: (id: string) => void }) {
   const doc = useRuntimes((state) => state.docs[id]);
   const projectId = useRuntimes((state) => state.projectId);
-  const { open, discard, check, save, remove, readModules } = useRuntimes.getState();
+  const { open, discard, check, save, remove, readModules, loadRuntime } = useRuntimes.getState();
+  const readRuntimes = usePrograms((s) => s.readRuntimes);
   // Deleted or discarded from here: its editor is closing, and the runtime is not read again meanwhile.
   const closing = useRef(false);
   const missing = doc === undefined;
@@ -558,6 +813,20 @@ export function RuntimeEditor({ id, onClose }: { id: string; onClose: (id: strin
   useEffect(() => {
     if (projectId !== null) void readModules();
   }, [projectId, readModules]);
+
+  // What the controller says of the runtime: read while the editor is shown, and not after.
+  useEffect(() => {
+    void readRuntimes();
+    const timer = setInterval(() => void readRuntimes(), RUNTIMES_POLL_MS);
+    return () => clearInterval(timer);
+  }, [readRuntimes]);
+
+  const configuredHere = doc !== undefined && doc.phase === 'ready';
+  useEffect(() => {
+    if (!configuredHere) return undefined;
+    host().setTaskCard(RUNTIME_STATUS_OWNER, { title: 'Runtime', mount: (card) => draw(card, <StatusCard id={id} />) });
+    return () => host().setTaskCard(RUNTIME_STATUS_OWNER, null);
+  }, [configuredHere, id]);
 
   const mount = useMemo<DiagnosticsPanel['mount']>(() => (panel) => draw(panel, <CheckCard id={id} />), [id]);
   const count = problemCount(doc);
@@ -659,6 +928,32 @@ export function RuntimeEditor({ id, onClose }: { id: string; onClose: (id: strin
         >
           <Check size={13} aria-hidden /> Check
         </button>
+        {may && (
+          <button
+            type="button"
+            className="btn"
+            disabled={working || !complete}
+            data-testid="runtime-load"
+            title="Load saves the draft first if it has changes, then checks it, builds it and, after asking, puts it into the project's runtimes, taking out or rebuilding what holds its programs."
+            onClick={() => void loadRuntime(id, false)}
+          >
+            <Download size={13} aria-hidden /> Load
+          </button>
+        )}
+        {may && (
+          <button
+            type="button"
+            className="btn"
+            disabled={working || !complete}
+            data-testid="runtime-load-cold"
+            title="Load cold saves the draft first if it has changes, and loads with every variable from its initial value, RETAIN ones included."
+            onClick={() => {
+              if (window.confirm(loadColdQuestion(id))) void loadRuntime(id, true);
+            }}
+          >
+            <Download size={13} aria-hidden /> Load cold
+          </button>
+        )}
         <CheckState doc={doc} />
         {doc.isNew && (
           <span className="badge badge--warn" data-testid="runtime-new">
@@ -718,6 +1013,8 @@ export function RuntimeEditor({ id, onClose }: { id: string; onClose: (id: strin
           <p>{doc.saveAnswer.created ? 'Saved; the module made the runtime. Nothing was built or loaded.' : 'Saved. Nothing was built or loaded.'}</p>
         </div>
       )}
+      {doc.loadStopped !== null && <StoppedNotice stopped={doc.loadStopped} testid="load-refused" />}
+      {doc.loaded !== null && <LoadResult loaded={doc.loaded} />}
       {doc.checkRefusal !== null && (
         <div className="notice notice--bad" role="alert" data-testid="check-refused">
           <p>{doc.checkRefusal.error}</p>

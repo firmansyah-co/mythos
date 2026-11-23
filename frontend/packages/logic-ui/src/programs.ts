@@ -8,9 +8,11 @@ import {
   api,
   host,
   log,
+  problemsOf,
   type ApplyAnswer,
   type BuildResult,
   type CheckResult,
+  type ConfigProblem,
   type Language,
   type ProgramEntry,
   type RuntimeLoad,
@@ -18,6 +20,7 @@ import {
   type Variable,
   type WatchAnswer,
 } from './bridge';
+import type { TaskConfig } from './runtimes';
 
 export interface ProgramDoc {
   /** The settings being edited. */
@@ -82,6 +85,17 @@ export interface RuntimesView {
   configured?: Record<string, string> | null;
   /** Why the configured runtimes could not be read. */
   configuredError?: string | null;
+  /**
+   * Read with `configured`: for each program a configured runtime runs, by its name in lower
+   * case, that runtime's id and the task, as configured, that runs it. `null` when not known.
+   */
+  assigned?: Record<string, Assignment> | null;
+}
+
+/** The configured runtime and task that run a program, as the logic module's configuration says. */
+export interface Assignment {
+  runtime: string;
+  task: TaskConfig;
 }
 
 /** The variables of a running program as last read, or why they could not be. */
@@ -184,6 +198,11 @@ export interface ProgramsState {
   busy: Busy;
   /** Why the last request failed. */
   error: string | null;
+  /**
+   * The core's `problems` with the refusal that `error` says, verbatim (a refused save of the
+   * project's runtimes); shown only beside that error.
+   */
+  refusedProblems: { error: string; problems: ConfigProblem[] } | null;
   runtimes: RuntimesView;
   /** By program name. */
   watches: Record<string, WatchView>;
@@ -262,7 +281,7 @@ export function describeStart(load: RuntimeLoad | null): string {
           : '')
       );
     case 'warm':
-      return `Not changed online${load.why ? `: ${load.why}` : ''}. Its RETAIN variables start from the values kept for them, every other variable from its initial value.`;
+      return `Not changed online${load.why ? `: ${load.why}` : ''}. Its RETAIN variables start from the values kept for them${(load.not_given ?? []).length > 0 ? ', except those listed as not given' : ''}, every other variable from its initial value.`;
     case 'cold':
       return 'Loaded cold: every variable starts from its initial value, RETAIN ones included.';
     case 'unknown':
@@ -416,11 +435,20 @@ const EMPTY_RUNTIMES: RuntimesView = {
   readAtMs: null,
   configured: null,
   configuredError: null,
+  assigned: null,
 };
 
 /** The configured runtimes' answer of the logic module, as far as this editor reads it. */
 interface ConfiguredAnswer {
-  runtimes: Array<{ id: string; tasks: Array<{ programs: string[] }> }>;
+  runtimes: Array<{ id: string; tasks: TaskConfig[] }>;
+}
+
+/** The configured runtime and task of program `name`; `null` in none; `undefined` while that is not known. */
+export function assignmentOf(name: string, view: RuntimesView): Assignment | null | undefined {
+  const assigned = view.assigned;
+  if (assigned === null || assigned === undefined) return undefined;
+  const key = name.toLowerCase();
+  return Object.hasOwn(assigned, key) ? (assigned[key] ?? null) : null;
 }
 
 /**
@@ -429,21 +457,25 @@ interface ConfiguredAnswer {
  */
 async function readConfigured(
   projectId: string | null
-): Promise<Pick<RuntimesView, 'configured' | 'configuredError'>> {
-  if (!projectId) return { configured: null, configuredError: 'no project is open' };
+): Promise<Pick<RuntimesView, 'configured' | 'configuredError' | 'assigned'>> {
+  if (!projectId) return { configured: null, configuredError: 'no project is open', assigned: null };
   try {
     const answer = await host().api<ConfiguredAnswer>(
       `/api/v1/projects/${encodeURIComponent(projectId)}/logic/runtimes`
     );
     const configured: Record<string, string> = {};
+    const assigned: Record<string, Assignment> = {};
     for (const runtime of answer.runtimes) {
       for (const task of runtime.tasks) {
-        for (const program of task.programs) configured[program.toLowerCase()] ??= runtime.id;
+        for (const program of task.programs) {
+          configured[program.toLowerCase()] ??= runtime.id;
+          assigned[program.toLowerCase()] ??= { runtime: runtime.id, task };
+        }
       }
     }
-    return { configured, configuredError: null };
+    return { configured, configuredError: null, assigned };
   } catch (cause) {
-    return { configured: null, configuredError: message(cause) };
+    return { configured: null, configuredError: message(cause), assigned: null };
   }
 }
 
@@ -454,6 +486,7 @@ const EMPTY = {
   programs: [] as ProgramDoc[],
   busy: null as Busy,
   error: null,
+  refusedProblems: null,
   runtimes: EMPTY_RUNTIMES,
   watches: {} as Record<string, WatchView>,
 };
@@ -566,8 +599,10 @@ export const usePrograms = create<ProgramsState>((set, get) => {
 
   const failed = (what: string, cause: unknown) => {
     const text = `${what}: ${message(cause)}`;
+    const problems = problemsOf(cause);
     log.error(text);
-    set({ busy: null, error: text });
+    for (const problem of problems ?? []) log.error(`${problem.connection_id}: ${problem.message}`);
+    set({ busy: null, error: text, refusedProblems: problems === null ? null : { error: text, problems } });
   };
 
   /**
@@ -609,7 +644,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
         ...EMPTY,
         projectId,
         phase: 'reading',
-        runtimes: { ...get().runtimes, configured: null, configuredError: null },
+        runtimes: { ...get().runtimes, configured: null, configuredError: null, assigned: null },
       });
       try {
         const listed = await api.list(projectId);
@@ -907,7 +942,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
             // Read for another project than the one open now: not known.
             ...(get().projectId === projectId
               ? configured
-              : { configured: null, configuredError: 'the configured runtimes are being read' }),
+              : { configured: null, configuredError: 'the configured runtimes are being read', assigned: null }),
           },
         });
       } catch (cause) {

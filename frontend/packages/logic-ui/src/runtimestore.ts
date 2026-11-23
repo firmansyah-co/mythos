@@ -6,19 +6,40 @@
 
 import { create } from 'zustand';
 import { refusalOf, type Refusal } from './library';
-import { canonical } from './programs';
+import { canonical, usePrograms } from './programs';
 import {
   api,
   bodyOf,
+  holdersOf,
+  loadQuestion,
+  planLoad,
   sameId,
   sentOf,
   newRuntime,
+  type Instance,
+  type LoadAnswer,
+  type RuntimeBuild,
   type RuntimeCheck,
   type RuntimeEntry,
   type RuntimesChanged,
   type RuntimesList,
 } from './runtimes';
-import type { RuntimesAnswer } from './bridge';
+import { api as core, problemsOf, type ApplyAnswer, type ConfigProblem, type RuntimesAnswer } from './bridge';
+
+/** Why a load, a command or an unload stopped: in this UI's words, then the refuser's own. */
+export interface Stopped {
+  words: string;
+  /** The module's or the core's refusal, verbatim; `null` when nothing was refused (a check that is not ok). */
+  refusal: Refusal | null;
+  /** The core's `problems` with a refused save of the project's runtimes. */
+  problems: ConfigProblem[] | null;
+}
+
+/** The versions of the runtime's programs last built or checked ok here, by program name in lower case. */
+export interface VersionsHere {
+  of: 'build' | 'check';
+  byName: Record<string, string>;
+}
 
 /** A runtime opened in an editor. */
 export interface RuntimeDoc {
@@ -44,7 +65,7 @@ export interface RuntimeDoc {
   /** The module refused the last check (a body it does not take, an unknown id), or it could not be made. */
   checkRefusal: Refusal | null;
   checking: boolean;
-  busy: 'saving' | 'deleting' | null;
+  busy: 'saving' | 'deleting' | 'loading' | 'unloading' | null;
   /** The module's refusal of the last save or delete. */
   refusal: { of: 'save' | 'delete'; refusal: Refusal } | null;
   /** What the last save answered: whether the module made the runtime. */
@@ -57,6 +78,16 @@ export interface RuntimeDoc {
   deferred: RuntimesChanged['what'] | null;
   /** An event of somebody else's write that came while this editor was busy: followed after. */
   later: RuntimesChanged['what'] | null;
+  /** The last build made here (by a load), as the module answered it. */
+  built: RuntimeBuild | null;
+  /** The versions of the last build, or of the last check that was ok, made here; `null`: none. */
+  versions: VersionsHere | null;
+  /** What the core answered the last load made here. */
+  loaded: LoadAnswer | null;
+  /** Why the last load stopped, when it did. */
+  loadStopped: Stopped | null;
+  /** What the last command (Run, Stop, Unload) answered: done, or why not. */
+  commanded: { words: string; stopped: Stopped | null; answer: ApplyAnswer | null } | null;
 }
 
 export interface RuntimesState {
@@ -88,7 +119,32 @@ export interface RuntimesState {
   forget(id: string): void;
   /** Follow `LOGIC_RUNTIMES_CHANGED` of the open project. Returns the editor to close (deleted elsewhere), if any. */
   changed(event: RuntimesChanged): string | null;
+  /**
+   * Save the draft if it has changes, check it, build it, build each configured runtime that holds
+   * one of its programs, ask, and save the plan into the project's runtimes. Stops at the first
+   * refusal, with its words, and sends nothing to the core's configuration before the engineer
+   * agreed. Resolves with whether the core's configuration was saved.
+   */
+  loadRuntime(id: string, cold: boolean): Promise<boolean>;
+  /** Ask the controller to put runtime `id` in RUN or in STOP (asked first by the caller). */
+  command(id: string, run: boolean): Promise<void>;
+  /** Take runtime `id` out of the project's runtimes, every other instance kept (asked first by the caller). */
+  unload(id: string): Promise<boolean>;
 }
+
+/** The versions of a build's programs, by name in lower case. */
+const versionsOfBuild = (build: RuntimeBuild): VersionsHere => ({
+  of: 'build',
+  byName: Object.fromEntries(build.programs.map((p) => [p.name.toLowerCase(), p.version])),
+});
+/** The versions of an ok check's programs, by name in lower case; `null` when it gives none. */
+const versionsOfCheck = (check: RuntimeCheck): VersionsHere | null =>
+  check.ok
+    ? {
+        of: 'check',
+        byName: Object.fromEntries(check.programs.flatMap((p) => (p.version === undefined ? [] : [[p.name.toLowerCase(), p.version]]))),
+      }
+    : null;
 
 /** Whether `doc` holds a runtime the module has not stored as it is shown. */
 export function isRuntimeDirty(doc: RuntimeDoc): boolean {
@@ -122,6 +178,11 @@ const fresh = (id: string): RuntimeDoc => ({
   elsewhereAs: null,
   deferred: null,
   later: null,
+  built: null,
+  versions: null,
+  loaded: null,
+  loadStopped: null,
+  commanded: null,
 });
 
 // The events of this workbench's own writes, still to come: one per write answered 200 whose
@@ -235,6 +296,92 @@ export const useRuntimes = create<RuntimesState>((set, get) => {
     follow(id, later);
   };
 
+  /** The steps of a load after the draft is saved: see `loadRuntime`. */
+  const loading = async (projectId: string, id: string, cold: boolean, at: number): Promise<boolean> => {
+    const gone = () => opening !== at;
+    const refuse = (words: string, cause?: unknown): false => {
+      if (!gone()) {
+        patch(id, {
+          loadStopped: { words, refusal: cause === undefined ? null : refusalOf(cause), problems: cause === undefined ? null : problemsOf(cause) },
+        });
+      }
+      return false;
+    };
+    // The stored runtime is checked as a build would compile it; an older check still out is dropped.
+    const seq = (get().docs[id]?.checkSeq ?? 0) + 1;
+    patch(id, { checkSeq: seq, checking: false });
+    let checked: RuntimeCheck;
+    try {
+      checked = await api.check(projectId, id, {});
+    } catch (cause) {
+      if (gone()) return false;
+      patch(id, { check: null, checkRefusal: refusalOf(cause) });
+      return refuse(`Runtime ${id} could not be checked, so nothing was built or loaded.`, cause);
+    }
+    if (gone()) return false;
+    const stored = get().docs[id]?.saved ?? null;
+    const versions = versionsOfCheck(checked);
+    patch(id, { check: { body: stored === null ? '' : draftKey(stored), answer: checked }, checkRefusal: null, ...(versions ? { versions } : {}) });
+    if (!checked.ok) {
+      return refuse(`Runtime ${id} does not check as saved, so nothing was built or loaded. What the module found is in the Diagnostics tab.`);
+    }
+    let build: RuntimeBuild;
+    try {
+      build = await api.build(projectId, id);
+    } catch (cause) {
+      return refuse(`Runtime ${id} was not built, so nothing was loaded.`, cause);
+    }
+    if (gone()) return false;
+    patch(id, { built: build, versions: versionsOfBuild(build) });
+    let saved: Instance[];
+    try {
+      saved = (await api.config(projectId)).config?.instances ?? [];
+    } catch (cause) {
+      return refuse("The project's runtimes could not be read, so nothing was loaded.", cause);
+    }
+    if (gone()) return false;
+    // Each other instance that holds one of its programs: a configured runtime is built again
+    // by the module, without the program, and goes into the same save; any other is taken out.
+    const holders = holdersOf(saved, build.instance, build.replaces);
+    const rebuilt: RuntimeBuild[] = [];
+    if (holders.length > 0) {
+      let list: RuntimesList;
+      try {
+        list = await api.list(projectId);
+      } catch (cause) {
+        return refuse(
+          `${holders.map((h) => h.id).join(', ')} ${holders.length === 1 ? 'holds' : 'hold'} a program of ${id}, and whether each is a configured runtime is not known: the configured runtimes could not be read. Nothing was loaded.`,
+          cause
+        );
+      }
+      if (gone()) return false;
+      for (const holder of holders) {
+        const entry = list.runtimes.find((r) => sameId(r.id, holder.id));
+        if (entry === undefined) continue;
+        try {
+          rebuilt.push(await api.build(projectId, entry.id));
+        } catch (cause) {
+          return refuse(`Runtime ${holder.id} holds a program of ${id} and was not built again without it, so nothing was loaded.`, cause);
+        }
+        if (gone()) return false;
+      }
+    }
+    const view = usePrograms.getState().runtimes;
+    const plan = planLoad(saved, build, rebuilt, cold, { runtimes: view.runtimes, error: view.error });
+    if (!window.confirm(loadQuestion(plan))) return false;
+    if (gone()) return false;
+    let answer: ApplyAnswer;
+    try {
+      answer = await api.setInstances(projectId, plan.instances, cold);
+    } catch (cause) {
+      return refuse("The project's runtimes were not saved, so nothing was loaded.", cause);
+    }
+    if (gone()) return false;
+    patch(id, { loaded: { plan, answer } });
+    void usePrograms.getState().readRuntimes();
+    return true;
+  };
+
   return {
     ...EMPTY,
 
@@ -334,7 +481,8 @@ export const useRuntimes = create<RuntimesState>((set, get) => {
       try {
         const answer = await api.check(projectId, id, body);
         if (stale()) return;
-        patch(id, { check: { body: key, answer }, checkRefusal: null, checking: false });
+        const versions = versionsOfCheck(answer);
+        patch(id, { check: { body: key, answer }, checkRefusal: null, checking: false, ...(versions ? { versions } : {}) });
       } catch (cause) {
         if (stale()) return;
         patch(id, { check: null, checkRefusal: refusalOf(cause), checking: false });
@@ -422,6 +570,103 @@ export const useRuntimes = create<RuntimesState>((set, get) => {
     },
 
     forget: (id) => drop(id),
+
+    loadRuntime: async (id, cold) => {
+      const projectId = get().projectId;
+      const doc = get().docs[id];
+      if (projectId === null || !doc || doc.phase !== 'ready' || doc.busy !== null) return false;
+      // A draft that is not a complete body is neither saved nor loaded: the form says what it lacks.
+      if (sentOf(doc.draft) === null) return false;
+      const at = opening;
+      patch(id, { loaded: null, loadStopped: null, commanded: null });
+      // What is built is what the module stores: the draft is saved first.
+      if (isRuntimeDirty(doc)) {
+        const saved = await get().save(id);
+        if (opening !== at) return false;
+        if (!saved) {
+          patch(id, { loadStopped: { words: `Runtime ${id} was not saved, so nothing was built or loaded.`, refusal: null, problems: null } });
+          return false;
+        }
+      }
+      if (!get().docs[id] || get().docs[id]?.busy !== null) return false;
+      patch(id, { busy: 'loading' });
+      try {
+        return await loading(projectId, id, cold, at);
+      } finally {
+        if (opening === at) {
+          patch(id, { busy: null });
+          afterBusy(id);
+        }
+      }
+    },
+
+    command: async (id, run) => {
+      const at = opening;
+      if (!get().docs[id]) return;
+      patch(id, { commanded: null });
+      try {
+        await (run ? core.run(id) : core.stop(id));
+        if (opening !== at) return;
+        patch(id, { commanded: { words: `Runtime ${id} was asked to ${run ? 'run' : 'stop'}.`, stopped: null, answer: null } });
+      } catch (cause) {
+        if (opening !== at) return;
+        patch(id, {
+          commanded: {
+            words: '',
+            stopped: { words: `Runtime ${id} was not asked to ${run ? 'run' : 'stop'}.`, refusal: refusalOf(cause), problems: null },
+            answer: null,
+          },
+        });
+      }
+      void usePrograms.getState().readRuntimes();
+    },
+
+    unload: async (id) => {
+      const projectId = get().projectId;
+      const doc = get().docs[id];
+      if (projectId === null || !doc || doc.busy !== null) return false;
+      const at = opening;
+      patch(id, { busy: 'unloading', commanded: null, loaded: null, loadStopped: null });
+      const stop = (words: string, cause: unknown): false => {
+        if (opening === at) {
+          patch(id, { commanded: { words: '', stopped: { words, refusal: refusalOf(cause), problems: problemsOf(cause) }, answer: null } });
+        }
+        return false;
+      };
+      try {
+        let saved: Instance[];
+        try {
+          saved = (await api.config(projectId)).config?.instances ?? [];
+        } catch (cause) {
+          return stop(`The project's runtimes could not be read, so runtime ${id} was not taken out.`, cause);
+        }
+        if (opening !== at) return false;
+        let answer: ApplyAnswer;
+        try {
+          // Every other instance is sent back as it was read, in its order.
+          answer = await api.setInstances(projectId, saved.filter((instance) => instance.id !== id));
+        } catch (cause) {
+          return stop(`The project's runtimes were not saved, so runtime ${id} was not taken out.`, cause);
+        }
+        if (opening !== at) return false;
+        patch(id, {
+          commanded: {
+            words: answer.applied
+              ? `Runtime ${id} was taken out of the project's runtimes.`
+              : `Runtime ${id} was taken out of the project's runtimes. The controller runs another project, so nothing was stopped.`,
+            stopped: null,
+            answer,
+          },
+        });
+        void usePrograms.getState().readRuntimes();
+        return true;
+      } finally {
+        if (opening === at) {
+          patch(id, { busy: null });
+          afterBusy(id);
+        }
+      }
+    },
 
     changed: (event) => {
       // Whether the event is of the open project is asked by the caller.

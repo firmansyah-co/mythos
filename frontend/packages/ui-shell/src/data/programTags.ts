@@ -31,8 +31,10 @@ export const useProgramTags = create<ProgramTagsState>((set, get) => ({
       if (get().projectId !== projectId) return;
       const published = [
         ...new Set(
+          // A runtime of one program carries `program`; one of several (ADR-013 §2.19) carries
+          // `programs`, and each of them publishes its own tags.
           (config?.instances ?? []).flatMap((instance) =>
-            (instance.program?.published ?? []).map((binding) => binding.tag)
+            (instance.program ? [instance.program] : (instance.programs ?? [])).flatMap((program) => (program.published ?? []).map((binding) => binding.tag))
           )
         ),
       ]
