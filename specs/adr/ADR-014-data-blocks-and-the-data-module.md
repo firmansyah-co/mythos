@@ -272,7 +272,7 @@ Each is one slice, built through the workflow topology, with its own evidence fi
 | D1 (done) | Compiler: several sources in one compilation; `VAR_EXTERNAL` against given data block declarations; the copy's address, the layout hash and the written members in the compiled program | — |
 | D2 (done) | Protocol, runtime module and core: data blocks in a runtime's configuration, master copies, hand-over at program start and task end, the one-writer and layout checks, retained blocks, live values | D1 (C8b is built) |
 | D3 (done) | Data module: store, check, routes and MCP tools; the logic module builds with `<project>/data/` and its library | D1 |
-| C8c | Logic module: runtimes and task configuration (ADR-013 §2.19) | — |
+| C8c (done) | Logic module: runtimes and task configuration (ADR-013 §2.19) | D2, D3 |
 | D4 | Workbench: editor for types and data blocks, live values | D3 |
 | C8d | Workbench: tasks (ADR-013 §2.19) | C8c, D2 |
 | D5 | Data blocks typed by a function block (§2.6) | D2, D3 |
@@ -335,22 +335,28 @@ module (`plugins/data`, `org.mythos.data`) stores a project's types as `data/typ
 and its data blocks as `data/blocks.json`, checks every write with the compiler over the whole
 new state and refuses one that leaves it not checking, answers each block's layout hash, size
 and members and which blocks changed their layout, and has eight routes, each an MCP tool.
-Its writes hold a lock between processes. The logic module (0.6.0) has a library of functions
+Its writes hold a lock between processes. The logic module (0.7.0) has a library of functions
 and function blocks in `logic/library/`, refuses a `TYPE` in it, reads `<project>/data/`
 without writing it, and builds a program with the project's types, library and blocks: the
 instance carries `data` and the program's `data`, and the build is refused when the protocol's
 `check_data` refuses it. When the stored data does not check, a program without `VAR_EXTERNAL`
 still builds and the answer carries `project_problems`. The two modules meet only in the
 project's files, and a program builds with the data module unloaded. A project without data
-or library builds to the bytes and the version it had. Two programs that share a block can be
-loaded only as one runtime composed by hand, until the logic module builds runtimes of several
-programs (C8c). The workbench draws a diagnostic from another file on the program's own text
-and does not show `project_problems`. The cost of checking the data before each compile is NOT
-MEASURED, and two processes during a hot swap can lose one of two simultaneous writes of the
-logic module's files (NOT TESTED).
+or library builds to the bytes and the version it had. Two programs that share a block are built
+into one runtime by the logic module since C8c: the project's runtimes and their tasks are in
+`logic/tasks.json`, a runtime build answers one instance with the union of its programs' blocks
+once each, and the caller saves that instance and removes the ids in `replaces`. The module does
+not load it, and a block shared between runtimes is still refused by the core (R16). The
+workbench draws a diagnostic from another file on the program's own text and does not show
+`project_problems`. The cost of checking the data before each compile is NOT MEASURED. Since
+C8c the logic module's writes hold a lock between processes, as the data module's do; a runtime
+build reads without it, and a write by another process during a hot swap could give one build a
+torn view (LATENT, not reproduced).
 
-**Not built.** The editor for types, data blocks and the library (D4), runtimes of several
-programs built by the logic module (C8c), and D5, T2 and T3 are not built, so a runtime with
-data blocks is configured by the API, the MCP or a test-composed instance, and the data module
-is used over the API and the MCP only. `VAR_GLOBAL` stays refused, and so do `VAR_EXTERNAL` in a function block or function, a
+**Not built.** The editor for types, data blocks and the library (D4), D5, T2 and T3 are
+not built. A runtime with data blocks is configured over the API and the MCP, the workbench
+having no editor for runtimes and tasks (C8d), and the data module is used over the API and the
+MCP only. A retained block that moves into a configured runtime loses its kept values, since the
+core keeps them per runtime id, and no warning of the build says so (only RETAIN variables are
+warned about). `VAR_GLOBAL` stays refused, and so do `VAR_EXTERNAL` in a function block or function, a
 data block whose type is not a structure, and a per-block initial value.

@@ -6,6 +6,7 @@
 import { create } from 'zustand';
 import {
   api,
+  host,
   log,
   type ApplyAnswer,
   type BuildResult,
@@ -55,6 +56,17 @@ export interface RuntimesView {
   error: string | null;
   /** When the last read that succeeded was sent (ms, `monotonicNow`). */
   readAtMs: number | null;
+  /**
+   * The runtimes configured in the logic module (its `logic/tasks.json`, ADR-013 §2.19), read
+   * with the controller's: for each program a configured runtime runs, by its name in lower
+   * case, that runtime's id. A program in none runs alone, as a runtime of its own name.
+   * `null`: not known, never read or the last read failed (`configuredError`). Left out of a
+   * view, the editor reads the controller's runtimes alone, as before there were configured
+   * runtimes.
+   */
+  configured?: Record<string, string> | null;
+  /** Why the configured runtimes could not be read. */
+  configuredError?: string | null;
 }
 
 /** The variables of a running program as last read, or why they could not be. */
@@ -259,25 +271,67 @@ export function checkIsCurrent(doc: ProgramDoc): boolean {
 
 /**
  * How what the controller runs compares with this program, in words that claim no more than
- * is known. The runtime of a program has the program's name as its id.
+ * is known. The runtime of a program running alone has the program's name as its id. A program
+ * that the logic module's configuration puts in a runtime (ADR-013 §2.19) is `unknown` with that
+ * runtime's id in `runtime`, whether that runtime is loaded or not: this editor does not show
+ * such a runtime, and its commands, which act on the runtime named like the program, are not
+ * offered for it (Load of such a program is refused by the logic module).
  */
 export type RunState =
-  | { kind: 'unknown'; why: string }
+  | { kind: 'unknown'; why: string; runtime?: string }
   | { kind: 'not-loaded' }
   | { kind: 'loaded'; runtime: RuntimeStatus; stale: boolean };
+
+/** The configured runtime that runs program `name`, if the logic module says one does. */
+const configuredOf = (name: string, view: RuntimesView): string | undefined => {
+  const configured = view.configured;
+  const key = name.toLowerCase();
+  return configured && Object.hasOwn(configured, key) ? configured[key] : undefined;
+};
 
 export function runState(name: string, view: RuntimesView): RunState {
   if (view.runtimes === null) {
     return { kind: 'unknown', why: view.error ?? 'the runtimes have not been read yet' };
   }
   const runtime = view.runtimes.find((r) => r.id === name);
+  // Which runtime runs a program is the logic module's configuration, never a guess from the
+  // controller's runtimes: those name the PROGRAM a source declares, which need not be the
+  // program's name (a program alone may declare any, and a copy of another's text declares that
+  // one's).
+  const owner = view.error === null ? configuredOf(name, view) : undefined;
+  if (owner !== undefined) {
+    const running = view.runtimes.find((r) => r.id === owner);
+    let why = running
+      ? running.program.split(', ').length > 1
+        ? `program ${name} runs in runtime ${owner} with other programs, which this editor does not show yet`
+        : `program ${name} runs in runtime ${owner}, which this editor does not show yet`
+      : `program ${name} is in runtime ${owner}, which is not loaded and which this editor does not show yet`;
+    // Its build alone, loaded before it was put in the runtime: it runs, and Load cannot replace it.
+    if (runtime) why += `; its build alone, loaded before, still runs as runtime ${name}`;
+    return { kind: 'unknown', runtime: owner, why };
+  }
   if (view.error !== null) {
     // What was read before the failure is not what is: it is shown only as the last known.
     return runtime
       ? { kind: 'loaded', runtime, stale: true }
       : { kind: 'unknown', why: view.error };
   }
+  if (!runtime && view.configured === null) {
+    // It may run in a configured runtime: not said to be not loaded.
+    return {
+      kind: 'unknown',
+      why: `whether program ${name} runs in a runtime configured in the logic module is not known: ${view.configuredError ?? 'the configured runtimes have not been read yet'}`,
+    };
+  }
   return runtime ? { kind: 'loaded', runtime, stale: false } : { kind: 'not-loaded' };
+}
+
+/**
+ * Why no command for the program is offered, when it runs in a runtime of another id: every
+ * command of the editor acts on the runtime named like the program. `null` otherwise.
+ */
+export function inOtherRuntime(state: RunState): string | null {
+  return state.kind === 'unknown' && state.runtime !== undefined ? state.why : null;
 }
 
 const message = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
@@ -307,7 +361,43 @@ const checked = (doc: ProgramDoc, result: CheckResult, source: string): ProgramD
     : {}),
 });
 
-const EMPTY_RUNTIMES: RuntimesView = { runtimes: null, modules: null, error: null, readAtMs: null };
+const EMPTY_RUNTIMES: RuntimesView = {
+  runtimes: null,
+  modules: null,
+  error: null,
+  readAtMs: null,
+  configured: null,
+  configuredError: null,
+};
+
+/** The configured runtimes' answer of the logic module, as far as this editor reads it. */
+interface ConfiguredAnswer {
+  runtimes: Array<{ id: string; tasks: Array<{ programs: string[] }> }>;
+}
+
+/**
+ * Which configured runtime of the logic module runs each program of `projectId`, by program
+ * name in lower case (the module compares names without case), or why that is not known.
+ */
+async function readConfigured(
+  projectId: string | null
+): Promise<Pick<RuntimesView, 'configured' | 'configuredError'>> {
+  if (!projectId) return { configured: null, configuredError: 'no project is open' };
+  try {
+    const answer = await host().api<ConfiguredAnswer>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/logic/runtimes`
+    );
+    const configured: Record<string, string> = {};
+    for (const runtime of answer.runtimes) {
+      for (const task of runtime.tasks) {
+        for (const program of task.programs) configured[program.toLowerCase()] ??= runtime.id;
+      }
+    }
+    return { configured, configuredError: null };
+  } catch (cause) {
+    return { configured: null, configuredError: message(cause) };
+  }
+}
 
 const EMPTY = {
   projectId: null,
@@ -371,6 +461,19 @@ export const usePrograms = create<ProgramsState>((set, get) => {
     set({ busy: null, error: text });
   };
 
+  /**
+   * Whether a command for program `name` is refused before it is sent, and said so: the program
+   * runs in a runtime of another id, and every command here acts on the runtime named like the
+   * program (Load and Unload replace or drop that instance; Run, Stop and the forces address it),
+   * so none would have the effect it reports.
+   */
+  const refusedElsewhere = (name: string, what: string): boolean => {
+    const why = inOtherRuntime(runState(name, get().runtimes));
+    if (why === null) return false;
+    set({ error: `${what}: ${why}.` });
+    return true;
+  };
+
   /** Save what changed. Resolves with whether everything is saved. */
   const saveDoc = async (projectId: string, name: string): Promise<boolean> => {
     const doc = find(name);
@@ -392,7 +495,13 @@ export const usePrograms = create<ProgramsState>((set, get) => {
     ...EMPTY,
 
     load: async (projectId) => {
-      set({ ...EMPTY, projectId, phase: 'reading', runtimes: get().runtimes });
+      // Another project's configured runtimes are not this one's.
+      set({
+        ...EMPTY,
+        projectId,
+        phase: 'reading',
+        runtimes: { ...get().runtimes, configured: null, configuredError: null },
+      });
       try {
         const listed = await api.list(projectId);
         if (!still(projectId)) return;
@@ -542,6 +651,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
     download: async (name, cold = false) => {
       const projectId = get().projectId;
       if (!projectId || !find(name)) return false;
+      if (refusedElsewhere(name, `Program ${name} was not loaded`)) return false;
       set({ busy: 'loading', error: null });
       try {
         if (!(await saveDoc(projectId, name))) {
@@ -594,6 +704,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
     unload: async (name) => {
       const projectId = get().projectId;
       if (!projectId) return false;
+      if (refusedElsewhere(name, `Program ${name} was not unloaded`)) return false;
       set({ busy: 'loading', error: null });
       try {
         await api.setInstance(projectId, name, null);
@@ -609,6 +720,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
     },
 
     command: async (name, run) => {
+      if (refusedElsewhere(name, `Runtime ${name} was not asked to ${run ? 'run' : 'stop'}`)) return;
       set({ busy: 'commanding', error: null });
       try {
         await (run ? api.run(name) : api.stop(name));
@@ -621,6 +733,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
     },
 
     force: async (name, variable, value) => {
+      if (refusedElsewhere(name, `${variable} of ${name} was not forced`)) return false;
       set({ busy: 'forcing', error: null });
       try {
         await api.force(name, variable, value);
@@ -636,6 +749,7 @@ export const usePrograms = create<ProgramsState>((set, get) => {
 
     release: async (name, variable) => {
       const what = variable === null ? `The forces of ${name} were` : `${variable} of ${name} was`;
+      if (refusedElsewhere(name, `${what} not released`)) return false;
       set({ busy: 'forcing', error: null });
       try {
         await api.release(name, variable);
@@ -660,7 +774,8 @@ export const usePrograms = create<ProgramsState>((set, get) => {
         return true;
       };
       try {
-        const answer = await api.runtimes();
+        const projectId = get().projectId;
+        const [answer, configured] = await Promise.all([api.runtimes(), readConfigured(projectId)]);
         if (!newest()) return;
         awaitRuntimes();
         set({
@@ -669,6 +784,10 @@ export const usePrograms = create<ProgramsState>((set, get) => {
             modules: answer.modules.map((module) => module.provides),
             error: null,
             readAtMs: sentAtMs,
+            // Read for another project than the one open now: not known.
+            ...(get().projectId === projectId
+              ? configured
+              : { configured: null, configuredError: 'the configured runtimes are being read' }),
           },
         });
       } catch (cause) {

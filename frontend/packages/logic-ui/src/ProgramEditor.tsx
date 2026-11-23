@@ -68,6 +68,7 @@ import {
   checkIsCurrent,
   currencyOf,
   describeStart,
+  inOtherRuntime,
   isDirty,
   loadOf,
   monotonicNow,
@@ -154,6 +155,8 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
   const active = useController((s) => s.activeProjectId);
   const may = mayEngineer();
   const elsewhere = project && active !== undefined && active !== project.id;
+  // Disabled below by `state.kind`; this says why.
+  const held = inOtherRuntime(state);
 
   return (
     <section className="logic-panel" data-testid="program-runtime" aria-label="Runtime">
@@ -261,7 +264,7 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
           type="button"
           className="btn"
           disabled={!may || busy || state.kind !== 'loaded' || state.stale}
-          title="Put the program in RUN. From STOP or FAULT that is a warm restart: its RETAIN variables keep their values, the others take their initial values."
+          title={held ?? 'Put the program in RUN. From STOP or FAULT that is a warm restart: its RETAIN variables keep their values, the others take their initial values.'}
           onClick={() => {
             // Run starts writing to the plant: it is asked, as on Settings → Runtimes.
             if (
@@ -282,7 +285,7 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
           // Stop is the safe direction: neither a request still unanswered nor a state that is
           // no longer known takes it away. If the controller cannot be reached, it says so.
           disabled={!may || state.kind !== 'loaded'}
-          title="Put the program in STOP. Its outputs are written their safe values."
+          title={held ?? 'Put the program in STOP. Its outputs are written their safe values.'}
           onClick={() => void command(name, false)}
           data-testid="runtime-stop"
         >
@@ -293,7 +296,7 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
           className="btn btn--flat"
           disabled={!may || busy || state.kind === 'unknown'}
           onClick={() => void unload(name)}
-          title="Take the program out of the project's runtimes. Its outputs are written their safe values."
+          title={held ?? "Take the program out of the project's runtimes. Its outputs are written their safe values."}
           data-testid="runtime-unload"
         >
           <Upload size={13} aria-hidden /> Unload
@@ -309,7 +312,7 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
             !Array.isArray(state.runtime.forced) ||
             state.runtime.forced.length === 0
           }
-          title="Release every forced variable: the program decides their values again from its next scan."
+          title={held ?? 'Release every forced variable: the program decides their values again from its next scan.'}
           onClick={() => {
             if (
               window.confirm(
@@ -1573,6 +1576,9 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
   const dirty = isDirty(doc);
   const working = busy !== null;
   const state = runState(name, runtimes);
+  // Load replaces the instance named like the program: not offered for one that runs in a
+  // runtime of another id, where it would report a load it did not make.
+  const held = inOtherRuntime(state);
   const diagnostics = drawnOf(checkIsCurrent(doc) ? doc.check : null);
   // What runs is another version than the last one built here: said, since the text may differ.
   const differs =
@@ -1633,9 +1639,12 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
         <button
           type="button"
           className="btn"
-          disabled={!may || working}
+          disabled={!may || working || held !== null}
           onClick={() => void download(name).then(showIfRefused)}
-          title="Save, check and build the program, and put it into the project's runtimes. A new version of the program while it runs is changed online: it takes over the running variables and scans on."
+          title={
+            held ??
+            "Save, check and build the program, and put it into the project's runtimes. A new version of the program while it runs is changed online: it takes over the running variables and scans on."
+          }
           data-testid="program-load"
         >
           <Download size={13} aria-hidden /> Load
@@ -1643,7 +1652,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
         <button
           type="button"
           className="btn"
-          disabled={!may || working}
+          disabled={!may || working || held !== null}
           onClick={() => {
             // A cold load throws away what the running program holds: it is asked first.
             if (
@@ -1654,7 +1663,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
               void download(name, true).then(showIfRefused);
             }
           }}
-          title="Load the program with every variable from its initial value, RETAIN ones included."
+          title={held ?? 'Load the program with every variable from its initial value, RETAIN ones included.'}
           data-testid="program-load-cold"
         >
           <Download size={13} aria-hidden /> Load cold

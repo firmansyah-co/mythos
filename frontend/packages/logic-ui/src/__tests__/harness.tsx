@@ -104,6 +104,11 @@ export interface Backend {
   runtimes?: RuntimesAnswer | 'fails' | 'hangs';
   /** The project's saved runtimes. */
   config?: { instances: Array<Record<string, unknown>> } | null;
+  /**
+   * The runtimes configured in the logic module (`GET .../logic/runtimes`), each with the
+   * programs its one task runs; left out, none. `'fails'` answers 500.
+   */
+  configured?: Array<{ id: string; programs: string[] }> | 'fails';
   /** Whether saving the runtimes applies them (the project is the active one). */
   applied?: boolean;
   warnings?: string[];
@@ -279,6 +284,22 @@ export function server(backend: Backend): Call[] {
         return Response.json({ config: backend.config, applied, changes: applied ? { started: [] } : null });
       }
 
+      if (/\/projects\/[^/]+\/logic\/runtimes$/.test(path) && method === 'GET') {
+        if (backend.configured === 'fails') {
+          return failure(500, "logic/tasks.json cannot be read as the project's runtimes: expected value at line 1 column 1");
+        }
+        return Response.json({
+          runtimes: (backend.configured ?? []).map(({ id, programs }) => ({
+            id,
+            module: 'vm',
+            target: 'pc',
+            run: true,
+            tasks: [{ name: 't', kind: { type: 'cyclic', interval_ms: 10, phase_ms: 0 }, priority: 1, programs }],
+          })),
+          implied: [],
+          problems: [],
+        });
+      }
       const logic = /\/projects\/[^/]+\/logic\/programs(?:\/([^/]+))?(?:\/(source|settings|check|build))?$/.exec(path);
       if (!logic) return failure(404, `no route ${method} ${path}`);
       const [, name, action] = logic;

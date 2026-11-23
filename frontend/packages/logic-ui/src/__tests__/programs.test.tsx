@@ -5,7 +5,7 @@ import { EDITOR } from '../entry';
 import { PANES, ProgramEditor } from '../ProgramEditor';
 import { useModuleUi } from '../../../ui-shell/src/modules/registry';
 import { ProgramsTree } from '../ProgramsTree';
-import { isDirty, usePrograms } from '../programs';
+import { isDirty, runState, usePrograms } from '../programs';
 import {
   answerNext,
   CURRENCY_CASES,
@@ -787,6 +787,110 @@ describe('what the runtime is doing', () => {
     expect((byTestId(container, 'program-load') as HTMLButtonElement).disabled).toBe(true);
     expect((byTestId(container, 'runtime-run') as HTMLButtonElement).disabled).toBe(true);
     expect((byTestId(container, 'runtime-stop') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('a program running in a runtime of several programs is not said to be not loaded', async () => {
+    const line = runtimeOf('Line', { program: 'Pump, Tank', version: 'bbbbbbbbbbbb, cccccccccccc' });
+    const backend = tank({
+      runtimes: runtimesOf(line),
+      config: { instances: [{ id: 'Line' }] },
+      configured: [{ id: 'Line', programs: ['Pump', 'Tank'] }],
+    });
+    const { calls, container } = await opened(backend);
+    const why = 'program Tank runs in runtime Line with other programs, which this editor does not show yet';
+    expect(mode(container)).toBe('UNKNOWN');
+    expect(byTestId(container, 'runtime-unknown-why')?.textContent).toBe(why);
+    // Every command acts on the runtime named like the program: none is offered, and each says why.
+    for (const id of ['program-load', 'program-load-cold', 'runtime-run', 'runtime-stop', 'runtime-unload', 'runtime-release-all']) {
+      const command = byTestId(container, id) as HTMLButtonElement;
+      expect(command.disabled, id).toBe(true);
+      expect(command.title, id).toBe(why);
+    }
+    // Nor is any sent when asked for another way: nothing claims an effect it did not have.
+    calls.length = 0;
+    expect(await state().download('Tank')).toBe(false);
+    expect(state().error).toBe(`Program Tank was not loaded: ${why}.`);
+    expect(await state().unload('Tank')).toBe(false);
+    expect(state().error).toBe(`Program Tank was not unloaded: ${why}.`);
+    await state().command('Tank', false);
+    expect(await state().force('Tank', 'speed', 1)).toBe(false);
+    expect(await state().release('Tank', null)).toBe(false);
+    expect(writes(calls)).toEqual([]);
+    expect(backend.config?.instances).toEqual([{ id: 'Line' }]);
+
+    // Which runtime runs it is the logic module's configuration, whatever PROGRAM the runtimes
+    // report: taken out of Line, it is the runtime of its own name that runs it.
+    backend.configured = [{ id: 'Line', programs: ['Pump', 'Tanker'] }];
+    backend.runtimes = runtimesOf(runtimeOf('Line', { program: 'Pump, Tank' }), runtimeOf('Tank'));
+    await doing(() => state().readRuntimes());
+    expect(mode(container)).toBe('RUN');
+    expect((byTestId(container, 'program-load') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('a program alone in a configured runtime is not said to be not loaded, whatever PROGRAM its source declares', async () => {
+    // Its source declares PROGRAM Other: the controller reports runtime R running 'Other'.
+    const { container } = await opened(
+      tank({ runtimes: runtimesOf(runtimeOf('R', { program: 'Other' })), configured: [{ id: 'R', programs: ['Tank'] }] })
+    );
+    expect(mode(container)).toBe('UNKNOWN');
+    expect(byTestId(container, 'runtime-unknown-why')?.textContent).toBe(
+      'program Tank runs in runtime R, which this editor does not show yet'
+    );
+    expect((byTestId(container, 'program-load') as HTMLButtonElement).disabled).toBe(true);
+    // The same, read as a view.
+    expect(
+      runState('Tank', {
+        runtimes: [runtimeOf('R', { program: 'Other' })],
+        modules: ['vm'],
+        error: null,
+        readAtMs: 0,
+        configured: { tank: 'R' },
+        configuredError: null,
+      })
+    ).toEqual({ kind: 'unknown', runtime: 'R', why: 'program Tank runs in runtime R, which this editor does not show yet' });
+  });
+
+  it('a program not loaded is said to be not loaded when another program running alone declares its PROGRAM name', async () => {
+    // A project with no configured runtime: Pump2's source is a copy of Tank's, so it declares
+    // PROGRAM Tank, and the controller reports runtime Pump2 running 'Tank'.
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Pump2', { program: 'Tank' })) });
+    const { container } = await opened(backend);
+    expect(mode(container)).toBe('NOT LOADED');
+    expect((byTestId(container, 'program-load') as HTMLButtonElement).disabled).toBe(false);
+    const view = { runtimes: [runtimeOf('Pump2', { program: 'Tank' })], modules: ['vm'], error: null, readAtMs: 0 };
+    expect(runState('Tank', view)).toEqual({ kind: 'not-loaded' });
+    expect(runState('Tank', { ...view, configured: {}, configuredError: null })).toEqual({ kind: 'not-loaded' });
+  });
+
+  it('a program put in a configured runtime while its build alone runs says so, and offers no Load the module refuses', async () => {
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')), configured: [{ id: 'Line', programs: ['Tank'] }] });
+    const { calls, container } = await opened(backend);
+    const why =
+      'program Tank is in runtime Line, which is not loaded and which this editor does not show yet; its build alone, loaded before, still runs as runtime Tank';
+    expect(mode(container)).toBe('UNKNOWN');
+    expect(byTestId(container, 'runtime-unknown-why')?.textContent).toBe(why);
+    for (const id of ['program-load', 'program-load-cold']) {
+      const command = byTestId(container, id) as HTMLButtonElement;
+      expect(command.disabled, id).toBe(true);
+      expect(command.title, id).toBe(why);
+    }
+    calls.length = 0;
+    expect(await state().download('Tank')).toBe(false);
+    expect(state().error).toBe(`Program Tank was not loaded: ${why}.`);
+    expect(writes(calls)).toEqual([]);
+  });
+
+  it('a program is not said to be not loaded while the configured runtimes cannot be read', async () => {
+    const backend = tank({ configured: 'fails' });
+    const { container } = await opened(backend);
+    expect(mode(container)).toBe('UNKNOWN');
+    expect(byTestId(container, 'runtime-unknown-why')?.textContent).toBe(
+      "whether program Tank runs in a runtime configured in the logic module is not known: 500 Internal Server Error: logic/tasks.json cannot be read as the project's runtimes: expected value at line 1 column 1"
+    );
+    // A runtime of its own name runs it, whatever else is not known.
+    backend.runtimes = runtimesOf(runtimeOf('Tank'));
+    await doing(() => state().readRuntimes());
+    expect(mode(container)).toBe('RUN');
   });
 
   it('says so when the runtime runs another version than the one just built', async () => {
