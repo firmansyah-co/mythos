@@ -761,7 +761,8 @@ async fn programs_sharing_a_block_loaded_alone_refuse_their_runtime_until_the_re
         "{applied}"
     );
 
-    // The runtime of both, saved beside the instance it replaces: refused.
+    // The runtime of both, saved beside the instance it replaces: refused, for the program in
+    // two runtimes, which both builds name, before the block it shares.
     let built = rig.build_runtime("Line", line(5)).await;
     assert_eq!(built["replaces"], json!(["Writer", "Reader"]), "{built}");
     let refused = rig
@@ -775,7 +776,7 @@ async fn programs_sharing_a_block_loaded_alone_refuse_their_runtime_until_the_re
     assert!(
         refused
             .to_string()
-            .contains("data block 'S' is in runtimes 'Writer' and 'Line'"),
+            .contains("program 'Writer' of the project is in runtimes 'Writer' and 'Line'; a program runs in one runtime: take it out of one of them in the same save"),
         "{refused}"
     );
     // Without the instances it names in `replaces`: started.
@@ -878,14 +879,13 @@ fn retain_file_of(root: &Path, id: &str) -> Option<PathBuf> {
     walk(root, &format!("{id}.json"))
 }
 
-/// The core keeps RETAIN values per runtime id, not per program (the core's and the runtime
-/// module's, not fixed in the logic module). So when runtime `Line`'s one program changes from A
-/// to B, a warm load gives B's RETAIN `total` what was kept under `Line` for A's `total`, and a
-/// cold load does not. The build of B says exactly that: this test is the check that its warning
-/// is true, and it goes red when the core stops handing one program's values to another, which
-/// is when the warning must change with it.
+/// The core keeps RETAIN values per runtime id and per program. So when runtime `Line`'s one
+/// program changes from A to B, a warm load gives B's RETAIN `total` none of what was kept under
+/// `Line` for A's `total`: B starts from its initial value, the load says what it did not give
+/// and why, and the core's file then holds B's values only. The build of B says exactly that:
+/// this test is the check that its warning is true.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_runtime_id_given_another_program_warns_of_the_values_a_warm_load_hands_it() {
+async fn a_runtime_id_given_another_program_gives_it_none_of_the_values_kept_for_the_first() {
     let rig = rig().await;
     let settings = json!({"interval_ms": 20, "runtime": "vm", "target": "pc", "run": true});
     rig.program(
@@ -931,7 +931,7 @@ async fn a_runtime_id_given_another_program_warns_of_the_values_a_warm_load_hand
     assert_eq!(
         second["warnings"],
         json!([
-            "program 'B': RETAIN values are kept per runtime id, not per program: a warm load of runtime 'Line' puts into each RETAIN variable of 'B' the value kept under runtime 'Line' for a variable of the same name, type and size, whichever program ran in runtime 'Line' before, and none of the values kept while 'B' ran alone as runtime 'B'; a cold load starts every RETAIN variable from its initial value"
+            "program 'B': RETAIN values are kept per runtime id and per program: a warm load of runtime 'Line' gives a RETAIN variable of 'B' only a value kept under runtime 'Line' for 'B' (or, when the build that kept it did not name its project program, for a program of the same PROGRAM name), of the same name, type and size; values kept under runtime 'Line' for another program are not given, a program deleted and made again under the name 'B' included, and none of those kept while 'B' ran in another runtime, alone as runtime 'B' included; the one exception is values kept before the core kept them per program, which a warm load gives once, as they are, to whatever runtime 'Line' runs; a cold load starts every RETAIN variable from its initial value"
         ]),
         "{second}"
     );
@@ -951,11 +951,52 @@ async fn a_runtime_id_given_another_program_warns_of_the_values_a_warm_load_hand
         t["program"] == "B" && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
     })
     .await;
-    let (warm, watched) = total().await;
-    assert!(
-        warm.as_i64().is_some_and(|v| v >= 1),
-        "a warm load gives B what was kept under Line for A, as the warning says: {watched}; the core answered {applied}"
+    let load = &applied["changes"]["runtimes"][0];
+    assert_eq!(
+        (&load["runtime"], &load["start"], &load["why"]),
+        (
+            &json!("Line"),
+            &json!("warm"),
+            &json!("the program running was 'A', not 'B'")
+        ),
+        "{applied}"
     );
+    assert_eq!(
+        load["not_given"],
+        json!([{
+            "variable": "A.total",
+            "why": "kept for program 'A', which runtime 'Line' does not run now"
+        }]),
+        "{applied}"
+    );
+    let (warm, watched) = total().await;
+    assert_eq!(
+        warm,
+        json!(0),
+        "a warm load gives B none of what was kept under Line for A, as the warning says: {watched}; the core answered {applied}"
+    );
+    // The core's file then holds B's values only: A's are not kept for B to be given later.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let kept: Option<Value> = retain_file_of(rig._root.path(), "Line")
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .and_then(|t| serde_json::from_str(&t).ok());
+        let names: Option<Vec<String>> = kept.as_ref().and_then(|k| {
+            k["programs"].as_array().map(|ps| {
+                ps.iter()
+                    .map(|p| p["name"].as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
+        });
+        if names.as_deref() == Some(&["B".to_string()][..]) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the core's file still holds a program other than B, or none: {kept:?}; the core answered {applied}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     // Cold: from its initial value, as the warning says (B never writes its total).
     let asked = rig
         .eng("POST", "/api/v1/runtimes/Line/cold-start", None, 200)
@@ -972,5 +1013,710 @@ async fn a_runtime_id_given_another_program_warns_of_the_values_a_warm_load_hand
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    rig.close().await;
+}
+
+impl Rig {
+    /// Runtime `id` as `GET /api/v1/runtimes` reports it, or `null` when it reports none.
+    async fn runtime_named(&self, id: &str) -> Value {
+        let all = self.eng("GET", "/api/v1/runtimes", None, 200).await;
+        all["runtimes"]
+            .as_array()
+            .and_then(|r| r.iter().find(|t| t["id"] == id).cloned())
+            .unwrap_or(Value::Null)
+    }
+
+    async fn named_when(&self, id: &str, what: &str, holds: impl Fn(&Value) -> bool) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let runtime = self.runtime_named(id).await;
+            if holds(&runtime) {
+                return runtime;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "never: {what}; runtime {id}: {runtime}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// The value of `variable` of runtime `id`, with the whole answer.
+    async fn watch(&self, id: &str, variable: &str) -> (Value, Value) {
+        let watched = self
+            .eng(
+                "POST",
+                &format!("/api/v1/runtimes/{id}/watch"),
+                Some(json!({ "variables": [variable] })),
+                200,
+            )
+            .await;
+        (watched["values"][0]["value"].clone(), watched)
+    }
+
+    /// The core's retain file of runtime `id`, parsed, once it is there and parses.
+    fn kept(&self, id: &str) -> Option<Value> {
+        retain_file_of(self._root.path(), id)
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .and_then(|t| serde_json::from_str(&t).ok())
+    }
+
+    /// Until the core's file of runtime `id` holds `holds`; the file as it then is.
+    async fn kept_when(&self, id: &str, what: &str, holds: impl Fn(&Value) -> bool) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Some(kept) = self.kept(id).filter(|k| holds(k)) {
+                return kept;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "never: {what}; the core's file of {id}: {:?}",
+                self.kept(id)
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+/// A DINT kept for the program built from `built_from` in a retain file, by its bare path, or
+/// `None` when the file holds no such value.
+fn kept_dint(kept: &Value, built_from: &str, path: &str) -> Option<i64> {
+    let program = kept["programs"]
+        .as_array()?
+        .iter()
+        .find(|p| p["built_from"] == built_from)?;
+    let value = program["values"]
+        .as_array()?
+        .iter()
+        .find(|v| v["path"] == path && v["type"] == "DINT")?;
+    let bytes = hex::decode(value["bytes"].as_str()?).ok()?;
+    Some(i64::from(i32::from_le_bytes(bytes.try_into().ok()?)))
+}
+
+/// The project programs each kept entry of a retain file is a build of.
+fn kept_built_from(kept: &Value) -> Vec<String> {
+    kept["programs"]
+        .as_array()
+        .map(|ps| {
+            ps.iter()
+                .map(|p| p["built_from"].as_str().unwrap_or("NOT NAMED").to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A configured runtime of one cyclic task `main` at 20 ms running `programs`.
+fn one_task(programs: &[&str]) -> Value {
+    every(programs, 20)
+}
+
+/// A configured runtime of one cyclic task `main` every `interval_ms` running `programs`.
+fn every(programs: &[&str], interval_ms: u64) -> Value {
+    json!({ "module": "vm", "target": "pc", "run": true, "tasks": [
+        { "name": "main", "kind": { "type": "cyclic", "interval_ms": interval_ms }, "priority": 1, "programs": programs }
+    ]})
+}
+
+/// A program named `name` that counts in `n`, with nothing bound.
+fn counting(name: &str) -> String {
+    format!("PROGRAM {name}\nVAR n : DINT; END_VAR\n  n := n + 1;\nEND_PROGRAM")
+}
+
+/// A program's settings: 20 ms, the VM, the PC target, RUN, nothing bound.
+fn settings() -> Value {
+    json!({"interval_ms": 20, "runtime": "vm", "target": "pc", "run": true})
+}
+
+/// One program of the project in two runtimes: both instances name it, as every build of the
+/// logic module does, so the core refuses the save that keeps the old runtime beside the new
+/// one, in its own words naming both, and saves nothing; the same save with the old runtime
+/// built again without the program runs it in one runtime only.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_moved_between_configured_runtimes_is_refused_until_the_old_runtime_lets_it_go() {
+    let rig = rig().await;
+    for name in ["A", "B", "C"] {
+        rig.program(name, &counting(name), settings()).await;
+    }
+    let x = rig.build_runtime("X", one_task(&["A", "B"])).await;
+    rig.load_built(&x, 200).await;
+    let y = rig.build_runtime("Y", one_task(&["C"])).await;
+    rig.load_built(&y, 200).await;
+    rig.named_when("X", "X runs A and B", runs(&x)).await;
+    let before = rig.eng("GET", CORE_RUNTIMES, None, 200).await;
+
+    // B moves from X to Y in the logic module: X is stored without it first, as it refuses a
+    // program in two of its runtimes.
+    rig.eng("PUT", &format!("{RUNTIMES}/X"), Some(one_task(&["A"])), 200)
+        .await;
+    let moved = rig.build_runtime("Y", one_task(&["C", "B"])).await;
+    // `replaces` names only the ids its programs run under alone, never X.
+    assert_eq!(moved["replaces"], json!(["C", "B"]), "{moved}");
+    let refused = rig.load_built(&moved, 400).await;
+    assert_eq!(
+        refused["error"],
+        "program 'B' of the project is in runtimes 'X' and 'Y'; a program runs in one runtime: take it out of one of them in the same save",
+        "{refused}"
+    );
+    assert_eq!(
+        rig.eng("GET", CORE_RUNTIMES, None, 200).await,
+        before,
+        "nothing is saved"
+    );
+    let still = rig.runtime_named("X").await;
+    assert_eq!(still["program"], "A, B", "{still}");
+
+    // X built again without B, saved in the same save as Y: B runs in Y only.
+    let x_without = rig
+        .eng("POST", &format!("{RUNTIMES}/X/build"), None, 200)
+        .await;
+    assert_eq!(
+        x_without["instance"]["program"]["built_from"], "A",
+        "{x_without}"
+    );
+    let applied = rig
+        .eng(
+            "PUT",
+            CORE_RUNTIMES,
+            Some(json!({ "instances": [x_without["instance"], moved["instance"]] })),
+            200,
+        )
+        .await;
+    let x_version = x_without["version"].clone();
+    let x_now = rig
+        .named_when("X", "X runs A alone", |t| {
+            t["version"] == x_version && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
+        })
+        .await;
+    assert_eq!(
+        x_now["program"], "A",
+        "{x_now}; the core answered {applied}"
+    );
+    let y_now = rig.named_when("Y", "Y runs C and B", runs(&moved)).await;
+    assert_eq!(
+        y_now["program"], "C, B",
+        "{y_now}; the core answered {applied}"
+    );
+    rig.close().await;
+}
+
+/// Two project programs whose sources both declare `PROGRAM Tank` are two programs: one put in
+/// the place of the other under one configured runtime id is not changed online (which would
+/// carry the first one's variables into it), and a warm load gives it none of the RETAIN values
+/// kept for the first; the load says which and why, and the core's file then holds the second
+/// one's values only.
+#[tokio::test(flavor = "multi_thread")]
+async fn another_project_program_of_the_same_program_name_is_neither_changed_online_nor_given_its_retained_values(
+) {
+    let rig = rig().await;
+    rig.program(
+        "T1",
+        "PROGRAM Tank\nVAR RETAIN total : DINT; END_VAR\n  total := total + 1;\nEND_PROGRAM",
+        settings(),
+    )
+    .await;
+    // Never writes its total: whatever it holds was given to it.
+    rig.program(
+        "T2",
+        "PROGRAM Tank\nVAR RETAIN total : DINT; END_VAR\nVAR n : DINT; END_VAR\n  n := n + 1;\nEND_PROGRAM",
+        settings(),
+    )
+    .await;
+    let first = rig.build_runtime("Line", one_task(&["T1"])).await;
+    assert_eq!(
+        (
+            &first["instance"]["program"]["name"],
+            &first["instance"]["program"]["built_from"]
+        ),
+        (&json!("Tank"), &json!("T1")),
+        "{first}"
+    );
+    rig.load_built(&first, 200).await;
+    rig.kept_when("Line", "a total of T1's above 0 is kept", |k| {
+        kept_dint(k, "T1", "total").is_some_and(|t| t > 0)
+    })
+    .await;
+
+    let second = rig.build_runtime("Line", one_task(&["T2"])).await;
+    assert_eq!(second["instance"]["program"]["name"], "Tank", "{second}");
+    let applied = rig.load_built(&second, 200).await;
+    let load = &applied["changes"]["runtimes"][0];
+    assert_eq!(
+        (&load["runtime"], &load["start"], &load["why"]),
+        (
+            &json!("Line"),
+            &json!("warm"),
+            &json!("the program running was 'T1', not 'T2'")
+        ),
+        "{applied}"
+    );
+    assert_eq!(
+        load["not_given"],
+        json!([{
+            "variable": "T1.total",
+            "why": "kept for program 'T1', which runtime 'Line' does not run now"
+        }]),
+        "{applied}"
+    );
+    let second_version = second["version"].clone();
+    rig.named_when("Line", "T2 runs and has scanned", |t| {
+        t["version"] == second_version && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
+    })
+    .await;
+    let (total, watched) = rig.watch("Line", "total").await;
+    assert_eq!(
+        total,
+        json!(0),
+        "T2 starts from its initial value: {watched}; the core answered {applied}"
+    );
+    let kept = rig
+        .kept_when("Line", "the file holds T2's values only", |k| {
+            kept_built_from(k) == ["T2"]
+        })
+        .await;
+    assert_eq!(kept_dint(&kept, "T2", "total"), Some(0), "{kept}");
+    rig.close().await;
+}
+
+/// The same project program, its source now declaring another PROGRAM name, is the same
+/// program: its new build replaces the running one online, its variables carried.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_whose_source_renames_its_program_is_still_changed_online() {
+    let rig = rig().await;
+    rig.program(
+        "P",
+        "PROGRAM Tank\nVAR RETAIN total : DINT; END_VAR\n  total := total + 1;\nEND_PROGRAM",
+        settings(),
+    )
+    .await;
+    let first = rig.build_runtime("Line", one_task(&["P"])).await;
+    rig.load_built(&first, 200).await;
+    let first_version = first["version"].clone();
+    rig.named_when("Line", "Tank runs and has scanned", |t| {
+        t["version"] == first_version && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
+    })
+    .await;
+    let (before, watched) = rig.watch("Line", "total").await;
+    let before = before
+        .as_i64()
+        .unwrap_or_else(|| panic!("a total is watched: {watched}"));
+
+    rig.eng(
+        "PUT",
+        &format!("{PROGRAMS}/P/source"),
+        Some(json!({ "source": "PROGRAM Vessel\nVAR RETAIN total : DINT; END_VAR\n  total := total + 1;\nEND_PROGRAM" })),
+        200,
+    )
+    .await;
+    let second = rig
+        .eng("POST", &format!("{RUNTIMES}/Line/build"), None, 200)
+        .await;
+    assert_eq!(
+        (
+            &second["instance"]["program"]["name"],
+            &second["instance"]["program"]["built_from"]
+        ),
+        (&json!("Vessel"), &json!("P")),
+        "{second}"
+    );
+    let applied = rig.load_built(&second, 200).await;
+    let load = &applied["changes"]["runtimes"][0];
+    assert_eq!(
+        (&load["runtime"], &load["start"]),
+        (&json!("Line"), &json!("online")),
+        "why: {}; {applied}",
+        load["why"]
+    );
+    let second_version = second["version"].clone();
+    let now = rig
+        .named_when("Line", "Vessel runs and has scanned", |t| {
+            t["version"] == second_version && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
+        })
+        .await;
+    assert_eq!(now["program"], "Vessel", "{now}");
+    // Carried: it goes on from the running value, never from what was kept before it.
+    let (after, watched) = rig.watch("Line", "total").await;
+    assert!(
+        after.as_i64().is_some_and(|a| a >= before),
+        "total went on from {before}: {watched}; the core answered {applied}"
+    );
+    rig.close().await;
+}
+
+/// A program keeps its RETAIN values when a second program joins its runtime (its values then
+/// named by it) and when that program leaves again. Each load is warm, as the programs differ;
+/// each time A's total goes on from what the core kept for A, never from its initial value.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_keeps_its_retained_values_when_programs_join_and_leave_its_runtime() {
+    let rig = rig().await;
+    // A thousand a scan, every 20 ms while kept, and every 500 ms after each load: a total
+    // started again from 0 would need 50 scans, 25 s, to reach the 50000 kept first.
+    rig.program(
+        "A",
+        "PROGRAM A\nVAR RETAIN total : DINT; END_VAR\n  total := total + 1000;\nEND_PROGRAM",
+        settings(),
+    )
+    .await;
+    rig.program("B", &counting("B"), settings()).await;
+
+    let alone = rig.build_runtime("Line", one_task(&["A"])).await;
+    rig.load_built(&alone, 200).await;
+    let kept = rig
+        .kept_when("Line", "a total of A's of at least 50000 is kept", |k| {
+            kept_dint(k, "A", "total").is_some_and(|t| t >= 50_000)
+        })
+        .await;
+    let k1 = kept_dint(&kept, "A", "total").unwrap();
+
+    // B joins.
+    let both = rig.build_runtime("Line", every(&["A", "B"], 500)).await;
+    let applied = rig.load_built(&both, 200).await;
+    let load = &applied["changes"]["runtimes"][0];
+    assert_eq!(
+        (&load["start"], &load["why"], &load["not_given"]),
+        (
+            &json!("warm"),
+            &json!("the program running was 'A', not 'A,B'"),
+            &json!([])
+        ),
+        "{applied}"
+    );
+    rig.named_when("Line", "A and B run and have scanned", runs(&both))
+        .await;
+    let (total, watched) = rig.watch("Line", "A.total").await;
+    assert!(
+        total.as_i64().is_some_and(|t| t >= k1),
+        "A's total goes on from the {k1} kept for it: {watched}; the core answered {applied}"
+    );
+    // Kept again, now from a runtime of two programs, for A by its name.
+    let kept = rig
+        .kept_when("Line", "a total of A's above the first is kept", |k| {
+            kept_dint(k, "A", "total").is_some_and(|t| t > k1)
+        })
+        .await;
+    assert_eq!(kept_built_from(&kept), ["A"], "B keeps nothing: {kept}");
+    let k2 = kept_dint(&kept, "A", "total").unwrap();
+
+    // B leaves.
+    let again = rig.build_runtime("Line", every(&["A"], 500)).await;
+    let applied = rig.load_built(&again, 200).await;
+    let load = &applied["changes"]["runtimes"][0];
+    assert_eq!(
+        (&load["start"], &load["why"], &load["not_given"]),
+        (
+            &json!("warm"),
+            &json!("the program running was 'A,B', not 'A'"),
+            &json!([])
+        ),
+        "{applied}"
+    );
+    let again_version = again["version"].clone();
+    rig.named_when("Line", "A runs alone again and has scanned", |t| {
+        t["version"] == again_version && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
+    })
+    .await;
+    let (total, watched) = rig.watch("Line", "total").await;
+    assert!(
+        total.as_i64().is_some_and(|t| t >= k2),
+        "A's total goes on from the {k2} kept for it: {watched}; the core answered {applied}"
+    );
+    rig.close().await;
+}
+
+/// A program counting its RETAIN `total`, and one that declares the same `total` and never
+/// writes it: whatever the second holds was given to it.
+const COUNTS_TOTAL: &str =
+    "PROGRAM T\nVAR RETAIN total : DINT; END_VAR\n  total := total + 1;\nEND_PROGRAM";
+const NEVER_WRITES_TOTAL: &str =
+    "PROGRAM T\nVAR RETAIN total : DINT; END_VAR\nVAR n : DINT; END_VAR\n  n := n + 1;\nEND_PROGRAM";
+
+/// Program `T` counting its RETAIN total, built alone, saved, and running until the core's
+/// file holds a total above 10; then deleted in the logic module (which the core does not
+/// know) and made again under its name, never writing total; built. The new build.
+async fn a_program_made_again(rig: &Rig) -> Value {
+    rig.program("T", COUNTS_TOTAL, settings()).await;
+    let first = rig.build("T").await;
+    let made = first["instance"]["program"]["created"].clone();
+    assert!(made.is_string(), "{first}");
+    rig.eng(
+        "PUT",
+        CORE_RUNTIMES,
+        Some(json!({ "instances": [first["instance"]] })),
+        200,
+    )
+    .await;
+    rig.kept_when("T", "a total of T's above 10 is kept", |k| {
+        kept_dint(k, "T", "total").is_some_and(|t| t > 10)
+    })
+    .await;
+    rig.eng("DELETE", &format!("{PROGRAMS}/T"), None, 200).await;
+    rig.program("T", NEVER_WRITES_TOTAL, settings()).await;
+    let second = rig.build("T").await;
+    let program = &second["instance"]["program"];
+    assert_eq!(program["built_from"], "T", "{second}");
+    assert!(
+        program["created"].is_string() && program["created"] != made,
+        "made again, it is marked apart: {made} then {second}"
+    );
+    second
+}
+
+/// What the load says of the first T's kept total, which the second is not given.
+fn made_before_not_given() -> Value {
+    json!([{
+        "variable": "T.total",
+        "why": "kept for program 'T' as it was made before: runtime 'T' runs a program made again under that name, which is another program"
+    }])
+}
+
+/// Review finding 1 of C8c-core, in RUN: a program deleted while the core ran it and made
+/// again under its name is another program. Its build is not changed online from the
+/// running one, it is not given the RETAIN values kept for the one before, the load says
+/// both, and the core's file then holds the new program's values only.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_made_again_under_a_deleted_name_is_neither_changed_online_nor_given_the_values_of_the_one_before(
+) {
+    let rig = rig().await;
+    let second = a_program_made_again(&rig).await;
+    let applied = rig
+        .eng(
+            "PUT",
+            CORE_RUNTIMES,
+            Some(json!({ "instances": [second["instance"]] })),
+            200,
+        )
+        .await;
+    let load = &applied["changes"]["runtimes"][0];
+    assert_eq!(
+        (&load["start"], &load["why"]),
+        (
+            &json!("warm"),
+            &json!("the program running was 'T' as made before: a program made again under its name is another program")
+        ),
+        "{applied}"
+    );
+    assert_eq!(load["not_given"], made_before_not_given(), "{applied}");
+    let version = second["version"].clone();
+    rig.named_when("T", "the new T runs and has scanned", |t| {
+        t["version"] == version && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
+    })
+    .await;
+    let (total, watched) = rig.watch("T", "total").await;
+    assert_eq!(
+        total,
+        json!(0),
+        "the new T never writes total: {watched}; the core answered {applied}"
+    );
+    let made = second["instance"]["program"]["created"].clone();
+    rig.kept_when("T", "the file holds the new T's values only", |k| {
+        k["programs"].as_array().is_some_and(|ps| {
+            ps.len() == 1 && ps[0]["created"] == made && kept_dint(k, "T", "total") == Some(0)
+        })
+    })
+    .await;
+    rig.close().await;
+}
+
+/// Review finding 1 of C8c-core, loaded in STOP and then put in RUN: a warm start of the
+/// program made again gives it none of the values kept for the one before, and says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_made_again_under_a_deleted_name_and_loaded_in_stop_starts_without_the_values_of_the_one_before(
+) {
+    let rig = rig().await;
+    let mut second = a_program_made_again(&rig).await;
+    second["instance"]["run"] = json!(false);
+    let applied = rig
+        .eng(
+            "PUT",
+            CORE_RUNTIMES,
+            Some(json!({ "instances": [second["instance"]] })),
+            200,
+        )
+        .await;
+    let load = &applied["changes"]["runtimes"][0];
+    assert_eq!(load["start"], "warm", "{applied}");
+    assert_eq!(load["not_given"], made_before_not_given(), "{applied}");
+    rig.eng("POST", "/api/v1/runtimes/T/run", None, 200).await;
+    let version = second["version"].clone();
+    rig.named_when("T", "the new T runs and has scanned", |t| {
+        t["version"] == version && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
+    })
+    .await;
+    let (total, watched) = rig.watch("T", "total").await;
+    assert_eq!(
+        total,
+        json!(0),
+        "the new T never writes total: {watched}; the core answered {applied}"
+    );
+    rig.close().await;
+}
+
+/// Review finding 4 of C8c-core: a program's identity is a name in its project. Project
+/// `plant` runs its program `Main` (PROGRAM Pump) alone; project `other` has its own `Main`
+/// (PROGRAM Mixer), built and saved while inactive. Activating `other` replaces runtime `Main`
+/// with a build of another project: it starts warm, never on the running variables of
+/// `plant`'s program.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_of_the_project_made_active_never_carries_on_from_another_project_s_running_program(
+) {
+    let rig = rig().await;
+    let every = |ms: u64| json!({"interval_ms": ms, "runtime": "vm", "target": "pc", "run": true});
+    rig.program(
+        "Main",
+        "PROGRAM Pump\nVAR n : DINT; END_VAR\n  n := n + 1;\nEND_PROGRAM",
+        every(20),
+    )
+    .await;
+    let first = rig.build("Main").await;
+    // As a program made before the making mark is built: named by its project name alone. Two
+    // such programs of one name in two projects differ in nothing but their project, so only
+    // the project keeps one from carrying on from the other. (Programs made since differ in
+    // their marks too, which would hide a core that forgot the project.)
+    let unmarked = |built: &Value| {
+        let mut instance = built["instance"].clone();
+        let mark = instance["program"]
+            .as_object_mut()
+            .expect("an instance of one program")
+            .remove("created");
+        assert!(mark.is_some(), "the build carries no making mark: {built}");
+        instance
+    };
+    let applied = rig
+        .eng(
+            "PUT",
+            CORE_RUNTIMES,
+            Some(json!({ "instances": [unmarked(&first)] })),
+            200,
+        )
+        .await;
+    let v1 = first["version"].clone();
+    rig.named_when("Main", "plant's Pump runs", |t| {
+        t["version"] == v1 && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
+    })
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let before = loop {
+        let (n, watched) = rig.watch("Main", "n").await;
+        if let Some(n) = n.as_i64().filter(|n| *n >= 150) {
+            break n;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "n never reached 150: {watched}; {applied}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+
+    rig.eng(
+        "POST",
+        "/api/v1/projects",
+        Some(json!({ "id": "other", "name": "other", "description": "", "author": "" })),
+        201,
+    )
+    .await;
+    let programs = "/api/v1/projects/other/logic/programs";
+    rig.eng("POST", programs, Some(json!({ "name": "Main" })), 201)
+        .await;
+    rig.eng(
+        "PUT",
+        &format!("{programs}/Main/source"),
+        Some(
+            json!({ "source": "PROGRAM Mixer\nVAR n : DINT; END_VAR\n  n := n + 1;\nEND_PROGRAM" }),
+        ),
+        200,
+    )
+    .await;
+    rig.eng(
+        "PUT",
+        &format!("{programs}/Main/settings"),
+        Some(every(1000)),
+        200,
+    )
+    .await;
+    let second = rig
+        .eng("POST", &format!("{programs}/Main/build"), None, 200)
+        .await;
+    assert_eq!(
+        second["instance"]["program"]["built_from"], "Main",
+        "{second}"
+    );
+    rig.eng(
+        "PUT",
+        "/api/v1/projects/other/runtimes",
+        Some(json!({ "instances": [unmarked(&second)] })),
+        200,
+    )
+    .await;
+    let activated = rig
+        .eng("POST", "/api/v1/projects/other/activate", None, 200)
+        .await;
+    let v2 = second["version"].clone();
+    let now = rig
+        .named_when("Main", "other's Mixer runs and has scanned", |t| {
+            t["version"] == v2 && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
+        })
+        .await;
+    let (n, watched) = rig.watch("Main", "n").await;
+    assert!(
+        n.as_i64().is_some_and(|n| n < 20),
+        "project other's Mixer (once a second) holds n = {n}, carried from project plant's Pump (n was {before}): {watched}; status {now}; activated {activated}"
+    );
+    rig.close().await;
+}
+
+/// Review finding 5 of C8c-core (H10 of its contract, accepted and said, not changed): a
+/// running instance that names no project program (saved by a builder of before) is replaced
+/// online by a build of any project program declaring its PROGRAM name, which takes over its
+/// variables, as save_runtimes_config says. This pins what is said; a change of it must change
+/// the summary too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_running_instance_that_names_no_project_program_is_replaced_online_by_one_of_its_program_name_as_said(
+) {
+    let rig = rig().await;
+    rig.program(
+        "T1",
+        "PROGRAM Tank\nVAR n : DINT; END_VAR\n  n := n + 1;\nEND_PROGRAM",
+        settings(),
+    )
+    .await;
+    rig.program(
+        "T2",
+        "PROGRAM Tank\nVAR n : DINT; m : DINT; END_VAR\n  m := m + 1;\nEND_PROGRAM",
+        settings(),
+    )
+    .await;
+    let mut first = rig.build_runtime("Line", one_task(&["T1"])).await;
+    // As a builder of before program identities wrote it.
+    let program = first["instance"]["program"].as_object_mut().unwrap();
+    program.remove("built_from");
+    program.remove("created");
+    rig.load_built(&first, 200).await;
+    let v1 = first["version"].clone();
+    rig.named_when("Line", "T1 runs", |t| {
+        t["version"] == v1 && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
+    })
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let before = loop {
+        let (n, watched) = rig.watch("Line", "n").await;
+        if let Some(n) = n.as_i64().filter(|n| *n >= 100) {
+            break n;
+        }
+        assert!(Instant::now() < deadline, "{watched}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let second = rig.build_runtime("Line", one_task(&["T2"])).await;
+    let applied = rig.load_built(&second, 200).await;
+    let load = &applied["changes"]["runtimes"][0];
+    assert_eq!(load["start"], "online", "{applied}");
+    let v2 = second["version"].clone();
+    rig.named_when("Line", "T2 runs", |t| {
+        t["version"] == v2 && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
+    })
+    .await;
+    let (n, watched) = rig.watch("Line", "n").await;
+    assert!(
+        n.as_i64().is_some_and(|n| n >= before),
+        "T2 never writes n; it took over T1's {before}: {watched}; {applied}"
+    );
     rig.close().await;
 }

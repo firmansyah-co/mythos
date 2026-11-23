@@ -15,7 +15,7 @@ use mythos_logic_compiler::{
     check_project, compile, compile_sources, DataBlock, Sources, TargetProfile,
 };
 use mythos_module::protocol::{
-    ProgramVariables, RetainedValue, RuntimeMode, WatchReply, WatchedValue,
+    ProgramIdentity, ProgramVariables, RetainedValue, RuntimeMode, WatchReply, WatchedValue,
 };
 use mythos_pal::DefaultShm;
 use mythos_shm::ShmWriterHandle;
@@ -1200,7 +1200,14 @@ fn a_runtimes_file_of_today_round_trips_byte_for_byte() {
     let instance = &config.instances[0];
     assert!(instance.programs.is_empty() && instance.tasks.is_empty());
     assert!(instance.runs_as_today());
-    assert_eq!(instance.program_key(), ["Tank"]);
+    assert_eq!(
+        instance.identities(),
+        [ProgramIdentity {
+            name: "Tank".into(),
+            built_from: None,
+            created: None
+        }]
+    );
     assert_eq!(
         String::from_utf8(serde_json::to_vec_pretty(&config).unwrap()).unwrap(),
         FILE_OF_TODAY,

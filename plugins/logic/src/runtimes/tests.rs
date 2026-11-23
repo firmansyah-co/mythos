@@ -1221,6 +1221,164 @@ async fn a_configured_runtime_of_one_program_gives_it_in_program_with_its_tasks(
     assert_eq!(b["version"], instance["program"]["version"], "{b}");
 }
 
+/// Every build this module answers names the project program each program is a build of, by
+/// its name in `programs.json` and never by the PROGRAM its source declares: alone, in a
+/// configured runtime of one and in one of several; and no version changes for it.
+#[tokio::test]
+async fn every_build_names_its_program_in_the_project() {
+    let (logic, p) = (Logic::default(), project());
+    written(&logic, &p, "Mixer", &counter("Main"), json!({})).await;
+    let alone = ok(&send(
+        &logic,
+        &p,
+        "POST",
+        "/programs/:program/build",
+        &[("program", "Mixer")],
+        None,
+    )
+    .await)
+    .clone();
+    let program = &alone["instance"]["program"];
+    assert_eq!(
+        (&program["name"], &program["built_from"]),
+        (&json!("Main"), &json!("Mixer")),
+        "{alone}"
+    );
+    // The implied runtime's build is the program's, byte for byte.
+    let implied = build_of(&logic, &p, "mixer", None).await;
+    assert_eq!(
+        serde_json::to_vec(&ok(&implied)).unwrap(),
+        serde_json::to_vec(&alone).unwrap()
+    );
+
+    // In a configured runtime of one, named in another case in its task.
+    ok(&put(&logic, &p, "R", one_task(&["mixer"])).await);
+    let b = built(&logic, &p, "R").await;
+    let program = &b["instance"]["program"];
+    assert_eq!(
+        (&program["name"], &program["built_from"]),
+        (&json!("Main"), &json!("Mixer")),
+        "{b}"
+    );
+
+    // In a runtime of several, each program its own.
+    written(&logic, &p, "Pump", &counter("PUMP"), json!({})).await;
+    written(&logic, &p, "A", &counter("A"), json!({})).await;
+    ok(&put(&logic, &p, "Line", one_task(&["pump", "A"])).await);
+    let b = built(&logic, &p, "Line").await;
+    let programs = b["instance"]["programs"].as_array().unwrap();
+    let pairs: Vec<(&Value, &Value)> = programs
+        .iter()
+        .map(|p| (&p["name"], &p["built_from"]))
+        .collect();
+    assert_eq!(
+        pairs,
+        [(&json!("PUMP"), &json!("Pump")), (&json!("A"), &json!("A"))],
+        "{b}"
+    );
+    // The name is in no version: the runtime's version is its programs' joined, as before.
+    let versions: Vec<&str> = programs
+        .iter()
+        .map(|p| p["version"].as_str().unwrap())
+        .collect();
+    assert_eq!(b["version"], versions.join(", "));
+}
+
+/// Review finding 1 of C8c-core: a program deleted and made again under its name was, to the
+/// core, the program before it. Each program is now marked when it is made: the mark is kept
+/// by its settings, carried by every build of it (alone, in a configured runtime), and a
+/// program made again under the name has another. A program made before there was a mark has
+/// none, and none is given to it.
+#[tokio::test]
+async fn a_program_made_again_under_its_name_is_marked_apart_from_the_one_before() {
+    async fn entry(logic: &Logic, p: &Project) -> Value {
+        ok(&send(
+            logic,
+            p,
+            "GET",
+            "/programs/:program",
+            &[("program", "T")],
+            None,
+        )
+        .await)["program"]
+            .clone()
+    }
+    async fn built_alone(logic: &Logic, p: &Project) -> Value {
+        ok(&send(
+            logic,
+            p,
+            "POST",
+            "/programs/:program/build",
+            &[("program", "T")],
+            None,
+        )
+        .await)["instance"]["program"]
+            .clone()
+    }
+    let (logic, p) = (Logic::default(), project());
+    written(&logic, &p, "T", &counter("T"), json!({})).await;
+    let first = entry(&logic, &p).await["created"].clone();
+    assert!(
+        first.as_str().is_some_and(|m| m.len() == 16),
+        "a program is marked when it is made: {first}"
+    );
+    // Its settings (written by `written`) keep it, and its builds carry it.
+    let alone = built_alone(&logic, &p).await;
+    assert_eq!(
+        (&alone["built_from"], &alone["created"]),
+        (&json!("T"), &first)
+    );
+    ok(&put(&logic, &p, "R", one_task(&["T"])).await);
+    let b = built(&logic, &p, "R").await;
+    assert_eq!(b["instance"]["program"]["created"], first, "{b}");
+    ok(&delete(&logic, &p, "R").await);
+
+    // Deleted and made again under its name: another mark, and its build carries that one.
+    ok(&send(
+        &logic,
+        &p,
+        "DELETE",
+        "/programs/:program",
+        &[("program", "T")],
+        None,
+    )
+    .await);
+    written(&logic, &p, "T", &counter("T"), json!({})).await;
+    let second = entry(&logic, &p).await["created"].clone();
+    assert!(
+        second.is_string() && second != first,
+        "{first} then {second}"
+    );
+    let again = built_alone(&logic, &p).await;
+    assert_eq!(again["created"], second);
+    // The mark is in no version: the same source builds to the same version.
+    assert_eq!(again["version"], alone["version"]);
+
+    // A program made before there was a mark reads, builds and writes back without one.
+    let file = p.logic.join("programs.json");
+    let marked = std::fs::read_to_string(&file).unwrap();
+    let line = format!("      \"created\": {second},\n");
+    assert!(marked.contains(&line), "{marked}");
+    std::fs::write(&file, marked.replace(&line, "")).unwrap();
+    let before = std::fs::read(&file).unwrap();
+    let old = built_alone(&logic, &p).await;
+    assert_eq!(old.get("created"), None, "{old}");
+    ok(&send(
+        &logic,
+        &p,
+        "PUT",
+        "/programs/:program/settings",
+        &[("program", "T")],
+        Some(json!({ "interval_ms": 20, "runtime": "vm", "target": "pc", "run": true })),
+    )
+    .await);
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        before,
+        "written back as it was"
+    );
+}
+
 #[tokio::test]
 async fn two_programs_sharing_a_block_build_into_one_instance_with_the_block_once() {
     let (logic, p) = (Logic::default(), project());
@@ -1757,7 +1915,7 @@ async fn a_runtime_build_names_what_it_replaces_and_warns_of_retained_values_not
     assert_eq!(
         b["warnings"],
         json!([
-            "program 'Keeper': RETAIN values are kept per runtime id, not per program: a warm load of runtime 'Line' puts into each RETAIN variable of 'Keeper' the value kept under runtime 'Line' for a variable of the same name, type and size, whichever program ran in runtime 'Line' before, and none of the values kept while 'Keeper' ran alone as runtime 'Keeper'; a cold load starts every RETAIN variable from its initial value",
+            "program 'Keeper': RETAIN values are kept per runtime id and per program: a warm load of runtime 'Line' gives a RETAIN variable of 'Keeper' only a value kept under runtime 'Line' for 'Keeper' (or, when the build that kept it did not name its project program, for a program of the same PROGRAM name), of the same name, type and size; values kept under runtime 'Line' for another program are not given, a program deleted and made again under the name 'Keeper' included, and none of those kept while 'Keeper' ran in another runtime, alone as runtime 'Keeper' included; the one exception is values kept before the core kept them per program, which a warm load gives once, as they are, to whatever runtime 'Line' runs; a cold load starts every RETAIN variable from its initial value",
             format!("program 'Reader': output {SPEED} is not a tag of this controller now: writes to it will fail"),
         ])
     );
@@ -2054,7 +2212,8 @@ async fn a_refused_write_in_a_project_without_the_modules_directory_makes_no_fil
 /// What this module cannot know (which instances the core runs) its tools say to the caller:
 /// `replaces` names only the ids its programs run under alone, so a configured runtime a program
 /// left still runs it until it is taken out or rebuilt; a deleted runtime runs on until its
-/// instance is taken out; and the core does not refuse one program in two runtimes.
+/// instance is taken out; and the core refuses one program in two runtimes only when both
+/// instances name it, which an instance built before 0.8.0 does not.
 #[test]
 fn the_tools_say_that_a_runtime_a_program_left_still_runs_it_until_it_is_taken_out() {
     let manifest = crate::manifest();
@@ -2070,21 +2229,37 @@ fn the_tools_say_that_a_runtime_a_program_left_still_runs_it_until_it_is_taken_o
     let build = summary("build_logic_runtime");
     for said in [
         "'replaces' does not name another configured runtime a program of this one was in before",
-        "or the program runs in both",
+        "the program then runs in both",
+        "The core refuses a save in which one program of the project is in two runtimes, when both instances name it as built by this module (every build since 0.8.0 does",
         "its programs' versions joined by ', '",
-        "a warm load gives a program the values kept under this runtime's id",
+        "a warm load gives a program only the values kept under this runtime's id",
+        "(a program deleted and made again under its name is another program)",
+        "the one exception is values kept before the core kept them per program, given once, as they are, to whatever the runtime runs",
     ] {
         assert!(build.contains(said), "{said}: {build}");
     }
+    let gone = summary("delete_logic_program");
+    assert!(
+        gone.contains("A program made again under its name is another program to the core"),
+        "{gone}"
+    );
     let delete = summary("delete_logic_runtime");
     assert!(
         delete.contains("its instance (the runtime's id) runs on, with all its programs, until it is taken out with save_runtimes_config"),
         "{delete}"
     );
     assert!(!delete.contains("its programs run alone again"), "{delete}");
+    assert!(
+        delete.contains("(the core refuses that build beside the runtime's instance when both were built by this module since 0.8.0)"),
+        "{delete}"
+    );
     let alone = summary("build_logic_program");
     assert!(
         alone.contains("take out any instance of a configured runtime the program was in before"),
+        "{alone}"
+    );
+    assert!(
+        alone.contains("the core refuses the save while that instance holds the program, when that instance was built by this module since 0.8.0; one built before is not compared"),
         "{alone}"
     );
     let save = summary("save_logic_runtime");
@@ -2092,6 +2267,24 @@ fn the_tools_say_that_a_runtime_a_program_left_still_runs_it_until_it_is_taken_o
         save.contains("a program taken out of it included, until it is built again"),
         "{save}"
     );
+    assert!(
+        save.contains(
+            "is refused by the core until then, when both were built by this module since 0.8.0"
+        ),
+        "{save}"
+    );
+    // Never the refusal without its condition (H6): every tool that speaks of it says which
+    // instances it holds between.
+    for tool in [
+        "build_logic_runtime",
+        "build_logic_program",
+        "save_logic_runtime",
+        "delete_logic_runtime",
+    ] {
+        let s = summary(tool);
+        assert!(!s.contains("does not refuse one program"), "{tool}: {s}");
+        assert!(s.contains("since 0.8.0"), "{tool}: {s}");
+    }
     let list = summary("list_logic_runtimes");
     assert!(
         list.contains("named by the PROGRAM the saved source declares"),

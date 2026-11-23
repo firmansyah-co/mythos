@@ -551,6 +551,8 @@ fn runtimes_config_body() -> Value {
         "required": ["name", "version", "interval_ms", "code"],
         "properties": {
             "name": { "type": "string", "description": "In a runtime of several programs, no '.', '[', ']' or spaces" },
+            "built_from": { "type": "string", "description": "The project program this is a build of, as the logic module names it in its builds; left out of an instance written by hand. Not blank, and one program of one built_from per runtime" },
+            "created": { "type": "string", "description": "The making of that project program, a mark the logic module gives it when it is made; left out of an instance written by hand. A program deleted and made again under its name has another, and is another program" },
             "version": { "type": "string" },
             "interval_ms": { "type": "integer", "minimum": 0, "description": "The interval of its implied cyclic task, at least 1 when no tasks are given; not used when tasks are given" },
             "code": { "type": "string", "description": "The compiled program, hex" },
@@ -1338,7 +1340,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "save_runtimes_config",
         title: "Save a project's runtimes",
-        description: "Check and save the programs a project runs. Each instance names a runtime module (list_runtimes shows them), whether to run at once, and a program: its code and symbols as the logic compiler made them, its data (each data block its code declares in VAR_EXTERNAL, as the compiler gave it; required when it declares any), the tags read into variables (inputs), the variables written to field tags with the safe value each tag takes whenever the program is not running (outputs), and the variables published as tags starting with internal. (published; writable makes one a setpoint an operator may write). A runtime of several programs gives them in programs instead of program, and tasks that say which task runs each (cyclic, cycle, startup or event, at a priority from 0, the highest, to 31); its variables are then named program.variable. A runtime module that does not say it runs tasks is refused such a runtime. An instance's data lists the data blocks its programs share: each block in one runtime only, each member written by one program at most, no tag read into a member and no member made a setpoint; a runtime module that does not say it hands data blocks over is refused a runtime with data. The layout hash, offsets and written flags of a block come only from the logic compiler: no route of this server returns them. The module loads each program to check it; anything that does not load is refused and nothing is saved. For the active project the runtimes are then made to match: 'applied' true says the configuration was put in force, not that every program started. 'changes.failed' lists each instance that did not start, with why; read list_runtimes for what runs. A new build of a program in run replaces it online: it takes over every variable of the same name, type and size (RETAIN or not) and scans on, its outputs never going to their safe values; start=cold starts every program it starts or replaces from its initial values instead, RETAIN ones included. 'changes.runtimes' says for each how it started: start online (with carried, the count, and dropped and initialized, the variables that did not carry over and why), warm (RETAIN values kept, the rest initial; why says why not online) or cold. Forces are released by a load either way.",
+        description: "Check and save the programs a project runs. Each instance names a runtime module (list_runtimes shows them), whether to run at once, and a program: its code and symbols as the logic compiler made them, its data (each data block its code declares in VAR_EXTERNAL, as the compiler gave it; required when it declares any), the tags read into variables (inputs), the variables written to field tags with the safe value each tag takes whenever the program is not running (outputs), and the variables published as tags starting with internal. (published; writable makes one a setpoint an operator may write). A runtime of several programs gives them in programs instead of program, and tasks that say which task runs each (cyclic, cycle, startup or event, at a priority from 0, the highest, to 31); its variables are then named program.variable. A runtime module that does not say it runs tasks is refused such a runtime. An instance's data lists the data blocks its programs share: each block in one runtime only, each member written by one program at most, no tag read into a member and no member made a setpoint; a runtime module that does not say it hands data blocks over is refused a runtime with data. The layout hash, offsets and written flags of a block come only from the logic compiler: no route of this server returns them. The module loads each program to check it; anything that does not load is refused and nothing is saved. For the active project the runtimes are then made to match: 'applied' true says the configuration was put in force, not that every program started. 'changes.failed' lists each instance that did not start, with why; read list_runtimes for what runs. A new build of the same programs of the same project in run replaces it online (the same programs: by built_from and created when every program of both gives built_from, else by PROGRAM name, so a running instance that names no project program is replaced online by a build of any program of the same PROGRAM name; never a build of a project made active since the running one was started): it takes over every variable of the same name, type and size (RETAIN or not) and scans on, its outputs never going to their safe values; start=cold starts every program it starts or replaces from its initial values instead, RETAIN ones included. 'changes.runtimes' says for each how it started: start online (with carried, the count, and dropped and initialized, the variables that did not carry over and why), warm (RETAIN values kept, the rest initial; why says why not online) or cold. Forces are released by a load either way. A program may name the project program it is a build of (built_from, given by the logic module's builds): two instances holding programs of one built_from are refused, and nothing is saved. RETAIN values are kept per runtime id and per program: a start gives a program only the values kept for it (by built_from and created when both name one, else by program name; a program made again under its name is another program), and none when values kept for two programs could be it; 'changes.runtimes' lists in not_given each kept value it did not give, and why. The one exception is a retain file written before values were kept per program (a JSON array): it is given once, as it is, to whatever the runtime runs at its next warm start, not_given then empty, and written again per program.",
         method: "PUT",
         path: "/api/v1/projects/:id/runtimes",
         query: &[(
@@ -1925,6 +1927,44 @@ mod tests {
         types.sort_unstable();
         assert_eq!(types, ["cycle", "cyclic", "event", "startup"]);
 
+        // The making of it: listed for program and programs.
+        for at in [
+            &instance["program"]["properties"]["created"],
+            &instance["programs"]["items"]["properties"]["created"],
+        ] {
+            assert_eq!(at["type"], json!("string"));
+            assert!(at["description"]
+                .as_str()
+                .unwrap()
+                .contains("A program deleted and made again under its name has another"));
+        }
+        // The project program a build is of: listed for program and programs, and taken.
+        for at in [
+            &instance["program"]["properties"]["built_from"],
+            &instance["programs"]["items"]["properties"]["built_from"],
+        ] {
+            assert_eq!(at["type"], json!("string"));
+            assert!(at["description"]
+                .as_str()
+                .unwrap()
+                .contains("The project program this is a build of, as the logic module names it"));
+        }
+        let built: RuntimesConfig = serde_json::from_value(json!({"instances": [{
+            "id": "t", "module": "vm", "run": true,
+            "program": {"name": "a", "built_from": "A", "version": "1", "interval_ms": 20, "code": "00"}
+        }]}))
+        .unwrap();
+        assert_eq!(built.validate(), Ok(()));
+        assert_eq!(
+            built.instances[0]
+                .program
+                .as_ref()
+                .unwrap()
+                .built_from
+                .as_deref(),
+            Some("A")
+        );
+
         // A program's interval_ms: 0 is taken when tasks are given, so the schema allows it.
         let program = &instance["programs"]["items"]["properties"]["interval_ms"];
         assert_eq!(program["minimum"], json!(0));
@@ -2035,6 +2075,12 @@ mod tests {
             "a runtime module that does not say it hands data blocks over is refused a runtime with data",
             "each block in one runtime only",
             "no route of this server returns them",
+            "two instances holding programs of one built_from are refused, and nothing is saved",
+            "a start gives a program only the values kept for it (by built_from and created when both name one, else by program name; a program made again under its name is another program), and none when values kept for two programs could be it",
+            "The one exception is a retain file written before values were kept per program (a JSON array): it is given once, as it is, to whatever the runtime runs at its next warm start, not_given then empty, and written again per program.",
+            "never a build of a project made active since the running one was started",
+            "so a running instance that names no project program is replaced online by a build of any program of the same PROGRAM name",
+            "'changes.runtimes' lists in not_given each kept value it did not give, and why",
         ] {
             assert!(save.contains(said), "save_runtimes_config: {said}");
         }

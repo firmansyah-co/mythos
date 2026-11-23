@@ -127,6 +127,8 @@ pub(crate) fn assigned<'a>(file: &'a TaskFile, name: &str) -> Option<(&'a str, &
 fn stub(name: &str, interval_ms: u64) -> RuntimeProgram {
     RuntimeProgram {
         name: name.to_string(),
+        built_from: None,
+        created: None,
         version: String::new(),
         interval_ms,
         code: String::new(),
@@ -684,11 +686,11 @@ fn runtime_version(built: &[Built]) -> String {
 }
 
 /// What a load does with the RETAIN values of program `p` in runtime `id` (ADR-013 §2.5): the
-/// core keeps them per runtime id, so a warm load gives `p` what is kept under `id`, whichever
-/// program ran under that id before, and nothing of what was kept while `p` ran alone.
+/// core keeps them per runtime id and per program, so a warm load gives `p` only what is kept
+/// under `id` for `p`, and nothing of what was kept while `p` ran in another runtime.
 fn retain_warning(p: &str, id: &str) -> String {
     format!(
-        "program '{p}': RETAIN values are kept per runtime id, not per program: a warm load of runtime '{id}' puts into each RETAIN variable of '{p}' the value kept under runtime '{id}' for a variable of the same name, type and size, whichever program ran in runtime '{id}' before, and none of the values kept while '{p}' ran alone as runtime '{p}'; a cold load starts every RETAIN variable from its initial value"
+        "program '{p}': RETAIN values are kept per runtime id and per program: a warm load of runtime '{id}' gives a RETAIN variable of '{p}' only a value kept under runtime '{id}' for '{p}' (or, when the build that kept it did not name its project program, for a program of the same PROGRAM name), of the same name, type and size; values kept under runtime '{id}' for another program are not given, a program deleted and made again under the name '{p}' included, and none of those kept while '{p}' ran in another runtime, alone as runtime '{p}' included; the one exception is values kept before the core kept them per program, which a warm load gives once, as they are, to whatever runtime '{id}' runs; a cold load starts every RETAIN variable from its initial value"
     )
 }
 
@@ -700,6 +702,10 @@ fn runtime_program(
 ) -> Result<RuntimeProgram, Refusal> {
     Ok(RuntimeProgram {
         name: compiled.name.clone(),
+        // The project program this is a build of, as `programs.json` spells it: the core
+        // compares it to keep one program in one runtime and to give RETAIN values per program.
+        built_from: Some(entry.name.clone()),
+        created: entry.created.clone(),
         version: version_in_runtime(entry, compiled, task),
         // Stored, and not used by a runtime given tasks; never a value made up here.
         interval_ms: entry.interval_ms,
@@ -802,10 +808,9 @@ fn build_runtime(
                 .into_iter()
                 .map(|w| format!("program '{p}': {w}")),
         );
-        // The core keeps RETAIN values per runtime id, not per program, and the runtime module
-        // puts each into the RETAIN variable of the same name, type and size, whichever program
-        // wrote it. This module cannot know what the core keeps under the id (it never calls
-        // the core), so it says what happens in either case.
+        // The core keeps RETAIN values per runtime id and per program, and gives a program
+        // only what was kept for it under this id. This module cannot know what the core keeps
+        // (it never calls the core), so it says what a warm load gives and what it does not.
         if b.compiled.symbols.iter().any(|s| s.retain) {
             warnings.push(retain_warning(p, id));
         }

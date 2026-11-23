@@ -340,7 +340,7 @@ module (`plugins/data`, `org.mythos.data`) stores a project's types as `data/typ
 and its data blocks as `data/blocks.json`, checks every write with the compiler over the whole
 new state and refuses one that leaves it not checking, answers each block's layout hash, size
 and members and which blocks changed their layout, and has eight routes, each an MCP tool.
-Its writes hold a lock between processes. The logic module (0.7.0) has a library of functions
+Its writes hold a lock between processes. The logic module (0.8.0) has a library of functions
 and function blocks in `logic/library/`, refuses a `TYPE` in it, reads `<project>/data/`
 without writing it, and builds a program with the project's types, library and blocks: the
 instance carries `data` and the program's `data`, and the build is refused when the protocol's
@@ -351,7 +351,7 @@ or library builds to the bytes and the version it had. Two programs that share a
 into one runtime by the logic module since C8c: the project's runtimes and their tasks are in
 `logic/tasks.json`, a runtime build answers one instance with the union of its programs' blocks
 once each, and the caller saves that instance and removes the ids in `replaces`. The module does
-not load it, and a block shared between runtimes is still refused by the core (R16). The
+not load it, and a block shared between runtimes is still refused by the core (R16). The core also refuses a save in which one project program is in two runtimes, when both instances name it as built by the logic module (since 0.8.0; an instance built before does not name it and is not compared), so a program that shares a block is not run twice. The
 workbench draws a diagnostic from another file on the program's own text and does not show
 `project_problems`. The cost of checking the data before each compile is NOT MEASURED. Since
 C8c the logic module's writes hold a lock between processes, as the data module's do; a runtime

@@ -25,10 +25,10 @@ use crate::io::{ConnectionConfig, IoStatusHandle, WriteError};
 use crate::storage::ControllerStorage;
 use crate::tag::TagCatalog;
 use mythos_module::protocol::{
-    check_data, check_tasks, implied_task, Call, CarryReport, DataBlock, DataSupport,
-    ExchangeReply, ForcedValue, NotCarried, OutputBinding, ProgramVariables, ProgramVersion,
-    RetainedValue, RuntimeMode, RuntimeProgram, RuntimeState, TaskConfig, TaskKind, TaskState,
-    TaskSupport, WatchReply, WireInput,
+    check_data, check_tasks, implied_task, program_set_keys, same_program, same_program_set, Call,
+    CarryReport, DataBlock, DataSupport, ExchangeReply, ForcedValue, NotCarried, OutputBinding,
+    ProgramIdentity, ProgramVariables, ProgramVersion, RetainedValue, RuntimeMode, RuntimeProgram,
+    RuntimeState, TaskConfig, TaskKind, TaskState, TaskSupport, WatchReply, WireInput,
 };
 use mythos_module::{ModuleBinary, ProcessDriver};
 use mythos_pal::PlatformShm;
@@ -149,13 +149,10 @@ impl RuntimeInstance {
         }
     }
 
-    /// What a running build must also run for a new build to carry on from its variables:
-    /// the names of its programs, sorted. Compared as a list, never as one string: a program
-    /// may have a `,` in its name, and `a,b` and `c` are not the programs `a` and `b,c`.
-    pub fn program_key(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.all_programs().iter().map(|p| p.name.clone()).collect();
-        names.sort_unstable();
-        names
+    /// Which programs it runs, in program order: what a running build must also run for a new
+    /// build to carry on from its variables, compared by [`same_program_set`].
+    pub fn identities(&self) -> Vec<ProgramIdentity> {
+        self.all_programs().iter().map(|p| p.identity()).collect()
     }
 
     /// Whether its variables are named `<program>.<path>`: it has two or more programs.
@@ -282,6 +279,31 @@ impl RuntimeInstance {
         if self.tasks.is_empty() && programs.iter().any(|p| p.interval_ms == 0) {
             return Err(format!("runtime '{id}': interval_ms must be at least 1"));
         }
+        // The project program each is a build of: never blank, and one build of it here.
+        for (n, p) in programs.iter().enumerate() {
+            let Some(from) = &p.built_from else {
+                continue;
+            };
+            if from.trim().is_empty() {
+                let at = if self.several() {
+                    format!("runtime '{id}': program '{}'", p.name)
+                } else {
+                    format!("runtime '{id}'")
+                };
+                return Err(format!("{at}: built_from names no program of the project"));
+            }
+            for q in &programs[n + 1..] {
+                if q.built_from
+                    .as_ref()
+                    .is_some_and(|f| f.eq_ignore_ascii_case(from))
+                {
+                    return Err(format!(
+                        "runtime '{id}': programs '{}' and '{}' are both builds of program '{from}' of the project",
+                        p.name, q.name
+                    ));
+                }
+            }
+        }
         for p in &programs {
             // A runtime of several programs names the program a binding is of.
             let at = if self.several() {
@@ -355,6 +377,8 @@ impl RuntimesConfig {
         let mut published: HashMap<&str, String> = HashMap::new();
         // A data block's name, in lower case, and the runtime it is in.
         let mut blocks: HashMap<String, &str> = HashMap::new();
+        // A project program's name, in lower case, with its spelling and the runtime it is in.
+        let mut built: HashMap<String, (String, &str)> = HashMap::new();
         for i in &self.instances {
             if !valid_id(&i.id) {
                 return Err(format!(
@@ -369,6 +393,21 @@ impl RuntimesConfig {
                 return Err(format!("runtime '{}' names no module", i.id));
             }
             i.check()?;
+            // One program of the project runs in one runtime, when both instances say which
+            // project program theirs are builds of. An instance that does not say is not
+            // compared: two project programs may declare one PROGRAM name.
+            for p in i.all_programs() {
+                if let Some(from) = &p.built_from {
+                    if let Some((first, other)) =
+                        built.insert(from.to_ascii_lowercase(), (from.clone(), i.id.as_str()))
+                    {
+                        return Err(format!(
+                            "program '{}' of the project is in runtimes '{}' and '{}'; a program runs in one runtime: take it out of one of them in the same save",
+                            first, other, i.id
+                        ));
+                    }
+                }
+            }
             // A data block is handed over inside one runtime; between runtimes is not built
             // yet (ADR-014 §5), and two independent copies of one name would mislead.
             for b in &i.data {
@@ -642,6 +681,9 @@ pub struct RuntimeLoad {
     /// Changed online: its variables that took no value of the running build, and why (new,
     /// or of another type or size): each its initial value, or a RETAIN one its kept value.
     pub initialized: Vec<NotCarried>,
+    /// The values kept under its id that it was not given, and why: kept for a program it does
+    /// not run now, or for one that two of its programs could be.
+    pub not_given: Vec<NotCarried>,
 }
 
 impl RuntimeLoad {
@@ -653,6 +695,7 @@ impl RuntimeLoad {
             carried: None,
             dropped: Vec::new(),
             initialized: Vec::new(),
+            not_given: Vec::new(),
         }
     }
 }
@@ -660,8 +703,10 @@ impl RuntimeLoad {
 /// What a new build asked of the running one: its variables, if it runs these programs in this
 /// module.
 struct PendingCarry {
-    /// The new build's [`RuntimeInstance::program_key`].
-    program: Vec<String>,
+    /// The project the new build is of: identities are names in one project.
+    project: Option<String>,
+    /// The new build's [`RuntimeInstance::identities`].
+    program: Vec<ProgramIdentity>,
     module: String,
     reply: oneshot::Sender<Result<ProgramVariables, String>>,
 }
@@ -823,11 +868,13 @@ impl RuntimeStates {
     }
 
     /// Ask the running instance `id` for its variables at its next exchange, for a new build of
-    /// the programs `program` (a [`RuntimeInstance::program_key`]) in `module` to carry on from. `None` when no instance of that id is loaded.
+    /// the programs `program` (a [`RuntimeInstance::identities`]) of `project` in `module` to
+    /// carry on from. `None` when no instance of that id is loaded.
     fn ask_variables(
         &self,
         id: &str,
-        program: Vec<String>,
+        project: Option<String>,
+        program: Vec<ProgramIdentity>,
         module: &str,
     ) -> Option<oneshot::Receiver<Result<ProgramVariables, String>>> {
         let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
@@ -840,6 +887,7 @@ impl RuntimeStates {
             .entry(id.to_string())
             .or_default()
             .push(PendingCarry {
+                project,
                 program,
                 module: module.to_string(),
                 reply,
@@ -941,8 +989,20 @@ impl RuntimeStates {
         inner.wanted.get(id).copied()
     }
 
+    /// What a driver says of its instance. A driver that has been replaced goes on reporting
+    /// until it is stopped: its report is of the build before, and never takes the place of
+    /// its replacement's (generations only grow, so the larger one is the newer driver).
+    /// Without this the driver before would be the one listed again, and its stop would then
+    /// forget the instance while its replacement runs.
     fn report(&self, generation: u64, status: RuntimeStatus) {
         let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        if inner
+            .statuses
+            .get(&status.id)
+            .is_some_and(|(newer, _)| *newer > generation)
+        {
+            return;
+        }
         inner
             .statuses
             .insert(status.id.clone(), (generation, status));
@@ -987,7 +1047,8 @@ pub struct RuntimeEnv {
 /// Where the RETAIN values of the active project's runtimes are kept, so that a restart of the
 /// module process or of the server is a warm restart (IEC 61131-3 §6.5.6): in the controller's
 /// own directory (`<system>/retain/<project>/<runtime>.json`), not in the project, which is the
-/// engineer's configuration and is not rewritten every few seconds.
+/// engineer's configuration and is not rewritten every few seconds. Each value is kept for the
+/// program it is of ([`KeptFile`]), and given only to that program.
 #[derive(Clone)]
 pub struct RetainStore {
     storage: Arc<ControllerStorage>,
@@ -1000,42 +1061,284 @@ impl RetainStore {
 
     /// The file of the active project's runtime `id`; `None` when no project is active.
     pub fn file(&self, id: &str) -> Option<PathBuf> {
-        let project = self.storage.get_active_project().ok().flatten()?;
-        Some(
-            self.storage
-                .system_dir()
-                .join("retain")
-                .join(project)
-                .join(format!("{id}.json")),
-        )
+        Some(self.file_in(&self.project()?, id))
     }
 
-    /// What is kept in `path`: nothing when there is no such file. A file that cannot be read
-    /// is said and taken as nothing, so the program starts cold rather than from a guess.
-    pub fn read(path: &Path) -> Vec<RetainedValue> {
+    /// The active project; `None` when none is, or it cannot be read.
+    pub fn project(&self) -> Option<String> {
+        self.storage.get_active_project().ok().flatten()
+    }
+
+    /// The file of runtime `id` of `project`.
+    pub fn file_in(&self, project: &str, id: &str) -> PathBuf {
+        self.storage
+            .system_dir()
+            .join("retain")
+            .join(project)
+            .join(format!("{id}.json"))
+    }
+
+    /// What is kept in `path`: nothing when there is no such file. A file that cannot be read,
+    /// or holds neither the values of before (an array) nor a [`KeptFile`], is said and taken
+    /// as nothing, so the program starts from its initial values rather than from a guess.
+    pub fn read(path: &Path) -> Kept {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Kept::Nothing,
             Err(e) => {
                 tracing::error!(
                     "the RETAIN values in {} cannot be read: {e}",
                     path.display()
                 );
-                return Vec::new();
+                return Kept::Nothing;
             }
         };
-        serde_json::from_str(&text).unwrap_or_else(|e| {
+        Kept::parse(&text).unwrap_or_else(|e| {
             tracing::error!("{} holds no RETAIN values: {e}", path.display());
-            Vec::new()
+            Kept::Nothing
         })
     }
 
-    fn write(&self, path: &Path, values: &[RetainedValue]) -> Result<(), String> {
-        let bytes = serde_json::to_vec_pretty(values).map_err(|e| e.to_string())?;
+    fn write(&self, path: &Path, file: &KeptFile) -> Result<(), String> {
+        let bytes = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
         self.storage
             .atomic_write_file(path, &bytes)
             .map_err(|e| e.to_string())
     }
+}
+
+/// What `<id>.json` holds since this slice. A file of before is a bare array (`Kept::Legacy`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeptFile {
+    /// The values of each program that had any, in the runtime's program order.
+    pub programs: Vec<KeptProgram>,
+    /// The data blocks' master copies (`layout` given, `path` the block's name), as the module
+    /// gave them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data: Vec<RetainedValue>,
+}
+
+/// The RETAIN values kept for one program.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeptProgram {
+    /// The PROGRAM it was.
+    pub name: String,
+    /// The project program it was a build of, when its build said; never guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built_from: Option<String>,
+    /// The making of that project program its build said (`RuntimeProgram::created`); never
+    /// guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+    /// Its values, each `path` the variable's own, without the program's name.
+    pub values: Vec<RetainedValue>,
+}
+
+/// What a retain file holds.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Kept {
+    /// No file, or one that could not be read.
+    Nothing,
+    /// A file of before this slice: the values as the module gave them, of no program said.
+    Legacy(Vec<RetainedValue>),
+    /// The values per program.
+    Programs(KeptFile),
+}
+
+impl Kept {
+    /// A retain file's text: an array is a file of before, an object a [`KeptFile`].
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let value: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        if value.is_array() {
+            serde_json::from_value(value)
+                .map(Kept::Legacy)
+                .map_err(|e| e.to_string())
+        } else {
+            serde_json::from_value(value)
+                .map(Kept::Programs)
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// The module's answer for RETAIN values as a retain file: each value kept for the program it
+/// is of, with its path bare. With one program every value is its own; with several, a value is
+/// of the program its name starts with (`<program>.`, without regard to case), as the module
+/// names them. A data block's master is kept as given. A value of no program of the runtime is
+/// not kept, and the second part says each such value.
+pub fn kept_of(instance: &RuntimeInstance, values: &[RetainedValue]) -> (KeptFile, Vec<String>) {
+    let programs = instance.all_programs();
+    let several = programs.len() > 1;
+    let mut kept: Vec<KeptProgram> = programs
+        .iter()
+        .map(|p| KeptProgram {
+            name: p.name.clone(),
+            built_from: p.built_from.clone(),
+            created: p.created.clone(),
+            values: Vec::new(),
+        })
+        .collect();
+    let mut data = Vec::new();
+    let mut dropped = Vec::new();
+    for v in values {
+        if v.layout.is_some() {
+            data.push(v.clone());
+            continue;
+        }
+        let found: Option<(usize, &str)> = if !several {
+            (!programs.is_empty()).then_some((0, v.path.as_str()))
+        } else {
+            v.path.split_once('.').and_then(|(prefix, rest)| {
+                programs
+                    .iter()
+                    .position(|p| p.name.eq_ignore_ascii_case(prefix.trim()))
+                    .map(|i| (i, rest))
+            })
+        };
+        match found {
+            Some((i, path)) => kept[i].values.push(RetainedValue {
+                path: path.to_string(),
+                ..v.clone()
+            }),
+            None => dropped.push(format!(
+                "a RETAIN value runtime '{}' gave names no program of it: {}",
+                instance.id, v.path
+            )),
+        }
+    }
+    kept.retain(|k| !k.values.is_empty());
+    (
+        KeptFile {
+            programs: kept,
+            data,
+        },
+        dropped,
+    )
+}
+
+/// What a runtime is given of what is kept under its id at a warm start, in its module's own
+/// form: each program's values only to the program of the runtime that is the same program
+/// ([`same_program`]), named `<program>.<path>` when it has several programs and bare when it
+/// has one; every data block's master as kept. An entry two programs could be is given to
+/// neither, and a program two entries could be is given neither: a variable is never given
+/// two values kept for two programs. The second part is each value not given, and why; the
+/// third whether the file is to be written again at the first keep: it is of before this
+/// slice, or holds values not given.
+pub fn given_of(
+    instance: &RuntimeInstance,
+    kept: &Kept,
+) -> (Vec<RetainedValue>, Vec<NotCarried>, bool) {
+    let file = match kept {
+        Kept::Nothing => return (Vec::new(), Vec::new(), false),
+        // Of no program said: given as before, and kept again in the new form.
+        Kept::Legacy(values) => return (values.clone(), Vec::new(), true),
+        Kept::Programs(file) => file,
+    };
+    let programs = instance.all_programs();
+    let several = programs.len() > 1;
+    let identity = |entry: &KeptProgram| ProgramIdentity {
+        name: entry.name.clone(),
+        built_from: entry.built_from.clone(),
+        created: entry.created.clone(),
+    };
+    // The program an entry was kept for, as a message names it.
+    let of = |entry: &KeptProgram| entry.built_from.clone().unwrap_or(entry.name.clone());
+    // For each entry, the programs of the runtime it could be.
+    let matching: Vec<Vec<usize>> = file
+        .programs
+        .iter()
+        .map(|entry| {
+            programs
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| same_program(&identity(entry), &p.identity()))
+                .map(|(i, _)| i)
+                .collect()
+        })
+        .collect();
+    let mut given = Vec::new();
+    let mut not_given = Vec::new();
+    for (entry, could_be) in file.programs.iter().zip(&matching) {
+        let kept_for = of(entry);
+        let withhold = |not_given: &mut Vec<NotCarried>, why: String| {
+            not_given.extend(entry.values.iter().map(|v| NotCarried {
+                variable: format!("{kept_for}.{}", v.path),
+                why: why.clone(),
+            }));
+        };
+        match could_be.as_slice() {
+            [i] => {
+                // The entries that could be only this program: more than one, and none is given.
+                let claims: Vec<String> = file
+                    .programs
+                    .iter()
+                    .zip(&matching)
+                    .filter(|(_, m)| m.as_slice() == [*i])
+                    .map(|(e, _)| format!("'{}'", of(e)))
+                    .collect();
+                if claims.len() > 1 {
+                    withhold(
+                        &mut not_given,
+                        format!(
+                            "program '{}' could be any of {}, each kept apart: it is given none of them",
+                            programs[*i].name,
+                            claims.join(" or ")
+                        ),
+                    );
+                    continue;
+                }
+                let p = programs[*i];
+                given.extend(entry.values.iter().map(|v| RetainedValue {
+                    path: if several {
+                        format!("{}.{}", p.name, v.path)
+                    } else {
+                        v.path.clone()
+                    },
+                    ..v.clone()
+                }));
+            }
+            [] => {
+                // Kept for a program of the same project name made apart from this one: deleted
+                // and made again under its name, it is another program.
+                let made_apart = entry.built_from.as_deref().is_some_and(|from| {
+                    programs.iter().any(|p| {
+                        p.built_from
+                            .as_deref()
+                            .is_some_and(|f| f.eq_ignore_ascii_case(from))
+                    })
+                });
+                withhold(
+                    &mut not_given,
+                    if made_apart {
+                        format!(
+                            "kept for program '{kept_for}' as it was made before: runtime '{}' runs a program made again under that name, which is another program",
+                            instance.id
+                        )
+                    } else {
+                        format!(
+                            "kept for program '{kept_for}', which runtime '{}' does not run now",
+                            instance.id
+                        )
+                    },
+                );
+            }
+            more => {
+                let names: Vec<String> = more
+                    .iter()
+                    .map(|i| format!("'{}'", programs[*i].name))
+                    .collect();
+                withhold(
+                    &mut not_given,
+                    format!("it could be of {}", names.join(" or ")),
+                );
+            }
+        }
+    }
+    given.extend(file.data.iter().cloned());
+    let rewrite = !not_given.is_empty();
+    (given, not_given, rewrite)
 }
 
 // -----------------------------------------------------------------------------
@@ -1068,7 +1371,11 @@ pub struct RuntimeDriver {
     safe: BTreeSet<String>,
     errors: HashMap<String, String>,
     last: Option<RuntimeState>,
-    /// Where its RETAIN values are kept, and what was kept last.
+    /// The project it was started for, when one was active: what it runs is named in that
+    /// project, and a build of another project never carries on from its variables.
+    project: Option<String>,
+    /// Where its RETAIN values are kept, and what was kept last, in its module's own form:
+    /// `None` when the next answer is to be written whatever it is.
     retain_file: Option<PathBuf>,
     kept: Option<Vec<RetainedValue>>,
     retain_due: Instant,
@@ -1095,6 +1402,7 @@ impl RuntimeDriver {
             safe: BTreeSet::new(),
             errors: HashMap::new(),
             last: None,
+            project: None,
             retain_file: None,
             kept: None,
             retain_due: Instant::now(),
@@ -1137,7 +1445,14 @@ impl RuntimeDriver {
         if self.kept.as_ref() == Some(&values) {
             return;
         }
-        match store.write(&path, &values) {
+        let Some(instance) = self.instance.as_ref() else {
+            return;
+        };
+        let (file, dropped) = kept_of(instance, &values);
+        for why in dropped {
+            tracing::warn!("{why}");
+        }
+        match store.write(&path, &file) {
             Ok(()) => {
                 if let Some(Value::Object(map)) = self.sent.as_mut() {
                     map.insert(
@@ -1160,13 +1475,15 @@ impl RuntimeDriver {
     /// running one's next exchange.
     async fn running_variables(
         &self,
+        project: Option<String>,
         instance: &RuntimeInstance,
     ) -> Result<(ProgramVariables, Instant), String> {
-        let Some(answer) =
-            self.env
-                .states
-                .ask_variables(&instance.id, instance.program_key(), &self.module)
-        else {
+        let Some(answer) = self.env.states.ask_variables(
+            &instance.id,
+            project,
+            instance.identities(),
+            &self.module,
+        ) else {
             return Err("no build of it was loaded".to_string());
         };
         match tokio::time::timeout(CARRY_WAIT, answer).await {
@@ -1201,6 +1518,7 @@ impl RuntimeDriver {
                 carried: Some(report.carried),
                 dropped: report.dropped,
                 initialized: report.initialized,
+                not_given: Vec::new(),
             },
             Ok(_) => RuntimeLoad::not_online(
                 id,
@@ -1219,8 +1537,8 @@ impl RuntimeDriver {
     }
 
     /// Answer a new build's asks for this one's variables: only for a build of the same
-    /// program in the same module, and only while this one is in RUN and nobody asked it to
-    /// stop.
+    /// program of the same project in the same module, and only while this one is in RUN and
+    /// nobody asked it to stop.
     async fn give_variables(&mut self, id: &str) {
         let asks = self.env.states.carrying_wanted(id);
         if asks.is_empty() {
@@ -1234,15 +1552,40 @@ impl RuntimeDriver {
         let program = self
             .instance
             .as_ref()
-            .map(RuntimeInstance::program_key)
+            .map(RuntimeInstance::identities)
             .unwrap_or_default();
         for ask in asks {
-            let answer = if ask.program != program {
+            let answer = if ask.project != self.project {
+                // A program's identity is a name in its project: two projects' programs of one
+                // name are two programs.
+                let of = |p: &Option<String>| match p {
+                    Some(p) => format!("project '{p}'"),
+                    None => "no project known".to_string(),
+                };
                 Err(format!(
-                    "the program running was '{}', not '{}'",
-                    program.join(","),
-                    ask.program.join(",")
+                    "the program running was of {}, not of {}",
+                    of(&self.project),
+                    of(&ask.project)
                 ))
+            } else if !same_program_set(&ask.program, &program) {
+                // What was compared: the project names when both say them, else the names.
+                let (running, asked, by_project) = program_set_keys(&program, &ask.program);
+                let lower = |keys: &[String]| -> Vec<String> {
+                    keys.iter().map(|k| k.to_ascii_lowercase()).collect()
+                };
+                if by_project && lower(&running) == lower(&asked) {
+                    // The same names, another making of one of them.
+                    Err(format!(
+                        "the program running was '{}' as made before: a program made again under its name is another program",
+                        running.join(",")
+                    ))
+                } else {
+                    Err(format!(
+                        "the program running was '{}', not '{}'",
+                        running.join(","),
+                        asked.join(",")
+                    ))
+                }
             } else if ask.module != self.module {
                 Err(format!(
                     "it ran in the runtime module '{}', not '{}'",
@@ -1665,7 +2008,13 @@ impl MythosPlugin for RuntimeDriver {
     async fn start(&mut self, ctx: &PluginContext, config: &Value) -> Result<(), PluginError> {
         let instance = Self::parse(config)?;
         self.check_support(&instance)?;
-        let retain_file = self.env.retain.as_ref().and_then(|r| r.file(&instance.id));
+        // The project active now, once: the retain file is of it, and an online change only
+        // from a build of it.
+        let project = self.env.retain.as_ref().and_then(RetainStore::project);
+        let retain_file = match (&self.env.retain, &project) {
+            (Some(store), Some(project)) => Some(store.file_in(project, &instance.id)),
+            _ => None,
+        };
         // How it starts (ADR-013 §2.5). Cold when the load asks for it. Changed online when it
         // replaces a running build of the same program: it takes over that build's variables.
         // Otherwise as at a warm restart: the values its RETAIN variables had when it last ran,
@@ -1673,8 +2022,21 @@ impl MythosPlugin for RuntimeDriver {
         let cold = self.env.states.cold_load();
         let kept = match (&retain_file, cold) {
             (Some(path), false) => RetainStore::read(path),
-            _ => Vec::new(),
+            _ => Kept::Nothing,
         };
+        // Each program is given only the values kept for it; what is not given is said.
+        let (given, not_given, rewrite) = given_of(&instance, &kept);
+        if !not_given.is_empty() {
+            tracing::warn!(
+                "runtime '{}' was not given RETAIN values kept under its id: {}",
+                instance.id,
+                not_given
+                    .iter()
+                    .map(|n| format!("{} ({})", n.variable, n.why))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
         let carried = if cold {
             Err((LoadStart::Cold, "a cold load was asked for".to_string()))
         } else if !instance.run {
@@ -1684,7 +2046,7 @@ impl MythosPlugin for RuntimeDriver {
                     .to_string(),
             ))
         } else {
-            self.running_variables(&instance)
+            self.running_variables(project.clone(), &instance)
                 .await
                 .map_err(|why| (LoadStart::Warm, why))
         };
@@ -1692,7 +2054,7 @@ impl MythosPlugin for RuntimeDriver {
         if let Value::Object(map) = &mut sent {
             map.insert(
                 "retained".to_string(),
-                serde_json::to_value(&kept).unwrap_or(Value::Null),
+                serde_json::to_value(&given).unwrap_or(Value::Null),
             );
         }
         let mut first = sent.clone();
@@ -1712,14 +2074,24 @@ impl MythosPlugin for RuntimeDriver {
         // A process started again after a crash is a warm restart: it is never given the
         // running build's values again, which would by then be old.
         self.process.restart_with(sent.clone());
-        let load = match carried {
-            Err((start, why)) => RuntimeLoad::not_online(&instance.id, start, why),
-            Ok(_) => self.what_it_carried(&instance.id).await,
+        let load = RuntimeLoad {
+            not_given,
+            ..match carried {
+                Err((start, why)) => RuntimeLoad::not_online(&instance.id, start, why),
+                Ok(_) => self.what_it_carried(&instance.id).await,
+            }
         };
+        self.project = project;
         self.retain_file = retain_file;
         // After a cold load nothing is taken as kept, so its first exchange keeps its values in
-        // place of those of the build it replaced.
-        self.kept = (!cold).then_some(kept);
+        // place of those of the build it replaced. The same after a start that read a file of
+        // before or did not give all it read: the file then holds only its own programs' values,
+        // in the new form, from its first keep.
+        self.kept = if rewrite {
+            None
+        } else {
+            (!cold).then_some(given)
+        };
         self.sent = Some(sent);
         self.retain_due = Instant::now();
         let outputs: Vec<String> = instance
@@ -2093,6 +2465,35 @@ mod tests {
         );
     }
 
+    /// A build replaces a running one: the new driver reports, then the driver before reports
+    /// once more (it runs until it is stopped), then it is stopped. The instance stays the
+    /// replacement's all along: it is still loaded, so a command reaches it, and the driver
+    /// before knows it was replaced (so it does not keep its RETAIN values over the new ones).
+    /// Seen in CI: without it the Run that follows a load was answered "no runtime is loaded".
+    #[test]
+    fn a_replaced_drivers_late_report_and_stop_leave_its_replacement_loaded() {
+        let states = RuntimeStates::default();
+        loaded(&states, "t", 1);
+        loaded(&states, "t", 2);
+        loaded(&states, "t", 1);
+        assert!(
+            states.replaced("t", 1),
+            "the driver before is still replaced after its late report"
+        );
+        assert!(!states.replaced("t", 2));
+        states.forget("t", 1);
+        assert!(
+            states.command("t", true),
+            "the replacement is still loaded after the driver before stopped"
+        );
+        // The same driver reporting again, and a newer one, are taken as before.
+        loaded(&states, "t", 2);
+        loaded(&states, "t", 3);
+        assert!(states.replaced("t", 2));
+        states.forget("t", 3);
+        assert!(!states.command("t", true), "its own stop forgets it");
+    }
+
     #[tokio::test]
     async fn a_force_waits_for_its_instance_and_one_nobody_waits_for_is_dropped() {
         let states = RuntimeStates::default();
@@ -2411,11 +2812,37 @@ mod tests {
         assert_eq!(two.effective_tasks(), two.tasks);
     }
 
+    fn named(name: &str) -> ProgramIdentity {
+        ProgramIdentity {
+            name: name.into(),
+            built_from: None,
+            created: None,
+        }
+    }
+
     #[test]
     fn the_program_key_is_the_sorted_names_and_one_program_s_is_its_name() {
-        assert_eq!(parsed(instance("t")).program_key(), ["P"]);
+        assert_eq!(parsed(instance("t")).identities(), [named("P")]);
         let two = parsed(several(&["b", "a"], json!([cyclic("f", 20, &["a", "b"])])));
-        assert_eq!(two.program_key(), ["a", "b"]);
+        assert_eq!(two.identities(), [named("b"), named("a")]);
+        // Compared as sorted names: the order of the programs does not matter.
+        let swapped = parsed(several(&["a", "b"], json!([cyclic("f", 20, &["a", "b"])])));
+        assert!(same_program_set(&two.identities(), &swapped.identities()));
+        assert_eq!(
+            program_set_keys(&two.identities(), &[]).0,
+            ["a".to_string(), "b".to_string()]
+        );
+        // Every program naming its project program: compared by those names.
+        let mut built = several(&["b", "a"], json!([cyclic("f", 20, &["a", "b"])]));
+        built["programs"][0]["built_from"] = json!("B1");
+        built["programs"][1]["built_from"] = json!("A1");
+        let built = parsed(built);
+        // One side without project names: the names, which are equal.
+        assert!(same_program_set(&built.identities(), &two.identities()));
+        assert_eq!(
+            program_set_keys(&built.identities(), &built.identities()).0,
+            ["A1".to_string(), "B1".to_string()]
+        );
     }
 
     #[test]
@@ -2436,9 +2863,25 @@ mod tests {
         for i in [&one, &other, &single, &pair] {
             assert_eq!(check_tasks(&i.all_programs(), &i.tasks), Ok(()));
         }
-        assert_ne!(one.program_key(), other.program_key());
-        assert_ne!(single.program_key(), pair.program_key());
-        assert_eq!(single.program_key(), ["a,b"]);
+        assert!(!same_program_set(&one.identities(), &other.identities()));
+        assert!(!same_program_set(&single.identities(), &pair.identities()));
+        assert_eq!(single.identities(), [named("a,b")]);
+        // The same with project names that hold a ','.
+        let from = |mut i: Value, names: &[&str]| {
+            for (n, name) in names.iter().enumerate() {
+                i["programs"][n]["built_from"] = json!(name);
+            }
+            parsed(i)
+        };
+        let one = from(
+            several(&["x", "y"], json!([cyclic("x", 10, &["x", "y"])])),
+            &["a,b", "c"],
+        );
+        let other = from(
+            several(&["x", "y"], json!([cyclic("x", 10, &["x", "y"])])),
+            &["a", "b,c"],
+        );
+        assert!(!same_program_set(&one.identities(), &other.identities()));
     }
 
     #[test]
@@ -2806,6 +3249,527 @@ mod tests {
             instance_forced_tags(&i, &forced(&["b.p", "o", "c.o"])),
             vec!["internal.A.b.p".to_string()],
             "an unprefixed name, or another program's, binds nothing"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Which program: the project program a build is of (C8c-core)
+    // -------------------------------------------------------------------------
+
+    /// Runtime `id` running program `name`, a build of the project program `from` when given,
+    /// with an output and a published tag of its own.
+    fn built(id: &str, name: &str, from: Option<&str>) -> Value {
+        let mut i = instance(id);
+        i["program"]["name"] = json!(name);
+        i["program"]["outputs"][0]["tag"] = json!(format!("external.A.{id}.d"));
+        if let Some(from) = from {
+            i["program"]["built_from"] = json!(from);
+        }
+        i
+    }
+
+    /// Runtime `t` of programs `A` and `B`, builds of the project programs `from` when given.
+    fn pair(from: [Option<&str>; 2]) -> Value {
+        let mut i = several(&["A", "B"], json!([cyclic("f", 20, &["A", "B"])]));
+        for (n, from) in from.iter().enumerate() {
+            if let Some(from) = from {
+                i["programs"][n]["built_from"] = json!(from);
+            }
+        }
+        i
+    }
+
+    #[test]
+    fn a_program_naming_no_project_program_or_one_named_twice_in_a_runtime_is_refused() {
+        assert_eq!(check(vec![built("t", "P", Some("Tank"))]), Ok(()));
+        for blank in ["", "  "] {
+            assert_eq!(
+                check(vec![built("t", "P", Some(blank))]),
+                Err("runtime 't': built_from names no program of the project".to_string())
+            );
+            assert_eq!(
+                check(vec![pair([Some("A1"), Some(blank)])]),
+                Err(
+                    "runtime 't': program 'B': built_from names no program of the project"
+                        .to_string()
+                )
+            );
+        }
+        assert_eq!(
+            check(vec![pair([Some("Tank"), Some("tank")])]),
+            Err("runtime 't': programs 'A' and 'B' are both builds of program 'Tank' of the project".to_string())
+        );
+        assert_eq!(check(vec![pair([Some("A1"), Some("B1")])]), Ok(()));
+        assert_eq!(check(vec![pair([Some("A1"), None])]), Ok(()));
+        // Also where a connection's configuration is read, at a start.
+        let refused = RuntimeDriver::parse(&built("t", "P", Some(""))).unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("runtime 't': built_from names no program of the project"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn one_program_of_the_project_in_two_instances_is_refused_naming_both() {
+        assert_eq!(
+            check(vec![
+                built("a", "P", Some("Tank1")),
+                built("b", "Q", Some("Tank2"))
+            ]),
+            Ok(())
+        );
+        let refused = "program 'Tank1' of the project is in runtimes 'a' and 'b'; a program runs in one runtime: take it out of one of them in the same save";
+        assert_eq!(
+            check(vec![
+                built("a", "P", Some("Tank1")),
+                built("b", "Q", Some("tank1"))
+            ]),
+            Err(refused.to_string())
+        );
+        // Refused for what it is, before the output tag the two builds share would be.
+        let mut a = instance("a");
+        a["program"]["built_from"] = json!("Tank1");
+        let mut b = instance("b");
+        b["program"]["built_from"] = json!("tank1");
+        assert_eq!(check(vec![a.clone(), b]), Err(refused.to_string()));
+        // In a runtime of several programs too.
+        assert_eq!(
+            check(vec![built("a", "P", Some("Tank1")), pair([Some("X"), Some("TANK1")])]),
+            Err("program 'Tank1' of the project is in runtimes 'a' and 't'; a program runs in one runtime: take it out of one of them in the same save".to_string())
+        );
+    }
+
+    #[test]
+    fn programs_that_do_not_name_their_project_program_are_not_compared() {
+        assert_eq!(
+            check(vec![built("a", "P", None), built("b", "P", None)]),
+            Ok(())
+        );
+        assert_eq!(
+            check(vec![built("a", "P", Some("P")), built("b", "P", None)]),
+            Ok(())
+        );
+        assert_eq!(
+            check(vec![built("a", "P", None), built("b", "P", Some("P"))]),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn two_project_programs_declaring_one_program_name_run_in_two_runtimes() {
+        assert_eq!(
+            check(vec![
+                built("a", "Tank", Some("T1")),
+                built("b", "Tank", Some("T2"))
+            ]),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_saved_file_with_one_program_in_two_runtimes_is_refused_at_load_in_the_same_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(RUNTIMES_FILE);
+        let two = vec![built("a", "P", Some("Tank")), built("b", "Q", Some("TANK"))];
+        std::fs::write(&path, json!({ "instances": two }).to_string()).unwrap();
+        assert_eq!(
+            RuntimesConfig::load(&path).unwrap_err(),
+            "program 'Tank' of the project is in runtimes 'a' and 'b'; a program runs in one runtime: take it out of one of them in the same save"
+        );
+        let apart = vec![built("a", "P", Some("Tank")), built("b", "Q", Some("Pump"))];
+        std::fs::write(&path, json!({ "instances": apart }).to_string()).unwrap();
+        assert!(RuntimesConfig::load(&path).unwrap().is_some());
+    }
+
+    fn retained(path: &str, bytes: &str) -> RetainedValue {
+        RetainedValue {
+            path: path.into(),
+            ty: "DINT".into(),
+            bytes: bytes.into(),
+            layout: None,
+        }
+    }
+
+    fn master(name: &str) -> RetainedValue {
+        RetainedValue {
+            path: name.into(),
+            ty: "T".into(),
+            bytes: "00000000".into(),
+            layout: Some(LAYOUT.into()),
+        }
+    }
+
+    fn kept(programs: Vec<(&str, Option<&str>, Vec<RetainedValue>)>) -> Kept {
+        Kept::Programs(KeptFile {
+            programs: programs
+                .into_iter()
+                .map(|(name, from, values)| KeptProgram {
+                    name: name.into(),
+                    built_from: from.map(str::to_string),
+                    created: None,
+                    values,
+                })
+                .collect(),
+            data: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn the_kept_file_of_one_program_and_of_several_is_written_as_this_text() {
+        let one = parsed(built("t", "P", None));
+        let (file, dropped) = kept_of(&one, &[retained("total", "2a000000"), master("S")]);
+        assert!(dropped.is_empty());
+        assert_eq!(
+            String::from_utf8(serde_json::to_vec_pretty(&file).unwrap()).unwrap(),
+            r#"{
+  "programs": [
+    {
+      "name": "P",
+      "values": [
+        {
+          "path": "total",
+          "type": "DINT",
+          "bytes": "2a000000"
+        }
+      ]
+    }
+  ],
+  "data": [
+    {
+      "path": "S",
+      "type": "T",
+      "bytes": "00000000",
+      "layout": "0123456789abcdef"
+    }
+  ]
+}"#
+        );
+        // Several: in the runtime's program order, the program's name taken off, the project
+        // name only where the build gave it, and no data key when there is no block.
+        let two = parsed(pair([Some("A1"), None]));
+        let (file, dropped) = kept_of(
+            &two,
+            &[
+                retained("b.count", "01000000"),
+                retained("A.total", "2a000000"),
+            ],
+        );
+        assert!(dropped.is_empty());
+        assert_eq!(
+            String::from_utf8(serde_json::to_vec_pretty(&file).unwrap()).unwrap(),
+            r#"{
+  "programs": [
+    {
+      "name": "A",
+      "built_from": "A1",
+      "values": [
+        {
+          "path": "total",
+          "type": "DINT",
+          "bytes": "2a000000"
+        }
+      ]
+    },
+    {
+      "name": "B",
+      "values": [
+        {
+          "path": "count",
+          "type": "DINT",
+          "bytes": "01000000"
+        }
+      ]
+    }
+  ]
+}"#
+        );
+        // It reads back as what was written.
+        let text = serde_json::to_string(&file).unwrap();
+        assert_eq!(Kept::parse(&text), Ok(Kept::Programs(file)));
+    }
+
+    #[test]
+    fn a_value_the_module_gives_is_kept_for_the_program_its_name_says() {
+        // One program: every value without a layout is its, whatever its name.
+        let one = parsed(built("t", "P", None));
+        let (file, dropped) = kept_of(&one, &[retained("Other.total", "01000000")]);
+        assert!(dropped.is_empty());
+        assert_eq!(
+            file.programs[0].values,
+            [retained("Other.total", "01000000")]
+        );
+        // Several: by the part before the first '.', without regard to case; the rest kept.
+        let two = parsed(pair([None, None]));
+        let (file, dropped) = kept_of(
+            &two,
+            &[
+                retained("a.s.x", "01000000"),
+                retained(" B .y", "02000000"),
+                retained("C.z", "03000000"),
+                retained("nodot", "04000000"),
+                master("S"),
+            ],
+        );
+        assert_eq!(file.programs.len(), 2);
+        assert_eq!(file.programs[0].name, "A");
+        assert_eq!(file.programs[0].values, [retained("s.x", "01000000")]);
+        assert_eq!(file.programs[1].name, "B");
+        assert_eq!(file.programs[1].values, [retained("y", "02000000")]);
+        assert_eq!(file.data, [master("S")]);
+        assert_eq!(
+            dropped,
+            [
+                "a RETAIN value runtime 't' gave names no program of it: C.z",
+                "a RETAIN value runtime 't' gave names no program of it: nodot"
+            ]
+        );
+        // A program with no value has no entry.
+        let (file, _) = kept_of(&two, &[retained("B.y", "02000000")]);
+        assert_eq!(file.programs.len(), 1);
+        assert_eq!(file.programs[0].name, "B");
+    }
+
+    #[test]
+    fn a_value_kept_for_one_program_is_given_only_to_it() {
+        let total = || vec![retained("total", "2a000000")];
+        let gone = |id: &str, of: &str| NotCarried {
+            variable: format!("{of}.total"),
+            why: format!("kept for program '{of}', which runtime '{id}' does not run now"),
+        };
+
+        // a) One program, the same program: given bare, nothing to write again.
+        let tank = parsed(built("t", "Tank", None));
+        assert_eq!(
+            given_of(&tank, &kept(vec![("Tank", None, total())])),
+            (total(), Vec::new(), false)
+        );
+        let t1 = parsed(built("t", "Tank", Some("T1")));
+        assert_eq!(
+            given_of(&t1, &kept(vec![("Tank", Some("t1"), total())])),
+            (total(), Vec::new(), false)
+        );
+        // b) Another program, by name, and by project name with equal names: nothing given,
+        // said, and the file written again.
+        assert_eq!(
+            given_of(&tank, &kept(vec![("Counter", None, total())])),
+            (Vec::new(), vec![gone("t", "Counter")], true)
+        );
+        assert_eq!(
+            given_of(&t1, &kept(vec![("Tank", Some("T2"), total())])),
+            (Vec::new(), vec![gone("t", "T2")], true)
+        );
+        // c) Kept by a build that did not name its project program, given to one that does,
+        // of the same PROGRAM name.
+        assert_eq!(
+            given_of(&t1, &kept(vec![("Tank", None, total())])),
+            (total(), Vec::new(), false)
+        );
+        // d) One to several: renamed for the program; several to one: bare; A,B to A,C: A's.
+        let ab = parsed(pair([None, None]));
+        assert_eq!(
+            given_of(&ab, &kept(vec![("A", None, total())])),
+            (vec![retained("A.total", "2a000000")], Vec::new(), false)
+        );
+        let a = parsed(built("t", "A", None));
+        assert_eq!(
+            given_of(
+                &a,
+                &kept(vec![
+                    ("A", None, total()),
+                    ("B", None, vec![retained("count", "01000000")])
+                ])
+            ),
+            (
+                total(),
+                vec![NotCarried {
+                    variable: "B.count".into(),
+                    why: "kept for program 'B', which runtime 't' does not run now".into()
+                }],
+                true
+            )
+        );
+        let mut ac = several(&["A", "C"], json!([cyclic("f", 20, &["A", "C"])]));
+        ac["id"] = json!("t");
+        let ac = parsed(ac);
+        assert_eq!(
+            given_of(&ac, &kept(vec![("A", None, total()), ("B", None, total())])),
+            (
+                vec![retained("A.total", "2a000000")],
+                vec![gone("t", "B")],
+                true
+            )
+        );
+        // e) An entry two programs could be: given to neither.
+        let same = parsed(pair([Some("X"), Some("Y")]));
+        let mut both = same.clone();
+        both.programs[1].name = "A".into();
+        assert_eq!(
+            given_of(&both, &kept(vec![("A", None, total())])),
+            (
+                Vec::new(),
+                vec![NotCarried {
+                    variable: "A.total".into(),
+                    why: "it could be of 'A' or 'A'".into()
+                }],
+                true
+            )
+        );
+        // f) Data blocks' masters are given whatever the programs.
+        let mut with_data = kept(vec![("Counter", None, total())]);
+        if let Kept::Programs(file) = &mut with_data {
+            file.data.push(master("S"));
+        }
+        let (given, not_given, rewrite) = given_of(&tank, &with_data);
+        assert_eq!(given, [master("S")]);
+        assert_eq!(not_given, [gone("t", "Counter")]);
+        assert!(rewrite);
+        let (given, _, _) = given_of(&ab, &with_data);
+        assert_eq!(given, [master("S")]);
+    }
+
+    /// Review finding 2 of C8c-core: one entry matched the program by its project name, another
+    /// (kept by a build that did not name its project program) by the PROGRAM name, and both
+    /// were given under one path, the later winning whichever program kept it. Now the program
+    /// is given neither, each value is said, and the file is written again.
+    #[test]
+    fn two_entries_kept_apart_are_never_both_given_to_one_program() {
+        let t1 = parsed(built("t", "Tank", Some("T1")));
+        let both = kept(vec![
+            ("Other", Some("T1"), vec![retained("total", "01000000")]),
+            ("Tank", None, vec![retained("total", "63000000")]),
+        ]);
+        let why = "program 'Tank' could be any of 'T1' or 'Tank', each kept apart: it is given none of them";
+        assert_eq!(
+            given_of(&t1, &both),
+            (
+                Vec::new(),
+                vec![
+                    NotCarried {
+                        variable: "T1.total".into(),
+                        why: why.into()
+                    },
+                    NotCarried {
+                        variable: "Tank.total".into(),
+                        why: why.into()
+                    }
+                ],
+                true
+            )
+        );
+        // In a runtime of several the other program is given its own as before.
+        let mut ab = pair([Some("T1"), None]);
+        ab["programs"][0]["name"] = json!("Tank");
+        ab["tasks"] = json!([cyclic("f", 20, &["Tank", "B"])]);
+        let ab = parsed(ab);
+        let (given, not_given, rewrite) = given_of(
+            &ab,
+            &kept(vec![
+                ("Other", Some("T1"), vec![retained("total", "01000000")]),
+                ("Tank", None, vec![retained("total", "63000000")]),
+                ("B", None, vec![retained("count", "02000000")]),
+            ]),
+        );
+        assert_eq!(given, [retained("B.count", "02000000")]);
+        assert_eq!(not_given.len(), 2, "{not_given:?}");
+        assert!(rewrite);
+    }
+
+    /// Review finding 1 of C8c-core: a program deleted in the logic module while the core ran
+    /// it, and made again under its name, had the same identity, and was given the RETAIN
+    /// values kept for the one before. The logic module now marks each making (`created`), and
+    /// a value kept for another making is not given, and said.
+    #[test]
+    fn a_program_made_again_under_its_name_is_given_none_of_the_values_kept_for_the_one_before() {
+        let made = |created: Option<&str>| {
+            let mut i = built("t", "T", Some("T"));
+            if let Some(c) = created {
+                i["program"]["created"] = json!(c);
+            }
+            parsed(i)
+        };
+        let kept_by = |created: Option<&str>| {
+            Kept::Programs(KeptFile {
+                programs: vec![KeptProgram {
+                    name: "T".into(),
+                    built_from: Some("T".into()),
+                    created: created.map(str::to_string),
+                    values: vec![retained("total", "65000000")],
+                }],
+                data: Vec::new(),
+            })
+        };
+        let gone = NotCarried {
+            variable: "T.total".into(),
+            why: "kept for program 'T' as it was made before: runtime 't' runs a program made again under that name, which is another program".into(),
+        };
+        for (now, before) in [(Some("b2"), Some("a1")), (Some("b2"), None)] {
+            assert_eq!(
+                given_of(&made(now), &kept_by(before)),
+                (Vec::new(), vec![gone.clone()], true),
+                "{now:?} after {before:?}"
+            );
+        }
+        // The same making: given.
+        assert_eq!(
+            given_of(&made(Some("a1")), &kept_by(Some("a1"))),
+            (vec![retained("total", "65000000")], Vec::new(), false)
+        );
+        // The mark is kept with the values, and written only when the build gave one.
+        let (file, _) = kept_of(&made(Some("a1")), &[retained("total", "65000000")]);
+        assert_eq!(file.programs[0].created.as_deref(), Some("a1"));
+        assert!(serde_json::to_string(&file)
+            .unwrap()
+            .contains(r#""built_from":"T","created":"a1","values""#));
+        let (file, _) = kept_of(&made(None), &[retained("total", "65000000")]);
+        assert!(!serde_json::to_string(&file).unwrap().contains("created"));
+    }
+
+    #[test]
+    fn a_retain_file_of_today_is_given_unchanged_and_written_again_in_the_new_form() {
+        let legacy = Kept::parse(r#"[{"path":"total","type":"DINT","bytes":"2a000000"}]"#).unwrap();
+        assert_eq!(legacy, Kept::Legacy(vec![retained("total", "2a000000")]));
+        // Whatever the runtime runs now, as before this slice; and the first keep writes.
+        for i in [
+            parsed(built("t", "Other", None)),
+            parsed(pair([Some("A1"), Some("B1")])),
+        ] {
+            assert_eq!(
+                given_of(&i, &legacy),
+                (vec![retained("total", "2a000000")], Vec::new(), true)
+            );
+        }
+        assert_eq!(
+            given_of(&parsed(built("t", "P", None)), &Kept::Nothing),
+            (Vec::new(), Vec::new(), false)
+        );
+    }
+
+    #[test]
+    fn a_retain_file_of_an_unknown_form_gives_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.json");
+        assert_eq!(RetainStore::read(&path), Kept::Nothing, "no file");
+        for text in [
+            r#"{"programs": [], "x": 1}"#,
+            "{}",
+            r#""text""#,
+            "[1, 2]",
+            r#"{"programs": [{"name": "P", "values": [], "extra": true}]}"#,
+            "not json",
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(RetainStore::read(&path), Kept::Nothing, "{text}");
+            assert!(Kept::parse(text).is_err(), "{text}");
+        }
+        std::fs::write(&path, r#"{"programs": []}"#).unwrap();
+        assert_eq!(
+            RetainStore::read(&path),
+            Kept::Programs(KeptFile {
+                programs: Vec::new(),
+                data: Vec::new()
+            })
         );
     }
 }
