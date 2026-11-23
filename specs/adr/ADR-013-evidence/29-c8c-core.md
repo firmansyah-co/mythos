@@ -359,6 +359,53 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
     keys and writes it back without them on its next `PUT`.
   - The workbench was not changed beyond the type field and the version line.
 
+  **Verification of the finished slice** (the orchestrator, after the review fixes; this is
+  what "not run" above was waiting for).
+  - **The gate.** `./scripts/check.sh` on the slice as the workflow left it (its four commits on
+    `dev` with C8c, before D4a), tree clean: fmt, clippy, the Rust tests (1115 passed, 0 failed,
+    6 ignored, 150 test binaries), lint, the frontend tests (581 passed, 42 files) and the build
+    all passed. **After that the branch got one changed test (below) and was moved onto `dev`
+    with D4a, with two conflicts in documents resolved by hand (each slice keeps its own lines).
+    The full gate was not run again on this machine:** the owner decided (2026-11-23) that when
+    the machine is too loaded the full gate is the one CI runs on the pull request, and this
+    machine was throttling its processor for heat during these runs.
+  - **Mutations**, each in a copy of the commit made by `git archive`, with
+    `scripts/mutation-check.py` and `--no-fail-fast`, both baselines green: 42. In the protocol
+    (`cargo test -p mythos-module`): 5 of 5 red, among them the identity ignoring the project
+    name, comparing it with case, without the fallback to the PROGRAM name, `built_from` always
+    written, and a program made again taken for the one before. In the core (`cargo test -p
+    mythos-core --lib`): 15 of 15 red, among them the refusal of one program in two runtimes
+    removed (2 tests), made by name (5) and treating an absent name as one name (6), values given
+    whatever their program (3), several programs not prefixed (2), kept paths not stripped (2), a
+    start that withheld not written again (3), data masters dropped (2), an empty project name
+    accepted (1), two kept entries of one program both given (1), and the two sentences of the
+    save tool (1 each). In the logic module (`cargo test -p mythos-logic`): 4 of 4 red (no
+    identity in a runtime build, the declared PROGRAM name in its place, no identity in a program
+    build, the making mark lost by a save of settings). Through the server (`cargo test -p
+    mythos-module-tests --test data_and_logic --test runtime_api --test runtime_vm --test
+    logic_module`): 18, of which 17 were red in the tests named for them, among them a file of
+    before not written again (1), `not_given` not reported (5), the online change by PROGRAM
+    names only (3), values given whatever their program (6), no fallback to the PROGRAM name (1,
+    in the test of a RETAIN variable across a new process), data masters dropped (1, in the test
+    of a retained block across a killed process).
+  - **One survived, and it was the test of the review's high finding.** "An online change across
+    projects is not refused" left
+    `a_program_of_the_project_made_active_never_carries_on_from_another_project_s_running_program`
+    green: its two programs were made through the route, so each had its own making mark and
+    was another program whatever the project. The project rule is the only guard for programs
+    that carry no mark, which is every program of a project made before this slice. The test now
+    takes the mark out of both built instances (and fails if a build carries none), so the two
+    differ in nothing but their project. Run again on that commit: baseline 18 of 18 green, the
+    mutation red in that test, baseline green again.
+  - **Windows, compile and lint only:** `cargo clippy --workspace --all-targets --target
+    x86_64-pc-windows-msvc -- -D warnings` from Linux found nothing in what it could check. It is
+    PARTIAL: the crates that need `ring` (`mythos-core`, `mythos-cli`, `mythos-desktop`,
+    `mythos-update`, and the tests that link the core) are not checked, for want of a C compiler
+    for Windows on this machine. Behaviour on Windows and macOS is run by CI and by nothing else.
+  - **The two fixes that changed the design** (the making mark `created`, and the project in the
+    online change) were written by the fix agent and read by the orchestrator, not reviewed by a
+    second agent. What holds them is the tests and the mutations above.
+
   **Open items, each with its class.**
   - Instances built before 0.8.0 are not compared (no `built_from`), so a program can still run
     in two runtimes until each is built again and saved. LATENT after the slice. A stored
