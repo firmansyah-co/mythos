@@ -1,0 +1,80 @@
+/* The data module's workbench UI. It uses the workbench's tokens and classes (btn, badge, grid,
+   notice, tree__node, editor__*); what is here is only layout the workbench has no class for. */
+
+.data-root {
+  display: contents;
+}
+
+/* The type's source over the rest of the editor; the editor scrolls as one. */
+.data-editor {
+  display: flex;
+  flex-direction: column;
+}
+
+.data-editor__source {
+  flex: none;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 16em;
+  resize: vertical;
+  margin: 0;
+  padding: var(--gap-2) var(--gap-3);
+  border: 0;
+  border-bottom: 1px solid var(--c-rule);
+  white-space: pre;
+}
+
+/* A data block's type and retain, one field under the other. */
+.data-block-form {
+  display: grid;
+  justify-items: start;
+  gap: var(--gap-3);
+  padding: var(--gap-2) var(--gap-3);
+}
+
+/* The retain choice: a fieldset, so it is disabled as one, without the browser's frame. */
+.data-block-form__retain {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+/* The Diagnostics tab's list: one line per message, where it is first. */
+.data-check {
+  padding: var(--gap-2) var(--gap-3);
+}
+
+.data-check p {
+  margin: 0 0 var(--gap-2);
+}
+
+.data-diagnostics {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.data-diagnostics li {
+  display: flex;
+  gap: var(--gap-2);
+  align-items: baseline;
+  padding: var(--gap-1) 0;
+}
+
+.data-diagnostics .btn {
+  height: auto;
+  text-align: left;
+  white-space: normal;
+}
+
+/* The name field of an "Add new …" row of the tree: the row's height, the field's frame. */
+.data-tree__input {
+  flex: 1;
+  min-width: 0;
+  height: calc(var(--row-h) - var(--gap-1));
+  margin-right: var(--gap-2);
+  padding: 0 var(--gap-1);
+  border: 1px solid var(--c-focus);
+  border-radius: var(--radius);
+}

@@ -143,7 +143,9 @@ export interface TagMetadata {
 export class ApiError extends Error {
   constructor(
     message: string,
-    readonly status: number | null
+    readonly status: number | null,
+    /** The refusal's body as JSON, when it was JSON and the request was a module UI's (`apiRequest`); otherwise `null`. */
+    readonly body: unknown = null
   ) {
     super(message);
     this.name = 'ApiError';
@@ -471,8 +473,11 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   const response = await call(path, init);
   if (!response.ok) {
     let detail = '';
+    // Kept whole for the module UI: its own module's refusal says more than `error`.
+    let refusal: unknown = null;
     try {
       const body: unknown = await response.json();
+      refusal = body;
       if (body && typeof body === 'object') {
         const text = (body as Record<string, unknown>).error;
         if (typeof text === 'string') detail = `: ${text}`;
@@ -480,10 +485,23 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
     } catch {
       // The body was not JSON; the status line is all there is to report.
     }
-    throw new ApiError(`${response.status} ${response.statusText}${detail}`, response.status);
+    throw new ApiError(`${response.status} ${response.statusText}${detail}`, response.status, refusal);
   }
-  const text = await response.text();
-  return (text === '' ? null : JSON.parse(text)) as T;
+  // An answer that cannot be read, or is not JSON (a proxy's page), is thrown as an `ApiError`
+  // like a refusal, with its status: a module UI is promised an `ApiRefusal` for anything thrown.
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (cause) {
+    const why = cause instanceof Error ? cause.message : String(cause);
+    throw new ApiError(`${response.status} ${response.statusText}: the answer could not be read (${why})`, response.status);
+  }
+  if (text === '') return null as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError(`${response.status} ${response.statusText}: the answer is not JSON`, response.status);
+  }
 }
 
 /** A request whose success carries no body. Throws exactly as `request` does. */

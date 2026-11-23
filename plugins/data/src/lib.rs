@@ -28,6 +28,11 @@
 //! It builds nothing, loads nothing and never talks to a runtime. Its answers give each
 //! block's layout hash, so a caller sees when a change of a type makes the programs built with
 //! it out of date; the logic module builds programs from these files (ADR-014 §2.8).
+//!
+//! **Its workbench UI** is `frontend/packages/data-ui` (ADR-011 §2.3): the project tree's
+//! "Data" section and the editors of user types and data blocks, built to `entry.js` and
+//! `data.css` and installed in `modules-ui/org.mythos.data/`. The manifest declares nothing for
+//! it: the controller serves a module's UI from that directory. It carries this crate's version.
 
 use async_trait::async_trait;
 use mythos_logic_compiler::{check_project, DataBlock, DataLayout, Diagnostic, Sources};

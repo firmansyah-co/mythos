@@ -1106,7 +1106,7 @@ fn the_manifest_declares_eight_routes_each_a_tool_of_its_own() {
     let m = manifest();
     assert_eq!(m.id, MODULE_ID);
     assert_eq!(m.provides, PROVIDES);
-    assert_eq!(m.version, "0.1.0");
+    assert_eq!(m.version, "0.2.0");
     assert_eq!(m.kind, ModuleKind::Service);
     assert!(!m.always_on);
     let tools: Vec<(&str, &str, &str, Option<&str>)> = m

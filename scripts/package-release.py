@@ -40,7 +40,7 @@ EXECUTABLES = [
 ]
 # Module UIs a bundle must carry: a module shipped without its UI would serve routes nobody can
 # use from the workbench.
-REQUIRED_UIS = ["org.mythos.hmi", "org.mythos.discovery", "org.mythos.logic"]
+REQUIRED_UIS = ["org.mythos.hmi", "org.mythos.discovery", "org.mythos.logic", "org.mythos.data"]
 
 
 def main() -> int:
