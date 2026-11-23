@@ -402,6 +402,21 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
     PARTIAL: the crates that need `ring` (`mythos-core`, `mythos-cli`, `mythos-desktop`,
     `mythos-update`, and the tests that link the core) are not checked, for want of a C compiler
     for Windows on this machine. Behaviour on Windows and macOS is run by CI and by nothing else.
+  - **CI's first run was red on Linux, in a test of this slice, and it showed a defect of the
+    core that is older than the slice.**
+    `a_program_made_again_under_a_deleted_name_and_loaded_in_stop_starts_without_the_values_of_the_one_before`
+    saves a build that replaces a running one and at once asks it to run; the answer was 404, "no
+    runtime 'T' is loaded on this node". When a build replaces a running one, the new driver
+    reports first and the driver before goes on reporting until it is stopped: its late report
+    took the replacement's place in the list of loaded runtimes, and its stop then forgot the
+    runtime, which was unknown until the replacement's next exchange. In that state the driver
+    before also did not know it was replaced, and kept its RETAIN values at its stop. LIVE
+    before this slice for anyone who commands a runtime right after loading it over a running
+    one; it never showed locally. `RuntimeStates::report` now ignores a report of an older
+    generation than the one listed. Core unit
+    `a_replaced_drivers_late_report_and_stop_leave_its_replacement_loaded`: red with the guard
+    taken out ("the driver before is still replaced after its late report"), green with it. Not
+    reproduced through the server: the window is a few milliseconds.
   - **The two fixes that changed the design** (the making mark `created`, and the project in the
     online change) were written by the fix agent and read by the orchestrator, not reviewed by a
     second agent. What holds them is the tests and the mutations above.
