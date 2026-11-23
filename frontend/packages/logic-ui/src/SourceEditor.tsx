@@ -4,6 +4,7 @@
 import { forwardRef, useImperativeHandle, useMemo, useRef } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { Diagnostic } from './bridge';
+import { lineEnds } from './library';
 import { offsetOf, rangeOf, tokenize } from './st';
 
 export interface SourceEditorHandle {
@@ -22,9 +23,13 @@ interface Props {
 const INDENT = '  ';
 
 export const SourceEditor = forwardRef<SourceEditorHandle, Props>(function SourceEditor(
-  { source, readOnly, diagnostics, onChange },
+  { source: given, readOnly, diagnostics, onChange },
   ref
 ) {
+  // A browser's text area holds its text with `\n` line ends whatever it is given, and places a
+  // caret in that text: every offset here (a diagnostic's place, the caret, an indent) is of the
+  // same text, so a file with `\r\n` line ends is shown and placed in as that text.
+  const source = useMemo(() => lineEnds(given), [given]);
   const area = useRef<HTMLTextAreaElement>(null);
   const lines = useMemo(() => source.split('\n'), [source]);
   const tokens = useMemo(() => tokenize(source), [source]);

@@ -10,13 +10,14 @@
 //! builds it: compiled for its target, bindings checked against its variables, packed as the
 //! runtime instance the core loads (`PUT /api/v1/projects/:id/runtimes`).
 //!
-//! **Each program is compiled from its own source alone** (`compile_sources` with that one
-//! source). Every source of a project holds a PROGRAM, and a program is compiled from sources
-//! of which exactly one POU is a PROGRAM, so another program's functions and function blocks
-//! cannot be compiled in without taking its PROGRAM out of its file; and a program built with
-//! another's POUs would change, and take a new version, when that other program is edited.
-//! A function or function block a program needs is in its own source: in a Ladder Diagram
-//! document beside its PROGRAM, in Structured Text before it.
+//! **Each program is compiled from its own source and the project's library, never with
+//! another program's source.** Every program source holds a PROGRAM, and a program is compiled
+//! from sources of which exactly one POU is a PROGRAM, so another program's functions and
+//! function blocks cannot be compiled in without taking its PROGRAM out of its file; and a
+//! program built with another's POUs would change, and take a new version, when that other
+//! program is edited. A function or function block a program needs is in its own source (in a
+//! Ladder Diagram document beside its PROGRAM, in Structured Text before it) or in the project's
+//! library (below), which every program is compiled with.
 //!
 //! **The project's library and data (ADR-014 §2.7, §2.8).** Beside the programs, the module
 //! keeps the project's library: Structured Text sources of functions and function blocks,

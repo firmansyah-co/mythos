@@ -1,10 +1,14 @@
-// The logic module's workbench UI (ADR-013 §2.6, ADR-011 §2.3): the "Programs" section of the
-// project tree and the program editor. Built into `entry.js` (see vite.config.ts) and served by
+// The logic module's workbench UI (ADR-013 §2.6, ADR-011 §2.3): the "Programs" and "Library"
+// sections of the project tree, the program editor and the library source editor (ADR-014 D4c). Built into `entry.js` (see vite.config.ts) and served by
 // the controller beside the module.
 
 import type { Dispose, WorkbenchHost, WorkbenchModule } from '@mythos/workbench-sdk';
 import { bind } from './bridge';
 import { draw } from './draw';
+import { DATA_CHANGED_EVENT, LIBRARY_CHANGED_EVENT, LIBRARY_EDITOR, libraryEventOf, projectOf } from './library';
+import { LibraryEditor } from './LibraryEditor';
+import { anyDirty as anyLibraryDirty, useLibrary } from './librarystore';
+import { LibraryTree } from './LibraryTree';
 import { ProgramEditor } from './ProgramEditor';
 import { ProgramsTree } from './ProgramsTree';
 import { anyDirty, followsSavedSource, usePrograms } from './programs';
@@ -16,6 +20,8 @@ export const MODULE_ID = 'org.mythos.logic';
 export const EDITOR = 'logic-program';
 /** Sent by the logic module when a project's programs change. */
 export const PROGRAMS_CHANGED_EVENT = 'LOGIC_PROGRAMS_CHANGED';
+/** The owner of the library sources' unsaved changes. */
+export const LIBRARY_UNSAVED_OWNER = 'logic-library';
 
 /** The stylesheet built beside `entry.js`, while the module is active. */
 function stylesheet(): Dispose {
@@ -32,10 +38,15 @@ function stylesheet(): Dispose {
 export function activate(host: WorkbenchHost): Dispose {
   const stops: Dispose[] = [stylesheet(), bind(host)];
 
-  // The open project's programs are read when it opens, and dropped when it closes.
+  // The open project's programs and library are read when it opens, and dropped when it closes.
   const load = (projectId: string | null) => {
-    if (projectId === null) usePrograms.getState().reset();
-    else void usePrograms.getState().load(projectId);
+    if (projectId === null) {
+      usePrograms.getState().reset();
+      useLibrary.getState().reset();
+    } else {
+      void usePrograms.getState().load(projectId);
+      void useLibrary.getState().load(projectId);
+    }
   };
   load(host.project()?.id ?? null);
   stops.push(host.onProject((project) => load(project?.id ?? null)));
@@ -47,6 +58,49 @@ export function activate(host: WorkbenchHost): Dispose {
     })
   );
   stops.push(() => host.setUnsaved('logic-programs', false));
+  stops.push(
+    useLibrary.subscribe((state, previous) => {
+      if (state.docs !== previous.docs) host.setUnsaved(LIBRARY_UNSAVED_OWNER, anyLibraryDirty(state));
+    })
+  );
+  stops.push(() => host.setUnsaved(LIBRARY_UNSAVED_OWNER, false));
+
+  // A library source was saved or deleted (here, by another engineer, by an agent over MCP): the
+  // list is read again, and an open editor follows it unless it has changes.
+  stops.push(
+    host.events.subscribe(LIBRARY_CHANGED_EVENT, (data) => {
+      const library = useLibrary.getState();
+      const project = (data as { project?: unknown } | null)?.project;
+      if (library.projectId === null || project !== library.projectId) return;
+      const event = libraryEventOf(data);
+      if (event === null) return;
+      const close = library.changed(event);
+      if (close !== null) host.closeEditor(LIBRARY_EDITOR, close);
+    })
+  );
+
+  // Every program is compiled with the library: a check made before the library changed is of
+  // an earlier one. Open programs say so, and those read are checked again.
+  stops.push(
+    host.events.subscribe(LIBRARY_CHANGED_EVENT, (data) => {
+      const programs = usePrograms.getState();
+      if (programs.projectId === null || projectOf(data) !== programs.projectId) return;
+      if (libraryEventOf(data) === null) return;
+      programs.libraryChanged();
+    })
+  );
+
+  // The data module changed the project's user types or data blocks: every program and the
+  // library are compiled with them, so the checks made before are of earlier ones.
+  stops.push(
+    host.events.subscribe(DATA_CHANGED_EVENT, (data) => {
+      const project = projectOf(data);
+      const programs = usePrograms.getState();
+      if (programs.projectId !== null && project === programs.projectId) programs.dataChanged();
+      const library = useLibrary.getState();
+      if (library.projectId !== null && project === library.projectId) library.dataChanged();
+    })
+  );
 
   // Somebody else (another engineer, an agent over MCP) changed the programs: read them again,
   // unless that would throw away what is being edited here.
@@ -82,6 +136,15 @@ export function activate(host: WorkbenchHost): Dispose {
   );
 
   stops.push(
+    host.register.treeSection({
+      id: 'logic-library',
+      // After Programs (20), before the data module's Data (30).
+      order: 25,
+      mount: (container) => draw(container, <LibraryTree openEditor={(name) => host.openEditor(LIBRARY_EDITOR, name)} />),
+    })
+  );
+
+  stops.push(
     host.register.editor({
       kind: EDITOR,
       live: true,
@@ -91,9 +154,19 @@ export function activate(host: WorkbenchHost): Dispose {
     })
   );
 
+  stops.push(
+    host.register.editor({
+      kind: LIBRARY_EDITOR,
+      title: (name) => ['Library', name ?? ''],
+      mount: (container, { target }) =>
+        draw(container, <LibraryEditor name={target ?? ''} onClose={(name) => host.closeEditor(LIBRARY_EDITOR, name)} />),
+    })
+  );
+
   return () => {
     for (const stop of stops.reverse()) stop();
     usePrograms.getState().reset();
+    useLibrary.getState().reset();
   };
 }
 

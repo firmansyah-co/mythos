@@ -19,7 +19,7 @@ const LANGUAGE_TITLE: Record<string, string> = {
   sfc: 'Sequential Function Chart',
 };
 
-interface NodeProps {
+export interface NodeProps {
   depth: number;
   icon: ReactNode;
   label: string;
@@ -30,7 +30,7 @@ interface NodeProps {
   testId?: string;
 }
 
-function TreeNode({ depth, icon, label, mark, expanded, onToggle, onOpen, testId }: NodeProps) {
+export function TreeNode({ depth, icon, label, mark, expanded, onToggle, onOpen, testId }: NodeProps) {
   return (
     <div
       role="treeitem"

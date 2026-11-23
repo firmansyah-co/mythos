@@ -60,6 +60,8 @@ import { readLadder, type Ladder } from './ladder';
 import { LadderEditor } from './LadderEditor';
 import { LadderView, type LadderLive } from './LadderView';
 import { InstructionsCard } from './LdInstructions';
+import { LIBRARY_EDITOR, librarySourceOf } from './library';
+import { useLibrary } from './librarystore';
 import { readSfc, type Sfc } from './sfc';
 import { SfcEditor } from './SfcEditor';
 import { SFC_KIT } from './SfcInstructions';
@@ -73,11 +75,13 @@ import {
   loadOf,
   monotonicNow,
   runState,
+  staleCause,
   usePrograms,
   WATCH_POLL_MS,
   type Currency,
   type ProgramDoc,
   type RunState,
+  type StaleCause,
   type WatchView,
 } from './programs';
 import { forceable, formatVariable, hasOneValue, parseForced, shownForced } from './values';
@@ -685,7 +689,15 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
   // What the Ladder Diagram front-end made for itself (`__LD_…`) is not the program's: it is
   // watched for the diagram, and not listed.
   const variables = doc.variables === null ? null : doc.variables.filter((variable) => variable.hidden !== true);
-  const current = variables !== null && doc.variablesSource === doc.source;
+  const sameText = doc.variablesSource === doc.source;
+  // Of the text now, and of the library and the project's types as they are now.
+  const current = variables !== null && sameText && doc.variablesStale === null;
+  const earlier =
+    doc.variablesStale === 'library'
+      ? 'an earlier library: it has'
+      : doc.variablesStale === 'data'
+        ? "earlier types and data blocks of the project: they have"
+        : 'an earlier library and earlier types and data blocks of the project: they have';
   // What a binding may name: the tags of the configuration being edited and of what runs.
   const tags = [...new Set([...configured, ...(io?.connections.flatMap((c) => c.tags) ?? [])])].sort();
   const lost = variables === null ? rows : orphans(rows, variables);
@@ -726,7 +738,9 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
         <>
           {!current && (
             <p className="muted" data-testid="variables-stale">
-              These are the variables of the last text that compiled. The text has changed since.
+              {doc.variablesStale === null
+                ? 'These are the variables of the last text that compiled. The text has changed since.'
+                : `These are the variables of the last text that compiled, with ${earlier} changed since.${sameText ? '' : ' The text has changed since too.'}`}
             </p>
           )}
           {variables.length === 0 ? (
@@ -872,6 +886,60 @@ export function placeOf(diagnostic: Diagnostic): string {
   return element.pou === '' ? `${diagnostic.line}:${diagnostic.col}` : element.pou;
 }
 
+/** What changed since a check, other than the text: the library, the project's types, or both. */
+const STALE_SAID: Record<StaleCause, string> = {
+  library: 'This is the check of an earlier library. The library has changed since.',
+  data: "This is a check with earlier types and data blocks of the project. They have changed since.",
+  both: "This is the check of an earlier library, with earlier types and data blocks of the project. Both have changed since.",
+};
+/** The toolbar's word for the same. */
+const STALE_BADGE: Record<StaleCause, string> = {
+  library: 'LIBRARY CHANGED SINCE CHECK',
+  data: 'DATA CHANGED SINCE CHECK',
+  both: 'LIBRARY AND DATA CHANGED SINCE CHECK',
+};
+/** Why nothing is drawn live, for the same. */
+const STALE_LIVE: Record<StaleCause, string> = {
+  library: 'No live state is drawn: the library has changed since this text was checked.',
+  data: "No live state is drawn: the project's types or data blocks have changed since this text was checked.",
+  both: "No live state is drawn: the library and the project's types or data blocks have changed since this text was checked.",
+};
+
+/**
+ * A diagnostic of another file. One in a library source the module listed last is a button that
+ * opens that source with the caret at its place; any other (a type's file, a source not listed,
+ * no list read) is only listed.
+ */
+function ElsewhereItem({ diagnostic }: { diagnostic: Diagnostic }) {
+  const listed = useLibrary((state) => state.names);
+  const source = librarySourceOf(diagnostic, listed);
+  if (source === null) {
+    return (
+      <li className="logic-diagnostic logic-diagnostic--plain" data-testid="diagnostic-elsewhere">
+        <span className="mono logic-diagnostic__at">{placeElsewhere(diagnostic)}</span>
+        {diagnostic.message}
+      </li>
+    );
+  }
+  return (
+    <li>
+      <button
+        type="button"
+        className="logic-diagnostic"
+        data-testid="diagnostic-library"
+        onClick={() => {
+          // At line 0 it is about the whole source: opened, with no place to go to.
+          if (diagnostic.line > 0) useLibrary.getState().goTo(source, diagnostic.line, diagnostic.col);
+          host().openEditor(LIBRARY_EDITOR, source);
+        }}
+      >
+        <span className="mono logic-diagnostic__at">{placeElsewhere(diagnostic)}</span>
+        {diagnostic.message}
+      </button>
+    </li>
+  );
+}
+
 /** What the compiler said, of which text. */
 function CheckPanel({ doc, goTo }: { doc: ProgramDoc; goTo: (diagnostic: Diagnostic) => void }) {
   const current = checkIsCurrent(doc);
@@ -883,6 +951,17 @@ function CheckPanel({ doc, goTo }: { doc: ProgramDoc; goTo: (diagnostic: Diagnos
     );
   }
   const { check } = doc;
+  const cause = staleCause(doc);
+  if (cause !== null) {
+    // Of an earlier library or earlier types: nothing it said is shown as said of this one.
+    return (
+      <div className="logic-check" data-testid="check-result">
+        <p className="muted" data-testid="check-library-stale" data-cause={cause}>
+          {STALE_SAID[cause]}
+        </p>
+      </div>
+    );
+  }
   return (
     <div className="logic-check" data-testid="check-result">
       {!current && (
@@ -917,12 +996,9 @@ function CheckPanel({ doc, goTo }: { doc: ProgramDoc; goTo: (diagnostic: Diagnos
                 </button>
               </li>
             ) : (
-              // Of the library or the project's types: a place in another file, so listed with
-              // its source and not a button that would jump into this program's text.
-              <li key={index} className="logic-diagnostic logic-diagnostic--plain" data-testid="diagnostic-elsewhere">
-                <span className="mono logic-diagnostic__at">{placeElsewhere(diagnostic)}</span>
-                {diagnostic.message}
-              </li>
+              // Of the library or the project's types: a place in another file, never one that
+              // would jump into this program's text.
+              <ElsewhereItem key={index} diagnostic={diagnostic} />
             )
           )}
         </ul>
@@ -1011,6 +1087,8 @@ function liveOf(
   const check = checkIsCurrent(doc) ? doc.check : null;
   const fbd = doc.entry.language === 'fbd';
   const sfc = doc.entry.language === 'sfc';
+  const cause = staleCause(doc);
+  if (doc.check !== null && doc.checkedSource === doc.source && cause !== null) return { live: null, why: STALE_LIVE[cause] };
   // Not checked and does not compile are told apart: a text followed from elsewhere is being
   // checked, and saying it did not compile would be a claim nobody made.
   if (check === null) {
@@ -1388,11 +1466,16 @@ function problemCount(doc: ProgramDoc | undefined): number | null {
 /** The check of the text, in a word, on the editor's toolbar; it opens the Diagnostics tab. */
 function CheckSummary({ doc }: { doc: ProgramDoc }) {
   const count = problemCount(doc);
+  const cause = staleCause(doc);
   const [tone, text, title] =
     doc.check === null
       ? ['neutral', 'NOT CHECKED', 'The program has not been checked yet.']
-      : !checkIsCurrent(doc)
+      : doc.checkedSource !== doc.source
         ? ['neutral', 'CHANGED SINCE CHECK', 'The text has changed since its last check.']
+        : cause !== null
+          ? ['neutral', STALE_BADGE[cause], STALE_SAID[cause]]
+          : !checkIsCurrent(doc)
+            ? ['neutral', 'CHANGED SINCE CHECK', 'The text has changed since its last check.']
         : !doc.check.ok
           ? ['bad', `${count} ${count === 1 ? 'ERROR' : 'ERRORS'}`, 'The program does not compile.']
           : count !== null && count > 0

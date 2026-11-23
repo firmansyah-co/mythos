@@ -33,9 +33,24 @@ export interface ProgramDoc {
   /** The last check, and the text it was a check of. */
   check: CheckResult | null;
   checkedSource: string | null;
+  /**
+   * The project's library changed (`LOGIC_LIBRARY_CHANGED`) since the last check was asked: it
+   * is the check of an earlier library, and says nothing of this one.
+   */
+  libraryStale: boolean;
+  /**
+   * The project's user types or data blocks changed (the data module's `DATA_CHANGED`) since the
+   * last check was asked: it is a check with earlier types and blocks.
+   */
+  dataStale: boolean;
   /** The variables of the last text that compiled, and that text. */
   variables: Variable[] | null;
   variablesSource: string | null;
+  /**
+   * What changed since the check that gave the variables, other than the text: the library, the
+   * project's types and data blocks, or both. `null` while they are of the library and types now.
+   */
+  variablesStale: StaleCause | null;
   /** The last build this workbench made, and whether it was loaded. */
   built: BuildResult | null;
   loaded: ApplyAnswer | null;
@@ -178,6 +193,13 @@ export interface ProgramsState {
   create: (name: string, language?: Language) => Promise<string | null>;
   /** Read the program's source again, unless it has changes here: someone else saved it. */
   reread: (name: string) => Promise<void>;
+  /**
+   * The project's library changed: every last check is of an earlier library, and every program
+   * whose source was read is checked again, quietly.
+   */
+  libraryChanged: () => void;
+  /** The project's user types or data blocks changed: the same, for that cause. */
+  dataChanged: () => void;
   remove: (name: string) => Promise<boolean>;
   open: (name: string) => Promise<void>;
   setSource: (name: string, source: string) => void;
@@ -264,9 +286,22 @@ export function anyDirty(state: Pick<ProgramsState, 'programs'>): boolean {
   return state.programs.some(isDirty);
 }
 
-/** Whether the last check is of the text now in the editor. */
+/**
+ * Whether the last check is of the text now in the editor, with the library and the project's
+ * types and data blocks as they are now.
+ */
 export function checkIsCurrent(doc: ProgramDoc): boolean {
-  return doc.check !== null && doc.checkedSource === doc.source;
+  return doc.check !== null && doc.checkedSource === doc.source && !doc.libraryStale && !doc.dataStale;
+}
+
+/** What changed since the last check other than the text, when something did. */
+export type StaleCause = 'library' | 'data' | 'both';
+
+export function staleCause(doc: ProgramDoc): StaleCause | null {
+  if (doc.libraryStale && doc.dataStale) return 'both';
+  if (doc.libraryStale) return 'library';
+  if (doc.dataStale) return 'data';
+  return null;
 }
 
 /**
@@ -344,22 +379,35 @@ const docOf = (entry: ProgramEntry): ProgramDoc => ({
   readError: null,
   check: null,
   checkedSource: null,
+  libraryStale: false,
+  dataStale: false,
   variables: null,
   variablesSource: null,
+  variablesStale: null,
   built: null,
   loaded: null,
   startFailure: null,
 });
 
-/** `doc` with the answer of a check of `source`. A text that compiled gives the variables. */
+/**
+ * `doc` with the answer of a check of `source`. A text that compiled gives the variables. The
+ * answer is of the library and the types as they are, unless they changed after it was asked
+ * (see {@link asOf}).
+ */
 const checked = (doc: ProgramDoc, result: CheckResult, source: string): ProgramDoc => ({
   ...doc,
   check: result,
   checkedSource: source,
+  libraryStale: false,
+  dataStale: false,
   ...(result.ok && result.variables
-    ? { variables: result.variables, variablesSource: source }
+    ? { variables: result.variables, variablesSource: source, variablesStale: null }
     : {}),
 });
+
+/** `cause` with `added` to it. */
+const withCause = (cause: StaleCause | null, added: 'library' | 'data'): StaleCause =>
+  cause === null || cause === added ? added : 'both';
 
 const EMPTY_RUNTIMES: RuntimesView = {
   runtimes: null,
@@ -425,6 +473,36 @@ let runtimesApplied = 0;
 let floor = 0;
 /** Fires when no read of the runtimes has come back for `RUNTIMES_STALE_AFTER_MS`. */
 let runtimesOverdue: ReturnType<typeof setTimeout> | null = null;
+/** The newest check applied (or failed) for each program, by program name. */
+const checkApplied = new Map<string, number>();
+/** How many times the library, and the project's types and blocks, were heard to change. */
+let libraryChanges = 0;
+let dataChanges = 0;
+
+/** What had changed when a check was asked: an answer is of the library and types of then. */
+interface AskedAt {
+  library: number;
+  data: number;
+}
+const askedNow = (): AskedAt => ({ library: libraryChanges, data: dataChanges });
+
+/** `doc` just checked, still marked stale when the library or the types changed after the check was asked. */
+const asOf = (doc: ProgramDoc, at: AskedAt): ProgramDoc =>
+  at.library === libraryChanges && at.data === dataChanges
+    ? doc
+    : {
+        ...doc,
+        libraryStale: doc.libraryStale || at.library !== libraryChanges,
+        dataStale: doc.dataStale || at.data !== dataChanges,
+        // The variables it gave, if any, are of the earlier library or types too.
+        variablesStale:
+          doc.variables === null
+            ? doc.variablesStale
+            : [...(at.library !== libraryChanges ? (['library'] as const) : []), ...(at.data !== dataChanges ? (['data'] as const) : [])].reduce<StaleCause | null>(
+                (cause, added) => withCause(cause, added),
+                doc.variablesStale
+              ),
+      };
 
 export const usePrograms = create<ProgramsState>((set, get) => {
   /** (Re)start waiting for the runtimes: past the bound with a read still out, what was read is no longer what is. */
@@ -454,6 +532,37 @@ export const usePrograms = create<ProgramsState>((set, get) => {
   const find = (name: string) => get().programs.find((doc) => doc.entry.name === name);
   /** Whether the project the request was made for is still the one open. */
   const still = (projectId: string) => get().projectId === projectId;
+
+  /** Number a check of program `name`; `newest()` says whether its answer is newer than any applied. */
+  const numberCheck = (name: string) => {
+    const number = ++asked;
+    return () => {
+      if (number <= Math.max(checkApplied.get(name) ?? 0, floor)) return false;
+      checkApplied.set(name, number);
+      return true;
+    };
+  };
+
+  /** Every last check is stale for `cause`; every program read is checked again, quietly. */
+  const changedUnder = (cause: 'library' | 'data') => {
+    if (cause === 'library') libraryChanges += 1;
+    else dataChanges += 1;
+    set((state) => ({
+      programs: state.programs.map((doc) => {
+        // The variables listed are of a check made with what changed: said so until a check
+        // of the library and types as they are gives them again.
+        const variables = doc.variables === null ? doc : { ...doc, variablesStale: withCause(doc.variablesStale, cause) };
+        return variables.check === null
+          ? variables
+          : cause === 'library'
+            ? { ...variables, libraryStale: true }
+            : { ...variables, dataStale: true };
+      }),
+    }));
+    for (const doc of get().programs) {
+      if (doc.source !== null) void get().check(doc.entry.name, true);
+    }
+  };
 
   const failed = (what: string, cause: unknown) => {
     const text = `${what}: ${message(cause)}`;
@@ -603,6 +712,10 @@ export const usePrograms = create<ProgramsState>((set, get) => {
       }
     },
 
+    libraryChanged: () => changedUnder('library'),
+
+    dataChanged: () => changedUnder('data'),
+
     setSource: (name, source) => change(name, (doc) => ({ ...doc, source })),
 
     setSettings: (name, edit) =>
@@ -634,15 +747,20 @@ export const usePrograms = create<ProgramsState>((set, get) => {
       const doc = find(name);
       if (!projectId || !doc || doc.source === null) return;
       const source = doc.source;
+      const at = askedNow();
+      const newest = numberCheck(name);
       if (!quiet) set({ busy: 'checking', error: null });
       try {
         const result = await api.check(projectId, name, source);
-        // A quiet check answered after the text moved on is of a text no longer shown: dropped.
-        change(name, (d) => (quiet && d.source !== source ? d : checked(d, result, source)));
+        // An answer older than one applied already is not shown over it; a quiet check answered
+        // after the text moved on is of a text no longer shown: dropped.
+        if (newest() && still(projectId)) {
+          change(name, (d) => (quiet && d.source !== source ? d : asOf(checked(d, result, source), at)));
+        }
         if (!quiet) set({ busy: null });
       } catch (cause) {
         // No result is kept: an old one would read as the answer for this text.
-        change(name, (d) => ({ ...d, check: null, checkedSource: null }));
+        if (newest() && still(projectId)) change(name, (d) => ({ ...d, check: null, checkedSource: null }));
         if (quiet) log.error(`Program ${name} was not checked: ${message(cause)}`);
         else failed(`Program ${name} was not checked`, cause);
       }
@@ -661,8 +779,10 @@ export const usePrograms = create<ProgramsState>((set, get) => {
         const source = find(name)?.source ?? '';
         // The check says what is wrong, with a line and a column; a refused build says only
         // that it was refused.
+        const at = askedNow();
+        const newest = numberCheck(name);
         const result = await api.check(projectId, name, source);
-        change(name, (d) => checked(d, result, source));
+        if (newest()) change(name, (d) => asOf(checked(d, result, source), at));
         if (!result.ok || (result.binding_problems?.length ?? 0) > 0) {
           set({
             busy: null,
