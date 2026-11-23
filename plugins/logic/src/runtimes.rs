@@ -701,7 +701,9 @@ fn runtime_program(
 ) -> Result<RuntimeProgram, Refusal> {
     Ok(RuntimeProgram {
         name: compiled.name.clone(),
-        built_from: None,
+        // The project program this is a build of, as `programs.json` spells it: the core
+        // compares it to keep one program in one runtime and to give RETAIN values per program.
+        built_from: Some(entry.name.clone()),
         version: version_in_runtime(entry, compiled, task),
         // Stored, and not used by a runtime given tasks; never a value made up here.
         interval_ms: entry.interval_ms,
@@ -804,10 +806,9 @@ fn build_runtime(
                 .into_iter()
                 .map(|w| format!("program '{p}': {w}")),
         );
-        // The core keeps RETAIN values per runtime id, not per program, and the runtime module
-        // puts each into the RETAIN variable of the same name, type and size, whichever program
-        // wrote it. This module cannot know what the core keeps under the id (it never calls
-        // the core), so it says what happens in either case.
+        // The core keeps RETAIN values per runtime id and per program, and gives a program
+        // only what was kept for it under this id. This module cannot know what the core keeps
+        // (it never calls the core), so it says what a warm load gives and what it does not.
         if b.compiled.symbols.iter().any(|s| s.retain) {
             warnings.push(retain_warning(p, id));
         }

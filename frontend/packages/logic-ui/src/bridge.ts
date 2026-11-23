@@ -353,6 +353,8 @@ export interface RuntimeLoad {
   dropped: NotCarried[];
   /** Changed online: its variables that took no value of the running version. */
   initialized: NotCarried[];
+  /** The values kept under its id that it was not given, and why. Not shown yet. */
+  not_given?: NotCarried[];
 }
 
 /** What saving a project's runtimes answers. */
