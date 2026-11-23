@@ -141,7 +141,7 @@ module and verifying a change.
 | Area | What you can do today |
 | :--- | :--- |
 | Field I/O | Configure Modbus TCP connections in a form drawn from the driver's own schema. Read registers as typed, scaled values with quality, and write a value to a writable tag. |
-| Control logic | Write, check, bind, build and load programs in Structured Text, Ladder Diagram, Function Block Diagram and Sequential Function Chart, each with its editor and its live view. Then run, stop, watch and force them, with RETAIN, a watchdog and online change. Keep functions and function blocks that programs share in a project's library (over the API and MCP). |
+| Control logic | Write, check, bind, build and load programs in Structured Text, Ladder Diagram, Function Block Diagram and Sequential Function Chart, each with its editor and its live view. Then run, stop, watch and force them, with RETAIN, a watchdog and online change. Keep functions and function blocks that programs share in a project's library, edited in the workbench (checked before it is saved) and over the API and MCP. |
 | Tasks | Run several programs in one runtime, in tasks of four kinds (cycle, cyclic, startup, event) with priorities and preemption, each task with its own process image and watchdog. Configured and built into one runtime by the logic module over the API and MCP: the workbench has no task editor yet. |
 | Data | Declare your own types and data blocks, and share a block between the programs of a runtime. Every change is checked with the compiler before it is saved. Edited in the workbench (user types as Structured Text, data blocks as a type and retain) and over the API and MCP; the workbench does not show the live values of a block. Programs that share a block are built into one runtime by the logic module. |
 | HMI | Draw screens with text and I/O fields bound to tags, release them, and open the full-window operator runtime. |
@@ -155,7 +155,7 @@ where it lives in the tree.
 ## What is not built yet
 
 - Drivers other than Modbus TCP (Modbus RTU, OPC UA, MQTT, …) and a device catalog for every protocol.
-- Editors in the workbench for tasks and the library, and the live values of a data block (types and data blocks have editors). Building several
+- Editors in the workbench for tasks, and the live values of a data block (types and data blocks have editors). Building several
   programs into one runtime from the workbench: the logic module builds them over the API and MCP.
 - Drawing and editing a chart's actions and conditions written in LD or FBD, and a CFC mode for FBD.
   Instruction List is not planned.

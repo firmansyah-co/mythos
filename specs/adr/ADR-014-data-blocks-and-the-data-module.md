@@ -1,8 +1,9 @@
 # ADR-014: Data Blocks, User Types and the Data Module
 
 - **Status**: ACCEPTED (design; of its slices D1, the compiler, D2, the runtime's hand-over of
-  a data block, D3, the data module and the logic module's use of it, and D4a, the workbench's
-  editors for user types and data blocks, are built: §6)
+  a data block, D3, the data module and the logic module's use of it, D4a, the workbench's
+  editors for user types and data blocks, and D4c, the library editor in the logic module's
+  workbench UI, are built: §6)
 - **Date**: 2026-11-22
 - **Requested by**: Adrian ("kalau aku mau ga area bersama gitu, tapi ada modul data (db) dimana
   kita bisa susun UDT dan sejenisnya"; "gimana biar hampir instant dan ga kena exchange
@@ -242,8 +243,9 @@ module is the one owner of the project's types (D3).
   route that reads a master copy. A scalar member can be bound to a tag like a published
   variable; a structure, array or STRING member cannot, because a tag cannot hold it.
 - The **workbench** gets an editor for types and data blocks in the data module's own UI
-  (ADR-011), which is built (D4a, §6), and shows live values of a data block per runtime, which
-  is not built (D4b).
+  (ADR-011), which is built (D4a, §6), and an editor for the project's library in the logic
+  module's own UI, which is built (D4c, §6), and shows live values of a data block per runtime,
+  which is not built (D4b).
 
 ## 3. Consequences
 
@@ -278,7 +280,7 @@ Each is one slice, built through the workflow topology, with its own evidence fi
 | C8c (done) | Logic module: runtimes and task configuration (ADR-013 §2.19) | D2, D3 |
 | D4a (done) | Workbench: editor for user types and data blocks, in the data module's UI | D3 |
 | D4b | Workbench: live values of a data block, per runtime | C8d, and a change in the core so that two watchers of one runtime do not replace each other's list |
-| D4c | Workbench: the library editor (functions and function blocks), in the logic module's UI | C8c |
+| D4c (done) | Workbench: the library editor (functions and function blocks), in the logic module's UI | C8c |
 | C8d | Workbench: tasks (ADR-013 §2.19) | C8c, D2 |
 | D5 | Data blocks typed by a function block (§2.6) | D2, D3 |
 | T2 | Tier 2: data segments between runtimes of one device | D2; after alarms and historian |
@@ -352,8 +354,9 @@ into one runtime by the logic module since C8c: the project's runtimes and their
 `logic/tasks.json`, a runtime build answers one instance with the union of its programs' blocks
 once each, and the caller saves that instance and removes the ids in `replaces`. The module does
 not load it, and a block shared between runtimes is still refused by the core (R16). The core also refuses a save in which one project program is in two runtimes, when both instances name it as built by the logic module (since 0.8.0; an instance built before does not name it and is not compared), so a program that shares a block is not run twice. The
-workbench draws a diagnostic from another file on the program's own text and does not show
-`project_problems`. The cost of checking the data before each compile is NOT MEASURED. Since
+workbench draws only a program's own diagnostics on its text and lists another file's apart (a
+library source's as a button that opens the library editor at its line), and it lists
+`project_problems` apart. The cost of checking the data before each compile is NOT MEASURED. Since
 C8c the logic module's writes hold a lock between processes, as the data module's do; a runtime
 build reads without it, and a write by another process during a hot swap could give one build a
 torn view (LATENT, not reproduced).
@@ -372,9 +375,29 @@ the layout hash, and a configuration is "configured", not "running". For this, a
 (ADR-013 evidence, `30-d4a.md`). Not in D4a: rename, reorder, per-block initial values, nested
 members, where-used, and a revision check, so the last save wins (LATENT).
 
-**Not built.** The library editor (D4c), the live values of a data block (D4b), D5, T2 and T3 are
-not built. A runtime with data blocks is configured over the API and the MCP, the workbench
-having no editor for runtimes and tasks (C8d). A retained block that moves into a configured
+**D4c is built.** The logic module's workbench UI, `frontend/packages/logic-ui` (version 0.9.0,
+with `plugins/logic` at 0.9.0), has a section Library in the project tree (order 25) and an editor
+for a library source, in Structured Text, the only language a library source can be written in. A
+list that could not be read is said and not shown as empty. Save first checks the text with
+`POST /library/check`; a text that does not check is not saved unless the engineer confirms Save
+anyway, since the module itself saves any text and a change across two sources needs one save that
+does not check. What is shown as saved is read again from the module, and a refusal shows the
+module's words. An ok check says the library checks and nothing about programs: the module's check
+compiles no program. The programs follow the library and the project's types: on
+`LOGIC_LIBRARY_CHANGED` and `DATA_CHANGED` of the open project every program's check is marked as
+of an earlier library, earlier types or both, nothing of it is drawn as current, and the programs
+the workbench has read are checked again. A program's diagnostic in a library source opens that
+source at its line, and the Library node says DOES NOT CHECK with the module's count when the
+stored library does not check. The words of the LD and FBD editors for a box they do not know
+were corrected (the editor does not know a library block; the compiler accepts it at Check). No
+route, MCP tool or Rust behaviour changed. The checks in a real browser are NOT VERIFIED (ADR-013
+evidence, `31-d4c.md`). Not in D4c: library blocks in the LD and FBD palette with their pins (LIVE
+gap), a check in the module on save, a revision check (the last save wins, LATENT), and an answer
+naming the programs a library change breaks.
+
+**Not built.** The live values of a data block (D4b), library blocks in the LD and FBD palette
+(D4c), D5, T2 and T3 are not built. A runtime with data blocks is configured over the API and the MCP,
+the workbench having no editor for runtimes and tasks (C8d). A retained block that moves into a configured
 runtime loses its kept values, since the core keeps them per runtime id, and no warning of the
 build says so (only RETAIN variables are
 warned about). `VAR_GLOBAL` stays refused, and so do `VAR_EXTERNAL` in a function block or function, a
