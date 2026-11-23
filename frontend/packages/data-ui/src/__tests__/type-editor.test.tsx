@@ -120,6 +120,11 @@ describe('opening a user type', () => {
     expect(doc().saved).toBe(crlf);
     expect(byTestId(container, 'type-unsaved')).toBeNull();
     expect(useModuleUi.getState().unsaved[UNSAVED_OWNER]).toBeUndefined();
+    // A textarea gives its text back with `\n`: the same text, so still not unsaved.
+    typeSource(container, RECIPE);
+    expect(doc().draft).toBe(RECIPE);
+    expect(byTestId(container, 'type-unsaved')).toBeNull();
+    expect(useModuleUi.getState().unsaved[UNSAVED_OWNER]).toBeUndefined();
     // A change is a change, whatever the line ends.
     typeSource(container, `${RECIPE}(* note *)\n`);
     expect(byTestId(container, 'type-unsaved')?.textContent).toBe('UNSAVED');
