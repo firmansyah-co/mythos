@@ -541,7 +541,9 @@ export function check(pou: PouModel, vars: readonly VarInfo[], own: readonly Box
           }
           const def = findBox(el.typeName, own);
           if (!def) {
-            problem(`${el.typeName} is not a function or function block this program can call.`);
+            problem(
+              `${el.typeName} is not a function or function block this editor knows: it knows this program's own and the standard ones. If the project's library declares it, Check compiles the program with it.`
+            );
             continue;
           }
           if (def.kind === 'functionBlock') {

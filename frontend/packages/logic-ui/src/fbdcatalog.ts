@@ -1,8 +1,10 @@
-// What a Function Block Diagram box can call, with its pins (ADR-013 §2.8, §2.16, L3c-2): the
-// Ladder Diagram's catalogue (ldcatalog.ts: the standard library's function blocks, the standard
-// functions, a conversion `X_TO_Y`, the document's own POUs) and the Boolean operators and MOD,
-// which IEC 61131-3 gives a graphical form (Tables 29 and 31) and the FBD front-end takes as
-// blocks: AND, OR and XOR of IN1, IN2, … (two or more), NOT of IN, MOD of IN1 and IN2.
+// What a Function Block Diagram box is known to call, with its pins (ADR-013 §2.8, §2.16,
+// L3c-2): the Ladder Diagram's catalogue (ldcatalog.ts: the standard library's function blocks,
+// the standard functions, a conversion `X_TO_Y`, the document's own POUs) and the Boolean
+// operators and MOD, which IEC 61131-3 gives a graphical form (Tables 29 and 31) and the FBD
+// front-end takes as blocks: AND, OR and XOR of IN1, IN2, … (two or more), NOT of IN, MOD of IN1
+// and IN2. The functions and function blocks of the project's library (ADR-014 §2.8), which
+// every program is compiled with, are not known here yet: the compiler decides them at Check.
 //
 // Unlike a Ladder Diagram's box, an FBD box carries no rung: its pins are its declaration's, and
 // EN and ENO are written only where the document already has them (a box read from another tool),

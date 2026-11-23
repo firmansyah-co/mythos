@@ -1024,7 +1024,7 @@ export function check(
       const def = findFbdBox(box.typeName, own);
       if (!def) {
         problem(
-          `${box.typeName} is not a function or function block this program can call.`,
+          `${box.typeName} is not a function or function block this editor knows: it knows this program's own and the standard ones. If the project's library declares it, Check compiles the program with it.`,
         );
         continue;
       }

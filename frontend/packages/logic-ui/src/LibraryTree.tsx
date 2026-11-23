@@ -6,7 +6,7 @@ import { useState } from 'react';
 import { FileCode2, Library, Plus } from 'lucide-react';
 import { mayEngineer, useProject } from './bridge';
 import { sameName } from './library';
-import { anyDirty, isDirty, useLibrary } from './librarystore';
+import { anyDirty, isDirty, useLibrary, type StoredCheck } from './librarystore';
 import { TreeNode } from './ProgramsTree';
 
 const unsavedMark = (
@@ -20,6 +20,34 @@ const stMark = (
     ST
   </span>
 );
+
+/**
+ * The state of the stored library, on the "Library" node: what the module answered to
+ * `POST /library/check {}`. A library that does not check refuses every program, so it is said
+ * with the count the module gave; one that could not be checked is NOT CHECKED, with why; one
+ * that checks carries no mark, since that says nothing of the programs (each is checked apart).
+ */
+function StoredState({ stored }: { stored: StoredCheck | null }) {
+  if (stored === null) return null;
+  if (stored.answer === null) {
+    return (
+      <span className="badge badge--neutral" data-testid="tree-library-state" title={`The library could not be checked: ${stored.error}`}>
+        NOT CHECKED
+      </span>
+    );
+  }
+  if (stored.answer.ok) return null;
+  const count = stored.answer.diagnostics.length;
+  return (
+    <span
+      className="badge badge--bad"
+      data-testid="tree-library-state"
+      title="Every program of the project is refused while the library does not check."
+    >
+      DOES NOT CHECK · {count} {count === 1 ? 'PROBLEM' : 'PROBLEMS'}
+    </span>
+  );
+}
 
 /**
  * The "Add new source" row: becomes a name field, and opens an editor on that name on Enter.
@@ -85,6 +113,7 @@ export function LibraryTree({ openEditor }: { openEditor: (name: string) => void
   const docs = useLibrary((state) => state.docs);
   const openNew = useLibrary((state) => state.openNew);
   const dirty = useLibrary(anyDirty);
+  const stored = useLibrary((state) => state.stored);
   const [open, setOpen] = useState(true);
 
   if (!project) return null;
@@ -99,7 +128,12 @@ export function LibraryTree({ openEditor }: { openEditor: (name: string) => void
         testId="tree-library"
         expanded={open}
         onToggle={() => setOpen(!open)}
-        mark={dirty ? unsavedMark : undefined}
+        mark={
+          <>
+            {dirty && unsavedMark}
+            <StoredState stored={stored} />
+          </>
+        }
       />
       {open && names !== null && mayEngineer() && (
         <AddSource

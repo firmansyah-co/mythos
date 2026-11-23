@@ -1,8 +1,8 @@
 {
   "name": "@mythos/logic-ui",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
-  "description": "The workbench UI of the MythOS logic module: programs, the Structured Text editor, bindings, check, load and run (ADR-013)",
+  "description": "The workbench UI of the MythOS logic module: programs, the Structured Text editor, the project's library, bindings, check, load and run (ADR-013, ADR-014)",
   "mythos": {
     "module": "org.mythos.logic",
     "crate": "plugins/logic"

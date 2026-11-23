@@ -11,6 +11,22 @@ import { host, type Diagnostic } from './bridge';
 export const LIBRARY_EDITOR = 'logic-library';
 /** Sent by the logic module after a library source was saved or deleted. */
 export const LIBRARY_CHANGED_EVENT = 'LOGIC_LIBRARY_CHANGED';
+/**
+ * Sent by the data module after each write of a user type or a data block (plugins/data,
+ * `DATA_CHANGED_EVENT`). Followed here by its name: every program and the library are compiled
+ * with the project's types and blocks, so a check made before it is of earlier ones.
+ */
+export const DATA_CHANGED_EVENT = 'DATA_CHANGED';
+
+/**
+ * The project a stream event is about, when its data names one. Of `DATA_CHANGED` nothing else
+ * is read: whatever it says changed, a check made before it is of earlier types and blocks.
+ */
+export function projectOf(data: unknown): string | null {
+  if (data === null || typeof data !== 'object') return null;
+  const project = (data as Record<string, unknown>).project;
+  return typeof project === 'string' ? project : null;
+}
 
 /** What `POST /library/check` answers: whether the library compiles with the draft put in. */
 export interface LibraryCheck {
@@ -126,4 +142,6 @@ export const libraryApi = {
   /** Check the library with source `name`'s text as `source`, which need not be saved. Writes nothing. */
   check: (projectId: string, name: string, source: string) =>
     host().api<LibraryCheck>(`${libraryOf(projectId)}/check`, json('POST', { name, source })),
+  /** Check the library as it is stored. Writes nothing. */
+  checkStored: (projectId: string) => host().api<LibraryCheck>(`${libraryOf(projectId)}/check`, json('POST', {})),
 };

@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Diagnostic } from '../bridge';
-import { deleteQuestion, LIBRARY_CHANGED_EVENT, LIBRARY_EDITOR, saveAnywayQuestion, type LibraryCheck } from '../library';
+import { DATA_CHANGED_EVENT, deleteQuestion, LIBRARY_CHANGED_EVENT, LIBRARY_EDITOR, saveAnywayQuestion, type LibraryCheck } from '../library';
 import { LIBRARY_DIAGNOSTICS_OWNER, LibraryEditor } from '../LibraryEditor';
 import { useLibrary } from '../librarystore';
 import {
@@ -105,7 +105,9 @@ const listed = (container: HTMLElement) =>
     text: d.textContent,
   }));
 const of = (calls: Call[], method: string) => calls.filter((c) => c.method === method && c.path.includes('/logic/library'));
-const checks = (calls: Call[]) => of(calls, 'POST').map((c) => c.body);
+/** A check of one source's text (`{name, source}`); the check of the stored library (`{}`, stage 2's R19) is not one. */
+const ofSource = (c: Call) => c.method === 'POST' && c.path.endsWith('/library/check') && (c.body as { name?: unknown } | undefined)?.name !== undefined;
+const checks = (calls: Call[]) => of(calls, 'POST').filter(ofSource).map((c) => c.body);
 const puts = (calls: Call[]) => of(calls, 'PUT').map((c) => `${c.path.replace(/^.*\/logic/, '')} ${JSON.stringify(c.body)}`);
 const editors = () => useShell.getState().editors.map((e) => `${e.kind}:${e.target ?? ''}`);
 const changed = (over: Record<string, unknown> = {}) =>
@@ -249,7 +251,7 @@ describe('checking a library source', () => {
     let asked = 0;
     const backend = motors({
       intercept: (call) => {
-        if (call.method !== 'POST' || !call.path.endsWith('/library/check')) return undefined;
+        if (!ofSource(call)) return undefined;
         asked += 1;
         return asked === 1 ? first.response : undefined;
       },
@@ -404,7 +406,7 @@ describe('saving a library source', () => {
     typeSource(container, MOTORS2);
     click(byTestId(container, 'library-save'));
     await settle();
-    const order = calls.filter((c) => c.path.includes('/logic/library/Motors') || c.path.endsWith('/library/check')).map((c) => c.method);
+    const order = calls.filter((c) => c.path.includes('/logic/library/Motors') || ofSource(c)).map((c) => c.method);
     // Read, check, write, read back.
     expect(order).toEqual(['GET', 'POST', 'PUT', 'GET']);
     expect(area(container).value).toBe(`${MOTORS2}\n`);
@@ -576,7 +578,7 @@ describe('unsaved changes', () => {
   it('closing the project drops what was open, and an answer for it is not applied', async () => {
     const late = held();
     const { container } = await opened(
-      motors({ intercept: (call) => (call.method === 'POST' && call.path.endsWith('/library/check') ? late.response : undefined) })
+      motors({ intercept: (call) => (ofSource(call) ? late.response : undefined) })
     );
     typeSource(container, MOTORS2);
     click(byTestId(container, 'library-check-button'));
@@ -691,5 +693,57 @@ describe('following changes made elsewhere', () => {
     expect(calls.length).toBe(before);
     expect(area(container).value).toBe(MOTORS);
     expect(editors()).toEqual(['logic-library:Motors']);
+  });
+});
+
+describe("after the project's types or data blocks changed", () => {
+  const typesChanged = (project = 'plant') => emit(DATA_CHANGED_EVENT, { project, what: 'type', name: 'Recipe', change: 'saved' });
+
+  it('the check is said to be with earlier types, and nothing of it is drawn', async () => {
+    const { container } = await opened(motors());
+    typeSource(container, BROKEN);
+    click(byTestId(container, 'library-check-button'));
+    await settle();
+    const editor = byTestId(container, 'library-editor') as HTMLElement;
+    expect(byTestId(container, 'library-check')?.textContent).toBe('DOES NOT CHECK');
+    expect(texts(editor, 'source-error-mark')).toEqual(['Nope']);
+
+    typesChanged();
+    await settle();
+    expect(byTestId(container, 'library-check')?.textContent).toBe('DOES NOT CHECK (EARLIER TYPES)');
+    expect(byTestId(container, 'library-check')?.className).toBe('badge badge--neutral');
+    expect(texts(editor, 'source-error-mark')).toEqual([]);
+    expect(byTestId(panel(container), 'library-check-earlier-types')?.textContent).toBe(
+      'This check was made with earlier types and data blocks of the project. They have changed since: check again.'
+    );
+    expect(useModuleUi.getState().diagnostics[LIBRARY_DIAGNOSTICS_OWNER]?.item.count).toBeNull();
+
+    // Checked again: of the types as they are now.
+    click(byTestId(container, 'library-check-button'));
+    await settle();
+    expect(byTestId(container, 'library-check')?.textContent).toBe('DOES NOT CHECK');
+    expect(byTestId(panel(container), 'library-check-earlier-types')).toBeNull();
+    expect(texts(editor, 'source-error-mark')).toEqual(['Nope']);
+  });
+
+  it('a check asked before the change and answered after it is with earlier types', async () => {
+    const late = held();
+    const { container } = await opened(motors({ intercept: (call) => (ofSource(call) ? late.response : undefined) }));
+    click(byTestId(container, 'library-check-button'));
+    await settle();
+    typesChanged();
+    await settle();
+    late.release(Response.json({ ok: true, diagnostics: [] }));
+    await settle();
+    expect(byTestId(container, 'library-check')?.textContent).toBe('CHECKS (EARLIER TYPES)');
+  });
+
+  it('a change of another project changes nothing', async () => {
+    const { container } = await opened(motors());
+    click(byTestId(container, 'library-check-button'));
+    await settle();
+    typesChanged('other');
+    await settle();
+    expect(byTestId(container, 'library-check')?.textContent).toBe('CHECKS');
   });
 });

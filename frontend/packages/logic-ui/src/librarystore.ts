@@ -23,8 +23,12 @@ export interface LibraryDoc {
   draft: string;
   /** The number of the last check asked for; an answer to an earlier one is dropped. */
   checkSeq: number;
-  /** The last check that was applied, and the text it checked. */
-  check: { text: string; answer: LibraryCheck } | null;
+  /**
+   * The last check that was applied, and the text it checked. `earlierTypes`: the project's
+   * types or data blocks changed (`DATA_CHANGED`) after it was asked, so it is a check with
+   * earlier ones.
+   */
+  check: { text: string; answer: LibraryCheck; earlierTypes: boolean } | null;
   /** The module refused the last check (its name rule, another spelling) or it could not be made. */
   checkRefusal: Refusal | null;
   checking: boolean;
@@ -44,6 +48,12 @@ export interface LibraryDoc {
   later: LibraryChanged['what'] | null;
 }
 
+/**
+ * The last check of the library as it is stored (`POST /library/check {}`): the module's answer,
+ * or why it could not be made.
+ */
+export type StoredCheck = { answer: LibraryCheck; error: null } | { answer: null; error: string };
+
 export interface LibraryState {
   projectId: string | null;
   /** The sources the module listed, in its order; `null` while not read, or when the read failed. */
@@ -52,6 +62,11 @@ export interface LibraryState {
   docs: Record<string, LibraryDoc>;
   /** A place to put the caret in, once the editor of `name` shows its text. */
   pending: { name: string; line: number; col: number } | null;
+  /**
+   * The stored library's last check; `null` while none has answered since the list was read or
+   * the library or the project's types last changed.
+   */
+  stored: StoredCheck | null;
 
   load(projectId: string): Promise<void>;
   reset(): void;
@@ -73,6 +88,10 @@ export interface LibraryState {
   wentTo(): void;
   /** Follow `LOGIC_LIBRARY_CHANGED` of the open project. Returns the editor to close (deleted elsewhere), if any. */
   changed(event: LibraryChanged): string | null;
+  /** Check the library as it is stored. */
+  checkStored(): Promise<void>;
+  /** The data module changed the open project's types or blocks: every check made before is of earlier ones. */
+  dataChanged(): void;
 }
 
 /** Whether `doc` holds text the module has not stored as it is shown. */
@@ -114,8 +133,13 @@ const unanswered = new Set<string>();
 let listRead = 0;
 // Which opening of a project this is: an answer to a request of an earlier one is dropped.
 let opening = 0;
+// Numbered checks of the stored library: an answer for an earlier one is dropped.
+let storedAsked = 0;
+// How many times the project's types and blocks were heard to change: a check asked before the
+// last change is of earlier ones.
+let dataChanges = 0;
 
-const EMPTY = { projectId: null, names: null, namesError: null, docs: {}, pending: null };
+const EMPTY = { projectId: null, names: null, namesError: null, docs: {}, pending: null, stored: null };
 
 export const useLibrary = create<LibraryState>((set, get) => {
   const patch = (name: string, change: Partial<LibraryDoc>) =>
@@ -252,6 +276,8 @@ export const useLibrary = create<LibraryState>((set, get) => {
       unanswered.clear();
       set({ ...EMPTY, projectId });
       await get().readList();
+      // What every program is compiled with: whether it checks as stored, said on the tree.
+      if (get().projectId === projectId && get().names !== null) await get().checkStored();
     },
 
     reset: () => {
@@ -309,13 +335,14 @@ export const useLibrary = create<LibraryState>((set, get) => {
       const seq = doc.checkSeq + 1;
       const text = doc.draft;
       const at = opening;
+      const data = dataChanges;
       patch(name, { checkSeq: seq, checking: true });
       // An answer for an older text than the last one sent, or of another opening, is not this text's.
       const stale = () => opening !== at || get().docs[name]?.checkSeq !== seq;
       try {
         const answer = await api.check(projectId, name, text);
         if (stale()) return;
-        patch(name, { check: { text, answer }, checkRefusal: null, checking: false });
+        patch(name, { check: { text, answer, earlierTypes: data !== dataChanges }, checkRefusal: null, checking: false });
       } catch (cause) {
         if (stale()) return;
         patch(name, { checkRefusal: refusalOf(cause), checking: false });
@@ -333,6 +360,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
         // The module writes any text, and a library that does not check refuses every program:
         // the text is checked first, as the module asks of a caller.
         const seq = doc.checkSeq + 1;
+        const data = dataChanges;
         patch(name, { checkSeq: seq, checking: true });
         let checked: LibraryCheck;
         try {
@@ -347,7 +375,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
         }
         if (opening !== at) return false;
         if (get().docs[name]?.checkSeq === seq) {
-          patch(name, { check: { text: sent, answer: checked }, checkRefusal: null, checking: false });
+          patch(name, { check: { text: sent, answer: checked, earlierTypes: data !== dataChanges }, checkRefusal: null, checking: false });
         }
         if (!checked.ok) {
           patch(name, { busy: null, held: true });
@@ -389,6 +417,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
     changed: (event) => {
       // Whether the event is of the open project is asked by the caller.
       void get().readList();
+      void get().checkStored();
       const name = docKey(event.name);
       const doc = get().docs[name];
       if (doc?.busy && unanswered.has(name)) {
@@ -407,6 +436,36 @@ export const useLibrary = create<LibraryState>((set, get) => {
         return null;
       }
       return follow(name, event.what);
+    },
+
+    checkStored: async () => {
+      const projectId = get().projectId;
+      if (projectId === null) return;
+      const seq = (storedAsked += 1);
+      const at = opening;
+      // What was said of the library before is not said of it now: nothing until this answers.
+      set({ stored: null });
+      const newest = () => seq === storedAsked && opening === at;
+      try {
+        const answer = await api.checkStored(projectId);
+        if (newest()) set({ stored: { answer, error: null } });
+      } catch (cause) {
+        // Not checked is never "checks": the module's words, and no verdict.
+        if (newest()) set({ stored: { answer: null, error: refusalOf(cause).error } });
+      }
+    },
+
+    dataChanged: () => {
+      dataChanges += 1;
+      set((state) => ({
+        docs: Object.fromEntries(
+          Object.entries(state.docs).map(([name, doc]) => [
+            name,
+            doc.check === null ? doc : { ...doc, check: { ...doc.check, earlierTypes: true } },
+          ])
+        ),
+      }));
+      void get().checkStored();
     },
   };
 });

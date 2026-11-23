@@ -5,7 +5,7 @@
 import type { Dispose, WorkbenchHost, WorkbenchModule } from '@mythos/workbench-sdk';
 import { bind } from './bridge';
 import { draw } from './draw';
-import { LIBRARY_CHANGED_EVENT, LIBRARY_EDITOR, libraryEventOf } from './library';
+import { DATA_CHANGED_EVENT, LIBRARY_CHANGED_EVENT, LIBRARY_EDITOR, libraryEventOf, projectOf } from './library';
 import { LibraryEditor } from './LibraryEditor';
 import { anyDirty as anyLibraryDirty, useLibrary } from './librarystore';
 import { LibraryTree } from './LibraryTree';
@@ -76,6 +76,29 @@ export function activate(host: WorkbenchHost): Dispose {
       if (event === null) return;
       const close = library.changed(event);
       if (close !== null) host.closeEditor(LIBRARY_EDITOR, close);
+    })
+  );
+
+  // Every program is compiled with the library: a check made before the library changed is of
+  // an earlier one. Open programs say so, and those read are checked again.
+  stops.push(
+    host.events.subscribe(LIBRARY_CHANGED_EVENT, (data) => {
+      const programs = usePrograms.getState();
+      if (programs.projectId === null || projectOf(data) !== programs.projectId) return;
+      if (libraryEventOf(data) === null) return;
+      programs.libraryChanged();
+    })
+  );
+
+  // The data module changed the project's user types or data blocks: every program and the
+  // library are compiled with them, so the checks made before are of earlier ones.
+  stops.push(
+    host.events.subscribe(DATA_CHANGED_EVENT, (data) => {
+      const project = projectOf(data);
+      const programs = usePrograms.getState();
+      if (programs.projectId !== null && project === programs.projectId) programs.dataChanged();
+      const library = useLibrary.getState();
+      if (library.projectId !== null && project === library.projectId) library.dataChanged();
     })
   );
 

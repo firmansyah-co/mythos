@@ -7,13 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { activate as activateData } from '../../../data-ui/src/entry';
 import { createHost } from '../../../ui-shell/src/modules/host';
 import { orderedTreeSections } from '../../../ui-shell/src/modules/registry';
-import { LIBRARY_EDITOR } from '../library';
+import type { Diagnostic } from '../bridge';
+import { DATA_CHANGED_EVENT, LIBRARY_CHANGED_EVENT, LIBRARY_EDITOR, type LibraryCheck } from '../library';
 import { useLibrary } from '../librarystore';
 import { LibraryTree } from '../LibraryTree';
 import {
   byLabel,
   byTestId,
   click,
+  emit,
   endTest,
   project,
   render,
@@ -52,8 +54,14 @@ async function opened(backend: Backend) {
   return { calls, tree };
 }
 
-/** Every request that is not a read of the list or a source. */
-const notReads = (calls: Call[]) => calls.filter((c) => c.method !== 'GET').map((c) => `${c.method} ${c.path}`);
+/**
+ * Every request that is not a read: of the list, of a source, or the check of the stored library
+ * (`POST /library/check {}`, which writes nothing).
+ */
+const notReads = (calls: Call[]) =>
+  calls
+    .filter((c) => c.method !== 'GET' && !(c.path.endsWith('/library/check') && JSON.stringify(c.body) === '{}'))
+    .map((c) => `${c.method} ${c.path}`);
 
 function press(element: Element | null, key: string): void {
   if (!(element instanceof HTMLElement)) throw new Error('nothing to press on');
@@ -190,5 +198,122 @@ describe('the Library section of the project tree', () => {
     } finally {
       deactivateData();
     }
+  });
+});
+
+describe('the state of the whole library (R19)', () => {
+  const NOPE: Diagnostic = { line: 2, col: 17, end_line: 2, end_col: 21, message: 'Nope is not a type', source: 'logic/library/Motors.st' };
+  const TWICE: Diagnostic = { line: 1, col: 16, end_line: 1, end_col: 21, message: 'Motor is declared twice', source: 'logic/library/Valves.st' };
+  const fails = (): LibraryCheck => ({ ok: false, diagnostics: [NOPE, TWICE] });
+  const checks = (): LibraryCheck => ({ ok: true, diagnostics: [] });
+  /** The checks of the stored library sent: `POST /library/check {}`. */
+  const storedChecks = (calls: Call[]) =>
+    calls.filter((c) => c.method === 'POST' && c.path === '/api/v1/projects/plant/logic/library/check' && JSON.stringify(c.body) === '{}');
+  const state = (tree: HTMLElement) => byTestId(tree, 'tree-library-state');
+
+  /** A response held until the test lets it go. */
+  function held(): { response: Promise<Response>; release: (response: Response) => void } {
+    let release: (response: Response) => void = () => undefined;
+    const response = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    return { response, release };
+  }
+  /** Hold every check of the stored library asked after this, in order. */
+  function holdStored(backend: Backend): Array<ReturnType<typeof held>> {
+    const holds: Array<ReturnType<typeof held>> = [];
+    backend.intercept = (call) => {
+      if (call.method !== 'POST' || JSON.stringify(call.body) !== '{}') return undefined;
+      const hold = held();
+      holds.push(hold);
+      return hold.response;
+    };
+    return holds;
+  }
+
+  it('a library that does not check says so on the Library node, with the count the module answered', async () => {
+    const { tree, calls } = await opened({ programs: [], library: { Motors: MOTORS }, compileLibrary: fails });
+    expect(storedChecks(calls)).toHaveLength(1);
+    expect(state(tree)?.textContent).toBe('DOES NOT CHECK · 2 PROBLEMS');
+    expect(state(tree)?.getAttribute('title')).toBe('Every program of the project is refused while the library does not check.');
+    expect(state(tree)?.className).toBe('badge badge--bad');
+    // On the Library node itself.
+    expect(byTestId(tree, 'tree-library')?.querySelector('[data-testid="tree-library-state"]')).toBe(state(tree));
+  });
+
+  it('a library that checks carries no mark: nothing is claimed about programs', async () => {
+    const { tree, calls } = await opened({ programs: [], library: { Motors: MOTORS }, compileLibrary: checks });
+    expect(storedChecks(calls)).toHaveLength(1);
+    expect(state(tree)).toBeNull();
+    expect(byTestId(tree, 'tree-library')?.textContent).toBe('Library');
+  });
+
+  it('a check that could not be made is NOT CHECKED with the module\'s words, never shown as checking', async () => {
+    const words = '/projects/plant/data/blocks.json: Permission denied (os error 13)';
+    const { tree } = await opened({
+      programs: [],
+      library: { Motors: MOTORS },
+      compileLibrary: fails,
+      intercept: (call) =>
+        call.method === 'POST' && JSON.stringify(call.body) === '{}'
+          ? Response.json({ error: words }, { status: 500, statusText: 'Internal Server Error' })
+          : undefined,
+    });
+    expect(state(tree)?.textContent).toBe('NOT CHECKED');
+    expect(state(tree)?.getAttribute('title')).toBe(`The library could not be checked: ${words}`);
+    expect(state(tree)?.className).toBe('badge badge--neutral');
+  });
+
+  it('nothing is shown while no answer is in, and an answer from before a change is not shown after it', async () => {
+    const backend: Backend = { programs: [], library: { Motors: MOTORS }, compileLibrary: fails };
+    const holds = holdStored(backend);
+    const { tree } = await opened(backend);
+    expect(holds).toHaveLength(1);
+    expect(state(tree)).toBeNull();
+    holds[0]?.release(Response.json(fails()));
+    await settle();
+    expect(state(tree)?.textContent).toBe('DOES NOT CHECK · 2 PROBLEMS');
+
+    // Changed: the library is checked again, and until it answers nothing is said of it.
+    emit(LIBRARY_CHANGED_EVENT, { project: 'plant', name: 'Motors', what: 'saved' });
+    await settle();
+    expect(holds).toHaveLength(2);
+    expect(state(tree)).toBeNull();
+    holds[1]?.release(Response.json(checks()));
+    await settle();
+    expect(state(tree)).toBeNull();
+
+    // The project's types changed: the same.
+    emit(DATA_CHANGED_EVENT, { project: 'plant', what: 'type', name: 'Recipe', change: 'saved' });
+    await settle();
+    expect(holds).toHaveLength(3);
+    holds[2]?.release(Response.json({ ok: false, diagnostics: [NOPE] }));
+    await settle();
+    expect(state(tree)?.textContent).toBe('DOES NOT CHECK · 1 PROBLEM');
+  });
+
+  it('an older answer never replaces a newer one', async () => {
+    const backend: Backend = { programs: [], library: { Motors: MOTORS }, compileLibrary: fails };
+    const holds = holdStored(backend);
+    const { tree } = await opened(backend);
+    emit(LIBRARY_CHANGED_EVENT, { project: 'plant', name: 'Motors', what: 'saved' });
+    await settle();
+    expect(holds).toHaveLength(2);
+    holds[1]?.release(Response.json(checks()));
+    await settle();
+    holds[0]?.release(Response.json(fails()));
+    await settle();
+    expect(state(tree)).toBeNull();
+    expect(useLibrary.getState().stored?.answer?.ok).toBe(true);
+  });
+
+  it('an event of another project changes nothing', async () => {
+    const { tree, calls } = await opened({ programs: [], library: { Motors: MOTORS }, compileLibrary: fails });
+    const before = calls.length;
+    emit(LIBRARY_CHANGED_EVENT, { project: 'other', name: 'Motors', what: 'saved' });
+    emit(DATA_CHANGED_EVENT, { project: 'other', what: 'type', name: 'Recipe', change: 'saved' });
+    await settle();
+    expect(calls.length).toBe(before);
+    expect(state(tree)?.textContent).toBe('DOES NOT CHECK · 2 PROBLEMS');
   });
 });

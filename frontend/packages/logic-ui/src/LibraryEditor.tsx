@@ -26,9 +26,12 @@ export const LIBRARY_DIAGNOSTICS_OWNER = 'logic-library-check';
 
 const NONE: Diagnostic[] = [];
 
-/** How many diagnostics the Diagnostics tab lists for `doc`; `null` before anything was checked. */
+/**
+ * How many diagnostics the Diagnostics tab lists for `doc`; `null` before anything was checked,
+ * and when the check is with types and blocks that have changed since (nothing known of now).
+ */
 export function problemCount(doc: LibraryDoc | undefined): number | null {
-  if (!doc || doc.check === null) return null;
+  if (!doc || doc.check === null || doc.check.earlierTypes) return null;
   return doc.check.answer.ok ? 0 : doc.check.answer.diagnostics.length;
 }
 
@@ -100,6 +103,11 @@ function CheckCard({ name }: { name: string }) {
           This is the check of an earlier text. The text has changed since.
         </p>
       )}
+      {check.earlierTypes && (
+        <p className="muted" data-testid="library-check-earlier-types">
+          This check was made with earlier types and data blocks of the project. They have changed since: check again.
+        </p>
+      )}
       {check.answer.ok ? (
         <>
           <p data-testid="library-check-ok">The library checks with this text, with the project's types and data blocks.</p>
@@ -143,12 +151,15 @@ function CheckBadge({ doc }: { doc: LibraryDoc }) {
     );
   }
   const stale = !sameText(doc.check.text, doc.draft);
-  const tone = stale ? 'neutral' : doc.check.answer.ok ? 'good' : 'bad';
+  const types = doc.check.earlierTypes;
+  const tone = stale || types ? 'neutral' : doc.check.answer.ok ? 'good' : 'bad';
   const text = doc.check.answer.ok ? 'CHECKS' : 'DOES NOT CHECK';
+  const earlier = stale && types ? ' (EARLIER TEXT AND TYPES)' : stale ? ' (EARLIER TEXT)' : types ? ' (EARLIER TYPES)' : '';
   return (
     <button type="button" className="btn btn--flat" onClick={() => host().showDiagnostics()} title="Show the diagnostics">
       <span className={`badge badge--${tone}`} data-testid="library-check">
-        {stale ? `${text} (EARLIER TEXT)` : text}
+        {text}
+        {earlier}
       </span>
     </button>
   );
@@ -208,7 +219,8 @@ export function LibraryEditor({ name, onClose }: { name: string; onClose: (name:
   const dirty = isDirty(doc);
   const working = doc.busy !== null;
   const refusal = doc.refusal;
-  const current = doc.check !== null && sameText(doc.check.text, doc.draft) ? doc.check.answer : null;
+  const current =
+    doc.check !== null && !doc.check.earlierTypes && sameText(doc.check.text, doc.draft) ? doc.check.answer : null;
   const drawn = current === null || current.ok ? NONE : current.diagnostics.filter((d) => d.line > 0 && isOfThisSource(d, name));
 
   return (

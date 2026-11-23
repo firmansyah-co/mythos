@@ -75,8 +75,13 @@ const doc = (name = 'Tank') => {
   return found;
 };
 /** What was asked to change something: a watch is a POST that only reads. */
+// Not counted either: the check of the stored library the Library section makes when the project
+// opens (`POST /library/check {}`, D4c R19), which writes nothing.
 const writes = (calls: Array<{ method: string; path: string; body: unknown }>) =>
-  calls.filter((call) => call.method !== 'GET' && !call.path.endsWith('/watch')).map((call) => `${call.method} ${call.path.replace(/^.*\/api\/v1/, '')}`);
+  calls
+    .filter((call) => call.method !== 'GET' && !call.path.endsWith('/watch'))
+    .filter((call) => !(call.path.endsWith('/logic/library/check') && JSON.stringify(call.body) === '{}'))
+    .map((call) => `${call.method} ${call.path.replace(/^.*\/api\/v1/, '')}`);
 
 /** The workbench has `plant` open, the controller runs it, and the logic UI has read it. */
 async function opened(backend: Backend) {
