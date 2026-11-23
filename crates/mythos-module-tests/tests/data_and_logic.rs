@@ -906,6 +906,11 @@ async fn a_runtime_id_given_another_program_warns_of_the_values_a_warm_load_hand
         ]})
     };
     let first = rig.build_runtime("Line", one("A")).await;
+    // One program is answered in `program`, as a runtime of today, and never as a list of one.
+    assert!(
+        first["instance"]["program"].is_object() && first["instance"].get("programs").is_none(),
+        "{first}"
+    );
     rig.load_built(&first, 200).await;
     // Until the core has kept a total of A's above its initial value under `Line`.
     let deadline = Instant::now() + Duration::from_secs(15);
