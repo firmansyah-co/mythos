@@ -2,9 +2,7 @@
 //! the server calls it.
 
 use super::*;
-use crate::{
-    temporary_path, Event, Logic, LOCK_FILE, PROGRAMS_CHANGED_EVENT, RUNTIMES_CHANGED_EVENT,
-};
+use crate::{Event, Logic, LOCK_FILE, PROGRAMS_CHANGED_EVENT, RUNTIMES_CHANGED_EVENT};
 use std::path::PathBuf;
 
 /// A project's directory as the core makes it, with the module's own `logic` in it.
@@ -826,6 +824,7 @@ fn a_runtime_write_holds_a_lock_another_process_waits_on() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_link_at_the_task_configurations_temporary_is_not_written_through() {
+    use crate::temporary_path;
     let (logic, p) = (Logic::default(), project());
     program(&logic, &p, "A", 20).await;
     let outside = p.root.path().join("outside.txt");
