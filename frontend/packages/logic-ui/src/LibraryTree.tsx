@@ -3,7 +3,7 @@
 // module's words, and lists nothing. No name is refused here: the module answers its own rule.
 
 import { useState } from 'react';
-import { FileCode2, Library, Plus } from 'lucide-react';
+import { FileCode2, Plus } from 'lucide-react';
 import { mayEngineer, useProject } from './bridge';
 import { sameName } from './library';
 import { anyDirty, isDirty, useLibrary, type StoredCheck } from './librarystore';
@@ -117,13 +117,16 @@ export function LibraryTree({ openEditor }: { openEditor: (name: string) => void
   const [open, setOpen] = useState(true);
 
   if (!project) return null;
-  const unsaved = Object.values(docs).filter((doc) => doc.isNew && !(names ?? []).some((n) => sameName(n, doc.name)));
+  // A new source is listed apart until the module lists it under its very name. One whose name
+  // the module lists in another spelling (made elsewhere meanwhile) is not that source: it stays
+  // listed apart, so that what was typed in it can still be reached.
+  const unsaved = Object.values(docs).filter((doc) => doc.isNew && !(names ?? []).includes(doc.name));
 
   return (
     <>
       <TreeNode
         depth={1}
-        icon={<Library size={14} />}
+        icon={<FileCode2 size={14} />}
         label="Library"
         testId="tree-library"
         expanded={open}

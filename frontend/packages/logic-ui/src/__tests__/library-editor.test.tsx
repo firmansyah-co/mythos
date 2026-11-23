@@ -146,8 +146,13 @@ describe('opening a library source', () => {
   });
 
   it('a name is sent in the address encoded', async () => {
-    const { calls } = await opened(motors(), 'a b/c');
+    const { calls, container } = await opened(motors(), 'a b/c');
     expect(of(calls, 'GET').map((c) => c.path)).toContain('/api/v1/projects/plant/logic/library/a%20b%2Fc');
+    // The core decodes the address before it routes: a name holding `/` never reaches the module,
+    // and what is shown is the core's answer, not the module's name rule.
+    expect(byTestId(container, 'library-read-error')?.textContent).toBe(
+      'The library source a b/c could not be read' + "module 'logic' serves no GET /library/a b/c"
+    );
   });
 
   it('a source that is not text is said, and can be replaced or deleted', async () => {
@@ -227,7 +232,7 @@ describe('checking a library source', () => {
       { kind: 'plain', tag: 'LI', text: 'about the wholethe library cannot be compiled' },
     ]);
     expect(byTestId(panel(container), 'library-project-problems-note')?.textContent).toBe(
-      "The project's types and data blocks do not check, so the library was checked without them."
+      "The project's types and data blocks do not check, so the library was checked without the data blocks, and without the types unless they check by themselves."
     );
     expect(texts(panel(container), 'library-project-problem')).toEqual([`about the whole${PROBLEM.message}`]);
     expect(useModuleUi.getState().diagnostics[LIBRARY_DIAGNOSTICS_OWNER]?.item.count).toBe(4);
@@ -325,6 +330,61 @@ describe('checking a library source', () => {
   });
 });
 
+describe('what an ok check claims', () => {
+  it("an ok check with the project's problems does not claim it was made with the types and data blocks", async () => {
+    const PROBLEM: Diagnostic = { line: 0, col: 0, end_line: 0, end_col: 0, message: "data/blocks.json cannot be read as the project's data blocks" };
+    const { container } = await opened(motors({ compileLibrary: () => ({ ok: true, diagnostics: [], project_problems: [PROBLEM] }) }));
+    click(byTestId(container, 'library-check-button'));
+    await settle();
+    expect(byTestId(container, 'library-check')?.textContent).toBe('CHECKS');
+    expect(byTestId(panel(container), 'library-check-ok')?.textContent).toBe(
+      "The library checks with this text, but not with all of the project's types and data blocks: they do not check, and were left out (below)."
+    );
+    expect(byTestId(panel(container), 'library-project-problems-note')?.textContent).toBe(
+      "The project's types and data blocks do not check, so the library was checked without the data blocks, and without the types unless they check by themselves."
+    );
+    expect(texts(panel(container), 'library-project-problem')).toEqual([`about the whole${PROBLEM.message}`]);
+  });
+});
+
+describe('a check of an earlier library', () => {
+  it('a check is of an earlier library once another source is saved or deleted elsewhere', async () => {
+    const backend = motors();
+    const { container } = await opened(backend);
+    click(byTestId(container, 'library-check-button'));
+    await settle();
+    expect(byTestId(container, 'library-check')?.textContent).toBe('CHECKS');
+    expect(byTestId(container, 'library-check')?.className).toBe('badge badge--good');
+
+    backend.library = { ...backend.library, Valves: BROKEN.replace('Motor', 'Valve') };
+    changed({ name: 'Valves' });
+    await settle();
+    expect(byTestId(container, 'library-check')?.textContent).toBe('CHECKS (EARLIER LIBRARY)');
+    expect(byTestId(container, 'library-check')?.className).toBe('badge badge--neutral');
+    expect(byTestId(panel(container), 'library-check-earlier-library')?.textContent).toBe(
+      'This check was made with an earlier library: another library source was saved or deleted since. Check again.'
+    );
+    expect(useModuleUi.getState().diagnostics[LIBRARY_DIAGNOSTICS_OWNER]?.item.count).toBeNull();
+
+    // Checked again: of the library as it is now.
+    click(byTestId(container, 'library-check-button'));
+    await settle();
+    expect(byTestId(container, 'library-check')?.textContent).toBe('DOES NOT CHECK');
+    expect(byTestId(panel(container), 'library-check-earlier-library')).toBeNull();
+  });
+
+  it("a change of this very source elsewhere leaves its check as it is (the check put this text in its place)", async () => {
+    const backend = motors();
+    const { container } = await opened(backend);
+    typeSource(container, MOTORS2);
+    click(byTestId(container, 'library-check-button'));
+    await settle();
+    changed();
+    await settle();
+    expect(byTestId(container, 'library-check')?.textContent).toBe('CHECKS');
+  });
+});
+
 describe('saving a library source', () => {
   it.each([
     ['a-b', "'a-b' is not a library source name: a letter, then letters, digits or _, at most 64"],
@@ -398,6 +458,59 @@ describe('saving a library source', () => {
     expect(backend.library?.Motors).toBe(BROKEN);
     expect(byTestId(container, 'save-held')).toBeNull();
     expect(byTestId(container, 'library-unsaved')).toBeNull();
+  });
+
+  it('Save anyway is withdrawn once the held text is changed, and never sends a text that was not checked', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const ALSO = 'FUNCTION_BLOCK Motor\nVAR_INPUT run : Nope; stop : Nope; END_VAR\nEND_FUNCTION_BLOCK\n';
+    const { container, calls } = await opened(motors());
+    typeSource(container, BROKEN);
+    click(byTestId(container, 'library-save'));
+    await settle();
+    expect(byTestId(container, 'library-save-anyway')).not.toBeNull();
+    typeSource(container, ALSO);
+    expect(byTestId(container, 'save-held')).toBeNull();
+    expect(byTestId(container, 'library-save-anyway')).toBeNull();
+    // Even asked for directly, the store sends nothing it did not check and hold.
+    expect(await useLibrary.getState().save('Motors', true)).toBe(false);
+    // Back to the held text: still not offered, since the hold was dropped with the edit.
+    typeSource(container, BROKEN);
+    expect(byTestId(container, 'library-save-anyway')).toBeNull();
+    expect(puts(calls)).toEqual([]);
+  });
+
+  it('a held save is dropped when a check of the new text says it checks, or the library or types change', async () => {
+    const backend = motors();
+    const { container } = await opened(backend);
+    typeSource(container, BROKEN);
+    click(byTestId(container, 'library-save'));
+    await settle();
+    expect(byTestId(container, 'save-held')).not.toBeNull();
+    // A check of the same text that does not check keeps the hold.
+    click(byTestId(container, 'library-check-button'));
+    await settle();
+    expect(byTestId(container, 'save-held')).not.toBeNull();
+    // Another source changed: the hold is of an earlier library.
+    changed({ name: 'Valves' });
+    await settle();
+    expect(byTestId(container, 'save-held')).toBeNull();
+
+    click(byTestId(container, 'library-save'));
+    await settle();
+    expect(byTestId(container, 'save-held')).not.toBeNull();
+    emit(DATA_CHANGED_EVENT, { project: 'plant', what: 'type', name: 'Recipe', change: 'saved' });
+    await settle();
+    expect(byTestId(container, 'save-held')).toBeNull();
+
+    click(byTestId(container, 'library-save'));
+    await settle();
+    expect(byTestId(container, 'save-held')).not.toBeNull();
+    typeSource(container, MOTORS2);
+    click(byTestId(container, 'library-check-button'));
+    await settle();
+    expect(byTestId(container, 'library-check')?.textContent).toBe('CHECKS');
+    expect(byTestId(container, 'save-held')).toBeNull();
+    expect(doc().held).toBeNull();
   });
 
   it('after a save the stored text is shown, not the typed one', async () => {
@@ -505,6 +618,43 @@ describe('deleting a library source', () => {
     expect(useLibrary.getState().names).toEqual(['Valves']);
   });
 
+  it('a delete closes the editor without reading the source again, and the name can be made again', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const calls = server(motors());
+    useShell.setState({ project: project('plant'), view: 'project' });
+    await settle();
+    useShell.getState().openEditor(LIBRARY_EDITOR, 'Motors');
+    // Mounted while the workbench has it open, as its work area mounts the active editor.
+    function Mounted() {
+      const open = useShell((state) => state.editors.some((e) => e.kind === LIBRARY_EDITOR && e.target === 'Motors'));
+      if (!open) return null;
+      return (
+        <LibraryEditor
+          name="Motors"
+          onClose={(gone) => {
+            const id = useShell.getState().editors.find((e) => e.kind === LIBRARY_EDITOR && e.target === gone)?.id;
+            if (id) useShell.getState().closeEditor(id);
+          }}
+        />
+      );
+    }
+    const container = render(<Mounted />);
+    await settle();
+    click(byTestId(container, 'library-delete'));
+    await settle();
+    const after = calls.slice(calls.findIndex((c) => c.method === 'DELETE') + 1).map((c) => `${c.method} ${c.path.replace(/^.*\/logic/, '')}`);
+    expect(after.filter((c) => c.startsWith('GET'))).toEqual(['GET /library']);
+    expect(editors()).toEqual([]);
+    expect(useLibrary.getState().docs).toEqual({});
+
+    // Made again under its name: a new source, not a page that it could not be read.
+    useLibrary.getState().openNew('Motors');
+    useShell.getState().openEditor(LIBRARY_EDITOR, 'Motors');
+    await settle();
+    expect(byTestId(container, 'library-new')?.textContent).toBe('NOT SAVED YET');
+    expect(byTestId(container, 'library-read-error')).toBeNull();
+  });
+
   it("a refused delete shows the module's words and keeps the editor", async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     const words = '/projects/plant/logic/library/Motors.st: Permission denied (os error 13)';
@@ -544,7 +694,7 @@ describe('who may change the library', () => {
     expect(checks(calls)).toEqual([{ name: 'Motors', source: MOTORS }]);
     expect(byTestId(container, 'library-check')?.textContent).toBe('CHECKS');
     // A save held for another reason is still not offered to be forced.
-    useLibrary.setState((state) => ({ docs: { ...state.docs, Motors: { ...doc(), held: true } } }));
+    useLibrary.setState((state) => ({ docs: { ...state.docs, Motors: { ...doc(), held: doc().draft } } }));
     await settle();
     expect(byTestId(container, 'save-held')).not.toBeNull();
     expect(byTestId(container, 'library-save-anyway')).toBeNull();
@@ -618,6 +768,62 @@ describe('following changes made elsewhere', () => {
       'Motors was deleted elsewhere since it was opened; saving makes it again.'
     );
     expect(editors()).toEqual(['logic-library:Motors']);
+  });
+
+  it('Discard after a change elsewhere shows the stored text, read again', async () => {
+    const backend = motors();
+    const { container } = await opened(backend);
+    typeSource(container, `${MOTORS}(* mine *)\n`);
+    backend.library = { ...backend.library, Motors: MOTORS2 };
+    changed();
+    await settle();
+    click(byTestId(container, 'library-discard'));
+    await settle();
+    expect(area(container).value).toBe(MOTORS2);
+    expect(doc().saved).toBe(MOTORS2);
+    expect(byTestId(container, 'library-unsaved')).toBeNull();
+    expect(byTestId(container, 'library-elsewhere')).toBeNull();
+  });
+
+  it('Discard after a delete elsewhere closes the editor: nothing is stored to go back to', async () => {
+    const backend = motors();
+    const { container, closed } = await opened(backend);
+    typeSource(container, `${MOTORS}(* mine *)\n`);
+    const { Motors: _gone, ...rest } = backend.library ?? {};
+    backend.library = rest;
+    changed({ what: 'deleted' });
+    await settle();
+    click(byTestId(container, 'library-discard'));
+    await settle();
+    expect(closed).toEqual(['Motors']);
+    expect(useLibrary.getState().docs).toEqual({});
+  });
+
+  it('text typed while a change elsewhere is read is kept when that read fails', async () => {
+    for (const [status, said] of [
+      [404, 'Motors was deleted elsewhere since it was opened; saving makes it again.'],
+      [500, 'Motors was changed elsewhere since it was opened; saving replaces that change.'],
+    ] as const) {
+      resetStores();
+      const read = held();
+      let armed = false;
+      const backend = motors({
+        intercept: (call) => (armed && call.method === 'GET' && call.path.endsWith('/library/Motors') ? read.response : undefined),
+      });
+      const { container } = await opened(backend);
+      armed = true;
+      changed();
+      await settle();
+      const typed = `${MOTORS}(* typed meanwhile *)\n`;
+      typeSource(container, typed);
+      read.release(Response.json({ error: 'refused' }, { status, statusText: 'Refused' }));
+      await settle();
+      expect(area(container).value).toBe(typed);
+      expect(byTestId(container, 'library-read-error')).toBeNull();
+      expect(byTestId(container, 'library-elsewhere')?.textContent).toBe(said);
+      expect(byTestId(container, 'library-unsaved')?.textContent).toBe('UNSAVED');
+      endTest();
+    }
   });
 
   it('a clean editor follows a change made elsewhere, and closes when the source is deleted elsewhere', async () => {

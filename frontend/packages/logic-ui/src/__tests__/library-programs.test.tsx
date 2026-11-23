@@ -226,7 +226,8 @@ describe('a program checked before the library changed', () => {
     // An engineer saves Motors in this workbench; the controller sends the event of that save.
     await useLibrary.getState().open('Motors');
     useLibrary.getState().edit('Motors', BROKEN);
-    await useLibrary.getState().save('Motors', true);
+    // Saved after its check: the stand-in compiler here takes every library.
+    await useLibrary.getState().save('Motors');
     await settle();
     expect(backend.library?.Motors).toBe(BROKEN);
     const before = programChecks(calls).length;
@@ -324,6 +325,60 @@ describe("a program checked before the project's types or data blocks changed", 
   });
 });
 
+describe("a program's variables after the library or the project's types changed", () => {
+  it('the Interface says its variables are of a check made with earlier types, until a check gives them again', async () => {
+    const answer = {
+      now: (): CheckResult => ({ ...compiles(), variables: [{ path: 'r.speed', type: 'REAL', section: 'local', bindable: true }] }),
+    };
+    const { container } = await opened(plant(answer));
+    expect(texts(container, 'variable-row').map((r) => r.split('Bind')[0])).toEqual(['r.speedREALlocal—']);
+    expect(byTestId(container, 'variables-stale')).toBeNull();
+
+    // The type loses `speed`; the quiet check refuses the program, and gives no variables.
+    answer.now = () => refused({ line: 2, col: 7, end_line: 2, end_col: 13, message: 'Recipe has no member speed', source: 'data/types/Recipe.st' });
+    dataChanged();
+    await settle();
+    expect(summary(container)).toBe('1 ERROR');
+    expect(byTestId(container, 'variables-stale')?.textContent).toBe(
+      'These are the variables of the last text that compiled, with earlier types and data blocks of the project: they have changed since.'
+    );
+
+    libraryChanged();
+    await settle();
+    expect(byTestId(container, 'variables-stale')?.textContent).toBe(
+      'These are the variables of the last text that compiled, with an earlier library and earlier types and data blocks of the project: they have changed since.'
+    );
+
+    // A check that compiles with them as they are now gives the variables again.
+    answer.now = () => ({ ...compiles(), variables: [{ path: 'r.rate', type: 'REAL', section: 'local', bindable: true }] });
+    libraryChanged();
+    await settle();
+    expect(summary(container)).toBe('COMPILES');
+    expect(texts(container, 'variable-row').map((r) => r.split('Bind')[0])).toEqual(['r.rateREALlocal—']);
+    expect(byTestId(container, 'variables-stale')).toBeNull();
+  });
+
+  it('variables from a check asked before the library changed are of the earlier library', async () => {
+    const answer = { now: (): CheckResult => ({ ...compiles(), variables: [{ path: 'm.run', type: 'BOOL', section: 'local', bindable: true }] }) };
+    const backend = plant(answer);
+    const { container } = await opened(backend);
+    const holds = holdChecks(backend);
+    libraryChanged();
+    await settle();
+    libraryChanged();
+    await settle();
+    // The first re-check (asked before the second change) answers last-but-one, with variables.
+    holds[0]?.release(Response.json(answer.now()));
+    await settle();
+    expect(byTestId(container, 'variables-stale')?.textContent).toBe(
+      'These are the variables of the last text that compiled, with an earlier library: it has changed since.'
+    );
+    holds[1]?.release(Response.json(answer.now()));
+    await settle();
+    expect(byTestId(container, 'variables-stale')).toBeNull();
+  });
+});
+
 describe("a program's diagnostic in a library source", () => {
   it("a program's diagnostic in a library source opens that source at its line", async () => {
     const answer = { now: () => refused(NOPE) };
@@ -346,6 +401,40 @@ describe("a program's diagnostic in a library source", () => {
     const area = byTestId(motors, 'library-editor')?.querySelector('textarea');
     expect(area?.value).toBe(BROKEN);
     expect(area?.selectionStart).toBe(BROKEN.indexOf('Nope'));
+    expect(useLibrary.getState().pending).toBeNull();
+  });
+
+  it('a CRLF library source is shown with LF line ends, so the caret lands on the place', async () => {
+    const crlf = BROKEN.replace(/\n/g, '\r\n');
+    const { container } = await opened(plant({ now: () => refused(NOPE) }, { library: { Motors: crlf } }));
+    click(byTestId(panel(container), 'diagnostic-library'));
+    const motors = render(<LibraryEditor name="Motors" onClose={() => undefined} />);
+    await until('the Motors editor shows its text', () => byTestId(motors, 'library-editor'));
+    await settle();
+    const area = byTestId(motors, 'library-editor')?.querySelector('textarea');
+    // A browser's text area holds `\n` line ends whatever it is given; the caret is placed in that text.
+    expect(area?.value).toBe(BROKEN);
+    expect(area?.selectionStart).toBe(BROKEN.indexOf('Nope'));
+    // Shown as is: still the stored text, not an unsaved change.
+    expect(byTestId(motors, 'library-unsaved')).toBeNull();
+  });
+
+  it('a place of the stored text is not gone to in an editor with unsaved changes, and it says so', async () => {
+    const { container } = await opened(plant({ now: () => refused(NOPE) }, { library: { Motors: BROKEN } }));
+    await useLibrary.getState().open('Motors');
+    const draft = `(* typed here *)\n${BROKEN}`;
+    useLibrary.getState().edit('Motors', draft);
+    click(byTestId(panel(container), 'diagnostic-library'));
+    const motors = render(<LibraryEditor name="Motors" onClose={() => undefined} />);
+    await until('the Motors editor shows its text', () => byTestId(motors, 'library-editor'));
+    await settle();
+    const area = byTestId(motors, 'library-editor')?.querySelector('textarea');
+    expect(area?.value).toBe(draft);
+    // Where the text area put the caret when it was given the text (its end), not 2:17 of the draft.
+    expect(area?.selectionStart).toBe(draft.length);
+    expect(byTestId(motors, 'library-unplaced')?.textContent).toBe(
+      'The caret was not moved to line 2, column 17: that place is in the stored text, and the text here is not that text.'
+    );
     expect(useLibrary.getState().pending).toBeNull();
   });
 

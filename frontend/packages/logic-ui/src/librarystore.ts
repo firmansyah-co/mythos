@@ -26,9 +26,12 @@ export interface LibraryDoc {
   /**
    * The last check that was applied, and the text it checked. `earlierTypes`: the project's
    * types or data blocks changed (`DATA_CHANGED`) after it was asked, so it is a check with
-   * earlier ones.
+   * earlier ones. `earlierLibrary`: another library source was saved or deleted after it was
+   * asked, so it is a check of an earlier library.
    */
-  check: { text: string; answer: LibraryCheck; earlierTypes: boolean } | null;
+  check: { text: string; answer: LibraryCheck; earlierTypes: boolean; earlierLibrary: boolean } | null;
+  /** How many times another library source was heard to change while this was open. */
+  libraryEpoch: number;
   /** The module refused the last check (its name rule, another spelling) or it could not be made. */
   checkRefusal: Refusal | null;
   checking: boolean;
@@ -36,12 +39,21 @@ export interface LibraryDoc {
   busy: 'saving' | 'deleting' | null;
   /** The module's refusal of the last save (or of its check) or delete. */
   refusal: { of: 'save' | 'delete'; refusal: Refusal } | null;
-  /** The last save was held: with its text the library does not check. */
-  held: boolean;
+  /**
+   * The text of the last save that was held, because the library does not check with it; `null`
+   * when none is. Dropped once the text, the library or the project's types change, or a check
+   * answers that it checks: "Save anyway" only ever sends the text that was checked and held.
+   */
+  held: string | null;
   /** What the last save answered: whether the module made the source. */
   saveAnswer: { created: boolean } | null;
   /** Saved or deleted by somebody else while this had changes here. */
   elsewhere: 'changed' | 'deleted' | null;
+  /**
+   * The spelling the event named, when it named another spelling than this new source's (the
+   * module takes names that differ only in case as one name): it is not this source's change.
+   */
+  elsewhereAs: string | null;
   /** An event for this source that came while a write of this editor was sent and not answered. */
   deferred: LibraryChanged['what'] | null;
   /** An event of somebody else's write that came while this editor was busy: followed after. */
@@ -60,8 +72,11 @@ export interface LibraryState {
   names: string[] | null;
   namesError: string | null;
   docs: Record<string, LibraryDoc>;
-  /** A place to put the caret in, once the editor of `name` shows its text. */
-  pending: { name: string; line: number; col: number } | null;
+  /**
+   * A place to put the caret in, once the editor of `name` shows its text. `text`: the text the
+   * place is in (a check's); `null` when it is in the stored text (another source's diagnostic).
+   */
+  pending: { name: string; line: number; col: number; text: string | null } | null;
   /**
    * The stored library's last check; `null` while none has answered since the list was read or
    * the library or the project's types last changed.
@@ -76,14 +91,21 @@ export interface LibraryState {
   /** An editor on a source the module has not stored, with an empty text. Writes nothing. */
   openNew(name: string): void;
   edit(name: string, text: string): void;
-  /** The draft back to the saved text. A new source is dropped: returns true then. */
+  /**
+   * The draft back to the stored text. A new source is dropped, and so is one deleted elsewhere:
+   * returns true then (its editor closes). When the stored text may not be the one last read (it
+   * was changed elsewhere, or a save's read-back failed), it is read again.
+   */
   discard(name: string): boolean;
   check(name: string): Promise<void>;
   /** Check the draft, and save it when the library checks with it, or `anyway`. */
   save(name: string, anyway?: boolean): Promise<boolean>;
+  /** Delete the source. Its editor is kept until `forget`, so that it is closed before it goes. */
   remove(name: string): Promise<boolean>;
-  /** Put the caret at `line`:`col` of source `name` once its editor shows it. */
-  goTo(name: string, line: number, col: number): void;
+  /** Drop the editor of `name` (after its editor was closed). */
+  forget(name: string): void;
+  /** Put the caret at `line`:`col` of source `name` (in `text`, or else in the stored text) once its editor shows it. */
+  goTo(name: string, line: number, col: number, text?: string | null): void;
   /** The pending place was gone to (or cannot be). */
   wentTo(): void;
   /** Follow `LOGIC_LIBRARY_CHANGED` of the open project. Returns the editor to close (deleted elsewhere), if any. */
@@ -114,11 +136,13 @@ const fresh = (name: string): LibraryDoc => ({
   check: null,
   checkRefusal: null,
   checking: false,
+  libraryEpoch: 0,
   busy: null,
   refusal: null,
-  held: false,
+  held: null,
   saveAnswer: null,
   elsewhere: null,
+  elsewhereAs: null,
   deferred: null,
   later: null,
 });
@@ -179,7 +203,15 @@ export const useLibrary = create<LibraryState>((set, get) => {
       });
     } catch (cause) {
       if (opening !== at) return;
-      patch(name, { phase: 'unreadable', readError: refusalOf(cause), saved: null, draft: '' });
+      const doc = get().docs[name];
+      const refusal = refusalOf(cause);
+      if (doc && doc.phase === 'ready' && isDirty(doc)) {
+        // Typed while a change made elsewhere was read: kept. Gone (404): saving makes it again;
+        // otherwise what is stored is not known, and it was changed: saving replaces it.
+        patch(name, refusal.status === 404 ? { elsewhere: 'deleted', saved: null } : { elsewhere: 'changed' });
+        return;
+      }
+      patch(name, { phase: 'unreadable', readError: refusal, saved: null, draft: '' });
     }
   };
 
@@ -243,7 +275,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
     }
     if (opening !== at) return false;
     unanswered.delete(name);
-    patch(name, { isNew: false, elsewhere: null, held: false, saveAnswer: { created: answer.created } });
+    patch(name, { isNew: false, elsewhere: null, elsewhereAs: null, held: null, saveAnswer: { created: answer.created } });
     settled(name, true);
     // The answer has no source: what is stored is read back, and that is what is shown as saved.
     try {
@@ -315,16 +347,27 @@ export const useLibrary = create<LibraryState>((set, get) => {
       set((state) => ({ docs: { ...state.docs, [name]: { ...fresh(name), phase: 'ready', isNew: true } } }));
     },
 
-    edit: (name, text) => patch(name, { draft: text }),
+    edit: (name, text) => {
+      const held = get().docs[name]?.held ?? null;
+      // A held save is of the text that was checked: another text was never checked.
+      patch(name, held !== null && !sameText(held, text) ? { draft: text, held: null } : { draft: text });
+    },
 
     discard: (name) => {
       const doc = get().docs[name];
       if (!doc || doc.busy !== null) return false;
-      if (doc.isNew) {
+      if (doc.isNew || doc.elsewhere === 'deleted') {
+        // Not stored (any more): nothing is left to go back to.
         drop(name);
         return true;
       }
-      patch(name, { draft: doc.saved ?? '', held: false });
+      if (doc.elsewhere === 'changed' || doc.readBack !== null) {
+        // The text last read is not known to be what is stored: it is read again.
+        patch(name, { phase: 'reading', draft: doc.saved ?? '', held: null, elsewhere: null, readBack: null });
+        void reread(name);
+        return false;
+      }
+      patch(name, { draft: doc.saved ?? '', held: null });
       return false;
     },
 
@@ -336,13 +379,26 @@ export const useLibrary = create<LibraryState>((set, get) => {
       const text = doc.draft;
       const at = opening;
       const data = dataChanges;
+      const library = doc.libraryEpoch;
       patch(name, { checkSeq: seq, checking: true });
       // An answer for an older text than the last one sent, or of another opening, is not this text's.
       const stale = () => opening !== at || get().docs[name]?.checkSeq !== seq;
       try {
         const answer = await api.check(projectId, name, text);
         if (stale()) return;
-        patch(name, { check: { text, answer, earlierTypes: data !== dataChanges }, checkRefusal: null, checking: false });
+        const now = get().docs[name];
+        const earlierLibrary = now?.libraryEpoch !== library;
+        const earlierTypes = data !== dataChanges;
+        // A held save stays held only while a check of its very text, of the library and types as
+        // they are, still says that the library does not check.
+        const held = now?.held ?? null;
+        const holds = held !== null && sameText(held, text) && !answer.ok && !earlierLibrary && !earlierTypes;
+        patch(name, {
+          check: { text, answer, earlierTypes, earlierLibrary },
+          checkRefusal: null,
+          checking: false,
+          ...(holds ? {} : { held: null }),
+        });
       } catch (cause) {
         if (stale()) return;
         patch(name, { checkRefusal: refusalOf(cause), checking: false });
@@ -353,14 +409,17 @@ export const useLibrary = create<LibraryState>((set, get) => {
       const projectId = get().projectId;
       const doc = get().docs[name];
       if (projectId === null || !doc || doc.busy !== null) return false;
+      // Saved anyway only as it was held: the text the check refused, which the engineer was asked about.
+      if (anyway && (doc.held === null || !sameText(doc.held, doc.draft))) return false;
       const sent = doc.draft;
       const at = opening;
-      patch(name, { busy: 'saving', refusal: null, held: false, saveAnswer: null });
+      patch(name, { busy: 'saving', refusal: null, held: null, saveAnswer: null });
       if (!anyway) {
         // The module writes any text, and a library that does not check refuses every program:
         // the text is checked first, as the module asks of a caller.
         const seq = doc.checkSeq + 1;
         const data = dataChanges;
+        const library = doc.libraryEpoch;
         patch(name, { checkSeq: seq, checking: true });
         let checked: LibraryCheck;
         try {
@@ -375,10 +434,13 @@ export const useLibrary = create<LibraryState>((set, get) => {
         }
         if (opening !== at) return false;
         if (get().docs[name]?.checkSeq === seq) {
-          patch(name, { check: { text: sent, answer: checked, earlierTypes: data !== dataChanges }, checkRefusal: null, checking: false });
+          const earlierLibrary = get().docs[name]?.libraryEpoch !== library;
+          patch(name, { check: { text: sent, answer: checked, earlierTypes: data !== dataChanges, earlierLibrary }, checkRefusal: null, checking: false });
         }
         if (!checked.ok) {
-          patch(name, { busy: null, held: true });
+          // Held only while the text is still the one checked: one typed meanwhile was never checked.
+          const now = get().docs[name];
+          patch(name, { busy: null, held: now && sameText(now.draft, sent) ? sent : null });
           afterBusy(name);
           return false;
         }
@@ -391,7 +453,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
       const doc = get().docs[name];
       if (projectId === null || !doc || doc.busy !== null) return false;
       const at = opening;
-      patch(name, { busy: 'deleting', refusal: null, held: false, saveAnswer: null });
+      patch(name, { busy: 'deleting', refusal: null, held: null, saveAnswer: null });
       unanswered.add(name);
       try {
         await api.remove(projectId, name);
@@ -406,20 +468,47 @@ export const useLibrary = create<LibraryState>((set, get) => {
       if (opening !== at) return false;
       unanswered.delete(name);
       settled(name, true);
-      drop(name);
+      // Kept (busy deleting) until its editor is closed: an editor shown without its source would
+      // read it again, and keep a source that is gone as open.
       void get().readList();
       return true;
     },
 
-    goTo: (name, line, col) => set({ pending: { name, line, col } }),
+    forget: (name) => drop(name),
+
+    goTo: (name, line, col, text = null) => set({ pending: { name, line, col, text } }),
     wentTo: () => set({ pending: null }),
 
     changed: (event) => {
       // Whether the event is of the open project is asked by the caller.
       void get().readList();
       void get().checkStored();
+      // Every other source's check was made with the library as it was: it is of an earlier one,
+      // and a save held by it is no longer known to be refused. The named source's own check
+      // put its text in place of the stored one, so the change does not touch it.
+      set((state) => ({
+        docs: Object.fromEntries(
+          Object.entries(state.docs).map(([key, doc]) => [
+            key,
+            key === event.name
+              ? doc
+              : {
+                  ...doc,
+                  libraryEpoch: doc.libraryEpoch + 1,
+                  held: null,
+                  check: doc.check === null ? null : { ...doc.check, earlierLibrary: true },
+                },
+          ])
+        ),
+      }));
       const name = docKey(event.name);
       const doc = get().docs[name];
+      if (doc?.isNew && name !== event.name) {
+        // Another spelling of this new source's name was saved or deleted elsewhere: not this
+        // source's change. Said as it is; what the module answers this one's save is its own.
+        patch(name, { elsewhere: event.what === 'deleted' ? 'deleted' : 'changed', elsewhereAs: event.name });
+        return null;
+      }
       if (doc?.busy && unanswered.has(name)) {
         // This editor's own write may be what it is about: decided once the write is answered.
         patch(name, { deferred: event.what });
@@ -461,7 +550,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
         docs: Object.fromEntries(
           Object.entries(state.docs).map(([name, doc]) => [
             name,
-            doc.check === null ? doc : { ...doc, check: { ...doc.check, earlierTypes: true } },
+            doc.check === null ? { ...doc, held: null } : { ...doc, held: null, check: { ...doc.check, earlierTypes: true } },
           ])
         ),
       }));

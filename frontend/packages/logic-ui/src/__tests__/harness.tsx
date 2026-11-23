@@ -328,7 +328,8 @@ function libraryRoute(backend: Backend, method: string, param: string | undefine
         const text = sources[stem];
         if (typeof text === 'string') return [];
         const file = `logic/library/${stem}.st`;
-        return [{ line: 0, col: 0, end_line: 0, end_col: 0, message: `${file} cannot be read as a library source: ${text?.unreadable}`, source: file }];
+        // `read_library` (lib.rs): "it is not UTF-8 text (<the decoder's words>)".
+        return [{ line: 0, col: 0, end_line: 0, end_col: 0, message: `${file} cannot be read as a library source: it is not UTF-8 text (${text?.unreadable})`, source: file }];
       });
     if (unreadable.length > 0) return Response.json({ ok: false, diagnostics: unreadable });
     const texts = Object.fromEntries(Object.entries(sources).map(([stem, text]) => [`logic/library/${stem}.st`, text as string]));
@@ -404,7 +405,17 @@ export function server(backend: Backend): Call[] {
       }
 
       const library = /^\/api\/v1\/projects\/[^/]+\/logic\/library(?:\/([^/]+))?$/.exec(path);
-      if (library) return libraryRoute(backend, method, library[1] === undefined ? undefined : decodeURIComponent(library[1]), body);
+      if (library) {
+        const param = library[1] === undefined ? undefined : decodeURIComponent(library[1]);
+        // The core decodes the path before it routes (crates/mythos-core/src/services.rs
+        // `forward`): an encoded separator is a separator there, and such a name never reaches
+        // the module. These are the core's words, not the module's name rule.
+        if (param !== undefined && param.split('/').some((segment) => segment === '.' || segment === '..' || segment.includes('\\'))) {
+          return refusal(400, "a path may not contain '.', '..' or '\\' segments");
+        }
+        if (param?.includes('/')) return refusal(404, `module 'logic' serves no ${method} /library/${param}`);
+        return libraryRoute(backend, method, param, body);
+      }
 
       if (/\/projects\/[^/]+\/logic\/runtimes$/.test(path) && method === 'GET') {
         if (backend.configured === 'fails') {

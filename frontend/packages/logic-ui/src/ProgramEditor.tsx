@@ -689,7 +689,15 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
   // What the Ladder Diagram front-end made for itself (`__LD_…`) is not the program's: it is
   // watched for the diagram, and not listed.
   const variables = doc.variables === null ? null : doc.variables.filter((variable) => variable.hidden !== true);
-  const current = variables !== null && doc.variablesSource === doc.source;
+  const sameText = doc.variablesSource === doc.source;
+  // Of the text now, and of the library and the project's types as they are now.
+  const current = variables !== null && sameText && doc.variablesStale === null;
+  const earlier =
+    doc.variablesStale === 'library'
+      ? 'an earlier library: it has'
+      : doc.variablesStale === 'data'
+        ? "earlier types and data blocks of the project: they have"
+        : 'an earlier library and earlier types and data blocks of the project: they have';
   // What a binding may name: the tags of the configuration being edited and of what runs.
   const tags = [...new Set([...configured, ...(io?.connections.flatMap((c) => c.tags) ?? [])])].sort();
   const lost = variables === null ? rows : orphans(rows, variables);
@@ -730,7 +738,9 @@ function VariablesPanel({ doc, readOnly, state }: { doc: ProgramDoc; readOnly: b
         <>
           {!current && (
             <p className="muted" data-testid="variables-stale">
-              These are the variables of the last text that compiled. The text has changed since.
+              {doc.variablesStale === null
+                ? 'These are the variables of the last text that compiled. The text has changed since.'
+                : `These are the variables of the last text that compiled, with ${earlier} changed since.${sameText ? '' : ' The text has changed since too.'}`}
             </p>
           )}
           {variables.length === 0 ? (

@@ -3,7 +3,7 @@
 // is shown as saved is what the module gave back; a refusal is shown in the module's own words.
 // A check that is ok says what was checked, and nothing of programs: they are checked apart.
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Save, Trash2, Undo2 } from 'lucide-react';
 import type { DiagnosticsPanel } from '@mythos/workbench-sdk';
 import { host, mayEngineer, type Diagnostic } from './bridge';
@@ -28,15 +28,16 @@ const NONE: Diagnostic[] = [];
 
 /**
  * How many diagnostics the Diagnostics tab lists for `doc`; `null` before anything was checked,
- * and when the check is with types and blocks that have changed since (nothing known of now).
+ * and when the check is with a library, or types and blocks, that have changed since (nothing
+ * known of now).
  */
 export function problemCount(doc: LibraryDoc | undefined): number | null {
-  if (!doc || doc.check === null || doc.check.earlierTypes) return null;
+  if (!doc || doc.check === null || doc.check.earlierTypes || doc.check.earlierLibrary) return null;
   return doc.check.answer.ok ? 0 : doc.check.answer.diagnostics.length;
 }
 
 /** One diagnostic of a check, as listed: a place to go to when it is one of the library's own texts. */
-function DiagnosticItem({ d, name, listed }: { d: Diagnostic; name: string; listed: string[] | null }) {
+function DiagnosticItem({ d, name, listed, checked }: { d: Diagnostic; name: string; listed: string[] | null; checked: string }) {
   const other = librarySourceOf(d, listed);
   if (d.line > 0 && isOfThisSource(d, name)) {
     return (
@@ -46,7 +47,7 @@ function DiagnosticItem({ d, name, listed }: { d: Diagnostic; name: string; list
           className="logic-diagnostic"
           data-testid="library-diagnostic"
           data-kind="own"
-          onClick={() => useLibrary.getState().goTo(name, d.line, d.col)}
+          onClick={() => useLibrary.getState().goTo(name, d.line, d.col, checked)}
         >
           <span className="mono logic-diagnostic__at">{placeOf(d, name)}</span>
           {d.message}
@@ -103,6 +104,11 @@ function CheckCard({ name }: { name: string }) {
           This is the check of an earlier text. The text has changed since.
         </p>
       )}
+      {check.earlierLibrary && (
+        <p className="muted" data-testid="library-check-earlier-library">
+          This check was made with an earlier library: another library source was saved or deleted since. Check again.
+        </p>
+      )}
       {check.earlierTypes && (
         <p className="muted" data-testid="library-check-earlier-types">
           This check was made with earlier types and data blocks of the project. They have changed since: check again.
@@ -110,7 +116,11 @@ function CheckCard({ name }: { name: string }) {
       )}
       {check.answer.ok ? (
         <>
-          <p data-testid="library-check-ok">The library checks with this text, with the project's types and data blocks.</p>
+          <p data-testid="library-check-ok">
+            {problems.length > 0
+              ? "The library checks with this text, but not with all of the project's types and data blocks: they do not check, and were left out (below)."
+              : "The library checks with this text, with the project's types and data blocks."}
+          </p>
           <p className="muted" data-testid="library-check-footnote">
             Programs are not checked here: a program that declares a name the library declares, or uses what this text no
             longer has, is refused at its own check.
@@ -119,14 +129,15 @@ function CheckCard({ name }: { name: string }) {
       ) : (
         <ul className="logic-diagnostics" aria-label="Diagnostics">
           {check.answer.diagnostics.map((d, index) => (
-            <DiagnosticItem key={index} d={d} name={name} listed={listed} />
+            <DiagnosticItem key={index} d={d} name={name} listed={listed} checked={check.text} />
           ))}
         </ul>
       )}
       {problems.length > 0 && (
         <>
           <p className="muted" data-testid="library-project-problems-note">
-            The project's types and data blocks do not check, so the library was checked without them.
+            The project's types and data blocks do not check, so the library was checked without the data blocks, and
+            without the types unless they check by themselves.
           </p>
           <ul className="logic-diagnostics" aria-label="Problems in the project's types and data blocks">
             {problems.map((d, index) => (
@@ -152,9 +163,13 @@ function CheckBadge({ doc }: { doc: LibraryDoc }) {
   }
   const stale = !sameText(doc.check.text, doc.draft);
   const types = doc.check.earlierTypes;
-  const tone = stale || types ? 'neutral' : doc.check.answer.ok ? 'good' : 'bad';
+  const library = doc.check.earlierLibrary;
+  const tone = stale || types || library ? 'neutral' : doc.check.answer.ok ? 'good' : 'bad';
   const text = doc.check.answer.ok ? 'CHECKS' : 'DOES NOT CHECK';
-  const earlier = stale && types ? ' (EARLIER TEXT AND TYPES)' : stale ? ' (EARLIER TEXT)' : types ? ' (EARLIER TYPES)' : '';
+  // What it was a check of that is no longer so: "TEXT", "TEXT AND TYPES", "TEXT, LIBRARY AND TYPES".
+  const of = [stale && 'TEXT', library && 'LIBRARY', types && 'TYPES'].filter((part): part is string => part !== false);
+  const earlier =
+    of.length === 0 ? '' : ` (EARLIER ${of.length === 1 ? of[0] : `${of.slice(0, -1).join(', ')} AND ${of[of.length - 1]}`})`;
   return (
     <button type="button" className="btn btn--flat" onClick={() => host().showDiagnostics()} title="Show the diagnostics">
       <span className={`badge badge--${tone}`} data-testid="library-check">
@@ -171,17 +186,29 @@ export function LibraryEditor({ name, onClose }: { name: string; onClose: (name:
   const pending = useLibrary((state) => state.pending);
   const { open, edit, discard, check, save, remove, wentTo } = useLibrary.getState();
   const editor = useRef<SourceEditorHandle>(null);
+  // Deleted or discarded from here: its editor is closing, and the source is not read again meanwhile.
+  const closing = useRef(false);
   const missing = doc === undefined;
   const phase = doc?.phase;
+  // A place that was not gone to, because the text shown is not the text it is a place in.
+  const [unplaced, setUnplaced] = useState<{ line: number; col: number; of: 'stored' | 'checked' } | null>(null);
 
   useEffect(() => {
-    if (missing && projectId !== null) void open(name);
+    if (missing && projectId !== null && !closing.current) void open(name);
   }, [missing, projectId, name, open]);
 
-  // A place asked for in this source (a diagnostic's) is gone to once its text is shown.
+  // A place asked for in this source (a diagnostic's) is gone to once its text is shown, when
+  // the text shown is the one the place is in: the stored text, or the text that was checked.
   useEffect(() => {
     if (pending === null || pending.name !== name || phase === undefined || phase === 'reading') return;
-    if (phase === 'ready') editor.current?.goTo(pending.line, pending.col);
+    const now = useLibrary.getState().docs[name];
+    const about = pending.text ?? now?.saved ?? null;
+    if (phase === 'ready' && now && about !== null && sameText(about, now.draft)) {
+      editor.current?.goTo(pending.line, pending.col);
+      setUnplaced(null);
+    } else if (phase === 'ready') {
+      setUnplaced({ line: pending.line, col: pending.col, of: pending.text === null ? 'stored' : 'checked' });
+    }
     wentTo();
   }, [pending, name, phase, wentTo]);
 
@@ -198,6 +225,7 @@ export function LibraryEditor({ name, onClose }: { name: string; onClose: (name:
     host().setDiagnostics(LIBRARY_DIAGNOSTICS_OWNER, { title: `Check: ${name}`, mount, count });
   }, [name, mount, count]);
 
+  if (!doc && closing.current) return null;
   if (!doc || doc.phase === 'reading') {
     return <p className="editor__loading muted">Reading {name}…</p>;
   }
@@ -220,7 +248,11 @@ export function LibraryEditor({ name, onClose }: { name: string; onClose: (name:
   const working = doc.busy !== null;
   const refusal = doc.refusal;
   const current =
-    doc.check !== null && !doc.check.earlierTypes && sameText(doc.check.text, doc.draft) ? doc.check.answer : null;
+    doc.check !== null && !doc.check.earlierTypes && !doc.check.earlierLibrary && sameText(doc.check.text, doc.draft)
+      ? doc.check.answer
+      : null;
+  // A held save is shown only for the text it held: another text was never checked.
+  const held = doc.held !== null && sameText(doc.held, doc.draft);
   const drawn = current === null || current.ok ? NONE : current.diagnostics.filter((d) => d.line > 0 && isOfThisSource(d, name));
 
   return (
@@ -244,7 +276,9 @@ export function LibraryEditor({ name, onClose }: { name: string; onClose: (name:
             disabled={!dirty || working}
             data-testid="library-discard"
             onClick={() => {
-              if (discard(name)) onClose(name);
+              if (!discard(name)) return;
+              closing.current = true;
+              onClose(name);
             }}
           >
             <Undo2 size={13} aria-hidden /> Discard
@@ -259,7 +293,10 @@ export function LibraryEditor({ name, onClose }: { name: string; onClose: (name:
             onClick={() => {
               if (!window.confirm(deleteQuestion(name))) return;
               void remove(name).then((gone) => {
-                if (gone) onClose(name);
+                if (!gone) return;
+                closing.current = true;
+                onClose(name);
+                useLibrary.getState().forget(name);
               });
             }}
           >
@@ -312,13 +349,23 @@ export function LibraryEditor({ name, onClose }: { name: string; onClose: (name:
       {doc.elsewhere !== null && (
         <div className="notice notice--warn" role="alert" data-testid="library-elsewhere">
           <p>
-            {doc.elsewhere === 'deleted'
-              ? `${name} was deleted elsewhere since it was opened; saving makes it again.`
-              : `${name} was changed elsewhere since it was opened; saving replaces that change.`}
+            {doc.elsewhereAs !== null
+              ? `A library source ${doc.elsewhereAs} was ${doc.elsewhere === 'deleted' ? 'deleted' : 'saved'} elsewhere since ${name} was opened.`
+              : doc.elsewhere === 'deleted'
+                ? `${name} was deleted elsewhere since it was opened; saving makes it again.`
+                : `${name} was changed elsewhere since it was opened; saving replaces that change.`}
           </p>
         </div>
       )}
-      {doc.held && (
+      {unplaced !== null && (
+        <div className="notice notice--warn" role="status" data-testid="library-unplaced">
+          <p>
+            The caret was not moved to line {unplaced.line}, column {unplaced.col}: that place is in{' '}
+            {unplaced.of === 'stored' ? 'the stored text' : 'the text that was checked'}, and the text here is not that text.
+          </p>
+        </div>
+      )}
+      {held && (
         <div className="notice notice--warn" role="alert" data-testid="save-held">
           <p>Not saved: with this text the library does not check, and every program of the project would be refused.</p>
           {may && (

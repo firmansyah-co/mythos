@@ -46,6 +46,11 @@ export interface ProgramDoc {
   /** The variables of the last text that compiled, and that text. */
   variables: Variable[] | null;
   variablesSource: string | null;
+  /**
+   * What changed since the check that gave the variables, other than the text: the library, the
+   * project's types and data blocks, or both. `null` while they are of the library and types now.
+   */
+  variablesStale: StaleCause | null;
   /** The last build this workbench made, and whether it was loaded. */
   built: BuildResult | null;
   loaded: ApplyAnswer | null;
@@ -378,6 +383,7 @@ const docOf = (entry: ProgramEntry): ProgramDoc => ({
   dataStale: false,
   variables: null,
   variablesSource: null,
+  variablesStale: null,
   built: null,
   loaded: null,
   startFailure: null,
@@ -395,9 +401,13 @@ const checked = (doc: ProgramDoc, result: CheckResult, source: string): ProgramD
   libraryStale: false,
   dataStale: false,
   ...(result.ok && result.variables
-    ? { variables: result.variables, variablesSource: source }
+    ? { variables: result.variables, variablesSource: source, variablesStale: null }
     : {}),
 });
+
+/** `cause` with `added` to it. */
+const withCause = (cause: StaleCause | null, added: 'library' | 'data'): StaleCause =>
+  cause === null || cause === added ? added : 'both';
 
 const EMPTY_RUNTIMES: RuntimesView = {
   runtimes: null,
@@ -484,6 +494,14 @@ const asOf = (doc: ProgramDoc, at: AskedAt): ProgramDoc =>
         ...doc,
         libraryStale: doc.libraryStale || at.library !== libraryChanges,
         dataStale: doc.dataStale || at.data !== dataChanges,
+        // The variables it gave, if any, are of the earlier library or types too.
+        variablesStale:
+          doc.variables === null
+            ? doc.variablesStale
+            : [...(at.library !== libraryChanges ? (['library'] as const) : []), ...(at.data !== dataChanges ? (['data'] as const) : [])].reduce<StaleCause | null>(
+                (cause, added) => withCause(cause, added),
+                doc.variablesStale
+              ),
       };
 
 export const usePrograms = create<ProgramsState>((set, get) => {
@@ -530,9 +548,16 @@ export const usePrograms = create<ProgramsState>((set, get) => {
     if (cause === 'library') libraryChanges += 1;
     else dataChanges += 1;
     set((state) => ({
-      programs: state.programs.map((doc) =>
-        doc.check === null ? doc : cause === 'library' ? { ...doc, libraryStale: true } : { ...doc, dataStale: true }
-      ),
+      programs: state.programs.map((doc) => {
+        // The variables listed are of a check made with what changed: said so until a check
+        // of the library and types as they are gives them again.
+        const variables = doc.variables === null ? doc : { ...doc, variablesStale: withCause(doc.variablesStale, cause) };
+        return variables.check === null
+          ? variables
+          : cause === 'library'
+            ? { ...variables, libraryStale: true }
+            : { ...variables, dataStale: true };
+      }),
     }));
     for (const doc of get().programs) {
       if (doc.source !== null) void get().check(doc.entry.name, true);

@@ -11,6 +11,7 @@ import type { Diagnostic } from '../bridge';
 import { DATA_CHANGED_EVENT, LIBRARY_CHANGED_EVENT, LIBRARY_EDITOR, type LibraryCheck } from '../library';
 import { useLibrary } from '../librarystore';
 import { LibraryTree } from '../LibraryTree';
+import { LibraryEditor } from '../LibraryEditor';
 import {
   byLabel,
   byTestId,
@@ -173,6 +174,25 @@ describe('the Library section of the project tree', () => {
     expect(useLibrary.getState().docs.motors).toBeUndefined();
     expect(byTestId(tree, 'tree-library-new')).toBeNull();
     expect(notReads(calls)).toEqual([]);
+  });
+
+  it('a new source stays listed when another spelling of its name is made elsewhere, and nothing says saving replaces it', async () => {
+    const backend: Backend = { programs: [], library: {} };
+    const { tree } = await opened(backend);
+    add(tree, 'motors');
+    await settle();
+    useLibrary.getState().edit('motors', MOTORS);
+    const editor = render(<LibraryEditor name="motors" onClose={() => undefined} />);
+    await settle();
+    backend.library = { Motors: MOTORS };
+    emit(LIBRARY_CHANGED_EVENT, { project: 'plant', name: 'Motors', what: 'saved' });
+    await settle();
+    // Both are there: the stored source, and the new one with what was typed in it.
+    expect(texts(tree, 'tree-library-source')).toEqual(['MotorsST']);
+    expect(byTestId(tree, 'tree-library-new')?.querySelector('.tree__label')?.textContent).toBe('motors (not saved yet)');
+    expect(useLibrary.getState().docs.motors?.draft).toBe(MOTORS);
+    // It is another spelling's change, said as such: no promise of what saving does.
+    expect(byTestId(editor, 'library-elsewhere')?.textContent).toBe('A library source Motors was saved elsewhere since motors was opened.');
   });
 
   it('a viewer gets no Add row', async () => {
