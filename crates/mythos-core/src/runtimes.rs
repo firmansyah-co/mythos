@@ -989,8 +989,20 @@ impl RuntimeStates {
         inner.wanted.get(id).copied()
     }
 
+    /// What a driver says of its instance. A driver that has been replaced goes on reporting
+    /// until it is stopped: its report is of the build before, and never takes the place of
+    /// its replacement's (generations only grow, so the larger one is the newer driver).
+    /// Without this the driver before would be the one listed again, and its stop would then
+    /// forget the instance while its replacement runs.
     fn report(&self, generation: u64, status: RuntimeStatus) {
         let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        if inner
+            .statuses
+            .get(&status.id)
+            .is_some_and(|(newer, _)| *newer > generation)
+        {
+            return;
+        }
         inner
             .statuses
             .insert(status.id.clone(), (generation, status));
@@ -2451,6 +2463,35 @@ mod tests {
             forced_tags(&program, &forced(&["A", "c", "zz"])),
             vec!["external.A.B.c".to_string(), "internal.A.t.c".to_string()]
         );
+    }
+
+    /// A build replaces a running one: the new driver reports, then the driver before reports
+    /// once more (it runs until it is stopped), then it is stopped. The instance stays the
+    /// replacement's all along: it is still loaded, so a command reaches it, and the driver
+    /// before knows it was replaced (so it does not keep its RETAIN values over the new ones).
+    /// Seen in CI: without it the Run that follows a load was answered "no runtime is loaded".
+    #[test]
+    fn a_replaced_drivers_late_report_and_stop_leave_its_replacement_loaded() {
+        let states = RuntimeStates::default();
+        loaded(&states, "t", 1);
+        loaded(&states, "t", 2);
+        loaded(&states, "t", 1);
+        assert!(
+            states.replaced("t", 1),
+            "the driver before is still replaced after its late report"
+        );
+        assert!(!states.replaced("t", 2));
+        states.forget("t", 1);
+        assert!(
+            states.command("t", true),
+            "the replacement is still loaded after the driver before stopped"
+        );
+        // The same driver reporting again, and a newer one, are taken as before.
+        loaded(&states, "t", 2);
+        loaded(&states, "t", 3);
+        assert!(states.replaced("t", 2));
+        states.forget("t", 3);
+        assert!(!states.command("t", true), "its own stop forgets it");
     }
 
     #[tokio::test]
