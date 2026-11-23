@@ -103,6 +103,12 @@ const DEVICE_NAMES: &[&str] = &[
 pub struct ProgramEntry {
     /// Its name in the project, and the id of the runtime instance it becomes.
     pub name: String,
+    /// A mark given when the program is made, never changed, and carried by each of its
+    /// builds (`RuntimeProgram::created`): a program deleted and made again under this name
+    /// has another, so the core takes it for another program. A program made before there was
+    /// a mark has none, and is never given one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
     /// The language of its source: `st` (Structured Text), `ld` (Ladder Diagram), `fbd`
     /// (Function Block Diagram) or `sfc` (Sequential Function Chart), each diagram a TC6
     /// document. A `programs.json` written before
@@ -134,6 +140,25 @@ struct Programs {
 
 fn structured_text() -> String {
     "st".into()
+}
+
+/// The mark of a program made now as `name` (see [`ProgramEntry::created`]): what tells it
+/// from any other program made under that name, before or after, in this or another process.
+fn making_mark(name: &str, now: std::time::SystemTime) -> String {
+    static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let since = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let mut hash = Sha256::new();
+    hash.update(name.as_bytes());
+    hash.update(since.to_le_bytes());
+    hash.update(std::process::id().to_le_bytes());
+    hash.update(
+        MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .to_le_bytes(),
+    );
+    hex::encode(&hash.finalize()[..8])
 }
 
 /// The languages a program may be written in, each with the extension of its file.
@@ -1287,6 +1312,7 @@ fn check_in(
                 let program = RuntimeProgram {
                     name: compiled.name.clone(),
                     built_from: None,
+                    created: None,
                     version: String::new(),
                     interval_ms: entry.interval_ms,
                     code: String::new(),
@@ -1417,6 +1443,7 @@ fn build(
         name: compiled.name.clone(),
         // The program's name in the project, never the PROGRAM its source declares.
         built_from: Some(entry.name.clone()),
+        created: entry.created.clone(),
         version: version.clone(),
         interval_ms: entry.interval_ms,
         code: hex::encode(&compiled.bytecode),
@@ -1607,7 +1634,7 @@ pub fn manifest() -> ModuleManifest {
                 "Replace a program's settings and its bindings to tags.",
                 Some(settings_schema()), &[]),
             route("DELETE", "/programs/:program", "engineer", "delete_logic_program",
-                "Remove a program and its source from a project. A runtime that already runs it is not touched.",
+                "Remove a program and its source from a project. A runtime that already runs it is not touched. A program made again under its name is another program to the core (each program is marked when it is made, and its builds carry the mark since 0.8.0): it is not changed online from the deleted one's running build, nor given the RETAIN values kept for it.",
                 None, &[]),
             route("POST", "/programs/:program/check", "viewer", "check_logic_program",
                 "Compile a program, Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart, without building it: every mistake in it as a diagnostic with the range it is about (line, col, end_line, end_col, counted from 1, the end exclusive; all 0 when it is about the whole program; in a diagram the range is the element's tag in the document and 'element' names it: pou, local_id, x, y, or the interface's variable, or a chart's action or transition by name, or ('inline') the local_id of the action or transition of the chart whose inline body in LD or FBD the element is in, and the characters of its text, with the line of the text when it has several), or its variables (hidden: made by the diagram front-end for itself), what its bindings get wrong and the version a build of it would have. A Ladder Diagram that compiles also gives 'power', to watch for power flow: for each output of an element that carries power ('output') and each input where links join ('input'), the hidden variable assigned when it is evaluated in the scan (or on: ON whenever its network runs); for each network ('network': its elements' local_ids), the variable that is TRUE when it ran in the last scan. A Function Block Diagram that compiles gives 'values' of the same shape: for every output of every element (a block's by its formal parameter, ENO among them; '' for a variable's), the hidden variable holding the value it gave when it was evaluated in the scan, of the output's own type (or on: ENO always TRUE), with 'ran' where the value is computed only where that BOOL is TRUE (a function under EN); for each network the variable that is TRUE when it ran. A Sequential Function Chart that compiles gives 'chart' of the same shape: for each step ('step': 'X') the variable that is TRUE while it is active and ('step': 'T') its elapsed time, a TIME; for each transition ('transition': true) the variable holding its condition, with 'ran', the variable that is TRUE when the transition was enabled and its condition evaluated in the last scan; for each action of an action block ('action': 'Q', by the action's local_id) the variable holding the state of the action it names. A chart also gives 'bodies': for every action and transition condition written in LD or FBD, the entries of its 'power' (LD) or 'values' (FBD), each with 'body', the body it is in: {'action': name} (an action of the POU), {'transition': name} (a transition of the POU), {'inline': local_id} (written in the action of an action block or in the transition of that local_id), or {'wired': local_id} (a network drawn in the chart that gives that transition its condition), with 'language' ld or fbd; a body's elements' local_ids are its own, and its networks' variables are FALSE where the body did not run in the scan (an action whose Q was FALSE, a transition not enabled). With 'source' it checks that text instead of the saved one.",
@@ -1653,7 +1680,7 @@ pub fn manifest() -> ModuleManifest {
                 "Check a runtime of the project without building or saving anything: each of its programs compiled from its saved source for the runtime's target, with its diagnostics, binding problems and its version in the runtime ('programs'); and 'problems', what the configuration breaks and what the core would refuse of the runtime as a whole (its tasks, its data blocks, an output or a published tag of two programs, an event task's tag no program reads into a BOOL). 'ok' when it would build; then 'version', the runtime's. 'data' is the data blocks its programs declare, each once. With a body (module, target, run and tasks, all four) that configuration is checked in place of the stored one, and nothing is saved. A program running alone is checked by its name as a runtime of its own. Nothing is loaded.",
                 Some(runtime_check_schema()), &[]),
             route("POST", "/runtimes/:runtime/build", "engineer", "build_logic_runtime",
-                "Build a runtime of the project: every program of it compiled from its saved source, in one snapshot of the project, for the runtime's target, packed as one runtime instance with its tasks and the data blocks its programs declare, each once. Answers 'instance', 'version' (the runtime's, as the core reports it once loaded: its programs' versions joined by ', '), 'programs' (each program's version in the runtime, code_size and memory_size), 'warnings', and 'replaces': the ids those programs run under alone. Nothing is loaded by this call: save 'instance' with save_runtimes_config in its 'instances', in place of the one with the same id, and take out the instances named in 'replaces' in the same save (the core refuses a data block or an output tag in two runtimes). 'replaces' does not name another configured runtime a program of this one was in before, which this module does not know to be loaded: if the core still runs one, take it out or build it again without the program and save it in the same save. The core refuses a save in which one program of the project is in two runtimes, when both instances name it as built by this module (every build since 0.8.0 does; an instance built before does not, and the program then runs in both until it is taken out). The core keeps RETAIN values per runtime id and per program: a warm load gives a program only the values kept under this runtime's id for it, of variables of the same name, type and size, never those kept for another program, nor those kept while it ran in another runtime; a cold load starts them from their initial values. A program running alone, by its name, builds exactly as build_logic_program builds it.",
+                "Build a runtime of the project: every program of it compiled from its saved source, in one snapshot of the project, for the runtime's target, packed as one runtime instance with its tasks and the data blocks its programs declare, each once. Answers 'instance', 'version' (the runtime's, as the core reports it once loaded: its programs' versions joined by ', '), 'programs' (each program's version in the runtime, code_size and memory_size), 'warnings', and 'replaces': the ids those programs run under alone. Nothing is loaded by this call: save 'instance' with save_runtimes_config in its 'instances', in place of the one with the same id, and take out the instances named in 'replaces' in the same save (the core refuses a data block or an output tag in two runtimes). 'replaces' does not name another configured runtime a program of this one was in before, which this module does not know to be loaded: if the core still runs one, take it out or build it again without the program and save it in the same save. The core refuses a save in which one program of the project is in two runtimes, when both instances name it as built by this module (every build since 0.8.0 does; an instance built before does not, and the program then runs in both until it is taken out). The core keeps RETAIN values per runtime id and per program: a warm load gives a program only the values kept under this runtime's id for it, of variables of the same name, type and size, never those kept for another program (a program deleted and made again under its name is another program), nor those kept while it ran in another runtime; the one exception is values kept before the core kept them per program, given once, as they are, to whatever the runtime runs; a cold load starts them from their initial values. A program running alone, by its name, builds exactly as build_logic_program builds it.",
                 None, &["tags"]),
         ],
     }
@@ -1816,8 +1843,10 @@ impl Logic {
                             format!("the project has a runtime '{}'; a program is not named like a runtime", r.id),
                         ));
                     }
+                    let now = std::time::SystemTime::now();
                     let entry = ProgramEntry {
                         name: b.name.clone(),
+                        created: Some(making_mark(&b.name, now)),
                         language: b.language.clone(),
                         interval_ms: b.interval_ms.unwrap_or(100),
                         runtime: "vm".into(),
@@ -1829,7 +1858,7 @@ impl Logic {
                         published: vec![],
                     };
                     check_entry(&entry).map_err(|e| error(400, e))?;
-                    let source = template(&b.name, &entry.language, std::time::SystemTime::now());
+                    let source = template(&b.name, &entry.language, now);
                     write_synced(&source_path(data, &entry), source.as_bytes())?;
                     programs.programs.push(entry.clone());
                     save(data, &programs)?;
@@ -1865,6 +1894,7 @@ impl Logic {
                         .ok_or_else(|| error(404, format!("the project has no program '{name}'")))?;
                     let entry = ProgramEntry {
                         name: name.to_string(),
+                        created: programs.programs[at].created.clone(),
                         language: programs.programs[at].language.clone(),
                         interval_ms: s.interval_ms,
                         runtime: s.runtime,

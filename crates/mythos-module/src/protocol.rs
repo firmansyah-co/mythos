@@ -359,6 +359,13 @@ pub struct RuntimeProgram {
     /// an instance written by hand or by a builder of before it, and then never guessed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub built_from: Option<String>,
+    /// A mark the logic module gives the project program when it is made (its `programs.json`
+    /// entry's `created`), opaque to everything else: a program deleted and made again under
+    /// its name has another, so it is another program and never takes over what was kept for,
+    /// or is running of, the one before. Absent from an instance written by hand, by a builder
+    /// of before it, or of a project program made before it, and then never guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
     /// What identifies this build of the program: shown as the version that runs.
     pub version: String,
     /// The interval of its cyclic task.
@@ -390,6 +397,8 @@ pub struct ProgramIdentity {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub built_from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
 }
 
 impl RuntimeProgram {
@@ -398,15 +407,17 @@ impl RuntimeProgram {
         ProgramIdentity {
             name: self.name.clone(),
             built_from: self.built_from.clone(),
+            created: self.created.clone(),
         }
     }
 }
 
 /// Whether two are the same program: both name the project program → those names, without
-/// regard to case; otherwise the PROGRAM names, exactly.
+/// regard to case, and the same making of it (`created` equal, both absent included);
+/// otherwise the PROGRAM names, exactly.
 pub fn same_program(a: &ProgramIdentity, b: &ProgramIdentity) -> bool {
     match (&a.built_from, &b.built_from) {
-        (Some(x), Some(y)) => x.eq_ignore_ascii_case(y),
+        (Some(x), Some(y)) => x.eq_ignore_ascii_case(y) && a.created == b.created,
         _ => a.name == b.name,
     }
 }
@@ -438,8 +449,8 @@ pub fn program_set_keys(
 }
 
 /// Whether two runtimes run the same programs: when every program of both names its project
-/// program, the sorted project names without regard to case; otherwise the sorted PROGRAM
-/// names exactly. Compared as lists, never joined.
+/// program, the sorted project names without regard to case, each of the same making
+/// (`created`); otherwise the sorted PROGRAM names exactly. Compared as lists, never joined.
 pub fn same_program_set(a: &[ProgramIdentity], b: &[ProgramIdentity]) -> bool {
     let (x, y, by_project) = program_set_keys(a, b);
     x.len() == y.len()
@@ -450,6 +461,22 @@ pub fn same_program_set(a: &[ProgramIdentity], b: &[ProgramIdentity]) -> bool {
                 p == q
             }
         })
+        && (!by_project || makings(a) == makings(b))
+}
+
+/// Each program's project name, in lower case, with its `created`, sorted.
+fn makings(set: &[ProgramIdentity]) -> Vec<(String, Option<String>)> {
+    let mut makings: Vec<(String, Option<String>)> = set
+        .iter()
+        .map(|p| {
+            (
+                p.built_from.as_deref().unwrap_or("").to_ascii_lowercase(),
+                p.created.clone(),
+            )
+        })
+        .collect();
+    makings.sort();
+    makings
 }
 
 // -----------------------------------------------------------------------------
@@ -1428,6 +1455,7 @@ mod tests {
         RuntimeProgram {
             name: name.into(),
             built_from: None,
+            created: None,
             version: "1".into(),
             interval_ms: 100,
             code: String::new(),
@@ -1445,7 +1473,58 @@ mod tests {
         ProgramIdentity {
             name: name.into(),
             built_from: built_from.map(str::to_string),
+            created: None,
         }
+    }
+
+    fn made(name: &str, built_from: &str, created: Option<&str>) -> ProgramIdentity {
+        ProgramIdentity {
+            created: created.map(str::to_string),
+            ..id(name, Some(built_from))
+        }
+    }
+
+    /// A program deleted and made again under its name in the logic module has another
+    /// `created`: it is another program, alone and among others, so it neither takes over the
+    /// running variables of the one before nor its kept RETAIN values. The mark is compared
+    /// only where both name their project program; it is written only when there is one.
+    #[test]
+    fn a_program_made_again_under_its_name_is_another_program() {
+        assert!(same_program(
+            &made("Tank", "T", Some("a1")),
+            &made("Tank", "t", Some("a1"))
+        ));
+        assert!(!same_program(
+            &made("Tank", "T", Some("a1")),
+            &made("Tank", "T", Some("b2"))
+        ));
+        // A program made before the mark against one made again since: another program.
+        assert!(!same_program(
+            &made("Tank", "T", None),
+            &made("Tank", "T", Some("b2"))
+        ));
+        // Without a project name on one side the PROGRAM names decide, as before.
+        assert!(same_program(
+            &id("Tank", None),
+            &made("Tank", "T", Some("b2"))
+        ));
+        assert!(same_program_set(
+            &[made("Tank", "T", Some("a1")), made("Pump", "P", None)],
+            &[made("Pump", "p", None), made("Tank", "t", Some("a1"))],
+        ));
+        assert!(!same_program_set(
+            &[made("Tank", "T", Some("a1")), made("Pump", "P", None)],
+            &[made("Tank", "T", Some("b2")), made("Pump", "P", None)],
+        ));
+        assert!(!same_program_set(
+            &[made("Tank", "T", None)],
+            &[made("Tank", "T", Some("b2"))],
+        ));
+
+        const WITH: &str = r#"{"name":"Tank","built_from":"T","created":"b2","version":"1","interval_ms":100,"code":"","symbols":null,"inputs":[],"outputs":[],"published":[]}"#;
+        let read: RuntimeProgram = serde_json::from_str(WITH).unwrap();
+        assert_eq!(read.identity(), made("Tank", "T", Some("b2")));
+        assert_eq!(serde_json::to_string(&read).unwrap(), WITH);
     }
 
     #[test]

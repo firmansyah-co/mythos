@@ -1204,7 +1204,8 @@ fn a_runtimes_file_of_today_round_trips_byte_for_byte() {
         instance.identities(),
         [ProgramIdentity {
             name: "Tank".into(),
-            built_from: None
+            built_from: None,
+            created: None
         }]
     );
     assert_eq!(
