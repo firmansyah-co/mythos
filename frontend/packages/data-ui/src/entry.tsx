@@ -1,12 +1,13 @@
 // The data module's workbench UI (ADR-014 §2.8, ADR-011 §2.3): the "Data" section of the
-// project tree and the editor of a user type. Built into `entry.js` (see vite.config.ts) and
+// project tree, the editor of a user type and the editor of a data block. Built into `entry.js` (see vite.config.ts) and
 // served by the controller beside the module.
 
 import type { Dispose, WorkbenchHost, WorkbenchModule } from '@mythos/workbench-sdk';
+import { BlockEditor } from './BlockEditor';
 import { bind, DATA_CHANGED_EVENT, type DataChanged } from './bridge';
 import { DataTree } from './DataTree';
 import { draw } from './draw';
-import { anyDirty, useData } from './store';
+import { anyBlockDirty, anyDirty, useData } from './store';
 import { TypeEditor } from './TypeEditor';
 // Extracted by the build into `data.css` beside `entry.js`, which `stylesheet()` links.
 import './data.css';
@@ -16,6 +17,10 @@ export const MODULE_ID = 'org.mythos.data';
 export const TYPE_EDITOR = 'data-type';
 /** The owner of the types' unsaved changes. */
 export const UNSAVED_OWNER = 'data-types';
+/** The editor of a data block; its target is the block's name. */
+export const BLOCK_EDITOR = 'data-block';
+/** The owner of the blocks' unsaved changes. */
+export const UNSAVED_BLOCKS_OWNER = 'data-blocks';
 
 /** The stylesheet built beside `entry.js`, while the module is active. */
 function stylesheet(): Dispose {
@@ -50,13 +55,17 @@ export function activate(host: WorkbenchHost): Dispose {
   load(host.project()?.id ?? null);
   stops.push(host.onProject((project) => load(project?.id ?? null)));
 
-  // Closing the project asks first while a type has changes that are not saved.
+  // Closing the project asks first while a type or a block has changes that are not saved.
   stops.push(
     useData.subscribe((state, previous) => {
       if (state.docs !== previous.docs) host.setUnsaved(UNSAVED_OWNER, anyDirty(state));
+      if (state.blockDocs !== previous.blockDocs || state.blocks !== previous.blocks) {
+        host.setUnsaved(UNSAVED_BLOCKS_OWNER, anyBlockDirty(state));
+      }
     })
   );
   stops.push(() => host.setUnsaved(UNSAVED_OWNER, false));
+  stops.push(() => host.setUnsaved(UNSAVED_BLOCKS_OWNER, false));
 
   // Somebody else (another engineer, an agent over MCP) changed the types or blocks.
   stops.push(
@@ -64,7 +73,7 @@ export function activate(host: WorkbenchHost): Dispose {
       const event = eventOf(data);
       if (!event) return;
       const close = useData.getState().changed(event);
-      if (close !== null) host.closeEditor(TYPE_EDITOR, close);
+      if (close !== null) host.closeEditor(close.what === 'type' ? TYPE_EDITOR : BLOCK_EDITOR, close.name);
     })
   );
 
@@ -72,7 +81,14 @@ export function activate(host: WorkbenchHost): Dispose {
     host.register.treeSection({
       id: 'data',
       order: 30,
-      mount: (container) => draw(container, <DataTree openType={(name) => host.openEditor(TYPE_EDITOR, name)} />),
+      mount: (container) =>
+        draw(
+          container,
+          <DataTree
+            openType={(name) => host.openEditor(TYPE_EDITOR, name)}
+            openBlock={(name) => host.openEditor(BLOCK_EDITOR, name)}
+          />
+        ),
     })
   );
 
@@ -82,6 +98,15 @@ export function activate(host: WorkbenchHost): Dispose {
       title: (name) => ['User types', name ?? ''],
       mount: (container, { target }) =>
         draw(container, <TypeEditor name={target ?? ''} onRemoved={(name) => host.closeEditor(TYPE_EDITOR, name)} />),
+    })
+  );
+
+  stops.push(
+    host.register.editor({
+      kind: BLOCK_EDITOR,
+      title: (name) => ['Data blocks', name ?? ''],
+      mount: (container, { target }) =>
+        draw(container, <BlockEditor name={target ?? ''} onRemoved={(name) => host.closeEditor(BLOCK_EDITOR, name)} />),
     })
   );
 

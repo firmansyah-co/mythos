@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataTree } from '../DataTree';
-import { TYPE_EDITOR } from '../entry';
+import { BLOCK_EDITOR, TYPE_EDITOR } from '../entry';
 import { TypeEditor } from '../TypeEditor';
 import {
   allByTestId,
@@ -39,7 +39,12 @@ async function opened(backend: Backend) {
   const calls = server(backend);
   useShell.setState({ project: project('plant'), view: 'project' });
   await settle();
-  const tree = render(<DataTree openType={(name) => useShell.getState().openEditor(TYPE_EDITOR, name)} />);
+  const tree = render(
+    <DataTree
+      openType={(name) => useShell.getState().openEditor(TYPE_EDITOR, name)}
+      openBlock={(name) => useShell.getState().openEditor(BLOCK_EDITOR, name)}
+    />
+  );
   await settle();
   return { calls, tree };
 }
@@ -143,6 +148,49 @@ describe('the Data section of the project tree', () => {
     );
     expect(byTestId(refused, 'type-new')?.textContent).toBe('NOT SAVED YET');
     expect(texts(tree, 'tree-type')).toEqual(['Recipe']);
+  });
+
+  it('says under Data blocks each block a configured runtime carries that the project no longer has', async () => {
+    const { tree } = await opened({
+      types: { Recipe: RECIPE },
+      blocks: [{ name: 'Line1', type: 'Recipe', retain: false }],
+      config: {
+        instances: [
+          { id: 'press', data: [{ name: 'LINE1', type: 'Recipe', layout: '0123456789abcdef', size: 4, members: [] }] },
+          { id: 'oven', data: [{ name: 'Old', type: 'Recipe', layout: '0123456789abcdef', size: 4, members: [] }] },
+        ],
+      },
+    });
+    expect(texts(tree, 'tree-block-gone')).toEqual(['Runtime oven carries data block Old, which the project no longer has.']);
+    expect(byTestId(tree, 'tree-runtimes-error')).toBeNull();
+  });
+
+  it('a runtimes configuration that cannot be read is said under Data blocks, not taken for none', async () => {
+    const { tree } = await opened({ types: { Recipe: RECIPE }, blocks: [], config: 'fails' });
+    expect(byTestId(tree, 'tree-runtimes-error')?.textContent).toBe(
+      'Whether a runtime carries a data block the project no longer has is not known: the runtimes configuration could not be read: runtimes.json cannot be read: expected value at line 1 column 1'
+    );
+    expect(allByTestId(tree, 'tree-block-gone')).toEqual([]);
+  });
+
+  it('a new data block opens an editor, not a listed block, and a listed name opens that block', async () => {
+    const { calls, tree } = await opened({ types: { Recipe: RECIPE }, blocks: [{ name: 'Line1', type: 'Recipe', retain: false }] });
+    expect(byTestId(tree, 'tree-add-block')?.textContent).toBe('Add new data block');
+    click(byTestId(tree, 'tree-add-block'));
+    typeInput(tree.querySelector('input[aria-label="Data block name"]'), 'Line2');
+    press(tree.querySelector('input[aria-label="Data block name"]'), 'Enter');
+    await settle();
+    expect(useShell.getState().editors.map((e) => `${e.kind}:${e.target}`)).toEqual([`${BLOCK_EDITOR}:Line2`]);
+    expect(writes(calls)).toEqual([]);
+    expect(allByTestId(tree, 'tree-block').map((row) => row.querySelector('.tree__label')?.textContent)).toEqual(['Line1']);
+    // Not saved yet: the Data node is marked unsaved.
+    expect(byTestId(tree, 'tree-data')?.querySelector('.tree__mark--warn')?.textContent?.trim()).toBe('*');
+
+    click(byTestId(tree, 'tree-add-block'));
+    typeInput(tree.querySelector('input[aria-label="Data block name"]'), 'line1');
+    press(tree.querySelector('input[aria-label="Data block name"]'), 'Enter');
+    await settle();
+    expect(useShell.getState().editors.map((e) => `${e.kind}:${e.target}`)).toEqual([`${BLOCK_EDITOR}:Line2`, `${BLOCK_EDITOR}:Line1`]);
   });
 
   it('offers a viewer no row to add a type', async () => {

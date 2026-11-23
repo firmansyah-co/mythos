@@ -2,7 +2,7 @@
 // is about the type being edited, what a block's layout reads as, how a block compares with the
 // one a runtime of the project is configured with, and whether two texts are the same text.
 
-import type { BlockAnswer, Diagnostic, RuntimeBlock } from './bridge';
+import type { BlockAnswer, Diagnostic, RuntimeBlock, RuntimeInstance } from './bridge';
 
 /** The text shown for a value the module did not answer. */
 export const NOT_KNOWN = 'NOT KNOWN';
@@ -63,6 +63,54 @@ export function compareBlock(saved: BlockAnswer | null, savedOk: boolean, config
   }
   if (retainOf(configured) !== saved.retain) differences.push({ what: 'retain', there: retainOf(configured), here: saved.retain });
   return { kind: 'compared', differences };
+}
+
+/** Two names are one name in any case, as the module and IEC 61131-3 compare them. */
+export const sameName = (a: string, b: string): boolean => a.toUpperCase() === b.toUpperCase();
+
+/** Block `name` of a list the module answered: by its stored spelling, else in another case. */
+export function findBlock<B extends { name: string }>(blocks: readonly B[], name: string): B | null {
+  return blocks.find((b) => b.name === name) ?? blocks.find((b) => sameName(b.name, name)) ?? null;
+}
+
+/** What one difference reads as: both values, the runtime's first. */
+export function differenceText(d: Difference): string {
+  switch (d.what) {
+    case 'layout':
+      return `built with layout ${d.there}, saved as ${d.here}`;
+    case 'type':
+      return `of type ${d.there} there, ${d.here} here`;
+    case 'retain':
+      return d.there ? 'retained there, not here' : 'not retained there, retained here';
+  }
+}
+
+/**
+ * What a comparison reads as. The most it says is "laid out as saved": an initial value changed
+ * in the type is outside the layout, so it never says the runtime is up to date.
+ */
+export function comparisonText(c: Comparison): string {
+  if (c.kind === 'gone') return 'the project no longer has this data block';
+  if (c.kind === 'not-known') return `the saved layout is ${NOT_KNOWN}: ${NOT_CHECKING}, so nothing is compared`;
+  if (c.differences.length === 0) return 'laid out as saved';
+  return c.differences.map(differenceText).join('; ');
+}
+
+/** The block named `name` in a runtime's configuration, if it carries one. */
+export const carried = (instance: RuntimeInstance, name: string): RuntimeBlock | null =>
+  findBlock(instance.data ?? [], name);
+
+/** Each block a configured runtime carries that the project's saved blocks do not have. */
+export function goneBlocks(blocks: readonly BlockAnswer[], instances: readonly RuntimeInstance[]): Array<{ runtime: string; block: string }> {
+  const gone: Array<{ runtime: string; block: string }> = [];
+  for (const instance of instances) {
+    for (const configured of instance.data ?? []) {
+      if (compareBlock(findBlock(blocks, configured.name), true, configured).kind === 'gone') {
+        gone.push({ runtime: instance.id, block: configured.name });
+      }
+    }
+  }
+  return gone;
 }
 
 /** A text with each `\r\n` read as `\n`: a textarea gives `\n`, a file saved on Windows has `\r\n`. */

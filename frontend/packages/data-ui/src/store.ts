@@ -11,8 +11,9 @@ import {
   type DataChanged,
   type Diagnostic,
   type Refusal,
+  type RuntimeInstance,
 } from './bridge';
-import { sameText } from './model';
+import { findBlock, sameName, sameText } from './model';
 
 /** A user type opened in an editor. */
 export interface TypeDoc {
@@ -46,6 +47,29 @@ export interface TypeDoc {
   deferred: DataChanged['change'] | null;
 }
 
+/**
+ * A data block opened in an editor. What is saved is not kept here: it is the block of the list
+ * the module last answered (`DataState.blocks`), so an editor without changes always shows that.
+ */
+export interface BlockDoc {
+  name: string;
+  /** Opened with "Add new data block": the module has not stored it, until a save answers 200. */
+  isNew: boolean;
+  /** The type chosen here; `null`: as saved, or for a new block, not chosen yet. */
+  type: string | null;
+  /** Retain as chosen here; `null`: as saved, or for a new block, not chosen yet (no default). */
+  retain: boolean | null;
+  busy: 'saving' | 'deleting' | null;
+  /** The module's refusal of the last save or delete. */
+  refusal: { of: 'save' | 'delete'; refusal: Refusal } | null;
+  /** What the last save answered. */
+  saveAnswer: { created: boolean; changed: string[] | null } | null;
+  /** Saved or deleted by somebody else while this had changes here. */
+  elsewhere: 'changed' | 'deleted' | null;
+  /** An event for this block that came while a write of this editor was in flight. */
+  deferred: DataChanged['change'] | null;
+}
+
 export interface DataState {
   projectId: string | null;
   /** The types the module listed; `null` while not read, or when the read failed (`typesError`). */
@@ -58,11 +82,20 @@ export interface DataState {
   blocksDiagnostics: Diagnostic[];
   blocksError: string | null;
   docs: Record<string, TypeDoc>;
+  /**
+   * The instances of the open project's runtimes configuration as saved (none when the project
+   * has no configuration); `null` while not read, or when the read failed (`runtimesError`).
+   * Configured, which is not running: whether the controller runs it is not read here.
+   */
+  runtimes: RuntimeInstance[] | null;
+  runtimesError: string | null;
+  blockDocs: Record<string, BlockDoc>;
 
   load(projectId: string): Promise<void>;
   reset(): void;
   readTypes(): Promise<void>;
   readBlocks(): Promise<void>;
+  readRuntimes(): Promise<void>;
   /** Read type `name` into an editor, unless it is open with changes. */
   open(name: string): Promise<void>;
   /** An editor on a type the module has not stored. */
@@ -71,8 +104,15 @@ export interface DataState {
   check(name: string): Promise<void>;
   save(name: string): Promise<boolean>;
   remove(name: string): Promise<boolean>;
-  /** Follow `DATA_CHANGED`. Returns the type whose editor is to close (deleted elsewhere), if any. */
-  changed(event: DataChanged): string | null;
+  /** An editor on data block `name`, as the block list answered it. */
+  openBlock(name: string): void;
+  /** An editor on a data block the module has not stored: no type and no retain chosen. */
+  openNewBlock(name: string): void;
+  editBlock(name: string, change: { type?: string; retain?: boolean }): void;
+  saveBlock(name: string): Promise<boolean>;
+  removeBlock(name: string): Promise<boolean>;
+  /** Follow `DATA_CHANGED`. Returns the editor to close (deleted elsewhere), if any. */
+  changed(event: DataChanged): { what: 'type' | 'block'; name: string } | null;
 }
 
 /** Whether `doc` holds text the module has not stored as it is shown. */
@@ -82,6 +122,28 @@ export function isDirty(doc: TypeDoc): boolean {
 }
 
 export const anyDirty = (state: Pick<DataState, 'docs'>): boolean => Object.values(state.docs).some(isDirty);
+
+/** The saved block `name`, as the module last answered the list; `null` when it has none or the list is not read. */
+export const savedBlock = (state: Pick<DataState, 'blocks'>, name: string): BlockAnswer | null =>
+  state.blocks === null ? null : findBlock(state.blocks, name);
+
+/** Whether `doc` holds a choice the module has not stored. */
+export function isBlockDirty(doc: BlockDoc, saved: BlockAnswer | null): boolean {
+  if (doc.isNew) return true;
+  if (saved === null) return doc.type !== null || doc.retain !== null;
+  return (doc.type !== null && !sameName(doc.type, saved.type)) || (doc.retain !== null && doc.retain !== saved.retain);
+}
+
+export const anyBlockDirty = (state: Pick<DataState, 'blocks' | 'blockDocs'>): boolean =>
+  Object.values(state.blockDocs).some((doc) => isBlockDirty(doc, savedBlock(state, doc.name)));
+
+/** The type and retain a save of `doc` sends: as chosen here, else as saved; `null` when not chosen. */
+export function chosen(doc: BlockDoc, saved: BlockAnswer | null): { type: string | null; retain: boolean | null } {
+  return {
+    type: doc.type ?? (doc.isNew ? null : (saved?.type ?? null)),
+    retain: doc.retain ?? (doc.isNew ? null : (saved?.retain ?? null)),
+  };
+}
 
 const fresh = (name: string): TypeDoc => ({
   name,
@@ -102,6 +164,18 @@ const fresh = (name: string): TypeDoc => ({
   deferred: null,
 });
 
+const freshBlock = (name: string): BlockDoc => ({
+  name,
+  isNew: false,
+  type: null,
+  retain: null,
+  busy: null,
+  refusal: null,
+  saveAnswer: null,
+  elsewhere: null,
+  deferred: null,
+});
+
 /** What a new type's editor starts with: the one declaration the module asks of its file. */
 export const newTypeText = (name: string): string => `TYPE ${name} :\nSTRUCT\nEND_STRUCT;\nEND_TYPE\n`;
 
@@ -111,6 +185,9 @@ const echoes = new Map<string, number>();
 // Numbered reads of each list: an answer for an earlier read, or another project, is dropped.
 let typesRead = 0;
 let blocksRead = 0;
+let runtimesRead = 0;
+// Echoes of block writes are counted apart from those of types: a block and a type may share a name.
+const blockKey = (name: string) => `block:${name.toUpperCase()}`;
 
 export const useData = create<DataState>((set, get) => {
   const patch = (name: string, change: Partial<TypeDoc>) =>
@@ -123,9 +200,27 @@ export const useData = create<DataState>((set, get) => {
       const { [name]: _gone, ...docs } = state.docs;
       return { docs };
     });
-  const blocksAnswered = (blocks: BlockAnswer[]) =>
+  /** The open editor of block `name`: by its key, else in another case. */
+  const blockDocKey = (name: string): string | null => {
+    const keys = Object.keys(get().blockDocs);
+    return keys.find((k) => k === name) ?? keys.find((k) => sameName(k, name)) ?? null;
+  };
+  const patchBlock = (name: string, change: Partial<BlockDoc>) =>
+    set((state) => {
+      const doc = state.blockDocs[name];
+      return doc ? { blockDocs: { ...state.blockDocs, [name]: { ...doc, ...change } } } : {};
+    });
+  const dropBlock = (name: string) =>
+    set((state) => {
+      const { [name]: _gone, ...blockDocs } = state.blockDocs;
+      return { blockDocs };
+    });
+  const blocksAnswered = (blocks: BlockAnswer[]) => {
+    // A read started before this answer would draw an older list over it: it is dropped.
+    blocksRead += 1;
     // A write is answered only when the state after it checks.
     set({ blocks, blocksOk: true, blocksDiagnostics: [], blocksError: null });
+  };
 
   /** Apply an event of somebody else's write to an open type. */
   const follow = (name: string, change: DataChanged['change']): string | null => {
@@ -142,6 +237,32 @@ export const useData = create<DataState>((set, get) => {
     }
     void reread(name);
     return null;
+  };
+
+  /** Apply an event of somebody else's write to an open block; the list is read again by the caller. */
+  const followBlock = (key: string, change: DataChanged['change']): string | null => {
+    const doc = get().blockDocs[key];
+    if (!doc) return null;
+    if (isBlockDirty(doc, savedBlock(get(), key))) {
+      patchBlock(key, { elsewhere: change === 'deleted' ? 'deleted' : 'changed' });
+      return null;
+    }
+    if (change === 'deleted') {
+      dropBlock(key);
+      return key;
+    }
+    // Nothing chosen here: the editor shows the list as read again.
+    return null;
+  };
+
+  const settledBlock = (key: string, ok: boolean) => {
+    const deferred = get().blockDocs[key]?.deferred ?? null;
+    patchBlock(key, { deferred: null });
+    if (ok) {
+      if (deferred === null) echoes.set(blockKey(key), (echoes.get(blockKey(key)) ?? 0) + 1);
+    } else if (deferred !== null) {
+      followBlock(key, deferred);
+    }
   };
 
   /** After a write of `name` was answered: its event, if it came first, was this write's. */
@@ -191,6 +312,9 @@ export const useData = create<DataState>((set, get) => {
     blocksDiagnostics: [],
     blocksError: null,
     docs: {},
+    runtimes: null,
+    runtimesError: null,
+    blockDocs: {},
 
     load: async (projectId) => {
       echoes.clear();
@@ -203,8 +327,11 @@ export const useData = create<DataState>((set, get) => {
         blocksDiagnostics: [],
         blocksError: null,
         docs: {},
+        runtimes: null,
+        runtimesError: null,
+        blockDocs: {},
       });
-      await Promise.all([get().readTypes(), get().readBlocks()]);
+      await Promise.all([get().readTypes(), get().readBlocks(), get().readRuntimes()]);
     },
 
     reset: () => {
@@ -218,6 +345,9 @@ export const useData = create<DataState>((set, get) => {
         blocksDiagnostics: [],
         blocksError: null,
         docs: {},
+        runtimes: null,
+        runtimesError: null,
+        blockDocs: {},
       });
     },
 
@@ -246,6 +376,22 @@ export const useData = create<DataState>((set, get) => {
       } catch (cause) {
         if (seq !== blocksRead || get().projectId !== projectId) return;
         set({ blocks: null, blocksOk: null, blocksDiagnostics: [], blocksError: refusalOf(cause).error });
+      }
+    },
+
+    readRuntimes: async () => {
+      const projectId = get().projectId;
+      if (projectId === null) return;
+      const seq = (runtimesRead += 1);
+      try {
+        const answer = await api.runtimes(projectId);
+        if (seq !== runtimesRead || get().projectId !== projectId) return;
+        // `null`: the project has no runtimes configuration, so no runtime carries anything.
+        set({ runtimes: answer.config === null ? [] : answer.config.instances, runtimesError: null });
+      } catch (cause) {
+        if (seq !== runtimesRead || get().projectId !== projectId) return;
+        // Not read is not "none": which runtimes carry a block is then not known.
+        set({ runtimes: null, runtimesError: refusalOf(cause).error });
       }
     },
 
@@ -344,11 +490,89 @@ export const useData = create<DataState>((set, get) => {
       return true;
     },
 
+    openBlock: (name) => {
+      if (get().projectId === null || blockDocKey(name) !== null) return;
+      set((state) => ({ blockDocs: { ...state.blockDocs, [name]: freshBlock(name) } }));
+    },
+
+    openNewBlock: (name) => {
+      if (get().projectId === null || blockDocKey(name) !== null) return;
+      set((state) => ({ blockDocs: { ...state.blockDocs, [name]: { ...freshBlock(name), isNew: true, type: null, retain: null } } }));
+    },
+
+    editBlock: (name, change) => patchBlock(name, change),
+
+    saveBlock: async (name) => {
+      const projectId = get().projectId;
+      const doc = get().blockDocs[name];
+      if (projectId === null || !doc || doc.busy !== null) return false;
+      const { type, retain } = chosen(doc, savedBlock(get(), name));
+      // The module asks both, and so does this editor: nothing is chosen for the user.
+      if (type === null || retain === null) return false;
+      patchBlock(name, { busy: 'saving', refusal: null, saveAnswer: null });
+      let answer;
+      try {
+        answer = await api.saveBlock(projectId, name, type, retain);
+      } catch (cause) {
+        // Refused: what was chosen stays, unsaved; the compiler's reasons are shown.
+        patchBlock(name, { busy: null, refusal: { of: 'save', refusal: refusalOf(cause) } });
+        settledBlock(name, false);
+        return false;
+      }
+      if (get().projectId !== projectId) return false;
+      blocksAnswered(answer.blocks); // R5: the module's list after the save, not this request
+      patchBlock(name, {
+        busy: null,
+        isNew: false,
+        type: null,
+        retain: null,
+        elsewhere: null,
+        saveAnswer: { created: answer.created, changed: answer.changed },
+      });
+      settledBlock(name, true);
+      return true;
+    },
+
+    removeBlock: async (name) => {
+      const projectId = get().projectId;
+      const doc = get().blockDocs[name];
+      if (projectId === null || !doc || doc.busy !== null) return false;
+      patchBlock(name, { busy: 'deleting', refusal: null, saveAnswer: null });
+      let answer;
+      try {
+        answer = await api.deleteBlock(projectId, name);
+      } catch (cause) {
+        patchBlock(name, { busy: null, refusal: { of: 'delete', refusal: refusalOf(cause) } });
+        settledBlock(name, false);
+        return false;
+      }
+      if (get().projectId !== projectId) return false;
+      settledBlock(name, true);
+      blocksAnswered(answer.blocks);
+      dropBlock(name);
+      return true;
+    },
+
     changed: (event) => {
       if (get().projectId === null || event.project !== get().projectId) return null;
       void get().readTypes();
       void get().readBlocks();
-      if (event.what !== 'type') return null;
+      if (event.what === 'block') {
+        const key = blockDocKey(event.name);
+        if (key === null) return null;
+        if (get().blockDocs[key]?.busy) {
+          patchBlock(key, { deferred: event.change });
+          return null;
+        }
+        const own = echoes.get(blockKey(key)) ?? 0;
+        if (own > 0) {
+          if (own === 1) echoes.delete(blockKey(key));
+          else echoes.set(blockKey(key), own - 1);
+          return null;
+        }
+        const close = followBlock(key, event.change);
+        return close === null ? null : { what: 'block', name: close };
+      }
       const name = event.name;
       const doc = get().docs[name];
       if (doc?.busy) {
@@ -362,7 +586,8 @@ export const useData = create<DataState>((set, get) => {
         else echoes.set(name, own - 1);
         return null;
       }
-      return follow(name, event.change);
+      const close = follow(name, event.change);
+      return close === null ? null : { what: 'type', name: close };
     },
   };
 });

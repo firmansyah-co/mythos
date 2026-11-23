@@ -24,6 +24,22 @@
   white-space: pre;
 }
 
+/* A data block's type and retain, one field under the other. */
+.data-block-form {
+  display: grid;
+  justify-items: start;
+  gap: var(--gap-3);
+  padding: var(--gap-2) var(--gap-3);
+}
+
+/* The retain choice: a fieldset, so it is disabled as one, without the browser's frame. */
+.data-block-form__retain {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
 /* The Diagnostics tab's list: one line per message, where it is first. */
 .data-check {
   padding: var(--gap-2) var(--gap-3);

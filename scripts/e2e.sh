@@ -81,7 +81,7 @@ mkdir -p "$WORK/data" "$WORK/shots"
 # notes test module is a service module with a UI of its own.
 mkdir -p "$WORK/install/bin" "$WORK/install/modules-ui/org.mythos.test.notes" \
     "$WORK/install/modules-ui/org.mythos.hmi" "$WORK/install/modules-ui/org.mythos.discovery" \
-    "$WORK/install/modules-ui/org.mythos.logic"
+    "$WORK/install/modules-ui/org.mythos.logic" "$WORK/install/modules-ui/org.mythos.data"
 cp "$ROOT/target/debug/mythos-module-modbus" "$WORK/install/bin/"
 # The HMI is a service module with its own UI (ADR-011 step 4), installed as a release installs it.
 cp "$ROOT/target/debug/mythos-module-hmi" "$WORK/install/bin/"
@@ -96,8 +96,11 @@ cp "$ROOT/target/debug/mythos-module-runtime-vm" "$WORK/install/bin/"
 cp "$ROOT/target/debug/mythos-module-logic" "$WORK/install/bin/"
 cp "$ROOT/frontend/packages/logic-ui/dist/entry.js" "$ROOT/frontend/packages/logic-ui/dist/logic.css" \
     "$WORK/install/modules-ui/org.mythos.logic/"
-# User types and data blocks (ADR-014 §2.8): a service module with no UI of its own yet.
+# User types and data blocks (ADR-014 §2.8): a service module with its own UI, the editors of
+# user types and data blocks.
 cp "$ROOT/target/debug/mythos-module-data" "$WORK/install/bin/"
+cp "$ROOT/frontend/packages/data-ui/dist/entry.js" "$ROOT/frontend/packages/data-ui/dist/data.css" \
+    "$WORK/install/modules-ui/org.mythos.data/"
 cp "$ROOT/target/debug/service-module-under-test" "$WORK/install/bin/mythos-module-notes"
 cp "$ROOT/crates/mythos-module-tests/ui/entry.js" "$WORK/install/modules-ui/org.mythos.test.notes/"
 API="http://127.0.0.1:${HTTP_PORT}"
