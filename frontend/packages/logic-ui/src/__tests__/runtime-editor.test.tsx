@@ -4,10 +4,12 @@
 // without losing what is typed. Every assertion reads a rendered element by its test id, or the
 // requests sent.
 
+import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimesAnswer } from '../bridge';
 import { deleteRuntimeQuestion, RUNTIME_EDITOR, RUNTIMES_CHANGED_EVENT, type RuntimeEntry } from '../runtimes';
-import { RUNTIME_DIAGNOSTICS_OWNER, RuntimeEditor, WATCHDOG_DEFAULT } from '../RuntimeEditor';
+import { numberOf, RUNTIME_DIAGNOSTICS_OWNER, RUNTIME_STATUS_OWNER, RuntimeEditor, WATCHDOG_DEFAULT } from '../RuntimeEditor';
+import { refusalOf, WITHHELD } from '../library';
 import { useRuntimes } from '../runtimestore';
 import {
   byTestId,
@@ -101,6 +103,8 @@ const panel = (container: HTMLElement) => {
   if (!pane) throw new Error('no diagnostics panel');
   return pane;
 };
+/** The tasks the fake module has stored for runtime Line. */
+const configuredTasks = (backend: Backend) => (backend.configured === 'fails' ? null : backend.configured?.find((r) => r.id === 'Line') as RuntimeEntry | undefined)?.tasks;
 const changed = (over: Record<string, unknown> = {}) => emit(RUNTIMES_CHANGED_EVENT, { project: 'plant', runtime: 'Line', what: 'saved', ...over });
 
 /** A response held until the test lets it go. */
@@ -144,10 +148,11 @@ describe('opening a runtime', () => {
     expect(value(container, 'task-watchdog')).toBe('');
     expect(field(container, 'task-watchdog')?.parentElement?.querySelector('.field__hint')?.textContent).toBe(WATCHDOG_DEFAULT);
     expect(texts(container, 'task-program-name')).toEqual(['Tank']);
-    // Configured, and nothing said of whether it runs.
+    // Configured; whether it runs is the Runtime card's, which is shown beside the form.
     expect(byTestId(container, 'runtime-configured')?.textContent).toBe(
-      "Runtime Line as configured in the project's logic module. Whether the controller runs it is not shown here."
+      "Runtime Line as configured in the project's logic module. Whether the controller runs it is on the Runtime card, as the controller lists it."
     );
+    expect(byTestId(paneOf(container, 'task-cards', RUNTIME_STATUS_OWNER) ?? container, 'runtime-status')).not.toBeNull();
     expect(byTestId(container, 'runtime-check-state')?.textContent).toBe('NOT CHECKED');
     expect(byTestId(container, 'runtime-unsaved')).toBeNull();
     expect(byTestId(container, 'runtime-new')).toBeNull();
@@ -346,6 +351,30 @@ describe('checking', () => {
     expect(byTestId(panel(container), 'runtime-check-stale')?.textContent).toBe('This is the check of an earlier draft. The draft has changed since.');
   });
 
+  it("a target that is not a profile is said by each program, and each program is checked once in the project's spelling", async () => {
+    const backend = plant({
+      configured: [
+        {
+          ...LINE,
+          tasks: [
+            { name: 'fast', kind: { type: 'cyclic', interval_ms: 10, phase_ms: 0 }, priority: 1, programs: ['tank'] },
+            { name: 'slow', kind: { type: 'cyclic', interval_ms: 100, phase_ms: 0 }, priority: 2, programs: ['TANK', 'Pump'] },
+          ],
+        },
+      ],
+    });
+    const { container } = await opened(backend);
+    typeInto(field(container, 'runtime-target'), 'esp33');
+    click(byTestId(container, 'runtime-check'));
+    await settle();
+    const shown = panel(container);
+    // One program however it is spelled, as the module's `members` finds it by its stored entry.
+    expect([...shown.querySelectorAll('[data-testid="runtime-check-program"]')].map((p) => p.getAttribute('data-program'))).toEqual(['Tank', 'Pump']);
+    expect(texts(shown, 'runtime-diagnostic')).toEqual(["about the whole'esp33' is not a target profile", "about the whole'esp33' is not a target profile"]);
+    expect(texts(shown, 'runtime-problem')).toContain("'esp33' is not a target profile");
+    expect(byTestId(container, 'runtime-check-state')?.textContent).toBe('DOES NOT CHECK');
+  });
+
   it('an answer for an earlier draft is not applied', async () => {
     const backend = plant();
     const holds: Array<ReturnType<typeof held>> = [];
@@ -427,6 +456,37 @@ describe('saving and deleting', () => {
     expect(byTestId(container, 'save-refused')?.textContent).toBe("runtime 'Line': task 'fast' has interval_ms 0; it must be at least 1");
     expect(value(container, 'task-interval')).toBe('0');
     expect(doc().saved).toEqual(LINE);
+  });
+
+  it('a number the module cannot read is refused in its words, and nothing is taken as saved', async () => {
+    const backend = plant();
+    const { container } = await opened(backend);
+    typeInto(field(container, 'task-priority'), '-1');
+    click(byTestId(container, 'runtime-save'));
+    await settle();
+    expect(byTestId(container, 'save-refused')?.textContent).toBe('the body is not what this route takes: invalid value: integer `-1`, expected u8');
+    expect(byTestId(container, 'runtime-unsaved')).not.toBeNull();
+    expect(configuredTasks(backend)).toEqual(LINE.tasks);
+
+    typeInto(field(container, 'task-priority'), '1');
+    typeInto(field(container, 'task-interval'), '1.5');
+    click(byTestId(container, 'runtime-save'));
+    await settle();
+    expect(byTestId(container, 'save-refused')?.textContent).toBe('the body is not what this route takes: invalid type: floating point `1.5`, expected u64');
+    expect(configuredTasks(backend)).toEqual(LINE.tasks);
+  });
+
+  it('a cycle task saved without its shortest cycle is shown as the module stored it', async () => {
+    const backend = plant();
+    const { container, calls } = await opened(backend);
+    typeInto(field(container, 'task-kind'), 'cycle');
+    expect(value(container, 'task-min-cycle')).toBe('');
+    click(byTestId(container, 'runtime-save'));
+    await settle();
+    // Sent without it; the module fills its default, 0, and that is what is shown.
+    expect((of(calls, 'PUT').at(-1)?.body as { tasks: Array<{ kind: unknown }> }).tasks[0]?.kind).toEqual({ type: 'cycle' });
+    expect(value(container, 'task-min-cycle')).toBe('0');
+    expect(byTestId(container, 'runtime-unsaved')).toBeNull();
   });
 
   it('Delete asks first; cancelled, nothing is deleted', async () => {
@@ -542,6 +602,65 @@ describe('changes made elsewhere', () => {
     expect(byTestId(container, 'runtime-elsewhere')?.textContent).toBe('Line was changed elsewhere since it was opened; saving replaces that change.');
   });
 
+  it("the echo of an own save that comes while a later save is out is not a change elsewhere, and the next change elsewhere is followed", async () => {
+    const backend = plant();
+    const { container } = await opened(backend);
+    typeInto(field(container, 'task-priority'), '4');
+    click(byTestId(container, 'runtime-save'));
+    await settle();
+    // Saved; its event has not come yet. Changed again, and saved again: that save is held.
+    typeInto(field(container, 'task-priority'), '40');
+    let hold: ReturnType<typeof held> | null = null;
+    backend.intercept = (call) => {
+      if (call.method !== 'PUT' || !call.path.includes('/logic/runtimes/')) return undefined;
+      hold = held();
+      return hold.response;
+    };
+    click(byTestId(container, 'runtime-save'));
+    await settle();
+    if (hold === null) throw new Error('the second save was not sent');
+    const second: ReturnType<typeof held> = hold;
+    // The event of the first save comes now, while the second is out; the second is refused.
+    changed();
+    await settle();
+    const words = "runtime 'Line': task 'fast' has priority 40; priorities are 0 (highest) to 31";
+    second.release(Response.json({ error: words }, { status: 400, statusText: 'Bad Request' }));
+    await settle();
+    backend.intercept = undefined;
+    expect(byTestId(container, 'save-refused')?.textContent).toBe(words);
+    // Nobody else changed it.
+    expect(byTestId(container, 'runtime-elsewhere')).toBeNull();
+
+    // Discarded: the stored runtime again, clean.
+    click(byTestId(container, 'runtime-discard'));
+    await settle();
+    expect(byTestId(container, 'runtime-unsaved')).toBeNull();
+    expect(value(container, 'task-priority')).toBe('4');
+    // Another engineer changes the target: the clean editor follows.
+    backend.configured = [{ ...LINE, target: 'esp32', tasks: [{ ...(LINE.tasks[0] as RuntimeEntry['tasks'][number]), priority: 4 }] }];
+    changed();
+    await settle();
+    expect(value(container, 'runtime-target')).toBe('esp32');
+  });
+
+  it("with the module's events, a save's own event that comes before its answer is not a change elsewhere", async () => {
+    // The fake sends LOGIC_RUNTIMES_CHANGED as the module does on every 200 write, before the
+    // answer: the event is heard while the save is out, and is decided once it is answered.
+    const backend = plant({ runtimeEvents: true });
+    const { container } = await opened(backend);
+    typeInto(field(container, 'task-priority'), '4');
+    click(byTestId(container, 'runtime-save'));
+    await settle();
+    expect(byTestId(container, 'runtime-saved')).not.toBeNull();
+    expect(byTestId(container, 'runtime-elsewhere')).toBeNull();
+    expect(value(container, 'task-priority')).toBe('4');
+    // No echo is left over: a change elsewhere after it, with changes here, is said.
+    typeInto(field(container, 'task-priority'), '5');
+    changed();
+    await settle();
+    expect(byTestId(container, 'runtime-elsewhere')?.textContent).toBe('Line was changed elsewhere since it was opened; saving replaces that change.');
+  });
+
   it('an event of another project changes nothing', async () => {
     const backend = plant();
     const { container, calls } = await opened(backend);
@@ -555,6 +674,70 @@ describe('changes made elsewhere', () => {
 });
 
 describe('unsaved changes', () => {
+  it('a watchdog, phase or shortest cycle typed and cleared again is not an unsaved change', async () => {
+    const backend = plant({ configured: [LINE, { ...LINE, id: 'Mix', tasks: [{ name: 'free', kind: { type: 'cycle', min_cycle_ms: 0 }, priority: 2, programs: ['Mixer'] }] }] });
+    const { container } = await opened(backend);
+    typeInto(field(container, 'task-watchdog'), '50');
+    expect(byTestId(container, 'runtime-unsaved')).not.toBeNull();
+    typeInto(field(container, 'task-watchdog'), '');
+    expect(value(container, 'task-watchdog')).toBe('');
+    expect(byTestId(container, 'runtime-unsaved')).toBeNull();
+    // The phase is stored as 0, the module's default an empty field stands for.
+    typeInto(field(container, 'task-phase'), '3');
+    expect(byTestId(container, 'runtime-unsaved')).not.toBeNull();
+    typeInto(field(container, 'task-phase'), '');
+    expect(value(container, 'task-phase')).toBe('');
+    expect(byTestId(container, 'runtime-unsaved')).toBeNull();
+    expect(useModuleUi.getState().unsaved['logic-runtimes']).toBeUndefined();
+    endTest();
+
+    resetStores();
+    const mix = await opened(backend, 'Mix');
+    expect(value(mix.container, 'task-min-cycle')).toBe('0');
+    typeInto(field(mix.container, 'task-min-cycle'), '');
+    expect(value(mix.container, 'task-min-cycle')).toBe('');
+    expect(byTestId(mix.container, 'runtime-unsaved')).toBeNull();
+  });
+
+  it('text that is not a finite number is said, and nothing is sent', async () => {
+    // What a browser keeps but cannot read comes with an empty value and `badInput`; what reads as
+    // Infinity would go out as JSON null. Neither is taken as "nothing typed".
+    expect(numberOf('5x', true)).toBeNaN();
+    expect(numberOf('', true)).toBeNaN();
+    expect(numberOf('1e400')).toBeNaN();
+    expect(numberOf('')).toBeNull();
+    expect(numberOf(' 50 ')).toBe(50);
+    const backend = plant();
+    const { container, calls } = await opened(backend);
+    typeInto(field(container, 'task-watchdog'), '1e400');
+    expect(texts(container, 'runtime-missing-field')).toEqual(['task fast: its watchdog as a number (what is typed is not one)']);
+    expect(disabled(container, 'runtime-save')).toBe(true);
+    expect(disabled(container, 'runtime-check')).toBe(true);
+    expect(byTestId(container, 'runtime-unsaved')).not.toBeNull();
+    const sent = of(calls, 'PUT').length + of(calls, 'POST').length;
+    click(byTestId(container, 'runtime-save'));
+    click(byTestId(container, 'runtime-check'));
+    await settle();
+    expect(of(calls, 'PUT').length + of(calls, 'POST').length).toBe(sent);
+  });
+
+  it('a refused check or read whose answer the workbench withheld says so', async () => {
+    const { container } = await opened(plant());
+    // `host.api` threw without the answer beside it: the module's reasons are not known here.
+    const bare = refusalOf(new Error('400 Bad Request: something'));
+    expect(bare.withheld).toBe(true);
+    act(() => useRuntimes.setState((state) => ({ docs: { ...state.docs, Line: { ...doc(), checkRefusal: bare } } })));
+    expect(byTestId(container, 'check-refused')?.querySelector('p')?.textContent).toBe('400 Bad Request: something');
+    expect(byTestId(container, 'check-refused-withheld')?.textContent).toBe(WITHHELD);
+    act(() => useRuntimes.setState((state) => ({ docs: { ...state.docs, Line: { ...doc(), phase: 'unreadable', readError: bare } } })));
+    expect(byTestId(container, 'read-error-withheld')?.textContent).toBe(WITHHELD);
+    // With the answer beside it, nothing is said withheld.
+    const answered = refusalOf(Object.assign(new Error('404 Not Found'), { status: 404, body: { error: "the project has no runtime 'Line'" } }));
+    act(() => useRuntimes.setState((state) => ({ docs: { ...state.docs, Line: { ...doc(), readError: answered } } })));
+    expect(byTestId(container, 'runtime-read-error')?.querySelector('p')?.textContent).toBe("the project has no runtime 'Line'");
+    expect(byTestId(container, 'read-error-withheld')).toBeNull();
+  });
+
   it('unsaved changes are reported to the workbench', async () => {
     const { container } = await opened(plant());
     expect(byTestId(container, 'runtime-unsaved')).toBeNull();

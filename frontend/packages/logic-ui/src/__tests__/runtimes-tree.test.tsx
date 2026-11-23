@@ -6,13 +6,14 @@
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { orderedTreeSections } from '../../../ui-shell/src/modules/registry';
-import { RUNTIME_EDITOR } from '../runtimes';
+import { RUNTIME_EDITOR, RUNTIMES_CHANGED_EVENT } from '../runtimes';
 import { useRuntimes } from '../runtimestore';
 import { RuntimesTree } from '../RuntimesTree';
 import {
   byLabel,
   byTestId,
   click,
+  emit,
   endTest,
   entryOf,
   project,
@@ -145,6 +146,8 @@ describe('the Runtimes section of the project tree', () => {
   });
 
   it("a hand-edited file's problems are counted on the node", async () => {
+    // The fake module lists what the file breaks as `configuration_problems` does: each runtime
+    // against those before it, in the module's words.
     const problems = [
       "the project already has a runtime 'Line'; names that differ only in case are one name",
       "program 'Tank' is in runtime 'Line' already; a program is in one runtime",
@@ -155,7 +158,6 @@ describe('the Runtimes section of the project tree', () => {
         { id: 'Line', programs: ['Tank'] },
         { id: 'line', programs: ['Tank'] },
       ],
-      runtimeProblems: problems,
     });
     const badge = byTestId(tree, 'tree-runtimes-problems');
     expect(badge?.textContent).toBe('2 PROBLEMS');
@@ -180,6 +182,30 @@ describe('the Runtimes section of the project tree', () => {
     // Unsaved: the node is marked, and the workbench is told.
     expect(byTestId(tree, 'tree-runtimes')?.querySelector('.tree__mark--warn')).not.toBeNull();
     expect(useModuleUi.getState().unsaved['logic-runtimes']).toBe('org.mythos.logic');
+  });
+
+  it('a runtime with changes here that was deleted elsewhere stays in the tree, marked unsaved', async () => {
+    const backend: Backend = { programs: programs(), configured: [{ id: 'Line', programs: ['Tank'] }] };
+    const { tree } = await opened(backend);
+    await act(async () => {
+      await useRuntimes.getState().open('Line');
+    });
+    const draft = useRuntimes.getState().docs.Line?.draft;
+    if (!draft) throw new Error('Line was not opened');
+    act(() => useRuntimes.getState().edit('Line', { ...draft, target: 'esp32' }));
+    backend.configured = [];
+    emit(RUNTIMES_CHANGED_EVENT, { project: 'plant', runtime: 'Line', what: 'deleted' });
+    await settle();
+    // The module lists none; the changes typed here are still reachable, and said not saved.
+    expect(labels(tree)).toEqual([]);
+    const node = byTestId(tree, 'tree-runtime-new');
+    expect(node?.querySelector('.tree__label')?.textContent).toBe('Line (deleted elsewhere; changes here not saved)');
+    expect(node?.querySelector('.tree__mark')?.getAttribute('title')).toBe('Unsaved changes');
+    expect(useModuleUi.getState().unsaved['logic-runtimes']).toBe('org.mythos.logic');
+    act(() => {
+      node?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    });
+    expect(editors()).toEqual(['logic-runtime:Line']);
   });
 
   it('an id held in another case opens the stored runtime', async () => {

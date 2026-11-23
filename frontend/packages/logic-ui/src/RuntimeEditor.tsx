@@ -2,9 +2,10 @@
 // runs it, the target its programs are compiled for, whether it runs when loaded, and its tasks,
 // each with its kind, priority, watchdog and programs in order. Checked and saved through the logic
 // module, which answers every rule in its own words; what is shown as saved is what it read back.
-// Nothing here says whether the controller runs the runtime: it is configured, nothing more.
+// The form is the runtime as configured; whether the controller runs it is said only on the
+// "Runtime" task card, from what the core lists.
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Check, CirclePlay, CircleStop, Download, Plus, Save, Trash2, Undo2, Upload } from 'lucide-react';
 import type { DiagnosticsPanel } from '@mythos/workbench-sdk';
 import { host, mayEngineer, type Diagnostic, type NotCarried, type RuntimeLoad, type RuntimeStatus } from './bridge';
@@ -63,13 +64,65 @@ const placeOf = (d: Diagnostic): string => {
   return d.source ? `${d.source} ${at}` : at;
 };
 
-/** A number typed into a field: `null` while nothing (or nothing that is a number) is typed. */
-function numberOf(text: string): number | null {
+/**
+ * A number typed into a field: `null` while nothing is typed; `NaN` when what is typed is not a
+ * finite number (text a browser keeps but cannot read, `badInput`, comes with an empty value; text
+ * such as `1e400` reads as Infinity, which JSON would send as `null`). `NaN` is never sent: the form
+ * says the field is not a number ({@link missingOf}).
+ */
+export function numberOf(text: string, badInput = false): number | null {
+  if (badInput) return Number.NaN;
   if (text.trim() === '') return null;
   const n = Number(text);
-  return Number.isNaN(n) ? null : n;
+  return Number.isFinite(n) ? n : Number.NaN;
 }
-const shown = (n: number | null | undefined): string => (n === null || n === undefined ? '' : String(n));
+const shown = (n: number | null | undefined): string => (n === null || n === undefined || Number.isNaN(n) ? '' : String(n));
+
+/**
+ * A number field of the form. It shows what was typed, and gives the draft what that text stands
+ * for: `empty` when nothing is typed, which is what the module stores when the key is left out
+ * (`undefined`: the key left out, as the module stores a watchdog not given; `0`: the module's
+ * default it fills in; `null`: nothing, a value that must be given). So typing a value and clearing
+ * it again leaves the draft as stored. A value that comes from elsewhere (a read, a save's read
+ * back, a discard) is shown as it is.
+ */
+function NumberField({
+  value,
+  empty,
+  onValue,
+  ...input
+}: {
+  value: number | null | undefined;
+  empty: number | null | undefined;
+  onValue: (value: number | null | undefined) => void;
+  'aria-label': string;
+  'data-testid': string;
+  disabled: boolean;
+}) {
+  const [text, setText] = useState(() => shown(value));
+  // The value this field last gave the draft: when the draft comes back with it, the text typed stays.
+  const given = useRef<{ value: number | null | undefined } | null>(null);
+  useEffect(() => {
+    if (given.current !== null && Object.is(given.current.value, value)) return;
+    given.current = null;
+    setText(shown(value));
+  }, [value]);
+  return (
+    <input
+      type="number"
+      {...input}
+      value={text}
+      onChange={(event) => {
+        const typed = event.target.value;
+        const n = numberOf(typed, event.target.validity?.badInput === true);
+        const next = n === null ? empty : n;
+        given.current = { value: next };
+        setText(typed);
+        onValue(next);
+      }}
+    />
+  );
+}
 
 /** One program of a check: whether it compiles, its diagnostics (each opens the program) and binding problems. */
 function ProgramResult({ program }: { program: ProgramCheck }) {
@@ -265,24 +318,24 @@ function TaskRow({
           <>
             <label className="field">
               <span className="field__label">Interval (ms)</span>
-              <input
-                type="number"
+              <NumberField
                 aria-label="Interval in milliseconds"
                 data-testid="task-interval"
-                value={shown(kind.interval_ms)}
+                value={kind.interval_ms}
+                empty={null}
                 disabled={readOnly}
-                onChange={(event) => setKind({ interval_ms: numberOf(event.target.value) })}
+                onValue={(n) => setKind({ interval_ms: n ?? null })}
               />
             </label>
             <label className="field">
               <span className="field__label">Phase (ms)</span>
-              <input
-                type="number"
+              <NumberField
                 aria-label="Phase in milliseconds"
                 data-testid="task-phase"
-                value={shown(kind.phase_ms)}
+                value={kind.phase_ms}
+                empty={0}
                 disabled={readOnly}
-                onChange={(event) => setKind({ phase_ms: numberOf(event.target.value) })}
+                onValue={(n) => setKind({ phase_ms: n })}
               />
               <span className="field__hint">Empty: 0, the module's default.</span>
             </label>
@@ -291,13 +344,13 @@ function TaskRow({
         {kind?.type === 'cycle' && (
           <label className="field">
             <span className="field__label">Shortest cycle (ms)</span>
-            <input
-              type="number"
+            <NumberField
               aria-label="Shortest cycle in milliseconds"
               data-testid="task-min-cycle"
-              value={shown(kind.min_cycle_ms)}
+              value={kind.min_cycle_ms}
+              empty={0}
               disabled={readOnly}
-              onChange={(event) => setKind({ min_cycle_ms: numberOf(event.target.value) })}
+              onValue={(n) => setKind({ min_cycle_ms: n })}
             />
             <span className="field__hint">Empty: 0, the module's default.</span>
           </label>
@@ -318,25 +371,25 @@ function TaskRow({
         )}
         <label className="field">
           <span className="field__label">Priority</span>
-          <input
-            type="number"
+          <NumberField
             aria-label="Task priority"
             data-testid="task-priority"
-            value={shown(task.priority)}
+            value={task.priority}
+            empty={null}
             disabled={readOnly}
-            onChange={(event) => onChange({ ...task, priority: numberOf(event.target.value) })}
+            onValue={(n) => onChange({ ...task, priority: n ?? null })}
           />
           <span className="field__hint">0 is the highest.</span>
         </label>
         <label className="field">
           <span className="field__label">Watchdog (ms)</span>
-          <input
-            type="number"
+          <NumberField
             aria-label="Watchdog in milliseconds"
             data-testid="task-watchdog"
-            value={shown(task.watchdog_ms)}
+            value={task.watchdog_ms}
+            empty={undefined}
             disabled={readOnly}
-            onChange={(event) => onChange({ ...task, watchdog_ms: numberOf(event.target.value) })}
+            onValue={(n) => onChange({ ...task, watchdog_ms: n })}
           />
           <span className="field__hint">{WATCHDOG_DEFAULT}</span>
         </label>
@@ -850,6 +903,7 @@ export function RuntimeEditor({ id, onClose }: { id: string; onClose: (id: strin
         <div>
           <h3>The runtime {id} could not be read</h3>
           <p>{doc.readError?.error}</p>
+          {doc.readError?.withheld && <p data-testid="read-error-withheld">{WITHHELD}</p>}
         </div>
       </div>
     );
@@ -972,7 +1026,8 @@ export function RuntimeEditor({ id, onClose }: { id: string; onClose: (id: strin
         )}
       </div>
       <p className="logic-note" data-testid="runtime-configured">
-        Runtime {id} as configured in the project's logic module. Whether the controller runs it is not shown here.
+        Runtime {id} as configured in the project's logic module. Whether the controller runs it is on the Runtime card, as the
+        controller lists it.
       </p>
       {!complete && (
         <div className="logic-note logic-note--warn" data-testid="runtime-missing">
@@ -1018,6 +1073,7 @@ export function RuntimeEditor({ id, onClose }: { id: string; onClose: (id: strin
       {doc.checkRefusal !== null && (
         <div className="notice notice--bad" role="alert" data-testid="check-refused">
           <p>{doc.checkRefusal.error}</p>
+          {doc.checkRefusal.withheld && <p data-testid="check-refused-withheld">{WITHHELD}</p>}
         </div>
       )}
       <RuntimeForm doc={doc} readOnly={!may || working} />

@@ -7,7 +7,7 @@ import { useState } from 'react';
 import { Cpu, Plus } from 'lucide-react';
 import { mayEngineer, useProject } from './bridge';
 import { sameId } from './runtimes';
-import { anyRuntimeDirty, hasChanges, useRuntimes } from './runtimestore';
+import { anyRuntimeDirty, hasChanges, useRuntimes, type RuntimeDoc } from './runtimestore';
 import { TreeNode } from './ProgramsTree';
 
 const unsavedMark = (
@@ -85,8 +85,12 @@ export function RuntimesTree({ openEditor }: { openEditor: (id: string) => void 
   if (!project) return null;
   const ids = list?.runtimes.map((r) => r.id) ?? null;
   const problems = list?.problems ?? [];
-  // A new runtime is listed apart until the module lists it under its very id.
-  const unsaved = Object.values(docs).filter((doc) => doc.isNew && !(ids ?? []).includes(doc.id));
+  // A new runtime, and one with changes here that the module does not list (deleted elsewhere,
+  // or the list could not be read), is listed apart until the module lists it under its very
+  // id: its unsaved changes stay reachable.
+  const unsaved = Object.values(docs).filter((doc) => (doc.isNew || hasChanges(doc)) && !(ids ?? []).includes(doc.id));
+  const apart = (doc: RuntimeDoc): string =>
+    doc.isNew ? 'not saved yet' : doc.elsewhere === 'deleted' ? 'deleted elsewhere; changes here not saved' : 'changes here not saved';
 
   return (
     <>
@@ -140,7 +144,7 @@ export function RuntimesTree({ openEditor }: { openEditor: (id: string) => void 
             key={`new:${doc.id}`}
             depth={2}
             icon={<Cpu size={14} />}
-            label={`${doc.id} (not saved yet)`}
+            label={`${doc.id} (${apart(doc)})`}
             testId="tree-runtime-new"
             onOpen={() => openEditor(doc.id)}
             mark={unsavedMark}

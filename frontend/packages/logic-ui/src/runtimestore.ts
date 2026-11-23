@@ -678,14 +678,17 @@ export const useRuntimes = create<RuntimesState>((set, get) => {
         patch(id, { elsewhere: event.what === 'deleted' ? 'deleted' : 'changed', elsewhereAs: event.runtime });
         return null;
       }
-      if (doc?.busy && unanswered.has(id)) {
-        // This editor's own write may be what it is about: decided once the write is answered.
-        patch(id, { deferred: event.what });
-        return null;
-      }
+      // An earlier write of this editor answered 200 whose event has not come yet: the module
+      // sends its events in the order it wrote, so this is that write's, even while a later
+      // write is out.
       const echo = echoes.get(id) ?? 0;
       if (echo > 0) {
         echoes.set(id, echo - 1);
+        return null;
+      }
+      if (doc?.busy && unanswered.has(id)) {
+        // This editor's own write may be what it is about: decided once the write is answered.
+        patch(id, { deferred: event.what });
         return null;
       }
       if (doc?.busy) {

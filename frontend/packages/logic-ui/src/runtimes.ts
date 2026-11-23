@@ -157,9 +157,21 @@ export function missingOf(body: RuntimeBody): string[] {
   if (body.run === null) missing.push('whether it runs when loaded: choose "Run when loaded" or "Stay in STOP when loaded"');
   body.tasks.forEach((task, index) => {
     const label = taskLabel(task, index);
+    // Typed text that is not a finite number: JSON cannot carry it (it would go as `null`, and a
+    // default would stand in for what was typed), so it is said, never sent.
+    const notNumber = (field: string, n: number | null | undefined) => {
+      if (typeof n === 'number' && Number.isNaN(n)) missing.push(`${label}: its ${field} as a number (what is typed is not one)`);
+    };
     if (task.kind === null) missing.push(`${label}: its kind`);
     else if (task.kind.type === 'cyclic' && task.kind.interval_ms === null) missing.push(`${label}: its interval`);
+    if (task.kind?.type === 'cyclic') {
+      notNumber('interval', task.kind.interval_ms);
+      notNumber('phase', task.kind.phase_ms);
+    }
+    if (task.kind?.type === 'cycle') notNumber('shortest cycle', task.kind.min_cycle_ms);
     if (task.priority === null) missing.push(`${label}: its priority`);
+    notNumber('priority', task.priority);
+    notNumber('watchdog', task.watchdog_ms);
   });
   return missing;
 }

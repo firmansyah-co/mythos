@@ -137,8 +137,12 @@ export interface Backend {
    * of the runtimes 500, as a file that is not the module's.
    */
   configured?: Array<{ id: string; programs: string[] } | RuntimeEntry> | 'fails';
-  /** What a hand edit broke, listed by `GET /runtimes` as `problems`; left out, none. */
-  runtimeProblems?: string[];
+  /**
+   * Send `LOGIC_RUNTIMES_CHANGED` for every runtime save or delete answered 200, as the module
+   * does, before the answer reaches the editor (the order a stream may deliver them in). Left out,
+   * no event is sent by the fake: a test emits what it needs.
+   */
+  runtimeEvents?: boolean;
   /** A runtime's check of each of its programs; left out, every program compiles with no problem. */
   checkRuntimeProgram?: (name: string) => Omit<ProgramCheck, 'name'>;
   /** Whether saving the runtimes applies them (the project is the active one). */
@@ -300,6 +304,8 @@ const STATUS: Record<number, string> = { 400: 'Bad Request', 404: 'Not Found', 4
 /** A refusal of the library's routes, with the status text the status has. */
 const refusal = (status: number, error: string) => Response.json({ error }, { status, statusText: STATUS[status] ?? '' });
 
+/** The logic module's event after a runtime was saved or deleted (plugins/logic/src/lib.rs). */
+const RUNTIMES_CHANGED = 'LOGIC_RUNTIMES_CHANGED';
 const DEVICE_NAMES = ['CON', 'PRN', 'AUX', 'NUL', ...[...'0123456789'].flatMap((d) => [`COM${d}`, `LPT${d}`])];
 
 /** The module's `library_name_problem`, its messages word for word. */
@@ -402,26 +408,88 @@ export function configuredOf(backend: Backend): RuntimeEntry[] {
 export const runtimeIdProblem = (id: string): string | null =>
   /^[A-Za-z0-9_-]{1,64}$/.test(id) ? null : `'${id}' is not a runtime id: use 1 to 64 letters, digits, '-' or '_'`;
 
-/** A body `PUT /runtimes/:runtime` takes, or the module's words for why it is not one (`deny_unknown_fields`, required keys). */
-function runtimeBodyOf(body: unknown): { module: string; target: string; run: boolean; tasks: TaskConfig[] } | string {
+/**
+ * A body `PUT /runtimes/:runtime` takes, as serde reads `RuntimeBody` and the protocol's
+ * `TaskConfig`/`TaskKind` (`deny_unknown_fields`, `priority: u8`, the kinds' numbers `u64`, the
+ * defaults it fills), or serde's words for why it is not one, after the module's own prefix.
+ * Returned as the module stores it: `min_cycle_ms` and `phase_ms` filled with 0 when left out,
+ * `watchdog_ms` left out when not given (or `null`).
+ */
+function runtimeBodyOf(body: unknown): Omit<RuntimeEntry, 'id'> | string {
   const words = (why: string) => `the body is not what this route takes: ${why}`;
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) return words('invalid type: expected struct RuntimeBody');
+  const shape = (v: unknown): string =>
+    v === null ? 'null' : typeof v === 'boolean' ? `boolean \`${v}\`` : typeof v === 'string' ? `string ${JSON.stringify(v)}` : Array.isArray(v) ? 'sequence' : typeof v === 'object' ? 'map' : String(v);
+  /** An unsigned integer of `bits`, or serde's words. */
+  const unsigned = (v: unknown, type: 'u8' | 'u64'): number | string => {
+    if (typeof v !== 'number') return words(`invalid type: ${shape(v)}, expected ${type}`);
+    if (!Number.isInteger(v)) return words(`invalid type: floating point \`${v}\`, expected ${type}`);
+    if (v < 0 || (type === 'u8' && v > 255)) return words(`invalid value: integer \`${v}\`, expected ${type}`);
+    return v;
+  };
+  const fieldsOf = (o: Record<string, unknown>, known: string[], required: string[]): string | null => {
+    const unknown = Object.keys(o).find((k) => !known.includes(k));
+    if (unknown !== undefined) return words(`unknown field \`${unknown}\`, expected one of ${known.map((k) => `\`${k}\``).join(', ')}`);
+    const lacking = required.find((k) => !(k in o));
+    return lacking === undefined ? null : words(`missing field \`${lacking}\``);
+  };
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return words(`invalid type: ${shape(body)}, expected struct RuntimeBody`);
   const b = body as Record<string, unknown>;
-  const fields = ['module', 'target', 'run', 'tasks'];
-  const unknown = Object.keys(b).find((k) => !fields.includes(k));
-  if (unknown !== undefined) return words(`unknown field \`${unknown}\`, expected one of \`module\`, \`target\`, \`run\`, \`tasks\``);
-  const lacking = fields.find((k) => !(k in b));
-  if (lacking !== undefined) return words(`missing field \`${lacking}\``);
-  if (typeof b.run !== 'boolean') return words(`invalid type: ${JSON.stringify(b.run)}, expected a boolean`);
-  for (const t of b.tasks as Array<Record<string, unknown>>) {
-    const taskFields = ['name', 'kind', 'priority', 'watchdog_ms', 'programs'];
-    const extra = Object.keys(t).find((k) => !taskFields.includes(k));
-    if (extra !== undefined) return words(`unknown field \`${extra}\``);
-    if (t.kind === null || typeof t.kind !== 'object') return words('invalid type: null, expected internally tagged enum TaskKind');
-    if (typeof t.priority !== 'number') return words('invalid type: null, expected u8');
-    if (t.priority > 255) return words(`invalid value: integer \`${t.priority}\`, expected u8`);
+  const top = fieldsOf(b, ['module', 'target', 'run', 'tasks'], ['module', 'target', 'run', 'tasks']);
+  if (top !== null) return top;
+  if (typeof b.module !== 'string') return words(`invalid type: ${shape(b.module)}, expected a string`);
+  if (typeof b.target !== 'string') return words(`invalid type: ${shape(b.target)}, expected a string`);
+  if (typeof b.run !== 'boolean') return words(`invalid type: ${shape(b.run)}, expected a boolean`);
+  if (!Array.isArray(b.tasks)) return words(`invalid type: ${shape(b.tasks)}, expected a sequence`);
+  const tasks: TaskConfig[] = [];
+  for (const raw of b.tasks as unknown[]) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return words(`invalid type: ${shape(raw)}, expected struct TaskConfig`);
+    const t = raw as Record<string, unknown>;
+    const taskFields = fieldsOf(t, ['name', 'kind', 'priority', 'watchdog_ms', 'programs'], ['name', 'kind', 'priority', 'programs']);
+    if (taskFields !== null) return taskFields;
+    if (typeof t.name !== 'string') return words(`invalid type: ${shape(t.name)}, expected a string`);
+    if (t.kind === null || typeof t.kind !== 'object' || Array.isArray(t.kind)) return words(`invalid type: ${shape(t.kind)}, expected internally tagged enum TaskKind`);
+    const k = t.kind as Record<string, unknown>;
+    if (!('type' in k)) return words('missing field `type`');
+    let kind: TaskConfig['kind'];
+    const variants = ['cycle', 'cyclic', 'startup', 'event'];
+    if (k.type === 'cycle') {
+      const f = fieldsOf(k, ['type', 'min_cycle_ms'], []);
+      if (f !== null) return f;
+      const min = 'min_cycle_ms' in k ? unsigned(k.min_cycle_ms, 'u64') : 0;
+      if (typeof min === 'string') return min;
+      kind = { type: 'cycle', min_cycle_ms: min };
+    } else if (k.type === 'cyclic') {
+      const f = fieldsOf(k, ['type', 'interval_ms', 'phase_ms'], ['interval_ms']);
+      if (f !== null) return f;
+      const interval = unsigned(k.interval_ms, 'u64');
+      if (typeof interval === 'string') return interval;
+      const phase = 'phase_ms' in k ? unsigned(k.phase_ms, 'u64') : 0;
+      if (typeof phase === 'string') return phase;
+      kind = { type: 'cyclic', interval_ms: interval, phase_ms: phase };
+    } else if (k.type === 'startup') {
+      const f = fieldsOf(k, ['type'], []);
+      if (f !== null) return f;
+      kind = { type: 'startup' };
+    } else if (k.type === 'event') {
+      const f = fieldsOf(k, ['type', 'tag'], ['tag']);
+      if (f !== null) return f;
+      if (typeof k.tag !== 'string') return words(`invalid type: ${shape(k.tag)}, expected a string`);
+      kind = { type: 'event', tag: k.tag };
+    } else {
+      return words(`unknown variant ${typeof k.type === 'string' ? `\`${k.type}\`` : shape(k.type)}, expected one of ${variants.map((v) => `\`${v}\``).join(', ')}`);
+    }
+    const priority = unsigned(t.priority, 'u8');
+    if (typeof priority === 'string') return priority;
+    let watchdog: number | undefined;
+    if (t.watchdog_ms !== undefined && t.watchdog_ms !== null) {
+      const w = unsigned(t.watchdog_ms, 'u64');
+      if (typeof w === 'string') return w;
+      watchdog = w;
+    }
+    if (!Array.isArray(t.programs) || t.programs.some((p) => typeof p !== 'string')) return words(`invalid type: ${shape(t.programs)}, expected a sequence of strings`);
+    tasks.push({ name: t.name, kind, priority, ...(watchdog === undefined ? {} : { watchdog_ms: watchdog }), programs: t.programs as string[] });
   }
-  return b as { module: string; target: string; run: boolean; tasks: TaskConfig[] };
+  return { module: b.module, target: b.target, run: b.run, tasks };
 }
 
 /** `check_tasks` of the protocol (crates/mythos-module/src/protocol.rs), word for word, for the cases tests use. */
@@ -484,6 +552,21 @@ function runtimeProblemsOf(backend: Backend, runtimes: RuntimeEntry[], i: number
   return found;
 }
 
+/** `members` of plugins/logic/src/runtimes.rs: the project programs a runtime names, by stored entry, each once, in task order. */
+function membersOf(backend: Backend, runtime: RuntimeEntry): string[] {
+  const found: string[] = [];
+  for (const t of runtime.tasks) {
+    for (const p of t.programs) {
+      const stored = backend.programs.find((e) => e.entry.name.toLowerCase() === p.toLowerCase())?.entry.name;
+      if (stored !== undefined && !found.includes(stored)) found.push(stored);
+    }
+  }
+  return found;
+}
+
+/** The PROGRAM name a program's saved source declares (`declared_name`); `null` when it declares none. */
+const declaredOf = (source: string): string | null => /^\s*PROGRAM\s+([A-Za-z_][A-Za-z0-9_]*)/m.exec(source)?.[1] ?? null;
+
 /** `put_in`: runtime `id` of `body` in place of the one of exactly that id, or after the others, its programs respelled. */
 function putIn(backend: Backend, file: RuntimeEntry[], id: string, body: Omit<RuntimeEntry, 'id'>): { at: number; created: boolean } {
   const tasks = body.tasks.map((t) => ({
@@ -505,17 +588,21 @@ function impliedOf(backend: Backend, file: RuntimeEntry[]): RuntimeEntry[] {
   const assigned = (name: string) => file.some((r) => r.tasks.some((t) => t.programs.some((p) => p.toLowerCase() === name.toLowerCase())));
   return backend.programs
     .filter((p) => !assigned(p.entry.name))
-    .map(({ entry }) => ({
-      id: entry.name,
-      module: entry.runtime,
-      target: entry.target,
-      run: entry.run,
-      tasks: [{ name: entry.name, kind: { type: 'cyclic', interval_ms: entry.interval_ms, phase_ms: 0 }, priority: 31, programs: [entry.name] }],
-    }));
+    .map(({ entry, source }) => {
+      // `listed`: the task and its program are named by the PROGRAM the saved source declares.
+      const declared = declaredOf(source) ?? entry.name;
+      return {
+        id: entry.name,
+        module: entry.runtime,
+        target: entry.target,
+        run: entry.run,
+        tasks: [{ name: declared, kind: { type: 'cyclic', interval_ms: entry.interval_ms, phase_ms: 0 }, priority: 31, programs: [declared] }],
+      };
+    });
 }
 
 /** The logic module's runtime routes over `backend.configured`, as `runtimes()` in plugins/logic/src/runtimes.rs answers them. */
-function runtimesRoute(backend: Backend, method: string, id: string | undefined, action: string | undefined, body: unknown): Response {
+function runtimesRoute(backend: Backend, projectId: string, method: string, id: string | undefined, action: string | undefined, body: unknown): Response {
   if (backend.configured === 'fails') {
     return refusal(500, "logic/tasks.json cannot be read as the project's runtimes: expected value at line 1 column 1");
   }
@@ -527,7 +614,9 @@ function runtimesRoute(backend: Backend, method: string, id: string | undefined,
   const noRuntime = (wanted: string) => refusal(404, `the project has no runtime '${wanted}'`);
   if (id === undefined) {
     if (method !== 'GET') return refusal(404, `the logic module has no route ${method} /runtimes`);
-    return Response.json({ runtimes: file, implied: impliedOf(backend, file), problems: backend.runtimeProblems ?? [] });
+    // `configuration_problems`: every rule the stored file breaks, each runtime against those before it.
+    const problems = file.flatMap((_, i) => runtimeProblemsOf(backend, file, i, true).map(([, m]) => m));
+    return Response.json({ runtimes: file, implied: impliedOf(backend, file), problems });
   }
   // The path's id is checked before the route (lib.rs), except to delete a runtime stored under it.
   const t1 = runtimeIdProblem(id);
@@ -546,6 +635,7 @@ function runtimesRoute(backend: Backend, method: string, id: string | undefined,
     const first = runtimeProblemsOf(backend, file, at, false)[0];
     if (first) return refusal(first[0], first[1]);
     backend.configured = file;
+    if (backend.runtimeEvents) emit(RUNTIMES_CHANGED, { project: projectId, runtime: id, what: 'saved' });
     return Response.json({ runtime: file[at], created });
   }
   if (action === undefined && method === 'DELETE') {
@@ -553,6 +643,7 @@ function runtimesRoute(backend: Backend, method: string, id: string | undefined,
     if (at < 0) return t1 !== null ? refusal(400, t1) : noRuntime(id);
     const [gone] = file.splice(at, 1);
     backend.configured = file;
+    if (backend.runtimeEvents) emit(RUNTIMES_CHANGED, { project: projectId, runtime: gone?.id, what: 'deleted' });
     return Response.json({ deleted: gone?.id });
   }
   const checkOf = (name: string): ProgramCheck => ({
@@ -573,10 +664,18 @@ function runtimesRoute(backend: Backend, method: string, id: string | undefined,
     }
     const runtime = file[at] as RuntimeEntry;
     const problems = runtimeProblemsOf(backend, file, at, false).map(([, m]) => m);
-    const members = [...new Set(runtime.tasks.flatMap((t) => t.programs))]
-      .map((p) => backend.programs.find((e) => e.entry.name.toLowerCase() === p.toLowerCase())?.entry.name)
-      .filter((p): p is string => p !== undefined);
-    const programs = members.map(checkOf);
+    const known = ['pc', 'rp2040', 'esp32'].includes(runtime.target);
+    // `check_runtime`: with a target that is not a profile no program is compiled; each says why.
+    const programs = membersOf(backend, runtime).map((name) =>
+      known
+        ? checkOf(name)
+        : {
+            name,
+            ok: false,
+            diagnostics: [{ line: 0, col: 0, end_line: 0, end_col: 0, message: `'${runtime.target}' is not a target profile` }],
+            binding_problems: [],
+          }
+    );
     const ok = problems.length === 0 && programs.every((p) => p.ok);
     return Response.json({ ok, runtime: id, programs, problems, ...(ok ? { version: `rt-${programs.map((p) => p.version).join('-')}` } : {}) });
   }
@@ -586,7 +685,7 @@ function runtimesRoute(backend: Backend, method: string, id: string | undefined,
     const runtime = file[at] as RuntimeEntry;
     const first = runtimeProblemsOf(backend, file, at, false)[0];
     if (first) return refusal(first[0], first[1]);
-    const members = [...new Set(runtime.tasks.flatMap((t) => t.programs))];
+    const members = membersOf(backend, runtime);
     const built = members.map((name) => ({ name, version: `v-${name}`, code_size: 12, memory_size: 4 }));
     const wire = members.map((name) => ({ name, built_from: name, version: `v-${name}`, published: [] }));
     return Response.json({
@@ -688,10 +787,10 @@ export function server(backend: Backend): Call[] {
         return libraryRoute(backend, method, param, body);
       }
 
-      const runtimes = /^\/api\/v1\/projects\/[^/]+\/logic\/runtimes(?:\/([^/]+))?(?:\/(check|build))?$/.exec(path);
+      const runtimes = /^\/api\/v1\/projects\/([^/]+)\/logic\/runtimes(?:\/([^/]+))?(?:\/(check|build))?$/.exec(path);
       if (runtimes) {
-        const id = runtimes[1] === undefined ? undefined : decodeURIComponent(runtimes[1]);
-        return runtimesRoute(backend, method, id, runtimes[2], body);
+        const id = runtimes[2] === undefined ? undefined : decodeURIComponent(runtimes[2]);
+        return runtimesRoute(backend, decodeURIComponent(runtimes[1] ?? ''), method, id, runtimes[3], body);
       }
       const logic = /\/projects\/[^/]+\/logic\/programs(?:\/([^/]+))?(?:\/(source|settings|check|build))?$/.exec(path);
       if (!logic) return failure(404, `no route ${method} ${path}`);
