@@ -124,7 +124,9 @@ export function createHost(module: string): WorkbenchHost {
       try {
         return await apiRequest<T>(path, init);
       } catch (cause) {
-        if (cause instanceof ApiError) throw new Error(cause.message);
+        // The message as before, with the answer beside it (`ApiRefusal`): a module UI shows its
+        // own module's reasons, which the message alone would lose.
+        if (cause instanceof ApiError) throw Object.assign(new Error(cause.message), { status: cause.status, body: cause.body });
         throw cause;
       }
     },

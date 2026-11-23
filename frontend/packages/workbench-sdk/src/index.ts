@@ -146,6 +146,17 @@ export interface DiagnosticsPanel extends Panel {
   count: number | null;
 }
 
+/**
+ * What `host.api` throws when the controller refused a request or could not be reached: an
+ * `Error` whose message says what was answered, with the answer itself beside it.
+ */
+export interface ApiRefusal extends Error {
+  /** The HTTP status of the answer; `null` when there was no answer (the controller was not reached). */
+  status: number | null;
+  /** The answer's body as JSON (`{ error, … }` from a module); `null` when it was not JSON, or there was none. */
+  body: unknown;
+}
+
 export interface WorkbenchHost {
   /** The version of this contract the workbench speaks. */
   readonly sdk: 1;
@@ -160,6 +171,8 @@ export interface WorkbenchHost {
   /**
    * A request to the controller, as the signed-in user. Resolves with the JSON body; throws an
    * `Error` whose message says what the controller answered, and ends the session on a 401.
+   * What it throws is an {@link ApiRefusal}: the answer's status and its body, so a module UI can
+   * show why its own module refused (the diagnostics of a refused save, …).
    */
   api<T = unknown>(path: string, init?: RequestInit): Promise<T>;
 

@@ -2,7 +2,7 @@
 
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { WorkbenchHost, WorkbenchModule } from '@mythos/workbench-sdk';
+import type { ApiRefusal, WorkbenchHost, WorkbenchModule } from '@mythos/workbench-sdk';
 import type { ModuleList } from '../api/client';
 import { useLog } from '../data/log';
 import { useTelemetry } from '../data/telemetry';
@@ -30,6 +30,12 @@ const row = (id: string, ui: string | null, enabled = true) => ({
   ui,
 });
 
+/** A module's refusal with its reasons, as the data module answers a save that does not check. */
+const REFUSAL = {
+  error: "with this source the project's types and data blocks do not check, and nothing was saved",
+  diagnostics: [{ line: 2, col: 3, end_line: 2, end_col: 8, message: 'Nope is not a type', source: 'data/types/Recipe.st' }],
+};
+
 function controller(list: ModuleList) {
   vi.stubGlobal(
     'fetch',
@@ -40,6 +46,12 @@ function controller(list: ModuleList) {
         return new Response(JSON.stringify({ notes: ['pump 1'] }), { status: 200 });
       }
       if (path === '/api/v1/projects/plant/notes/empty') return new Response('', { status: 204 });
+      if (path === '/api/v1/projects/plant/notes/refused') {
+        return new Response(JSON.stringify(REFUSAL), { status: 400, statusText: 'Bad Request' });
+      }
+      if (path === '/api/v1/projects/plant/notes/garbled') {
+        return new Response('<html>proxy error</html>', { status: 502, statusText: 'Bad Gateway' });
+      }
       return new Response(JSON.stringify({ error: 'no such note' }), { status: 404 });
     })
   );
@@ -363,6 +375,22 @@ describe('what a module registered, in the workbench', () => {
     await expect(host.api('/api/v1/projects/plant/notes/notes')).resolves.toEqual({ notes: ['pump 1'] });
     await expect(host.api('/api/v1/projects/plant/notes/empty')).resolves.toBeNull();
     await expect(host.api('/api/v1/projects/plant/notes/missing')).rejects.toThrow('404');
+    // A refusal reaches the module whole: its status and its body beside the same message.
+    const refused = await host.api('/api/v1/projects/plant/notes/refused').then(
+      () => null,
+      (cause: unknown) => cause as ApiRefusal
+    );
+    expect(refused).toBeInstanceOf(Error);
+    expect(refused?.message).toBe(`400 Bad Request: ${REFUSAL.error}`);
+    expect(refused?.status).toBe(400);
+    expect(refused?.body).toEqual(REFUSAL);
+    const garbled = await host.api('/api/v1/projects/plant/notes/garbled').then(
+      () => null,
+      (cause: unknown) => cause as ApiRefusal
+    );
+    expect(garbled?.message).toBe('502 Bad Gateway');
+    expect(garbled?.status).toBe(502);
+    expect(garbled?.body).toBeNull();
     expect(host.project()).toEqual({ id: 'plant', name: 'Plant A' });
   });
 });

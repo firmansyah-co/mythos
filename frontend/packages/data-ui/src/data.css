@@ -1,0 +1,53 @@
+/* The data module's workbench UI. It uses the workbench's tokens and classes (btn, badge, grid,
+   notice, tree__node, editor__*); what is here is only layout the workbench has no class for. */
+
+.data-root {
+  display: contents;
+}
+
+/* The type's source over the rest of the editor; the editor scrolls as one. */
+.data-editor {
+  display: flex;
+  flex-direction: column;
+}
+
+.data-editor__source {
+  flex: none;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 16em;
+  resize: vertical;
+  margin: 0;
+  padding: var(--gap-2) var(--gap-3);
+  border: 0;
+  border-bottom: 1px solid var(--c-rule);
+  white-space: pre;
+}
+
+/* The Diagnostics tab's list: one line per message, where it is first. */
+.data-check {
+  padding: var(--gap-2) var(--gap-3);
+}
+
+.data-check p {
+  margin: 0 0 var(--gap-2);
+}
+
+.data-diagnostics {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.data-diagnostics li {
+  display: flex;
+  gap: var(--gap-2);
+  align-items: baseline;
+  padding: var(--gap-1) 0;
+}
+
+.data-diagnostics .btn {
+  height: auto;
+  text-align: left;
+  white-space: normal;
+}

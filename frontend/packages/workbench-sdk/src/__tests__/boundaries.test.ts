@@ -37,6 +37,22 @@ describe('module boundaries in the workbench (ADR-011 §2.6)', () => {
     expect(boundaryViolations(packages)).toEqual([]);
   });
 
+  it('every module UI is typechecked by the root lint and built by the root build', () => {
+    // The root scripts name their packages: one left out is neither typechecked by `pnpm lint`
+    // nor built by `pnpm build`, and nothing says so.
+    const root = JSON.parse(readFileSync(resolve(PACKAGES, '../package.json'), 'utf8')) as { scripts: Record<string, string> };
+    const filtered = (script: string) =>
+      [...(root.scripts[script] ?? '').matchAll(/--filter\s+(\S+)/g)].map((match) => match[1]);
+    const moduleUis = workspacePackages()
+      .filter((p) => p.manifest.mythos?.module)
+      .map((p) => p.manifest.name);
+    // The check means nothing if it found nothing to check.
+    expect(moduleUis).toEqual(expect.arrayContaining(['@mythos/hmi-ui', '@mythos/logic-ui', '@mythos/data-ui']));
+    for (const script of ['lint', 'build']) {
+      expect({ script, missing: moduleUis.filter((name) => !filtered(script).includes(name)) }).toEqual({ script, missing: [] });
+    }
+  });
+
   it('names every kind of break', () => {
     const file = (path: string, text: string) => ({ path, text });
     const found = boundaryViolations([

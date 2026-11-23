@@ -35,7 +35,9 @@ export default {
 - **Mounts.** Each contribution is `mount(container, context)`, returning what takes it down.
   Draw with anything; bundle what you use (React included). Use the workbench's CSS classes
   (`tree__node`, `btn`, `card`, …) to look like it.
-- **Data.** `host.api` calls the controller as the signed-in user; `host.telemetry` gives the
+- **Data.** `host.api` calls the controller as the signed-in user, and a refusal it throws is
+  an `ApiRefusal`: the message as before, with the answer's `status` and its JSON `body` (a
+  module's `{ error, diagnostics }`, `null` when not JSON); `host.telemetry` gives the
   live values the workbench already holds (never a value while the stream is closed);
   `host.events.subscribe(name)` hears events a service module sends.
 - **Names.** Editor kinds, view ids and tree-section ids are global; registering one that is

@@ -143,7 +143,9 @@ export interface TagMetadata {
 export class ApiError extends Error {
   constructor(
     message: string,
-    readonly status: number | null
+    readonly status: number | null,
+    /** The refusal's body as JSON, when it was JSON and the request was a module UI's (`apiRequest`); otherwise `null`. */
+    readonly body: unknown = null
   ) {
     super(message);
     this.name = 'ApiError';
@@ -471,8 +473,11 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   const response = await call(path, init);
   if (!response.ok) {
     let detail = '';
+    // Kept whole for the module UI: its own module's refusal says more than `error`.
+    let refusal: unknown = null;
     try {
       const body: unknown = await response.json();
+      refusal = body;
       if (body && typeof body === 'object') {
         const text = (body as Record<string, unknown>).error;
         if (typeof text === 'string') detail = `: ${text}`;
@@ -480,7 +485,7 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
     } catch {
       // The body was not JSON; the status line is all there is to report.
     }
-    throw new ApiError(`${response.status} ${response.statusText}${detail}`, response.status);
+    throw new ApiError(`${response.status} ${response.statusText}${detail}`, response.status, refusal);
   }
   const text = await response.text();
   return (text === '' ? null : JSON.parse(text)) as T;

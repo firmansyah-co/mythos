@@ -5,10 +5,10 @@
   "description": "MythOS web workbench",
   "type": "module",
   "scripts": {
-    "build": "pnpm --filter @mythos/ui-shell --filter @mythos/hmi-ui --filter @mythos/logic-ui run build",
+    "build": "pnpm --filter @mythos/ui-shell --filter @mythos/hmi-ui --filter @mythos/logic-ui --filter @mythos/data-ui run build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "pnpm --filter @mythos/workbench-sdk --filter @mythos/ui-shell --filter @mythos/hmi-ui --filter @mythos/logic-ui run typecheck",
+    "lint": "pnpm --filter @mythos/workbench-sdk --filter @mythos/ui-shell --filter @mythos/hmi-ui --filter @mythos/logic-ui --filter @mythos/data-ui run typecheck",
     "dev": "pnpm --filter @mythos/ui-shell run dev"
   },
   "devDependencies": {
