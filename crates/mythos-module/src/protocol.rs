@@ -325,9 +325,10 @@ pub struct NotCarried {
     pub why: String,
 }
 
-/// The value of one RETAIN variable, as the runtime module keeps it: what the host stores and
-/// gives back when it starts the program again (`retained` beside `program` in the start
-/// configuration), which takes it only into a variable of the same path, type and size.
+/// The value of one RETAIN variable, as the runtime module keeps it: what the host gives back
+/// when it starts the program again (`retained` beside `program` in the start configuration),
+/// which takes it only into a variable of the same path, type and size. The host stores the
+/// values per program, and gives a program only those kept for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RetainedValue {
     pub path: String,
@@ -353,6 +354,11 @@ pub struct RetainedValue {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeProgram {
     pub name: String,
+    /// The project program this is a build of, by its name in the project (the logic module's
+    /// `programs.json`), which need not be `name`, the PROGRAM its source declares. Absent from
+    /// an instance written by hand or by a builder of before it, and then never guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built_from: Option<String>,
     /// What identifies this build of the program: shown as the version that runs.
     pub version: String,
     /// The interval of its cyclic task.
@@ -376,6 +382,74 @@ pub struct RuntimeProgram {
     /// and absent from the JSON, for a program that declares none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub data: Vec<DataUse>,
+}
+
+/// Which program a value, a running build or a configured program is of.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgramIdentity {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built_from: Option<String>,
+}
+
+impl RuntimeProgram {
+    /// Which program this is: its PROGRAM name and, when the build says it, its project program.
+    pub fn identity(&self) -> ProgramIdentity {
+        ProgramIdentity {
+            name: self.name.clone(),
+            built_from: self.built_from.clone(),
+        }
+    }
+}
+
+/// Whether two are the same program: both name the project program → those names, without
+/// regard to case; otherwise the PROGRAM names, exactly.
+pub fn same_program(a: &ProgramIdentity, b: &ProgramIdentity) -> bool {
+    match (&a.built_from, &b.built_from) {
+        (Some(x), Some(y)) => x.eq_ignore_ascii_case(y),
+        _ => a.name == b.name,
+    }
+}
+
+/// What two runtimes are compared by: when every program of both names its project program,
+/// those names as spelled, sorted without regard to case; otherwise the PROGRAM names, sorted by bytes. The
+/// `bool` says which: `true` for project names.
+pub fn program_set_keys(
+    a: &[ProgramIdentity],
+    b: &[ProgramIdentity],
+) -> (Vec<String>, Vec<String>, bool) {
+    let by_project = a.iter().chain(b).all(|p| p.built_from.is_some());
+    let keys = |set: &[ProgramIdentity]| -> Vec<String> {
+        let mut keys: Vec<String> = set
+            .iter()
+            .map(|p| match (&p.built_from, by_project) {
+                (Some(from), true) => from.clone(),
+                _ => p.name.clone(),
+            })
+            .collect();
+        if by_project {
+            keys.sort_by_key(|k| k.to_ascii_lowercase());
+        } else {
+            keys.sort();
+        }
+        keys
+    };
+    (keys(a), keys(b), by_project)
+}
+
+/// Whether two runtimes run the same programs: when every program of both names its project
+/// program, the sorted project names without regard to case; otherwise the sorted PROGRAM
+/// names exactly. Compared as lists, never joined.
+pub fn same_program_set(a: &[ProgramIdentity], b: &[ProgramIdentity]) -> bool {
+    let (x, y, by_project) = program_set_keys(a, b);
+    x.len() == y.len()
+        && x.iter().zip(&y).all(|(p, q)| {
+            if by_project {
+                p.eq_ignore_ascii_case(q)
+            } else {
+                p == q
+            }
+        })
 }
 
 // -----------------------------------------------------------------------------
@@ -1353,6 +1427,7 @@ mod tests {
     fn program(name: &str) -> RuntimeProgram {
         RuntimeProgram {
             name: name.into(),
+            built_from: None,
             version: "1".into(),
             interval_ms: 100,
             code: String::new(),
@@ -1365,6 +1440,98 @@ mod tests {
     }
 
     const HASH: &str = "0123456789abcdef";
+
+    fn id(name: &str, built_from: Option<&str>) -> ProgramIdentity {
+        ProgramIdentity {
+            name: name.into(),
+            built_from: built_from.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_program_without_a_project_name_reads_and_writes_as_before_and_one_with_it_round_trips() {
+        const WITHOUT: &str = r#"{"name":"Tank","version":"1","interval_ms":100,"code":"","symbols":null,"inputs":[],"outputs":[],"published":[]}"#;
+        let read: RuntimeProgram = serde_json::from_str(WITHOUT).unwrap();
+        assert_eq!(read.built_from, None);
+        assert_eq!(serde_json::to_string(&read).unwrap(), WITHOUT);
+
+        const WITH: &str = r#"{"name":"Tank","built_from":"T1","version":"1","interval_ms":100,"code":"","symbols":null,"inputs":[],"outputs":[],"published":[]}"#;
+        let read: RuntimeProgram = serde_json::from_str(WITH).unwrap();
+        assert_eq!(read.built_from.as_deref(), Some("T1"));
+        assert_eq!(read.identity(), id("Tank", Some("T1")));
+        assert_eq!(serde_json::to_string(&read).unwrap(), WITH);
+    }
+
+    #[test]
+    fn the_same_program_is_the_same_project_program_when_both_name_it_and_the_same_program_name_otherwise(
+    ) {
+        // Both name the project program: those names, without regard to case.
+        assert!(same_program(
+            &id("Tank", Some("T1")),
+            &id("Tank", Some("t1"))
+        ));
+        assert!(!same_program(
+            &id("Tank", Some("T1")),
+            &id("Tank", Some("T2"))
+        ));
+        assert!(same_program(
+            &id("Main", Some("T1")),
+            &id("Tank", Some("T1"))
+        ));
+        // Otherwise the PROGRAM names, exactly, whatever the other's project name.
+        assert!(same_program(&id("Tank", None), &id("Tank", None)));
+        assert!(!same_program(&id("Tank", None), &id("tank", None)));
+        assert!(same_program(&id("Tank", None), &id("Tank", Some("T2"))));
+        assert!(same_program(&id("Tank", Some("T1")), &id("Tank", None)));
+        assert!(!same_program(&id("Tank", Some("T1")), &id("Main", None)));
+    }
+
+    #[test]
+    fn two_runtimes_run_the_same_programs_by_project_name_when_every_program_says_it_and_by_program_name_otherwise(
+    ) {
+        // Every program names its project program: those names, sorted, without case.
+        assert!(same_program_set(
+            &[id("Tank", Some("T1")), id("Pump", Some("P"))],
+            &[id("Pump", Some("p")), id("Other", Some("t1"))],
+        ));
+        assert!(!same_program_set(
+            &[id("Tank", Some("T1"))],
+            &[id("Tank", Some("T2"))],
+        ));
+        // Lengths first.
+        assert!(!same_program_set(
+            &[id("A", Some("A"))],
+            &[id("A", Some("A")), id("B", Some("B"))],
+        ));
+        // One program without a project name: the PROGRAM names, exactly.
+        assert!(same_program_set(
+            &[id("Tank", Some("T1")), id("Pump", None)],
+            &[id("Pump", Some("X")), id("Tank", Some("Y"))],
+        ));
+        assert!(!same_program_set(&[id("Tank", None)], &[id("tank", None)]));
+        assert!(same_program_set(
+            &[id("Tank", None)],
+            &[id("Tank", Some("T2"))]
+        ));
+        // Lists, never joined text.
+        assert!(!same_program_set(
+            &[id("a,b", None), id("c", None)],
+            &[id("a", None), id("b,c", None)],
+        ));
+        assert!(!same_program_set(
+            &[id("x", Some("a,b")), id("y", Some("c"))],
+            &[id("x", Some("a")), id("y", Some("b,c"))],
+        ));
+        // What a refusal names: the keys as compared.
+        assert_eq!(
+            program_set_keys(&[id("Z", Some("t2")), id("Y", Some("T1"))], &[]),
+            (vec!["T1".to_string(), "t2".to_string()], Vec::new(), true)
+        );
+        assert_eq!(
+            program_set_keys(&[id("b", None), id("a", Some("Q"))], &[]),
+            (vec!["a".to_string(), "b".to_string()], Vec::new(), false)
+        );
+    }
 
     /// Block `S` of type `T`: members `a` (INT at 0) and `b` (DINT at 4), 8 bytes.
     fn block(name: &str) -> DataBlock {

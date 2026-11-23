@@ -1286,6 +1286,7 @@ fn check_in(
                 // Only the fields `check_data` reads: this program is never answered.
                 let program = RuntimeProgram {
                     name: compiled.name.clone(),
+                    built_from: None,
                     version: String::new(),
                     interval_ms: entry.interval_ms,
                     code: String::new(),
@@ -1414,6 +1415,7 @@ fn build(
 
     let program = RuntimeProgram {
         name: compiled.name.clone(),
+        built_from: None,
         version: version.clone(),
         interval_ms: entry.interval_ms,
         code: hex::encode(&compiled.bytecode),
@@ -1650,7 +1652,7 @@ pub fn manifest() -> ModuleManifest {
                 "Check a runtime of the project without building or saving anything: each of its programs compiled from its saved source for the runtime's target, with its diagnostics, binding problems and its version in the runtime ('programs'); and 'problems', what the configuration breaks and what the core would refuse of the runtime as a whole (its tasks, its data blocks, an output or a published tag of two programs, an event task's tag no program reads into a BOOL). 'ok' when it would build; then 'version', the runtime's. 'data' is the data blocks its programs declare, each once. With a body (module, target, run and tasks, all four) that configuration is checked in place of the stored one, and nothing is saved. A program running alone is checked by its name as a runtime of its own. Nothing is loaded.",
                 Some(runtime_check_schema()), &[]),
             route("POST", "/runtimes/:runtime/build", "engineer", "build_logic_runtime",
-                "Build a runtime of the project: every program of it compiled from its saved source, in one snapshot of the project, for the runtime's target, packed as one runtime instance with its tasks and the data blocks its programs declare, each once. Answers 'instance', 'version' (the runtime's, as the core reports it once loaded: its programs' versions joined by ', '), 'programs' (each program's version in the runtime, code_size and memory_size), 'warnings', and 'replaces': the ids those programs run under alone. Nothing is loaded by this call: save 'instance' with save_runtimes_config in its 'instances', in place of the one with the same id, and take out the instances named in 'replaces' in the same save (the core refuses a data block or an output tag in two runtimes). 'replaces' does not name another configured runtime a program of this one was in before, which this module does not know to be loaded: if the core still runs one, take it out or build it again without the program and save it in the same save, or the program runs in both (the core does not refuse that when they share no output tag, published tag or data block). The core keeps RETAIN values per runtime id, not per program: a warm load gives a program the values kept under this runtime's id for variables of the same name, type and size, whichever program ran under it before, and none kept while it ran in another runtime; a cold load starts them from their initial values. A program running alone, by its name, builds exactly as build_logic_program builds it.",
+                "Build a runtime of the project: every program of it compiled from its saved source, in one snapshot of the project, for the runtime's target, packed as one runtime instance with its tasks and the data blocks its programs declare, each once. Answers 'instance', 'version' (the runtime's, as the core reports it once loaded: its programs' versions joined by ', '), 'programs' (each program's version in the runtime, code_size and memory_size), 'warnings', and 'replaces': the ids those programs run under alone. Nothing is loaded by this call: save 'instance' with save_runtimes_config in its 'instances', in place of the one with the same id, and take out the instances named in 'replaces' in the same save (the core refuses a data block or an output tag in two runtimes). 'replaces' does not name another configured runtime a program of this one was in before, which this module does not know to be loaded: if the core still runs one, take it out or build it again without the program and save it in the same save, or the program runs in both (the core does not refuse that when they share no output tag, published tag or data block). The core keeps RETAIN values per runtime id and per program: a warm load gives a program only the values kept under this runtime's id for it, of variables of the same name, type and size, never those kept for another program, nor those kept while it ran in another runtime; a cold load starts them from their initial values. A program running alone, by its name, builds exactly as build_logic_program builds it.",
                 None, &["tags"]),
         ],
     }

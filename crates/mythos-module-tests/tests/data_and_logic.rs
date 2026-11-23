@@ -878,14 +878,13 @@ fn retain_file_of(root: &Path, id: &str) -> Option<PathBuf> {
     walk(root, &format!("{id}.json"))
 }
 
-/// The core keeps RETAIN values per runtime id, not per program (the core's and the runtime
-/// module's, not fixed in the logic module). So when runtime `Line`'s one program changes from A
-/// to B, a warm load gives B's RETAIN `total` what was kept under `Line` for A's `total`, and a
-/// cold load does not. The build of B says exactly that: this test is the check that its warning
-/// is true, and it goes red when the core stops handing one program's values to another, which
-/// is when the warning must change with it.
+/// The core keeps RETAIN values per runtime id and per program. So when runtime `Line`'s one
+/// program changes from A to B, a warm load gives B's RETAIN `total` none of what was kept under
+/// `Line` for A's `total`: B starts from its initial value, the load says what it did not give
+/// and why, and the core's file then holds B's values only. The build of B says exactly that:
+/// this test is the check that its warning is true.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_runtime_id_given_another_program_warns_of_the_values_a_warm_load_hands_it() {
+async fn a_runtime_id_given_another_program_gives_it_none_of_the_values_kept_for_the_first() {
     let rig = rig().await;
     let settings = json!({"interval_ms": 20, "runtime": "vm", "target": "pc", "run": true});
     rig.program(
@@ -931,7 +930,7 @@ async fn a_runtime_id_given_another_program_warns_of_the_values_a_warm_load_hand
     assert_eq!(
         second["warnings"],
         json!([
-            "program 'B': RETAIN values are kept per runtime id, not per program: a warm load of runtime 'Line' puts into each RETAIN variable of 'B' the value kept under runtime 'Line' for a variable of the same name, type and size, whichever program ran in runtime 'Line' before, and none of the values kept while 'B' ran alone as runtime 'B'; a cold load starts every RETAIN variable from its initial value"
+            "program 'B': RETAIN values are kept per runtime id and per program: a warm load of runtime 'Line' gives a RETAIN variable of 'B' only a value kept under runtime 'Line' for 'B' (or, when the build that kept it did not name its project program, for a program of the same PROGRAM name), of the same name, type and size; values kept under runtime 'Line' for another program are not given, and none of those kept while 'B' ran in another runtime, alone as runtime 'B' included; a cold load starts every RETAIN variable from its initial value"
         ]),
         "{second}"
     );
@@ -951,11 +950,52 @@ async fn a_runtime_id_given_another_program_warns_of_the_values_a_warm_load_hand
         t["program"] == "B" && t["mode"] == "run" && t["scans"].as_u64() >= Some(1)
     })
     .await;
-    let (warm, watched) = total().await;
-    assert!(
-        warm.as_i64().is_some_and(|v| v >= 1),
-        "a warm load gives B what was kept under Line for A, as the warning says: {watched}; the core answered {applied}"
+    let load = &applied["changes"]["runtimes"][0];
+    assert_eq!(
+        (&load["runtime"], &load["start"], &load["why"]),
+        (
+            &json!("Line"),
+            &json!("warm"),
+            &json!("the program running was 'A', not 'B'")
+        ),
+        "{applied}"
     );
+    assert_eq!(
+        load["not_given"],
+        json!([{
+            "variable": "A.total",
+            "why": "kept for program 'A', which runtime 'Line' does not run now"
+        }]),
+        "{applied}"
+    );
+    let (warm, watched) = total().await;
+    assert_eq!(
+        warm,
+        json!(0),
+        "a warm load gives B none of what was kept under Line for A, as the warning says: {watched}; the core answered {applied}"
+    );
+    // The core's file then holds B's values only: A's are not kept for B to be given later.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let kept: Option<Value> = retain_file_of(rig._root.path(), "Line")
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .and_then(|t| serde_json::from_str(&t).ok());
+        let names: Option<Vec<String>> = kept.as_ref().and_then(|k| {
+            k["programs"].as_array().map(|ps| {
+                ps.iter()
+                    .map(|p| p["name"].as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
+        });
+        if names.as_deref() == Some(&["B".to_string()][..]) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the core's file still holds a program other than B, or none: {kept:?}; the core answered {applied}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     // Cold: from its initial value, as the warning says (B never writes its total).
     let asked = rig
         .eng("POST", "/api/v1/runtimes/Line/cold-start", None, 200)

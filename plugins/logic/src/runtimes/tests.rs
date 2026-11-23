@@ -1757,7 +1757,7 @@ async fn a_runtime_build_names_what_it_replaces_and_warns_of_retained_values_not
     assert_eq!(
         b["warnings"],
         json!([
-            "program 'Keeper': RETAIN values are kept per runtime id, not per program: a warm load of runtime 'Line' puts into each RETAIN variable of 'Keeper' the value kept under runtime 'Line' for a variable of the same name, type and size, whichever program ran in runtime 'Line' before, and none of the values kept while 'Keeper' ran alone as runtime 'Keeper'; a cold load starts every RETAIN variable from its initial value",
+            "program 'Keeper': RETAIN values are kept per runtime id and per program: a warm load of runtime 'Line' gives a RETAIN variable of 'Keeper' only a value kept under runtime 'Line' for 'Keeper' (or, when the build that kept it did not name its project program, for a program of the same PROGRAM name), of the same name, type and size; values kept under runtime 'Line' for another program are not given, and none of those kept while 'Keeper' ran in another runtime, alone as runtime 'Keeper' included; a cold load starts every RETAIN variable from its initial value",
             format!("program 'Reader': output {SPEED} is not a tag of this controller now: writes to it will fail"),
         ])
     );
@@ -2072,7 +2072,7 @@ fn the_tools_say_that_a_runtime_a_program_left_still_runs_it_until_it_is_taken_o
         "'replaces' does not name another configured runtime a program of this one was in before",
         "or the program runs in both",
         "its programs' versions joined by ', '",
-        "a warm load gives a program the values kept under this runtime's id",
+        "a warm load gives a program only the values kept under this runtime's id",
     ] {
         assert!(build.contains(said), "{said}: {build}");
     }

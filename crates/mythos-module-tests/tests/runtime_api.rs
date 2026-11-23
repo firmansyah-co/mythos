@@ -974,14 +974,17 @@ impl Rig {
         loop {
             if let Ok(text) = std::fs::read_to_string(&file) {
                 let kept: Value = serde_json::from_str(&text).unwrap();
-                assert_eq!(kept[0]["path"], "total", "{kept}");
-                assert_eq!(kept[0]["type"], "DINT", "{kept}");
-                assert_eq!(
-                    kept.as_array().unwrap().len(),
-                    1,
-                    "only the RETAIN one: {kept}"
-                );
-                let bytes = hex::decode(kept[0]["bytes"].as_str().unwrap()).unwrap();
+                // Kept for the program it is of, by its name, with its path bare.
+                let programs = kept["programs"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("kept per program: {kept}"));
+                assert_eq!(programs.len(), 1, "one program: {kept}");
+                assert_eq!(programs[0]["name"], "Counter", "{kept}");
+                let values = programs[0]["values"].as_array().unwrap();
+                assert_eq!(values.len(), 1, "only the RETAIN one: {kept}");
+                assert_eq!(values[0]["path"], "total", "{kept}");
+                assert_eq!(values[0]["type"], "DINT", "{kept}");
+                let bytes = hex::decode(values[0]["bytes"].as_str().unwrap()).unwrap();
                 let total = i64::from(i32::from_le_bytes(bytes.try_into().unwrap()));
                 if holds(total) {
                     return total;
@@ -991,6 +994,72 @@ impl Rig {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
+}
+
+/// A retain file written before RETAIN values were kept per program is a bare array of the
+/// module's values. It is given as it was, and the first keep writes it again in the new form,
+/// even when nothing changed: here the runtime is loaded in STOP, so its module answers what it
+/// was given.
+#[tokio::test]
+async fn a_retain_file_of_today_is_given_as_before_and_written_again_in_the_new_form() {
+    let rig = rig().await;
+    let file = rig
+        ._root
+        .path()
+        .join("projects/.mythos-system/retain/plant/counter.json");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        r#"[{"path":"total","type":"DINT","bytes":"2a000000"}]"#,
+    )
+    .unwrap();
+    let mut stopped = counter("v1");
+    stopped["instances"][0]["run"] = json!(false);
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/runtimes",
+            Some(stopped),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let load = &body["changes"]["runtimes"][0];
+    assert_eq!(load["start"], "warm", "{body}");
+    assert_eq!(load["not_given"], json!([]), "{body}");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let kept: Option<Value> = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok());
+        if let Some(kept) = kept.as_ref().filter(|k| k.is_object()) {
+            assert_eq!(kept["programs"][0]["name"], "Counter", "{kept}");
+            assert_eq!(kept["programs"][0]["values"][0]["path"], "total", "{kept}");
+            assert_eq!(
+                kept["programs"][0]["values"][0]["bytes"], "2a000000",
+                "the value it was given, kept again: {kept}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the file of today was never written again in the new form: {kept:?}; the load answered {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let (status, body) = rig
+        .send(&rig.engineer, "POST", "/api/v1/runtimes/counter/run", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (total, n) = rig
+        .counted_when("it runs", |_, n, mode| mode == "run" && n > 0)
+        .await;
+    assert_eq!(
+        total - n,
+        42,
+        "the RETAIN counter went on from the 42 of the file of today, n from zero: total {total}, n {n}"
+    );
+    rig.io.shutdown().await;
 }
 
 #[tokio::test]
@@ -1445,8 +1514,9 @@ async fn a_new_build_of_a_running_program_is_changed_online_and_a_cold_load_or_a
     rig.kept_when("the cold load's count", |t| t < before.0)
         .await;
 
-    // A program of another name in its place starts as before: the RETAIN counter from what
-    // was kept for the runtime, the plain one from zero.
+    // A program of another name in its place is not the same program: it is given none of what
+    // was kept for Counter under the runtime's id, and the load says so. Both counters start
+    // from zero.
     let (running_total, _) = rig
         .counted_when("it counts past 100 again", |total, _, mode| {
             mode == "run" && total > 100
@@ -1468,6 +1538,14 @@ async fn a_new_build_of_a_running_program_is_changed_online_and_a_cold_load_or_a
         load["why"], "the program running was 'Counter', not 'Tally'",
         "{body}"
     );
+    assert_eq!(
+        load["not_given"],
+        json!([{
+            "variable": "Counter.total",
+            "why": "kept for program 'Counter', which runtime 'counter' does not run now"
+        }]),
+        "{body}"
+    );
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let (_, body) = rig.send(&rig.viewer, "GET", "/api/v1/runtimes", None).await;
@@ -1485,8 +1563,8 @@ async fn a_new_build_of_a_running_program_is_changed_online_and_a_cold_load_or_a
         })
         .await;
     assert!(
-        total >= kept + n && n < running_total,
-        "a warm restart: total from what was kept ({kept}): {total}; n from zero: {n}"
+        total <= n + 1 && n < running_total,
+        "a warm restart given none of Counter's values: total from zero, not from what was kept for Counter ({kept}): {total}; n from zero: {n}"
     );
 
     rig.io.shutdown().await;
@@ -1933,9 +2011,10 @@ impl Rig {
         loop {
             if let Ok(text) = std::fs::read_to_string(&file) {
                 let kept: Value = serde_json::from_str(&text).unwrap();
-                let block = kept
+                // A block's master is kept in data, apart from the programs' values.
+                let block = kept["data"]
                     .as_array()
-                    .unwrap()
+                    .unwrap_or_else(|| panic!("the blocks are kept in data: {kept}"))
                     .iter()
                     .find(|k| k["path"] == "S")
                     .unwrap_or_else(|| panic!("the block is kept: {kept}"));
