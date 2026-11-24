@@ -101,8 +101,9 @@ The design is recorded in the [architecture decisions](specs/adr/). The ones tha
 are [ADR-010](specs/adr/ADR-010-modules-are-processes.md) (modules are processes),
 [ADR-011](specs/adr/ADR-011-the-core-and-service-modules.md) (the core and service modules),
 [ADR-012](specs/adr/ADR-012-nodes-discovery-and-plant-projects.md) (nodes and plants),
-[ADR-013](specs/adr/ADR-013-logic-compiler-and-vm.md) (the logic compiler and VM) and
-[ADR-014](specs/adr/ADR-014-data-blocks-and-the-data-module.md) (data blocks and the data module).
+[ADR-013](specs/adr/ADR-013-logic-compiler-and-vm.md) (the logic compiler and VM),
+[ADR-014](specs/adr/ADR-014-data-blocks-and-the-data-module.md) (data blocks and the data module)
+and [ADR-015](specs/adr/ADR-015-library-packages.md) (library packages, a design not built).
 
 ## Quick start
 
