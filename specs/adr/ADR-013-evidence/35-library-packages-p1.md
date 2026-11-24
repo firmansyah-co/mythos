@@ -11,7 +11,7 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
   built.
 
   **The crate.** `crates/mythos-logic-package` is a platform crate (std; dependencies `zip` 0.6
-  with deflate only, `sha2`, `hex`, `serde`, `serde_json` with `raw_value`; all already in
+  with deflate only, `sha2`, `hex`, `serde`, `serde_json`; all already in
   `Cargo.lock`, which gains only the 11 lines of the crate's own entry). Its one entry is
   `read(file: &[u8]) -> Result<Package, String>`. It opens no file, reads no environment, builds
   no path from a name in the file and writes nothing. `id_problem` (R3) and `source_name_problem`
@@ -84,8 +84,9 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
     or an AES field; an unsupported method; a data descriptor on a stored entry or one that
     disagrees with the central directory; an extra field other than `0x000a` (NTFS times),
     `0x5455` (time stamp) and `0x7875` (Unix owner); bytes in `src/`.
-  - The format: not an integer from 1; above 1, told with its number as written, before the
-    entries are read.
+  - The format: not an integer from 1; above 1, told with its number, before the entries are
+    read; a whole number from 2^64 told as "a format past 18446744073709551615" (the JSON reader
+    does not keep its digits).
   - `checksums.json`: absent; not an object of 64-hex-digit values; a key twice; the manifest or
     a source not listed; a listed name not held; it lists itself or `src/`; a mismatch.
   - `manifest.json`: not JSON; a byte order mark; a key twice; an unknown key; a required field
@@ -95,8 +96,8 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
   - A source: not among `files`; a `files` item not held; not UTF-8 text; a byte order mark.
     CRLF is taken, byte for byte.
 
-  **Tests.** `crates/mythos-logic-package/tests/read.rs` has 89 tests; the run printed
-  `ok. 89 passed; 0 failed`, and `ok. 3 passed` for three `compile_fail` doctests that prove a
+  **Tests.** `crates/mythos-logic-package/tests/read.rs` had 89 tests when this was written (95
+  after the second review below); the run printed `ok. 89 passed; 0 failed`, and `ok. 3 passed` for three `compile_fail` doctests that prove a
   `Package`, `Manifest` and `Dependency` cannot be built outside the crate. Zips are built in
   memory by the `zip` writer, or byte by byte (`zip_by_hand`) for headers the writer never makes.
   - `a_valid_package_is_read_whole_with_its_sources_in_byte_order`: R9, every field, sorted
@@ -184,3 +185,63 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
   - Not fixed: control characters and bidirectional text in `name`, `license`, `description` and
     `authors` are taken, since the contract asks only that they are not empty; P1b and the UI
     must escape them (LATENT). `depends` has no count bound (LATENT).
+
+  **A second review, of the fix commit alone** (one reviewer, asked for by the orchestrator: the
+  twelve fixes above had been read by nobody but their author). Six findings, all corrected by
+  the orchestrator in one commit:
+  - High, LATENT: the fix had turned on serde_json's `raw_value` feature to read the format's
+    digits. With it, every `Value` of a build reads an object of the one key
+    `$serde_json::private::RawValue` as the value its string holds, so a manifest could give
+    `files` or `depends` in a form every other JSON reader sees as an object, and a key twice
+    inside that string was not seen. The feature is gone; a whole number from 2^64 is told as a
+    format past `u64::MAX`, and one of more digits than the JSON reader takes is "not a package
+    manifest: number out of range". Tests:
+    `a_manifest_field_wrapped_in_a_private_key_of_the_json_library_is_refused`,
+    `a_format_past_u64_is_refused_as_a_newer_format`,
+    `a_format_of_more_digits_than_a_json_reader_takes_is_not_a_manifest`.
+  - Medium, a regression of the fix: a package Info-ZIP writes to a stream was refused (its local
+    header holds a zero checksum, a zero compressed size and the real size, beside a data
+    descriptor). With a descriptor, each of the three is now zero or the central directory's.
+    Tests: `a_package_written_to_a_stream_with_its_size_in_the_local_header_is_read`,
+    `a_local_header_size_that_is_neither_zero_nor_the_central_one_is_refused`.
+  - Medium, LATENT: the DOS directory bit of an entry's attributes was not read, and 7-Zip and
+    bsdtar make a directory of such an entry. Refused now, except for `src/`. Test:
+    `an_entry_whose_dos_attributes_mark_it_a_directory_is_refused`.
+  - Low, TEST-ONLY: no test had an extra field in the local header alone. Test:
+    `an_extra_field_that_only_the_local_header_holds_is_refused_by_its_id`.
+  - Low: a format of 310 digits or more (above); and the words of `Manifest`'s documentation,
+    which said a manifest is always one `read` took although a clone can be changed: corrected.
+  - The reviewer's 145 crafted files (made with Info-ZIP, bsdtar, 7-Zip, Python and by hand) were
+    run against the corrected reader by the orchestrator: no panic; the 42 taken are plain
+    packages of those writers and the shapes the review lists as right to take; the files of the
+    six findings give the answers above. Those files are not in the repository.
+
+  **A red of this slice found by CI, and its correction.** On the first push, "Rust Workspace
+  Test Suite & Lints" failed in `the_logic_crates_keep_their_layers`
+  (`crates/mythos-logic-compiler/tests/layers.rs`): every `mythos-logic-*` crate must be listed
+  there with what it may depend on, and the new one was not. It is listed now with no workspace
+  dependency at all. The orchestrator had run the crate's own tests and `module_boundaries`, not
+  the compiler crate's.
+
+  **Verification of the finished slice** (the orchestrator; this is what "run after this text"
+  above was waiting for).
+  - On `e582335` (the corrections of the second review): `cargo fmt --all --check` clean;
+    `cargo clippy -p mythos-logic-package --all-targets -- -D warnings` clean;
+    `cargo test -p mythos-logic-package` 95 passed and the 3 `compile_fail` doctests;
+    `cargo test -p mythos-module-tests --test module_boundaries` 3 passed;
+    `cargo check --workspace --all-targets --locked` finished; the Windows lint printed
+    "win-clippy: GREEN". After the layer was added: `cargo test -p mythos-logic-compiler --test
+    layers` 2 passed.
+  - **Mutations**, with `scripts/mutation-check.py`, in a copy of `e582335` made by `git archive`
+    with its own target directory, both baselines green, against the crate's whole test suite:
+    **29 of 29 red.** They are 12 of the stage, 11 for the first review's fixes (the twelfth no
+    longer applies: its lines were replaced by the second review's correction) and 6 of the
+    orchestrator's for that correction, one of them turning `raw_value` on again. The tool prints
+    "did not compile" for one, the mutation that takes `#[non_exhaustive]` off `Manifest`: its
+    log shows the doctest "Manifest - compile fail ... FAILED", which is the red; the tool
+    mislabels a failing `compile_fail` doctest.
+  - **Read by one reader only:** the orchestrator's correction of the second review's findings
+    (`e582335`) was read by no reviewer; its six mutations above are its check.
+  - **Not run by the orchestrator:** the full gate (`./scripts/check.sh`), `cargo test
+    --workspace`, macOS. No green full gate of this commit exists from this machine; CI is the
+    gate.
