@@ -1,6 +1,6 @@
 # ADR-015: Library Packages
 
-- **Status**: PROPOSED (design; P1a, the package file, is built with evidence 35; P1b and P1c are not built: §7)
+- **Status**: PROPOSED (design; P1a, the package file, and P1b, the stored list, five routes and an event, are built with evidence 35; P1c is not built: §7)
 - **Date**: 2026-11-24
 - **Requested by**: Adrian (2026-11-23 and 2026-11-24, in Indonesian; the words quoted below are
   translated into English)
@@ -88,7 +88,9 @@ owner has not answered, §5 asks.
   a cache on the machine does not.
 - **Routes carry JSON**: a module route's body is `Option<Value>`
   (`crates/mythos-module/src/protocol.rs:166`), so a package file reaches a module only encoded
-  inside JSON. The size limit of a module route's body is UNKNOWN.
+  inside JSON. The size limit of a module route's body is the default of the web framework, 2_097_152
+  bytes (`axum-core` 0.4.5, `src/ext_traits/request.rs`, `DEFAULT_LIMIT`; the core sets no limit of
+  its own on module routes). That is a figure of that library and not one MythOS publishes.
 - **Targets**: `pc`, `rp2040` (64 KiB memory, 512 KiB code), `esp32` (128 KiB, 1 MiB)
   (`crates/mythos-logic-compiler/src/profile.rs:62-77`). Each built-in profile takes the one
   `FORMAT_VERSION` of the VM (`profile.rs:41-51`), and the bytecode is little-endian on every
@@ -159,9 +161,14 @@ The manifest's fields (the author's; the names are proposals, the meanings are t
 
 ### 2.3 Where a package lives in a project, and what add and remove mean
 
-- An added package is copied into `<project>/logic/packages/<id>/<version>/`, and the project's
+- An added package is kept whole, as the file it came as, at
+  `<project>/logic/packages/<id>/<version>.zip` (P1b; both names lower-cased, so ids that differ
+  only in case are one directory on every OS), and the project's
   list `<project>/logic/packages.json` names each package, its version, its SHA-256 and its origin
   (A6). The list is the lock of §2.5. A project holds one version of a package.
+  The file is kept whole, and not unpacked into a directory, because the SHA-256 of §2.13 is over
+  the file as published and can be checked again at every read only against the file; nothing is
+  written from inside the package, so no path inside it reaches the disk.
 - Every check and build reads the packages from the project, never from a cache. The slice
   carries them to a controller, and they enter the slice's hash (§1.3).
 - **Add** checks the file (§2.8), reads its manifest, checks its sources with the project's
@@ -234,7 +241,11 @@ The manifest's fields (the author's; the names are proposals, the meanings are t
   configured endpoint holds is listed as not found and cannot be ticked.
 - Installed together means all or none: if one download or check fails, nothing is added.
 - A file import (step 1) has no page: its manifest's dependencies that the project does not have
-  are named, and the import answers that the project will not check until they are added.
+  are named, and the import is refused (P1b) while the project lacks one of them, with the missing
+  ids answered. The author's first text had the import answer that the project will not check
+  until they are added; refusing keeps "every package's dependencies are present", which the
+  refusal of a remove for dependents (A1) relies on, and is cheap to loosen later where an
+  accepted package is not cheap to take back.
 - Which version a range resolves to when two packages ask for different ones is open (§5
   question 1).
 
@@ -316,15 +327,19 @@ is open (§5 question 5).
   so a data block can be typed by a package's type. A package's type is read-only in the data
   module's editor.
 
+The path parameter of step 1 is `:package`, not `:id` (P1b): the core's MCP maps a module route's
+`:id` to the argument `project_id`, which a project route already has, so one tool could not
+name both values.
+
 Routes and tools each step will add (names proposed; each route an MCP tool, ADR-010 §2.5):
 
 | Step | Module | Route | Role | MCP tool |
 |------|--------|-------|------|----------|
 | 1 | logic | `GET /packages` | viewer | `list_logic_packages` |
-| 1 | logic | `GET /packages/:id` | viewer | `get_logic_package` |
+| 1 | logic | `GET /packages/:package` | viewer | `get_logic_package` |
 | 1 | logic | `POST /packages/check` (a package file: what it adds, clashes, missing dependencies) | viewer | `check_logic_package` |
 | 1 | logic | `POST /packages` (add from a file, base64 in JSON) | engineer | `add_logic_package` |
-| 1 | logic | `DELETE /packages/:id` | engineer | `remove_logic_package` |
+| 1 | logic | `DELETE /packages/:package` | engineer | `remove_logic_package` |
 | 1 | logic | event `LOGIC_PACKAGES_CHANGED` | | |
 | 3 | packages | `GET /endpoints` | viewer | `list_package_endpoints` |
 | 3 | packages | `PUT /endpoints/:name`, `DELETE /endpoints/:name` | admin | `save_package_endpoint`, `delete_package_endpoint` |
@@ -362,7 +377,7 @@ UI piece. Each slice has its own evidence file.
 
 | Slice | Step | What | Needs first |
 |-------|------|------|-------------|
-| P1 | 1 | P1a (the package file, crate `mythos-logic-package`) is built: evidence 35; P1b and P1c are not built. Logic module: the package file (zip, manifest with `form` and `languages`, checksums), `packages.json`, the step-1 routes and event, packages compiled with the project, clashes and removals refused, origin and SHA-256 recorded, logic module version and package hashes in the build answer | §5 questions 2, 3 |
+| P1 | 1 | P1a (the package file, crate `mythos-logic-package`) and P1b (the stored file, `packages.json`, five routes and tools, the event; programs are not compiled with packages yet) are built: evidence 35; P1c is not built. Logic module: the package file (zip, manifest with `form` and `languages`, checksums), `packages.json`, the step-1 routes and event, packages compiled with the project, clashes and removals refused, origin and SHA-256 recorded, logic module version and package hashes in the build answer | §5 questions 2, 3 |
 | P2 | 1 | CLI: pack a directory into a package, as `mythos module pack` does for modules | P1; the command's word (§5 question 7) |
 | P3 | 1 | logic-ui: a Packages node in the Library section; add from a file, details, remove with the users named on refusal | P1 |
 | P4 | 2 | Logic module and data module: types in a package; the data module reads them as a contract; a data block typed by one | P1 |
@@ -420,13 +435,15 @@ recommendation.
 - Whether the compiler's output for one source is the same on every OS.
 - Whether a module crate may depend on `mythos-update` or on the module package code under the
   boundary guard (ADR-011 §2.6); the install code is in the core today.
-- The body size limit of a service module route.
+- The body size limit of a service module route is read (§1.3: the web framework's default, 2_097_152
+  bytes) and is not a figure MythOS publishes; if the library's default changes, an add fails with
+  the library's 413 before the module's words.
 - Whether a whole project can be exported or imported as a file today: UNKNOWN; none was found.
 - Whether a compiled unit would sit at the IR or the bytecode level.
 
 ## 7. Status
 
-P1a (the package file, read by the crate `mythos-logic-package`, nothing uses it yet) is built, with evidence 35 in ADR-013's evidence directory. P1b and P1c are not built, and nothing else of this ADR is. The project's own library (ADR-014 D4c) is built and unchanged by
+P1a (the package file, read by the crate `mythos-logic-package`) and P1b (a project keeps a package whole at `logic/packages/<id>/<version>.zip`, lists it in `logic/packages.json` with its SHA-256 and origin, reads it again at every read, and removes it; five routes, each an MCP tool; the event `LOGIC_PACKAGES_CHANGED`) are built, with evidence 35 in ADR-013's evidence directory. Programs are not compiled with packages yet: P1c does that and is not built, and nothing else of this ADR is. The project's own library (ADR-014 D4c) is built and unchanged by
 it. The routes, tools, fields and module named here are a plan. The store does not exist.
 
 ## 8. Public concepts referred to

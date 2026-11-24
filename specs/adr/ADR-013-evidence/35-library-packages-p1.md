@@ -267,3 +267,269 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
   - **Not run by the orchestrator:** the full gate (`./scripts/check.sh`), `cargo test
     --workspace`, macOS. No green full gate of this commit exists from this machine; CI is the
     gate.
+
+- **Library packages P1b** (a project holds packages: the stored file and packages.json, five
+  routes with their MCP tools, an event; ADR-015 step 1, second of three slices, 2026-11-24).
+  The logic module keeps a package file in the project, lists it, reads it again and removes it.
+  **No program is compiled with a package yet.** A package is kept and listed; programs are not
+  compiled with it. `read_project`, `given`, `POST /library/check` and both builds are unchanged,
+  so a program that calls a package's block does not compile with it until P1c, which does that
+  and is not built.
+
+  **The stored form.** The file is kept whole, as given, at
+  `<project>/logic/packages/<id>/<version>.zip`, with `<id>` and `<version>` the manifest's, both
+  lower-cased, so ids that differ only in case are one directory on every file system. The path
+  is built in one function (`stored_names`) from an id and version that passed
+  `mythos_logic_package::read` (add) or the checks of `packages.json` (every other route); the
+  caller's file name is never part of a path. The list `<project>/logic/packages.json` is sorted
+  by lowercase id and refuses unknown keys:
+
+  ```json
+  { "packages": [ { "id": "org.example.motors", "version": "1.2.0",
+      "sha256": "<64 lowercase hex>", "origin": { "kind": "file", "file_name": "motors-1.2.0.zip" } } ] }
+  ```
+
+  `file_name` is present only when the caller gave one (1 to 255 characters, no control
+  character). A missing `packages.json` is no package, and no read makes it.
+
+  **The routes.** Each is declared in the manifest and is an MCP tool (19 tools before, 24 now).
+  The parameter is `:package`, since `:id` would collide with `project_id` in the core's MCP
+  mapping.
+
+  | Method and path | Least role | MCP tool |
+  |---|---|---|
+  | `GET /packages` | viewer | `list_logic_packages` |
+  | `GET /packages/:package` | viewer | `get_logic_package` |
+  | `POST /packages/check` | viewer | `check_logic_package` |
+  | `POST /packages` | engineer | `add_logic_package` |
+  | `DELETE /packages/:package` | engineer | `remove_logic_package` |
+
+  Each description says what the tool reads or writes and ends "A package is kept and listed;
+  programs are not compiled with it yet." The two POST descriptions state the bounds, built from
+  the crate's constants: base64 (standard alphabet, padded) of at most 1398104 characters,
+  1048576 bytes, 1024 entries, 2097152 bytes unpacked; the add states the 1024 library source
+  bound. The body of both POSTs is `{"file": "<base64>", "file_name": "<optional>"}`, `file`
+  required; its length is checked before it is decoded and the decode error echoes no byte of it.
+
+  **The answers.**
+  - List: 200 `{packages: [...]}`; an entry is `{id, version, sha256, origin, name, license,
+    format}` (the last three read again from the stored file) or `{id, version, sha256, origin,
+    problem}` with no manifest field.
+  - Get (id without regard to case, the manifest's spelling answered): 200 `{entry, manifest,
+    sources, blocks, diagnostics, dependents, versions_checked: false}`, `blocks` only when the
+    package checks, `dependents_unknown` when another package's file does not read; a package
+    that does not read: 200 `{entry, problem}` only; unknown: 404; not an id: 400 in the crate's
+    `id_problem` words, before the lock.
+  - Check: 200 `{ok, package, sha256, size, blocks?, diagnostics, clashes, missing, present,
+    versions_checked: false}` and, when `ok` is false, `refusal: {status, error}` with the add's
+    words. No lock, nothing written; in a project with no module directory it makes none.
+  - Add: 201 `{added, blocks, versions_checked: false}`. Remove: 200 `{removed: {id, version}}`,
+    with `left` when the list was written but the file could not be removed.
+  - Event `LOGIC_PACKAGES_CHANGED` `{project, package, version, what}`, `what` "added" or
+    "removed", sent on a successful add or remove only. `LOGIC_LIBRARY_CHANGED` is never sent for
+    a package (H5): the workbench reads it as a library source.
+
+  **The add**, in the order of its refusals: the base64 bound, `file_name`, decoding, the crate's
+  reader (400); an id already present in any case (409); a missing dependency (409); another
+  stored package that does not read (409); a TYPE or PROGRAM in a package source (400); a name
+  clash (409); more than `MAX_SOURCES` library sources (409); a package that does not check
+  (400). The package is checked by `library_blocks` with the sources of its dependencies
+  (transitively) and nothing else of the project, so it may use only what it depends on.
+  Clashes compare, without case, each FUNCTION, FUNCTION_BLOCK and TYPE name of a package source
+  with the non-PROGRAM names of the project's library sources, of `data/types/*.st` and of every
+  other stored package. Dependency versions are kept as text and not compared.
+
+  **What keeps an answer truthful.**
+  - A stored file is read again at every read; its SHA-256 is compared with the recorded one, then
+    its id and version with the entry. A file missing, unreadable, no longer a package, changed
+    or holding another id or version is a `problem` naming `logic/packages/<id>/<version>.zip`,
+    never a package in order. A stored file `packages.json` does not list is not a package, and a
+    later add of the same id and version writes over it.
+  - `packages.json` is validated whole at every load (id, version, SHA-256, `file_name`, no id
+    twice in any case, no unknown key or origin kind). A file that fails is a 500 naming it and
+    is never written over; no path is built from an unchecked entry.
+  - A refused add or check writes nothing of the package. In a project that already has `logic/`
+    a refused add or remove leaves `logic/.lock.tmp`, as every write route does; in a project
+    with no `logic/` a refused add makes nothing.
+  - The add writes the file, then `packages.json`; the remove writes `packages.json`, then
+    removes the file, then the `<id>` directory with `remove_dir`. All through `write_synced` and
+    `remove_written` under the module's lock. Check and add share one function, so `ok` is true
+    exactly when the add would answer 201.
+
+  **The refusals.** 400: base64 over the bound ("the file is N characters of base64; at most
+  1398104 are taken, the base64 of 1048576 bytes"), not base64, the reader's words verbatim,
+  a bad `file_name` or body key, a `:package` that is not an id, a TYPE or PROGRAM in a package,
+  "does not check". 404: no such package. 409 (add): the id is present ("remove it first (an
+  update is ADR-015 step 3)"), a missing dependency, another stored package that does not read,
+  a clash naming both places, a source that cannot be told (see the fixes), over 1024 sources.
+  409 (remove): other readable packages depend on it, naming them. 500: `packages.json` cannot
+  be read, a file cannot be written.
+
+  **Tests.** The stage's run of `cargo test -p mythos-logic --lib packages` printed `ok. 22
+  passed; 0 failed`; the fixes added six, 28 in all, and the output of a run after the fixes was
+  not given to this text's author: NOT VERIFIED here. They are in
+  `plugins/logic/src/packages/tests.rs`, build zips with the `zip` writer and call `Logic::serve`
+  on a temporary directory.
+  - `a_package_is_added_listed_read_and_removed`: add in a project with no module directory,
+    entry and `file_name`, blocks, both events, stored bytes, `packages.json`, sorted list, get
+    with an absent optional field left absent, remove takes file and directory.
+  - Refused with nothing written: `a_package_whose_id_differs_only_in_case_from_one_in_the_project_is_refused`,
+    `a_package_whose_dependency_the_project_lacks_is_refused_naming_it`,
+    `a_package_declaring_a_block_the_projects_library_declares_is_refused_naming_both`,
+    `..._another_package_declares_...`, `..._named_like_a_user_type_...` (each names both places
+    and `clashes`), `a_type_in_a_package_is_refused`,
+    `a_package_that_uses_a_block_of_a_package_it_does_not_depend_on_is_refused`,
+    `an_add_past_the_source_bound_is_refused_stating_it`.
+  - `removing_a_package_another_depends_on_is_refused_naming_it`;
+    `an_absent_package_is_404_and_a_parameter_that_is_not_an_id_is_400_in_the_readers_words`.
+  - `a_file_over_the_base64_bound_is_refused_before_it_is_decoded` (one character over: the
+    bound's words; at the bound: not base64; both routes);
+    `a_file_that_is_not_a_package_is_refused_in_the_readers_words_and_nothing_written`.
+  - `the_check_writes_nothing_takes_no_lock_and_its_ok_is_true_exactly_when_the_add_would_succeed`:
+    seven cases, the check's `ok` equals the add's 201 and its refusal the add's.
+  - Storage: `a_listed_package_whose_file_is_missing_is_answered_with_a_problem_and_no_manifest_fields`,
+    `a_listed_package_whose_file_was_changed_is_answered_with_a_problem_and_can_be_removed`,
+    `a_stored_file_packages_json_does_not_list_is_not_a_package_and_an_add_writes_over_it`,
+    `an_unreadable_packages_json_is_a_500_naming_it_and_is_not_written_over` (seven bad files),
+    `the_add_writes_the_file_before_the_list`, `the_remove_writes_the_list_before_it_removes_the_file`,
+    `ids_that_differ_only_in_case_are_one_id_and_one_directory`.
+  - `the_manifest_declares_the_five_package_routes_each_a_tool_that_says_programs_are_not_compiled_with_it`:
+    method, path, tool, role, the "not compiled" sentence, the bounds from the constants.
+  - Added by the fixes: `a_package_whose_dependencys_file_is_lost_is_removed_and_then_the_dependency`,
+    `two_listed_packages_whose_files_are_missing_can_each_be_removed`,
+    `a_dependency_cycle_made_by_hand_is_removed_one_package_at_a_time`,
+    `a_file_of_text_that_is_not_ascii_past_the_byte_bound_is_refused_as_not_base64`,
+    `a_package_is_refused_while_a_project_source_declares_what_cannot_be_named`,
+    `the_package_tools_name_every_refusal_and_the_keys_that_carry_it`.
+  - `crates/mythos-module-tests/tests/logic_module.rs`, through the real server:
+    `an_agent_adds_lists_reads_and_removes_a_package_over_mcp` (five tools, check, add, the second
+    add's 409 words, list, get in another case, remove, files on disk, the event on the telemetry
+    stream with exact data); `an_agent_writes_checks_and_builds_a_program_over_mcp` (changed: the
+    pinned list 19 to 24, the five after `build_logic_program`);
+    `each_role_does_what_it_may_and_what_is_wrong_is_refused_and_not_saved` (changed, a block
+    appended: viewer and operator 403 on add and remove, reads and check as viewer, operator and
+    administrator, engineer and administrator add and remove, 404, `org.CON` 400). The exact
+    `id_problem` words are not compared there: `mythos-module-tests` does not depend on the crate
+    and its `Cargo.toml` is not a file of this slice.
+  - Stage runs, before the fixes: `logic_module` `ok. 13 passed`, `module_boundaries` `ok. 3
+    passed`, `cargo test -p mythos-module-tests --no-fail-fast` exit 0, `cargo test -p
+    mythos-logic` lib `ok. 101 passed`, clippy `-D warnings` and `cargo fmt --all --check` exit 0.
+
+  **Departures and decisions.**
+  - The routes sit between `build_logic_program` and `list_logic_library`, not after the library
+    routes: `runtimes::tests::the_manifest_declares_the_runtime_routes_each_a_tool_of_its_own`
+    pins the last seven tools, and no existing test may change.
+  - `plugins/logic/Cargo.toml` gains `mythos-logic-package`, `base64` and, as a dev-dependency,
+    `zip` for the tests. `Cargo.lock` gains three added lines in `mythos-logic`'s list and
+    changes no `version =` line. The manifest's description gains a clause about packages.
+  - Answer keys beyond the contract's shapes: `refusal` (check), `diagnostics`, `versions_checked`
+    and `dependents_unknown` (get), `versions_checked` (add), `left` (remove).
+  - The crate's `version_problem` is private and the crate may not change in P1b, so
+    `packages.rs` restates its rule for `packages.json` with its own words; a reviewer read the
+    two as the same rule.
+  - A bad id or version in `packages.json` is a 500 for the whole file, not a per-entry
+    `problem`, since such an entry cannot name a file.
+  - The add and the check are refused 409 while another listed package does not read: what it
+    declares is unknown, so no clash check can be claimed.
+  - The base64 bound is checked on the byte length, before decoding and before `file_name`.
+  - H15: the only route ending in `/check` that P1b adds is the read-only one. H13: refused 409
+    stating `MAX_SOURCES`. H4 is unchanged. H17: the check is a viewer's and bounded by the reader.
+
+  **The two reviews.** Both returned: the storage review made four findings, the routes and tools
+  review two. All six were fixed in the second commit; each fix has a test that went red on the
+  first commit's code before the fix.
+  - HIGH, LIVE: when the file of a package another package depends on was lost, neither could be
+    removed, each refused for the other; two lost packages refused each other the same way. Fixed:
+    another package whose file does not read no longer refuses a remove; the answer lists it in
+    `dependents_unknown: [{id, problem}]`. A readable dependent still refuses (409), so with a lost
+    `b` that `a` needs, removing `b` is refused, removing `a` succeeds, then `b` can be removed.
+    If `b`'s file is put back later it may depend on a package that is gone; the answer says so.
+  - LOW, LATENT: a dependency cycle made by hand in `packages.json` could not be removed. Fixed: a
+    dependent the removed package itself reaches through `depends` does not refuse the remove and
+    is answered in `dependents_in_a_cycle`; the others still refuse.
+  - LOW, LIVE: the base64 bound was checked on bytes but worded as characters. Fixed: over the
+    bound, text that is not ASCII is refused as not base64.
+  - LOW, LATENT: a library source declaring a block inside NAMESPACE, CLASS or INTERFACE, or not
+    UTF-8, was taken as declaring nothing and the check said `ok: true`. Fixed: such a library
+    source or type file refuses the add and the check with 409 ("whether <id> <version> clashes
+    with it is not known"). Not fixed: when the whole `data/types` directory cannot be read,
+    `read_project` gives a diagnostic with no source, and that case still adds as before.
+  - LOW, DOC: the descriptions missed the add's 409 for an unreadable stored package, the check's
+    `refusal` key, the get's `entry` with `problem`, and the lock file left by a refused write.
+    Fixed in the summaries.
+  - LOW, TEST-ONLY: the server tests missed the operator's and administrator's reads, the 404 and
+    400 words, the event on the stream, the second add's words and the id's spelling. Fixed.
+
+  **Not run.** The full gate, the Windows lint and a mutation check are run after this text. The
+  agents ran the commands listed under the tests, before the fixes' commit. Nothing was run on
+  Windows or macOS by the agents. The version of the logic module is not changed by this slice's
+  commits: the orchestrator sets it.
+
+  **Left out, with its class.**
+  - P1c (R21 to R26: packages compiled with the project, users of a package, `built_with`): not
+    built. LATENT: a package is stored and listed and no program uses it.
+  - No user interface: the workbench does not list packages or follow `LOGIC_PACKAGES_CHANGED`
+    (P3). LATENT.
+  - The body limit of a module route is the web framework's default, 2_097_152 bytes (`axum-core`
+    0.4.5, `src/ext_traits/request.rs`, `DEFAULT_LIMIT`), a figure of that library and not one
+    MythOS publishes (H2). The routes reviewer's scratch test added and checked a package of
+    1048576 bytes over HTTP and MCP; the stage's tests send small packages only.
+  - Dependency versions are not compared (H16); answers say `versions_checked: false`.
+  - NOT VERIFIED: Windows path length (H11); case-insensitive file systems; two processes adding at
+    once during a hot swap (read only).
+  - Not fixed: the version rule restated in `packages.rs` can drift from the crate's (LATENT); a
+    symbolic link planted at `logic/packages/<id>` is followed by the module's synced write, as
+    by every write helper of the module (read, not run); `read_project` drops unreadable
+    `data/types` files silently from the clash set (LATENT, partly covered above).
+
+  **A review of the fix commit alone** (one reviewer, asked for by the orchestrator: the six
+  fixes above had been read by nobody but their author). Five findings, none high, all corrected
+  by the orchestrator in `d1a0ae3`:
+  - Low, LATENT: when the directory `data/types` cannot be listed, the project's types are not
+    known, and the add and its check went ahead without the clash check against types (only a
+    problem that names a file stopped the add). It is refused 409 now, in the same words as an
+    unreadable type file. Test: `a_package_is_refused_while_the_project_s_types_cannot_be_listed`
+    (a file where the directory should be, so it runs on every OS).
+  - Low, TEST-ONLY: no test had a type file that is not text; a case of it is added to
+    `a_package_is_refused_while_a_project_source_declares_what_cannot_be_named`.
+  - Low, LIVE, cost: a remove read every stored file the package reaches even when nothing
+    depends on it (39 file opens for the top of a chain of 20, counted by the reviewer). What it
+    reaches is read now only when something depends on it.
+  - Low, DOC, twice: the remove's description said a cycle is "this one depends on that one too"
+    while the code follows dependencies through other packages; and the keys `removed` and `left`
+    of the remove and `package` of the check were not named. The descriptions say them now.
+  - Checked by the reviewer and found right, among others: no package that reads is left with a
+    missing dependency except inside a hand-made cycle, where the answer names it; the walk of
+    what a package reaches ends on every hand-made list tried; the check's `refusal` equals the
+    add's status and words in the 20 cases tried.
+
+  **Verification of the finished slice** (the orchestrator; this is what "run after this text"
+  above was waiting for).
+  - On `24feb1d` (the slice on dev with the version line): `cargo fmt --all --check` clean;
+    `cargo clippy -p mythos-logic -p mythos-module-tests --all-targets -- -D warnings` clean;
+    `cargo test -p mythos-logic` 107 passed; `cargo test -p mythos-module-tests --no-fail-fast`
+    every suite green (`logic_module` 13, `runtime_api` 16, `runtime_vm` 27, `data_and_logic` 18,
+    `module_boundaries` 3 and the others); `cargo test -p mythos-core --test
+    version_agreement_tests` 3 passed; `cargo test -p mythos-logic-compiler` (the whole crate,
+    with its sweeping tests) green; the Windows lint printed "win-clippy: GREEN".
+  - In a build where serde_json's `raw_value` is on (`cargo test -p mythos-logic
+    -p mythos-logic-package -p mythos-module-tests --lib --test read --test module_boundaries`):
+    107, 95 and 3 passed.
+  - On `d1a0ae3` (the corrections of the review above): clippy as above clean;
+    `cargo test -p mythos-logic` 108 passed; `cargo test -p mythos-module-tests --no-fail-fast`
+    every suite green; the Windows lint "win-clippy: GREEN".
+  - **Mutations**, with `scripts/mutation-check.py`, in a copy made by `git archive` with its own
+    target directory, both baselines green, against the module's package tests and
+    `logic_module`: on `24feb1d`, **18 of 18 red** (12 of the stage, 6 for the first fixes); on
+    `d1a0ae3`, **3 of 3 red** for the orchestrator's corrections (types that cannot be listed; a
+    type file that is not text; what a package reaches read only when nothing depends on it).
+  - **A red of CI that is not this slice's:** on `24feb1d` the macOS job failed in
+    `a_watchdog_shorter_than_its_interval_faults_no_task_waiting_for_its_time`
+    (`plugins/runtime-vm/tests/tasks.rs`: a 100 ms watchdog measured on a runner that came back
+    after 274 ms). The Linux job of the same commit passed. The test is a wall-clock test listed
+    for correction; this slice touches nothing of the runtime.
+  - **Read by one reader only:** the orchestrator's corrections (`d1a0ae3`); their three
+    mutations are their check.
+  - **Not run by the orchestrator:** the full gate (`./scripts/check.sh`), the frontend gate (the
+    slice changes one version line of the frontend and nothing else), `cargo test --workspace`,
+    macOS. No green full gate of this commit exists from this machine; CI is the gate.

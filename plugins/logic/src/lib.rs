@@ -53,6 +53,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tokio::sync::Mutex;
 
+mod packages;
 mod runtimes;
 
 pub const MODULE_ID: &str = "org.mythos.logic";
@@ -68,6 +69,10 @@ pub const LIBRARY_CHANGED_EVENT: &str = "LOGIC_LIBRARY_CHANGED";
 /// "runtime", "what": "saved" | "deleted"}`. Not [`PROGRAMS_CHANGED_EVENT`], whose `program`
 /// and `what` the workbench acts on.
 pub const RUNTIMES_CHANGED_EVENT: &str = "LOGIC_RUNTIMES_CHANGED";
+/// Sent when a library package is added to or removed from the project: `{"project",
+/// "package", "version", "what": "added" | "removed"}`. Not [`LIBRARY_CHANGED_EVENT`], whose
+/// `name` the workbench reads as a library source's.
+pub const PACKAGES_CHANGED_EVENT: &str = "LOGIC_PACKAGES_CHANGED";
 /// In the module's directory, the file whose lock every write holds, so that two processes
 /// serving one project (a hot swap starts the new one before the old one stops) never read and
 /// write at the same time: the task configuration and the programs must agree, and they are two
@@ -84,6 +89,10 @@ const DATA_DIR: &str = "data";
 /// In the data directory: one file a user type, and the data blocks.
 const TYPES_DIR: &str = "types";
 const BLOCKS_FILE: &str = "blocks.json";
+/// The project's library packages, in the module's own directory (ADR-015 step 1): the list,
+/// and each package file kept whole as `packages/<id>/<version>.zip`.
+const PACKAGES_FILE: &str = "packages.json";
+const PACKAGES_DIR: &str = "packages";
 /// The extension of a library source or a type file, exactly.
 const SOURCE_EXTENSION: &str = ".st";
 /// Names that are a device on Windows whatever follows them: `CON.st` is the console there.
@@ -391,6 +400,10 @@ fn read_sources(dir: &Path, takes: fn(&str) -> bool) -> Result<Read, (PathBuf, s
     Ok(read)
 }
 
+/// How a problem begins when the directory of the project's types cannot be listed: which
+/// types there are is then not known (the packages' clash check reads it).
+const TYPES_UNREADABLE: &str = "data/types cannot be read as the project's types";
+
 /// `blocks.json` as read.
 #[derive(PartialEq)]
 enum BlocksRead {
@@ -483,9 +496,7 @@ fn read_project(logic: &Path) -> Result<Project, Refusal> {
                 .collect()
         }
         Err((_, e)) => {
-            problems.push(Diagnostic::whole(format!(
-                "data/types cannot be read as the project's types: {e}"
-            )));
+            problems.push(Diagnostic::whole(format!("{TYPES_UNREADABLE}: {e}")));
             Vec::new()
         }
     };
@@ -1593,8 +1604,38 @@ fn runtime_check_schema() -> Value {
     schema
 }
 
+/// Said by each package tool: no program is compiled with a package in this stage.
+const NOT_COMPILED: &str = "A package is kept and listed; programs are not compiled with it yet.";
+
+/// Said by each tool that takes a package file: its form and bounds, from the reader's constants.
+fn file_bounds() -> String {
+    format!(
+        "The file is given as base64 (standard alphabet, padded) in 'file', at most {} characters, the base64 of at most {} bytes; a zip of at most {} entries and {} bytes once unpacked.",
+        mythos_logic_package::MAX_PACKAGE_BASE64_LEN,
+        mythos_logic_package::MAX_PACKAGE_BYTES,
+        mythos_logic_package::MAX_PACKAGE_ENTRIES,
+        mythos_logic_package::MAX_UNPACKED_BYTES,
+    )
+}
+
+/// The body of the two POSTs of the packages.
+fn package_file_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["file"],
+        "properties": {
+            "file": { "type": "string", "maxLength": mythos_logic_package::MAX_PACKAGE_BASE64_LEN,
+                "description": "The package file (a zip), base64 of the standard alphabet with padding" },
+            "file_name": { "type": "string", "minLength": 1, "maxLength": packages::MAX_FILE_NAME_LEN,
+                "description": "The file's name as the caller has it, kept as given in the package's origin; never a path" }
+        }
+    })
+}
+
 /// What `mythos-module-logic --manifest` prints.
 pub fn manifest() -> ModuleManifest {
+    let file_bounds = file_bounds();
+    let max_sources = mythos_logic_st::project::MAX_SOURCES;
     ModuleManifest {
         protocol: PROTOCOL_VERSION,
         id: MODULE_ID.into(),
@@ -1602,7 +1643,7 @@ pub fn manifest() -> ModuleManifest {
         version: env!("CARGO_PKG_VERSION").into(),
         kind: ModuleKind::Service,
         provides: PROVIDES.into(),
-        description: "Control programs in Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart: their source, their bindings to tags, check and build; and the project's library of functions and function blocks".into(),
+        description: "Control programs in Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart: their source, their bindings to tags, check and build; and the project's library of functions and function blocks; and library packages, kept and listed (programs are not compiled with them yet)".into(),
         capabilities: vec![],
         config_schema: Value::Null,
         always_on: false,
@@ -1646,6 +1687,21 @@ pub fn manifest() -> ModuleManifest {
             route("POST", "/programs/:program/build", "engineer", "build_logic_program",
                 "Compile the saved source, Structured Text, Ladder Diagram, Function Block Diagram or Sequential Function Chart, and pack it as a runtime instance. The answer's 'instance' is what save_runtimes_config takes in its 'instances' (replace the one with the same id, and take out any instance of a configured runtime the program was in before, which the core still runs until it is taken out or rebuilt without the program: the core refuses the save while that instance holds the program, when that instance was built by this module since 0.8.0; one built before is not compared, and runs the program too until it is taken out; pass save_runtimes_config the revision get_runtimes_config answered with the instances it read, so a save made by someone else since is not overwritten); nothing is loaded by this call. The program is compiled with the project's library and its user types and data blocks (the data module's); when those types and blocks do not check, it is compiled without them and 'project_problems' says why. When the program declares data blocks, the instance carries them in 'data'. A data block in two runtimes is refused when saved. A program that a configured runtime of the project runs (list_logic_runtimes) is not built alone: it is refused with 409 naming the runtime, which build_logic_runtime builds with all its programs.",
                 None, &["tags"]),
+            route("GET", "/packages", "viewer", "list_logic_packages",
+                &format!("The project's library packages (logic/packages.json): each with its id, version, the SHA-256 of its file and its origin, and its name, licence and format read again from the stored file (logic/packages/<id>/<version>.zip); a package whose file is missing, changed since it was added (its SHA-256 is not the one recorded) or no longer reads carries 'problem' and no manifest field. {NOT_COMPILED} Reads only; nothing is written."),
+                None, &[]),
+            route("GET", "/packages/:package", "viewer", "get_logic_package",
+                &format!("One library package of the project, by id (without regard to case): its entry, and read again from its stored file and checked against the SHA-256 recorded, its manifest, its sources (Structured Text), its blocks as check_logic_library answers blocks (the package checked with the sources of the packages it depends on and nothing else of the project; absent with 'diagnostics' when it does not check) and the packages that depend on it ('dependents'). A package whose file is missing, changed or no longer reads is answered with 'entry' and 'problem' only. Packages whose file does not read, so that whether they depend on this one cannot be told, are in 'dependents_unknown'. Dependency versions are not compared ('versions_checked': false). {NOT_COMPILED} Reads only; nothing is written."),
+                None, &[]),
+            route("POST", "/packages/check", "viewer", "check_logic_package",
+                &format!("Read a package file and say what add_logic_package would do with it, writing nothing: 'ok' exactly when the add would add it, 'package' (the file's manifest), the file's SHA-256 and size, its blocks or diagnostics (checked with the packages it depends on and nothing else of the project), 'clashes' with the project's library sources, the data module's types and the other packages, 'missing' dependencies and 'present' (the version and SHA-256 of a package of the same id already in the project). When 'ok' is false, 'refusal' holds the add's answer: {{'status', 'error'}}, with each of the add's refusals. A file that is not a package is refused (400) as the add refuses it. {file_bounds} {NOT_COMPILED}"),
+                Some(package_file_schema()), &[]),
+            route("POST", "/packages", "engineer", "add_logic_package",
+                &format!("Add a library package to the project: the file is read whole and refused with words when it is not a package; refused (409) when a package of the same id is already in the project in any case (remove it first), when a dependency is not in the project ('missing'), when a block or type name clashes with the project's library, the data module's types or another package ('clashes', naming both places), when another package of the project has a file that does not read, or a library source or a type of the data module does not read as text or declares something whose name cannot be read (NAMESPACE, CLASS, INTERFACE), since what they declare is then not known (correct it or take it out first), when the project would have more than {max_sources} library sources; refused (400) when it holds a TYPE or PROGRAM, or does not check with the packages it depends on ('diagnostics'). Nothing of the package is written when it is refused (the module's lock file, logic/{LOCK_FILE}, is made by every write route). Kept whole as logic/packages/<id>/<version>.zip and listed with its SHA-256 and origin in logic/packages.json. {file_bounds} {NOT_COMPILED}"),
+                Some(package_file_schema()), &[]),
+            route("DELETE", "/packages/:package", "engineer", "remove_logic_package",
+                &format!("Remove a library package from the project, by id (without regard to case): its entry in logic/packages.json, then its file. Refused (409) while another package depends on it ('dependents'), unless this one reaches that one through its own dependencies, directly or through other packages (a cycle made by hand: answered in 'dependents_in_a_cycle', and those packages are left with a dependency the project no longer has). A package whose file does not read, so that whether it depends on this one cannot be told, does not refuse it: it is answered in 'dependents_unknown'. A package whose own file is missing or changed can be removed. Answers 'removed': {{id, version}}, and 'left' with the stored file's path and why when the entry is gone and the file could not be deleted. {NOT_COMPILED}"),
+                None, &[]),
             route("GET", "/library", "viewer", "list_logic_library",
                 "The project's library: Structured Text sources of functions and function blocks shared by every program, by name. Reads only; nothing is written, compiled or loaded.", None, &[]),
             route("GET", "/library/:name", "viewer", "get_logic_library_source",
@@ -1767,6 +1823,12 @@ impl Logic {
         // So does a library source's.
         if let Some(name) = call.params.get("name") {
             if let Some(problem) = library_name_problem(name) {
+                return (HttpReply::error(400, problem), None);
+            }
+        }
+        // A package's id becomes a directory name: nothing but a package id gets that far.
+        if let Some(id) = call.params.get("package") {
+            if let Some(problem) = mythos_logic_package::id_problem(id) {
                 return (HttpReply::error(400, problem), None);
             }
         }
@@ -1992,6 +2054,10 @@ impl Logic {
             (_, route) if route == "/library" || route.starts_with("/library/") => {
                 let (reply, sent) = library(call, data);
                 return (reply, sent.map(|e| (LIBRARY_CHANGED_EVENT, e)));
+            }
+            (_, route) if route == "/packages" || route.starts_with("/packages/") => {
+                let (reply, sent) = packages::packages(call, data);
+                return (reply, sent.map(|e| (PACKAGES_CHANGED_EVENT, e)));
             }
             (_, route) if route == "/runtimes" || route.starts_with("/runtimes/") => {
                 let (reply, sent) = runtimes::runtimes(call, data);

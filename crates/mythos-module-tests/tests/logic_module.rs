@@ -201,6 +201,7 @@ struct Rig {
     engineer: String,
     operator: String,
     viewer: String,
+    admin: String,
     project: PathBuf,
     _root: tempfile::TempDir,
     _modules: tempfile::TempDir,
@@ -242,6 +243,7 @@ async fn rig() -> Rig {
     }
     let session = |name: &str| auth.sign_in(name, "a good password").unwrap().1;
     let (engineer, operator, viewer) = (session("erin"), session("otto"), session("vera"));
+    let admin = auth.sign_in("root", "root password 1").unwrap().1;
 
     let catalog = Arc::new(RwLock::new(TagCatalog::new()));
     let dirs = vec![modules.path().to_path_buf()];
@@ -285,6 +287,7 @@ async fn rig() -> Rig {
         engineer,
         operator,
         viewer,
+        admin,
         project,
         _root: root_dir,
         _modules: modules,
@@ -388,6 +391,54 @@ fn settings() -> Value {
         "outputs": [{"variable": "speed", "tag": SPEED, "safe": 7}],
         "published": [{"variable": "setpoint", "tag": T_SETPOINT, "writable": true}]
     })
+}
+
+/// A library package file (ADR-015 step 1): one source and its manifest, `checksums.json`
+/// right, built with the zip writer.
+fn package_file() -> Vec<u8> {
+    let source =
+        "FUNCTION Twice : INT\nVAR_INPUT x : INT; END_VAR\nTwice := x * 2;\nEND_FUNCTION\n";
+    let manifest = json!({
+        "format": 1, "id": "org.example.base", "name": "Base blocks", "version": "1.0.0",
+        "form": "source", "languages": ["st"], "files": ["src/twice.st"], "depends": [],
+        "license": "MIT"
+    })
+    .to_string();
+    let checksums = json!({
+        "manifest.json": mythos_core::auth::sha256_hex(&manifest),
+        "src/twice.st": mythos_core::auth::sha256_hex(source),
+    })
+    .to_string();
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, text) in [
+        ("manifest.json", manifest.as_str()),
+        ("src/twice.st", source),
+        ("checksums.json", checksums.as_str()),
+    ] {
+        writer
+            .start_file(name, zip::write::FileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut writer, text.as_bytes()).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+/// Base64 of the standard alphabet with padding, as the package routes take a file.
+fn base64_of(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let at = |i: usize| u32::from(chunk.get(i).copied().unwrap_or(0));
+        let n = (at(0) << 16) | (at(1) << 8) | at(2);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[(n >> (18 - 6 * i)) as usize & 63]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1163,6 +1214,87 @@ async fn each_role_does_what_it_may_and_what_is_wrong_is_refused_and_not_saved()
     );
     assert!(!data.join("programs/Pump.st").exists());
 
+    // Library packages: reading and checking them is a viewer's (so an operator's and an
+    // administrator's too), adding and removing an engineer's (and an administrator's).
+    let packages = "/api/v1/projects/plant/logic/packages";
+    let base = format!("{packages}/org.example.base");
+    let file = json!({"file": base64_of(&package_file())});
+    for who in [&rig.viewer, &rig.operator] {
+        let (status, _) = rig.send(who, "POST", packages, Some(file.clone())).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+    for who in [&rig.viewer, &rig.operator, &rig.admin] {
+        let (status, checked) = rig
+            .send(
+                who,
+                "POST",
+                &format!("{packages}/check"),
+                Some(file.clone()),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(checked["ok"], true, "{checked}");
+    }
+    assert!(!data.join("packages.json").exists());
+    rig.eng("POST", packages, Some(file), 201).await;
+    for who in [&rig.viewer, &rig.operator] {
+        let (status, _) = rig.send(who, "DELETE", &base, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+    for who in [&rig.viewer, &rig.operator, &rig.admin] {
+        let (status, listed) = rig.send(who, "GET", packages, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed["packages"][0]["id"], "org.example.base", "{listed}");
+        // Asked in another case, answered in the manifest's own spelling.
+        let (status, got) = rig
+            .send(who, "GET", &format!("{packages}/ORG.Example.BASE"), None)
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(got["entry"]["id"], "org.example.base", "{got}");
+        assert_eq!(got["sources"][0]["path"], "src/twice.st", "{got}");
+    }
+    // An unknown package is 404 in the module's words; a parameter that is not an id is 400,
+    // the same words for a read and a remove.
+    let (status, unknown) = rig
+        .send(
+            &rig.viewer,
+            "GET",
+            &format!("{packages}/org.example.nothere"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        unknown["error"], "the project has no package 'org.example.nothere'",
+        "{unknown}"
+    );
+    let mut said = Vec::new();
+    for (who, method) in [(&rig.viewer, "GET"), (&rig.engineer, "DELETE")] {
+        let (status, bad) = rig
+            .send(who, method, &format!("{packages}/org.CON"), None)
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{method}: {bad}");
+        let words = bad["error"].as_str().unwrap_or("").to_string();
+        assert!(words.contains("CON"), "{method}: {bad}");
+        said.push(words);
+    }
+    assert_eq!(said[0], said[1]);
+    assert!(data.join("packages/org.example.base/1.0.0.zip").is_file());
+    let (status, removed) = rig
+        .send(
+            &rig.admin,
+            "DELETE",
+            &format!("{packages}/ORG.EXAMPLE.BASE"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert_eq!(
+        removed,
+        json!({"removed": {"id": "org.example.base", "version": "1.0.0"}})
+    );
+    assert!(!data.join("packages/org.example.base/1.0.0.zip").exists());
+
     rig.close().await;
 }
 
@@ -1243,6 +1375,11 @@ async fn an_agent_writes_checks_and_builds_a_program_over_mcp() {
             "delete_logic_program",
             "check_logic_program",
             "build_logic_program",
+            "list_logic_packages",
+            "get_logic_package",
+            "check_logic_package",
+            "add_logic_package",
+            "remove_logic_package",
             "list_logic_library",
             "get_logic_library_source",
             "save_logic_library_source",
@@ -1882,6 +2019,195 @@ async fn an_agent_configures_a_runtime_over_mcp() {
         deleted["structuredContent"]["body"],
         json!({"deleted": "Line"}),
         "{deleted}"
+    );
+    services.shutdown().await;
+}
+
+/// The library packages over MCP alone (ADR-010): checked, added, listed, read and removed, each
+/// tool saying that programs are not compiled with a package yet.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_adds_lists_reads_and_removes_a_package_over_mcp() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Arc::new(ControllerStorage::new(dir.path()).unwrap());
+    storage
+        .create_project(&ProjectConfig::new("plant", "Plant"))
+        .unwrap();
+    let project = storage.project_dir("plant").unwrap();
+    let path = Path::new(LOGIC);
+    let module = Arc::new(ModuleBinary {
+        path: path.to_path_buf(),
+        manifest: read_manifest(path).await.unwrap(),
+        fingerprint: Fingerprint::of(path).unwrap(),
+    });
+    let state = ApiState::<mythos_pal::MemoryShm>::new(
+        storage,
+        Arc::new(RwLock::new(TagCatalog::new())),
+        None,
+    );
+    let mut events = state.hmi_events.subscribe();
+    let services = ServiceHost::new(state.hmi_events.clone());
+    services.sync(vec![module]).await;
+    let app = create_router(state.with_services(Arc::clone(&services)));
+    // The next package event on the server's telemetry stream: the module's event, forwarded
+    // by the core under its own name.
+    macro_rules! package_event {
+        () => {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let e = events.recv().await.unwrap();
+                    if e.event == "LOGIC_PACKAGES_CHANGED" {
+                        break e.data;
+                    }
+                }
+            })
+            .await
+            .expect("no LOGIC_PACKAGES_CHANGED on the telemetry stream")
+        };
+    }
+    let rpc = |method: &'static str, params: Value| {
+        let app = app.clone();
+        async move {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header(header::HOST, "127.0.0.1:8080")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json, text/event-stream")
+                .body(Body::from(
+                    json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                        .to_string(),
+                ))
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        }
+    };
+    let tool = |name: &'static str, arguments: Value| {
+        let call = rpc("tools/call", json!({"name": name, "arguments": arguments}));
+        async move { call.await["result"].clone() }
+    };
+
+    let listed = rpc("tools/list", json!({})).await;
+    let found = |name: &str| {
+        listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("no tool {name}"))
+            .clone()
+    };
+    for name in [
+        "list_logic_packages",
+        "get_logic_package",
+        "check_logic_package",
+        "add_logic_package",
+        "remove_logic_package",
+    ] {
+        let said = found(name)["description"].as_str().unwrap().to_string();
+        assert!(
+            said.contains("programs are not compiled with it yet"),
+            "{name}: {said}"
+        );
+    }
+    for name in ["check_logic_package", "add_logic_package"] {
+        let said = found(name)["description"].as_str().unwrap().to_string();
+        assert!(
+            said.contains("base64") && said.contains("1048576 bytes"),
+            "{name}: {said}"
+        );
+        assert_eq!(
+            found(name)["inputSchema"]["required"],
+            json!(["project_id", "body"]),
+            "{name}"
+        );
+    }
+    for name in ["get_logic_package", "remove_logic_package"] {
+        assert_eq!(
+            found(name)["inputSchema"]["required"],
+            json!(["project_id", "package"]),
+            "{name}"
+        );
+    }
+
+    let file = json!({"file": base64_of(&package_file()), "file_name": "base-1.0.0.zip"});
+    let checked = tool(
+        "check_logic_package",
+        json!({"project_id": "plant", "body": file}),
+    )
+    .await;
+    assert_eq!(checked["isError"], false, "{checked}");
+    assert_eq!(
+        checked["structuredContent"]["body"]["ok"], true,
+        "{checked}"
+    );
+    let added = tool(
+        "add_logic_package",
+        json!({"project_id": "plant", "body": file}),
+    )
+    .await;
+    assert_eq!(added["isError"], false, "{added}");
+    assert_eq!(
+        added["structuredContent"]["body"]["added"]["origin"],
+        json!({"kind": "file", "file_name": "base-1.0.0.zip"}),
+        "{added}"
+    );
+    assert_eq!(
+        package_event!(),
+        json!({"project": "plant", "package": "org.example.base", "version": "1.0.0", "what": "added"})
+    );
+    let again = tool(
+        "add_logic_package",
+        json!({"project_id": "plant", "body": file}),
+    )
+    .await;
+    assert_eq!(again["isError"], true, "{again}");
+    assert_eq!(again["structuredContent"]["status"], 409, "{again}");
+    assert_eq!(
+        again["structuredContent"]["body"]["error"],
+        "the project already has package 'org.example.base' 1.0.0; remove it first (an update is ADR-015 step 3)",
+        "{again}"
+    );
+    let all = tool("list_logic_packages", json!({"project_id": "plant"})).await;
+    assert_eq!(
+        all["structuredContent"]["body"]["packages"][0]["name"], "Base blocks",
+        "{all}"
+    );
+    let got = tool(
+        "get_logic_package",
+        json!({"project_id": "plant", "package": "ORG.EXAMPLE.BASE"}),
+    )
+    .await;
+    assert_eq!(got["isError"], false, "{got}");
+    assert_eq!(
+        got["structuredContent"]["body"]["blocks"][0]["name"], "Twice",
+        "{got}"
+    );
+    assert_eq!(
+        got["structuredContent"]["body"]["entry"]["id"], "org.example.base",
+        "{got}"
+    );
+    assert!(project
+        .join("logic/packages/org.example.base/1.0.0.zip")
+        .is_file());
+    let removed = tool(
+        "remove_logic_package",
+        json!({"project_id": "plant", "package": "org.example.base"}),
+    )
+    .await;
+    assert_eq!(
+        removed["structuredContent"]["body"],
+        json!({"removed": {"id": "org.example.base", "version": "1.0.0"}}),
+        "{removed}"
+    );
+    assert!(!project.join("logic/packages/org.example.base").exists());
+    assert_eq!(
+        package_event!(),
+        json!({"project": "plant", "package": "org.example.base", "version": "1.0.0", "what": "removed"})
     );
     services.shutdown().await;
 }

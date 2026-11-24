@@ -2,7 +2,7 @@
 name = "mythos-logic"
 # A module has its own version (ADR-011 §2.6): it is released and replaced on its own,
 # and the server says which version of it runs. Bump it when the module changes.
-version = "0.12.0"
+version = "0.13.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -18,7 +18,10 @@ workspace = true
 mythos-module.workspace = true
 mythos-logic-compiler.workspace = true
 mythos-logic-st.workspace = true
+mythos-logic-package.workspace = true
 async-trait.workspace = true
+# The package file arrives as base64 in a JSON body (ADR-015 P1 contract, H2).
+base64 = "0.22"
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -32,6 +35,8 @@ path = "src/bin/mythos-module-logic.rs"
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
+# The tests build their package files with the zip writer (ADR-015 P1 contract, R28).
+zip.workspace = true
 # Only to pin the two copies of the file rule together (a test): dev-dependencies do not
 # count as a module depending on another (module_boundaries.rs).
 mythos-data = { path = "../data" }
