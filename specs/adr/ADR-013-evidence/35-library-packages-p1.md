@@ -49,8 +49,10 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
   - `MAX_UNPACKED_BYTES` 2_097_152, the sum of all entries unpacked.
   - `MAX_PACKAGE_ENTRIES` 1024, the entries and the items of `files`. Basis, as the contract
     gives it: the compiler's bound of 1024 sources per compilation (`MAX_SOURCES`), so a library
-    of several hundred blocks, one per file, fits. That constant was not found by a grep of
-    `crates/mythos-logic-compiler/src` or `plugins/logic/src` in this checkout: NOT VERIFIED.
+    of several hundred blocks, one per file, fits. The constant is
+    `mythos_logic_st::project::MAX_SOURCES` (`crates/mythos-logic-st/src/project.rs`), the lines
+    between `FIRST_LINE` 2^30 and 2^31 divided by `SOURCE_LINES` 2^20: 1024 (read by the
+    orchestrator; the document's author had looked in two other crates).
   - `MAX_PACKAGE_ID_LEN` 64, `MAX_VERSION_LEN` 32, `MAX_SOURCE_NAME_LEN` 64 (the logic module's
     bound for a library source name). `depends` has no count bound; its duplicate check is linear.
 
