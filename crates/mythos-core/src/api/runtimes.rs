@@ -329,7 +329,9 @@ pub async fn release<S: PlatformShm + 'static>(
 /// `GET /api/v1/projects/:id/runtimes` — the project's runtimes, or `null` when it has none,
 /// and the `revision` of what is stored: the lower hex SHA-256 of the file's bytes as read (the
 /// same bytes that were parsed), of no bytes when there is no file. A save that passes it back
-/// is refused if the configuration has changed since.
+/// is refused if the configuration has changed since. An empty file, which this read refuses
+/// (500: it is not a configuration), has no bytes either: a save passing the revision of no file
+/// replaces it.
 pub async fn get_config<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
     Path(project): Path<String>,
@@ -395,8 +397,17 @@ impl LoadQuery {
     }
 }
 
-// The precondition is compared, the file written and the runtimes made to match it as one step:
-// two saves of one revision cannot both be written, and each answer's `changes` is its own save's.
+// The precondition is compared, the file written and the runtimes made to match it as one step
+// among the saves of this route: two saves of one revision cannot both be written, and of two
+// saves of this route each answer's `changes` is its own save's.
+//
+// Not covered, and not claimed: a slice install (`PUT /api/v1/slices/:project`, `plant::install`
+// and `plant::restore`) replaces the project's directory, this file included, without this lock;
+// and the I/O manager is reloaded from the stored file by other routes too (the I/O
+// configuration's save, an activation, a change of the node's role, `run_here`) without it. Such a reload between this save's
+// write and its own reload applies this file online, whatever `start` said, and this save's
+// `changes` then describe nothing. Closing it needs the lock taken by those writers and a reload
+// that applies the configuration it is given instead of reading the file again.
 static RUNTIMES_WRITES: Mutex<()> = Mutex::const_new(());
 
 /// Whether a save that read `expected` finds another `revision` stored. No revision given is

@@ -362,7 +362,8 @@ fn valid_id(id: &str) -> bool {
 
 /// The revision of a stored runtimes configuration: the lower hex SHA-256 of its bytes, as
 /// they are on disk. No file is the revision of no bytes. Any byte changed, by a save or by
-/// hand (whitespace too), gives another revision.
+/// hand (whitespace too), gives another revision; an empty file has no bytes either, so it has
+/// the revision of no file.
 pub fn revision_of(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -745,35 +746,101 @@ struct PendingForce {
     reply: oneshot::Sender<ForceAnswer>,
 }
 
-/// One watch of an instance: one list of variables (kept as the key it is found by), when it
-/// was last asked for, and what its module last said of exactly those.
+/// One watch of an instance: one list of variables (kept as the key it is found by).
 struct Watch {
     /// When they were last asked for.
     asked: Instant,
-    /// The module's answer for exactly these variables, in their order, or why it gave none,
-    /// and when.
-    answer: Option<(Instant, Result<WatchReply, String>)>,
+    /// How many reads of the instance were kept when the list was first asked for: only a
+    /// read kept after that can be its own.
+    since: u64,
 }
 
 /// What a watch says of a name the module's answer has no value for. Never a value.
 pub const NOT_GIVEN: &str = "the runtime's module gave no value for it";
 
-impl Watch {
-    /// The value of `name` in a module's answer, found by the name as it was asked for, or
-    /// that the answer has none.
-    fn value_of(reply: &WatchReply, name: &str) -> WatchedValue {
-        reply
-            .values
-            .iter()
-            .find(|v| v.variable == *name)
-            .cloned()
-            .unwrap_or_else(|| WatchedValue {
-                variable: name.to_string(),
-                ty: None,
-                value: None,
-                error: Some(NOT_GIVEN.to_string()),
-                forced: false,
-            })
+/// The module's last read of an instance's watched variables, kept once for every list.
+struct WatchRead {
+    /// Its number among the reads of the instance, from 1.
+    number: u64,
+    /// When it was kept.
+    at: Instant,
+    /// The names it was asked for; `None` when the module did not answer, which fails every list.
+    sent: Option<HashSet<String>>,
+    /// The module's answer, with the place of each name among its values (the first, by the
+    /// name as it was asked for), or why it gave none.
+    answer: Result<(WatchReply, HashMap<String, usize>), String>,
+}
+
+/// The watches of one instance.
+///
+/// Its lock is the one every runtime of the server shares, so no step here does work for the
+/// lists of other watchers: asking again with a list costs that list's names; the union is
+/// kept as lists come and go, not worked out again from every list; and the module's answer is
+/// kept once, each list taking its own names from it when it is read.
+#[derive(Default)]
+struct Watching {
+    lists: HashMap<Vec<String>, Watch>,
+    /// Every name of a list still watched, with how many lists name it: the union.
+    named: BTreeMap<String, usize>,
+    /// How many reads were kept.
+    reads: u64,
+    last: Option<WatchRead>,
+}
+
+/// The names of `list`, each once, in its order.
+fn each_once(list: &[String]) -> impl Iterator<Item = &String> {
+    let mut seen = HashSet::new();
+    list.iter().filter(move |name| seen.insert(name.as_str()))
+}
+
+impl Watching {
+    /// Let go of the lists nobody asked for within [`WATCH_KEPT`], and of their names.
+    fn let_go(&mut self) {
+        let now = Instant::now();
+        let named = &mut self.named;
+        self.lists.retain(|list, w| {
+            let kept = now.saturating_duration_since(w.asked) <= WATCH_KEPT;
+            if !kept {
+                for name in each_once(list) {
+                    if let Some(count) = named.get_mut(name) {
+                        *count -= 1;
+                        if *count == 0 {
+                            named.remove(name);
+                        }
+                    }
+                }
+            }
+            kept
+        });
+    }
+
+    /// Watch a new list from now.
+    fn add(&mut self, list: &[String]) {
+        for name in each_once(list) {
+            *self.named.entry(name.clone()).or_insert(0) += 1;
+        }
+        self.lists.insert(
+            list.to_vec(),
+            Watch {
+                asked: Instant::now(),
+                since: self.reads,
+            },
+        );
+    }
+
+    /// Keep a read of the module.
+    fn keep(
+        &mut self,
+        sent: Option<HashSet<String>>,
+        answer: Result<(WatchReply, HashMap<String, usize>), String>,
+    ) {
+        self.reads += 1;
+        self.last = Some(WatchRead {
+            number: self.reads,
+            at: Instant::now(),
+            sent,
+            answer,
+        });
     }
 }
 
@@ -788,7 +855,7 @@ struct StatesInner {
     /// Why the project's runtimes are not as configured, when they are not.
     problem: Option<String>,
     /// What is being watched, by instance id: each list of names is a watch of its own.
-    watches: HashMap<String, HashMap<Vec<String>, Watch>>,
+    watches: HashMap<String, Watching>,
     /// Forces and releases waiting for the instance's next exchange, by instance id.
     forcing: HashMap<String, Vec<PendingForce>>,
     /// Asks of a new build for the variables of the running one, by instance id.
@@ -876,39 +943,32 @@ impl RuntimeStates {
         if !inner.statuses.contains_key(id) {
             return Ok(false);
         }
-        let lists = inner.watches.entry(id.to_string()).or_default();
-        lists.retain(|_, w| w.asked.elapsed() <= WATCH_KEPT); // before the bounds
-        let watching = &*lists;
-        let other: HashSet<&String> = watching.keys().flatten().collect();
-        let union: HashSet<&String> = other.iter().copied().chain(variables).collect();
-        if !watching.contains_key(variables) && union.len() > WATCH_LIMIT {
+        let watching = inner.watches.entry(id.to_string()).or_default();
+        watching.let_go(); // before the bounds
+                           // Asked again: renewed, whatever the bounds, at the cost of its own names only.
+        if let Some(watch) = watching.lists.get_mut(variables) {
+            watch.asked = Instant::now();
+            return Ok(true);
+        }
+        let other = watching.named.len();
+        let more = each_once(variables)
+            .filter(|name| !watching.named.contains_key(*name))
+            .count();
+        if other + more > WATCH_LIMIT {
             return Err(format!(
                 "runtime '{id}' would be read for {n} variables at every exchange, and at most {WATCH_LIMIT} are: other watches name {other} of them; a watch nobody asks for again within {} s is let go",
                 WATCH_KEPT.as_secs(),
-                n = union.len(),
-                other = other.len(),
+                n = other + more,
             ));
         }
-        if !watching.contains_key(variables) && watching.len() >= WATCH_LIMIT {
+        if watching.lists.len() >= WATCH_LIMIT {
             return Err(format!(
                 "runtime '{id}' has {n} watches already, and at most {WATCH_LIMIT} are kept: a watch nobody asks for again within {} s is let go",
                 WATCH_KEPT.as_secs(),
-                n = watching.len(),
+                n = watching.lists.len(),
             ));
         }
-        let now = Instant::now();
-        match lists.get_mut(variables) {
-            Some(watch) => watch.asked = now,
-            None => {
-                lists.insert(
-                    variables.to_vec(),
-                    Watch {
-                        asked: now,
-                        answer: None,
-                    },
-                );
-            }
-        }
+        watching.add(variables);
         Ok(true)
     }
 
@@ -1017,16 +1077,49 @@ impl RuntimeStates {
     }
 
     /// What the instance's module last said of exactly these variables, in their order, and
-    /// how long ago. `None`: nothing yet for this list, or it is let go, or the instance is gone.
+    /// how long ago: each name's value found by the name as it was asked for, and a name the
+    /// answer lacks with no value and saying so ([`NOT_GIVEN`]). `None`: nothing yet for this
+    /// list, or it is let go, or the instance is gone. A list is given only a read made after it
+    /// was first asked for, and only one that asked for every name of it: a list with a name
+    /// that was not sent (watched since) waits for a read of its own. A module that did not
+    /// answer fails every list.
     pub fn watched(
         &self,
         id: &str,
         variables: &[String],
     ) -> Option<(Duration, Result<WatchReply, String>)> {
         let inner = self.0.read().unwrap_or_else(|e| e.into_inner());
-        let watch = inner.watches.get(id)?.get(variables)?;
-        let (at, answer) = watch.answer.as_ref()?;
-        Some((at.elapsed(), answer.clone()))
+        let watching = inner.watches.get(id)?;
+        let watch = watching.lists.get(variables)?;
+        let read = watching
+            .last
+            .as_ref()
+            .filter(|read| read.number > watch.since)?;
+        if let Some(sent) = &read.sent {
+            if !variables.iter().all(|name| sent.contains(name)) {
+                return None;
+            }
+        }
+        let answer = match &read.answer {
+            Ok((reply, places)) => Ok(WatchReply {
+                state: reply.state.clone(),
+                values: variables
+                    .iter()
+                    .map(|name| match places.get(name) {
+                        Some(&at) => reply.values[at].clone(),
+                        None => WatchedValue {
+                            variable: name.clone(),
+                            ty: None,
+                            value: None,
+                            error: Some(NOT_GIVEN.to_string()),
+                            forced: false,
+                        },
+                    })
+                    .collect(),
+            }),
+            Err(why) => Err(why.clone()),
+        };
+        Some((read.at.elapsed(), answer))
     }
 
     /// Woken whenever a watch is answered: wait on it, then read [`RuntimeStates::watched`].
@@ -1035,53 +1128,35 @@ impl RuntimeStates {
     }
 
     /// The variables to ask the instance's module for now, if anybody still watches: every
-    /// name of every list still asked for, each once. Lists nobody asked for within
-    /// [`WATCH_KEPT`] are let go here.
+    /// name of every list still asked for, each once, in the order of the names, so one runtime
+    /// is asked the same way every time. Lists nobody asked for within [`WATCH_KEPT`] are let go
+    /// here.
     fn watch_wanted(&self, id: &str) -> Option<Vec<String>> {
         let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
-        let lists = inner.watches.get_mut(id)?;
-        lists.retain(|_, w| w.asked.elapsed() <= WATCH_KEPT); // at the exchange
-        if lists.is_empty() {
+        let watching = inner.watches.get_mut(id)?;
+        watching.let_go(); // at the exchange
+        if watching.lists.is_empty() {
             inner.watches.remove(id);
             return None;
         }
-        // In the order of the lists, so one runtime is asked the same way every time.
-        let mut ordered: Vec<&Vec<String>> = lists.keys().collect();
-        ordered.sort();
-        let mut seen = HashSet::new();
-        let mut union = Vec::new();
-        for name in ordered.into_iter().flatten() {
-            if seen.insert(name) {
-                union.push(name.clone());
-            }
-        }
-        Some(union)
+        Some(watching.named.keys().cloned().collect())
     }
 
-    /// The module's answer to the names `sent`, given to every list all of whose names were
-    /// sent: each list gets the values of its own names, in its own order, found by the name
-    /// as asked; a name the answer lacks has no value and says so ([`NOT_GIVEN`]). A list with a
-    /// name that was not sent (watched since) keeps no answer and waits for a read of its own.
+    /// The module's answer to the names `sent`, kept once for every list of the instance: each
+    /// list takes its own names from it when it is read ([`RuntimeStates::watched`]).
     fn watch_answer(&self, id: &str, sent: &[String], answer: Result<WatchReply, String>) {
-        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
-        let sent: HashSet<&String> = sent.iter().collect();
-        let now = Instant::now();
-        if let Some(lists) = inner.watches.get_mut(id) {
-            for (list, watch) in lists.iter_mut() {
-                if list.iter().all(|name| sent.contains(name)) {
-                    let own = match &answer {
-                        Ok(reply) => Ok(WatchReply {
-                            state: reply.state.clone(),
-                            values: list
-                                .iter()
-                                .map(|name| Watch::value_of(reply, name))
-                                .collect(),
-                        }),
-                        Err(why) => Err(why.clone()),
-                    };
-                    watch.answer = Some((now, own));
-                }
+        // Made ready before the lock is taken: under it, only what is kept is replaced.
+        let sent: HashSet<String> = sent.iter().cloned().collect();
+        let answer = answer.map(|reply| {
+            let mut places = HashMap::with_capacity(reply.values.len());
+            for (at, value) in reply.values.iter().enumerate() {
+                places.entry(value.variable.clone()).or_insert(at);
             }
+            (reply, places)
+        });
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(watching) = inner.watches.get_mut(id) {
+            watching.keep(Some(sent), answer);
         }
         inner.answered.notify_waiters();
     }
@@ -1090,11 +1165,8 @@ impl RuntimeStates {
     /// value.
     fn watch_failed(&self, id: &str, why: String) {
         let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
-        let now = Instant::now();
-        if let Some(lists) = inner.watches.get_mut(id) {
-            for watch in lists.values_mut() {
-                watch.answer = Some((now, Err(why.clone())));
-            }
+        if let Some(watching) = inner.watches.get_mut(id) {
+            watching.keep(None, Err(why));
         }
         inner.answered.notify_waiters();
     }
@@ -2670,8 +2742,8 @@ mod tests {
         let (_, answer) = states.watched("tank", &b).expect("answered");
         assert_eq!(answer.unwrap_err(), "the module does not answer");
         assert!(
-            states.watched("tank", &a).unwrap().1.is_ok(),
-            "an answer to b's names is not a's"
+            states.watched("tank", &a).is_none(),
+            "an answer to b's names is not a's, neither its values nor its failure: a waits"
         );
     }
 
@@ -2687,6 +2759,7 @@ mod tests {
             .watches
             .get_mut(id)
             .unwrap()
+            .lists
             .get_mut(list)
             .unwrap()
             .asked = then;
@@ -2881,7 +2954,9 @@ mod tests {
             !wanted.contains(&"new".to_string()),
             "nothing is registered"
         );
-        assert!(!states.0.read().unwrap().watches["tank"].contains_key(&third));
+        assert!(!states.0.read().unwrap().watches["tank"]
+            .lists
+            .contains_key(&third));
 
         // A list let go is dropped before the bound is counted, by the watch itself.
         asked_back(&states, "tank", &second, LONG_AGO);
@@ -2898,7 +2973,7 @@ mod tests {
         asked_back(&states, "tank", &second, Duration::from_secs(4));
         assert_eq!(states.watch("tank", &second), Ok(true), "the union is full");
         assert!(
-            states.0.read().unwrap().watches["tank"][&second]
+            states.0.read().unwrap().watches["tank"].lists[&second]
                 .asked
                 .elapsed()
                 < Duration::from_secs(1),
@@ -2927,8 +3002,10 @@ mod tests {
             states.watch("tank", &more),
             Err("runtime 'tank' has 256 watches already, and at most 256 are kept: a watch nobody asks for again within 5 s is let go".to_string())
         );
-        assert_eq!(states.0.read().unwrap().watches["tank"].len(), 256);
-        assert!(!states.0.read().unwrap().watches["tank"].contains_key(&more));
+        assert_eq!(states.0.read().unwrap().watches["tank"].lists.len(), 256);
+        assert!(!states.0.read().unwrap().watches["tank"]
+            .lists
+            .contains_key(&more));
 
         asked_back(&states, "tank", &numbered(9, 10), LONG_AGO);
         assert_eq!(states.watch("tank", &more), Ok(true), "one was let go");
@@ -2956,6 +3033,76 @@ mod tests {
         assert!(states.watched("tank", &a).is_none());
         assert!(states.watched("tank", &b).is_none());
         assert!(!states.0.read().unwrap().watches.contains_key("tank"));
+    }
+
+    /// The fastest of several runs of `work`: what the work costs, not what the machine did
+    /// meanwhile.
+    fn fastest(work: &dyn Fn()) -> Duration {
+        (0..15)
+            .map(|_| {
+                let start = Instant::now();
+                work();
+                start.elapsed()
+            })
+            .min()
+            .unwrap()
+    }
+
+    /// The lock of the runtime states is the one every runtime of the server shares: each
+    /// exchange of every runtime takes it. A watcher asking again with its list, and an
+    /// exchange keeping the module's answer, must not do work for the other watchers' lists
+    /// under it. Both bounds at once: 256 lists of 256 names (each a rotation of the same 256,
+    /// so the union is 256 names whatever the number of lists). Measured against the same work
+    /// with one list, on this machine, now: the ratio, not a time.
+    #[test]
+    fn asking_again_and_keeping_an_answer_cost_as_much_with_256_lists_as_with_one() {
+        let all = numbered(0, WATCH_LIMIT);
+        let rotation = |k: usize| {
+            let mut list = all.clone();
+            list.rotate_left(k);
+            list
+        };
+        let (one, many) = (RuntimeStates::default(), RuntimeStates::default());
+        for states in [&one, &many] {
+            loaded(states, "tank", 1);
+        }
+        assert_eq!(one.watch("tank", &rotation(0)), Ok(true));
+        for k in 0..WATCH_LIMIT {
+            assert_eq!(many.watch("tank", &rotation(k)), Ok(true), "list {k}");
+        }
+        let mut union = all.clone();
+        union.sort();
+        assert_eq!(one.watch_wanted("tank"), Some(union.clone()));
+        assert_eq!(many.watch_wanted("tank"), Some(union.clone()));
+        let values: Vec<(&str, i64)> = all.iter().map(|n| (n.as_str(), 1)).collect();
+        let reply = replying(&values);
+
+        let first = rotation(0);
+        let renewal = |states: &RuntimeStates| {
+            fastest(&|| assert_eq!(states.watch("tank", &first), Ok(true)))
+        };
+        let keeping = |states: &RuntimeStates| {
+            fastest(&|| states.watch_answer("tank", &union, Ok(reply.clone())))
+        };
+        let (renew_one, renew_many) = (renewal(&one), renewal(&many));
+        let (keep_one, keep_many) = (keeping(&one), keeping(&many));
+        assert!(
+            renew_many < renew_one * 4,
+            "asking again with one list of 256 costs {renew_one:?} beside no other list, and {renew_many:?} beside 255 others"
+        );
+        assert!(
+            keep_many < keep_one * 4,
+            "keeping the module's answer costs {keep_one:?} for one list, and {keep_many:?} for 256"
+        );
+        // And each list still reads its own names, in its own order, from the one answer.
+        let (_, answer) = many.watched("tank", &rotation(7)).expect("answered");
+        let names: Vec<String> = answer
+            .unwrap()
+            .values
+            .into_iter()
+            .map(|v| v.variable)
+            .collect();
+        assert_eq!(names, rotation(7));
     }
 
     #[test]

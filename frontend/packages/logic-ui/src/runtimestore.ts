@@ -27,6 +27,10 @@ import {
 } from './runtimes';
 import { api as core, problemsOf, useController, type ApplyAnswer, type ConfigProblem, type RuntimesAnswer } from './bridge';
 
+/** The programs a stored instance names, by their names in it: its `programs`, else its `program`. */
+const heldBy = (instance: Instance): string[] =>
+  Array.isArray(instance.programs) ? instance.programs.map((p) => p.name) : instance.program !== undefined ? [instance.program.name] : [];
+
 /** Why a load, a command or an unload stopped: in this UI's words, then the refuser's own. */
 export interface Stopped {
   words: string;
@@ -343,7 +347,7 @@ export const useRuntimes = create<RuntimesState>((set, get) => {
     // workbench, a program's Load) saves the project's runtimes while the builds run or the
     // question is open, the core refuses this save instead of taking out or setting back what
     // that client saved.
-    let revision: string;
+    let revision: string | undefined;
     try {
       const read = await api.config(projectId);
       saved = read.config?.instances ?? [];
@@ -352,6 +356,13 @@ export const useRuntimes = create<RuntimesState>((set, get) => {
       return refuse("The project's runtimes could not be read, so nothing was loaded.", cause);
     }
     if (gone()) return false;
+    // Without a revision the save would be made whatever is stored by then: a save another client
+    // makes while the question is open would be overwritten, unasked. Nothing is asked or sent.
+    if (revision === undefined) {
+      return refuse(
+        "The core gave no revision with the project's runtimes, so this Load could not keep a save made by someone else while it asks from being overwritten: nothing was loaded. Load needs a core that gives one."
+      );
+    }
     // Each other instance that holds one of its programs: a configured runtime is built again
     // by the module, without the program, and goes into the same save; any other is taken out.
     // A runtime built again may itself now run a program another instance holds: the same
@@ -654,15 +665,21 @@ export const useRuntimes = create<RuntimesState>((set, get) => {
       if (projectId === null || !doc || doc.busy !== null) return false;
       const at = opening;
       patch(id, { busy: 'unloading', commanded: null, loaded: null, loadStopped: null });
-      const stop = (words: string, cause: unknown): false => {
+      const stop = (words: string, cause?: unknown): false => {
         if (opening === at) {
-          patch(id, { commanded: { words: '', stopped: { words, refusal: refusalOf(cause), problems: problemsOf(cause) }, answer: null } });
+          patch(id, {
+            commanded: {
+              words: '',
+              stopped: { words, refusal: cause === undefined ? null : refusalOf(cause), problems: cause === undefined ? null : problemsOf(cause) },
+              answer: null,
+            },
+          });
         }
         return false;
       };
       try {
         let saved: Instance[];
-        let revision: string;
+        let revision: string | undefined;
         try {
           const read = await api.config(projectId);
           saved = read.config?.instances ?? [];
@@ -671,20 +688,30 @@ export const useRuntimes = create<RuntimesState>((set, get) => {
           return stop(`The project's runtimes could not be read, so runtime ${id} was not taken out.`, cause);
         }
         if (opening !== at) return false;
+        // The question was asked before this read, of what the controller lists: what is taken out
+        // is what is stored now, and it is said below, so that a runtime saved by someone else
+        // while the question was open is not taken out without a word of it.
+        const stored = saved.find((instance) => instance.id === id);
+        if (stored === undefined) {
+          return stop(`The project's runtimes hold no runtime ${id}, so nothing was taken out.`);
+        }
         let answer: ApplyAnswer;
         try {
           // Every other instance is sent back as it was read, in its order, with the revision of
-          // that read: the core refuses the save if another client saved since.
+          // that read when the core gave one: the core then refuses the save if another client
+          // saved since.
           answer = await api.setInstances(projectId, saved.filter((instance) => instance.id !== id), false, revision);
         } catch (cause) {
           return stop(`The project's runtimes were not saved, so runtime ${id} was not taken out.`, cause);
         }
         if (opening !== at) return false;
+        const held = heldBy(stored);
+        const what = `As stored when it was taken out, it held ${held.length === 0 ? 'no program it names' : held.join(', ')}.`;
         patch(id, {
           commanded: {
             words: answer.applied
-              ? `Runtime ${id} was taken out of the project's runtimes.`
-              : `Runtime ${id} was taken out of the project's runtimes. The controller runs another project, so nothing was stopped.`,
+              ? `Runtime ${id} was taken out of the project's runtimes. ${what}`
+              : `Runtime ${id} was taken out of the project's runtimes. ${what} The controller runs another project, so nothing was stopped.`,
             stopped: null,
             answer,
           },

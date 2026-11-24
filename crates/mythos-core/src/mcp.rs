@@ -1329,7 +1329,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "get_runtimes_config",
         title: "Get a project's runtimes",
-        description: "The programs a project is configured to run, with their bindings to tags, or null, and its revision: the lower hex SHA-256 of the stored file's bytes as read (of no bytes when the project has none), which changes with any change to the file, by a save or by hand. Pass the revision to save_runtimes_config: the save is then refused with 409 if the configuration has changed since this read. A save without it can overwrite a save made since the read.",
+        description: "The programs a project is configured to run, with their bindings to tags, or null, and its revision: the lower hex SHA-256 of the stored file's bytes as read (of no bytes when the project has none), which changes with any change to the file's bytes, by a save or by hand. An empty file has no bytes either, so it has the revision of no file: the read refuses it (it is not a configuration), and a save passing the revision of no file replaces it. Pass the revision to save_runtimes_config: the save is then refused with 409 if the configuration has changed since this read. A save without it can overwrite a save made since the read.",
         method: "GET",
         path: "/api/v1/projects/:id/runtimes",
         query: &[],
@@ -2133,6 +2133,7 @@ mod tests {
             "the lower hex SHA-256 of the stored file's bytes as read (of no bytes when the project has none)",
             "Pass the revision to save_runtimes_config",
             "A save without it can overwrite a save made since the read.",
+            "An empty file has no bytes either, so it has the revision of no file: the read refuses it (it is not a configuration), and a save passing the revision of no file replaces it.",
         ] {
             assert!(read.contains(said), "get_runtimes_config: {said}");
         }

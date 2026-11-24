@@ -387,6 +387,29 @@ describe('loading a configured runtime', () => {
     expect(byTestId(container, 'runtime-loaded')).toBeNull();
   });
 
+  it('a core that gives no revision with the project’s runtimes is asked nothing and sent no save by Load', async () => {
+    const spare = { id: 'Spare', module: 'vm', run: true, program: { name: 'Spare', built_from: 'Spare', version: 'v1' } };
+    const backend = plant({ config: { instances: [spare] } });
+    const { calls, container } = await opened(backend);
+    // A core older than the revision: its read answers the configuration only, and its save
+    // would take one without a precondition, overwriting what another client saved meanwhile.
+    backend.intercept = (call) =>
+      call.method === 'GET' && /\/projects\/plant\/runtimes$/.test(call.path) ? Response.json({ config: backend.config ?? null }) : undefined;
+    const asked = answering(calls, true);
+    calls.length = 0;
+    await load(container);
+
+    expect(calls.some((c) => c.method === 'GET' && /\/projects\/plant\/runtimes$/.test(c.path))).toBe(true);
+    expect(asked).toEqual([]);
+    expect(coreSaves(calls)).toEqual([]);
+    expect(backend.config).toEqual({ instances: [spare] });
+    expect(byTestId(container, 'load-refused')?.querySelector('p')?.textContent).toBe(
+      "The core gave no revision with the project's runtimes, so this Load could not keep a save made by someone else while it asks from being overwritten: nothing was loaded. Load needs a core that gives one."
+    );
+    expect(byTestId(container, 'load-refused-error')).toBeNull();
+    expect(byTestId(container, 'runtime-loaded')).toBeNull();
+  });
+
   it('a program whose source declares another PROGRAM name is found where it runs, under that name', async () => {
     // Line runs Tank alone; Tank's source declares PROGRAM Main, and the controller lists it so.
     const backend = plant({
@@ -745,7 +768,53 @@ describe('the runtime card', () => {
     await settle();
     expect((coreSaves(calls)[0]?.body as { instances: unknown[] }).instances).toEqual([a, b]);
     expect(coreSaves(calls)[0]?.path).toBe(`/api/v1/projects/plant/runtimes?revision=${revisionOf({ instances: [a, line, b] })}`);
-    expect(byTestId(card(container), 'runtime-commanded')?.textContent).toBe("Runtime Line was taken out of the project's runtimes.");
+    expect(byTestId(card(container), 'runtime-commanded')?.textContent).toBe(
+      "Runtime Line was taken out of the project's runtimes. As stored when it was taken out, it held Tank, Pump."
+    );
+  });
+
+  it('a runtime saved by someone else while the Unload question was open is taken out naming what it held, not what was asked', async () => {
+    // The question is asked of what the controller lists, before the configuration is read: what
+    // Unload takes out is what is stored when it reads, and the words say that, not the question.
+    const a = { id: 'Spare', module: 'vm', run: true, program: { name: 'Spare', built_from: 'Spare' } };
+    const line = { id: 'Line', module: 'vm', run: true, programs: [{ name: 'Tank', built_from: 'Tank' }, { name: 'Pump', built_from: 'Pump' }] };
+    const lineByAgent = { id: 'Line', module: 'vm', run: true, programs: [{ name: 'Mixer', built_from: 'Mixer' }] };
+    const backend = plant({ config: { instances: [a, line] }, runtimes: listing(runtimeOf('Line', { program: 'Tank, Pump' })) });
+    const { calls, container } = await opened(backend);
+    const asked = answering(calls, () => {
+      // While the engineer reads "It stops running Tank, Pump", an agent saves Line to run Mixer.
+      backend.config = { instances: [a, lineByAgent] };
+      return true;
+    });
+    calls.length = 0;
+    click(byTestId(card(container), 'runtime-card-unload'));
+    await until('unloaded', () => coreSaves(calls).length === 1);
+    await settle();
+
+    expect(asked[0]?.question).toContain('It stops running Tank, Pump,');
+    expect(coreSaves(calls)[0]?.path).toBe(`/api/v1/projects/plant/runtimes?revision=${revisionOf({ instances: [a, lineByAgent] })}`);
+    expect(backend.config).toEqual({ instances: [a] });
+    expect(byTestId(card(container), 'runtime-commanded')?.textContent).toBe(
+      "Runtime Line was taken out of the project's runtimes. As stored when it was taken out, it held Mixer."
+    );
+  });
+
+  it('Unload of a runtime the project\'s runtimes do not hold sends no save and says nothing was taken out', async () => {
+    const a = { id: 'Spare', module: 'vm', run: true, program: { name: 'Spare', built_from: 'Spare' } };
+    const backend = plant({ config: { instances: [a] }, runtimes: listing(runtimeOf('Line', { program: 'Tank, Pump' })) });
+    const { calls, container } = await opened(backend);
+    answering(calls, true);
+    calls.length = 0;
+    click(byTestId(card(container), 'runtime-card-unload'));
+    await until('refused', () => byTestId(card(container), 'command-refused') !== null);
+    await settle();
+
+    expect(coreSaves(calls)).toEqual([]);
+    expect(backend.config).toEqual({ instances: [a] });
+    expect(byTestId(card(container), 'command-refused')?.querySelector('p')?.textContent).toBe(
+      "The project's runtimes hold no runtime Line, so nothing was taken out."
+    );
+    expect(byTestId(card(container), 'runtime-commanded')).toBeNull();
   });
 
   it("Unload saved by someone else after it read the project's runtimes takes nothing out, in the core's words", async () => {

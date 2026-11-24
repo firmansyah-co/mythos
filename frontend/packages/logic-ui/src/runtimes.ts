@@ -567,12 +567,15 @@ export const api = {
   installed: () => host().api<RuntimesAnswer>('/api/v1/runtimes'),
   /**
    * The project's runtimes configuration as the core has it saved (`null`: none), and the
-   * revision of what is stored.
+   * revision of what is stored: `undefined` when the core gave none (a core older than the
+   * revision gives none), never assumed.
    */
-  config: (projectId: string) =>
-    host().api<{ config: { instances?: Instance[] } | null; revision: string }>(
+  config: async (projectId: string): Promise<{ config: { instances?: Instance[] } | null; revision: string | undefined }> => {
+    const read = await host().api<{ config: { instances?: Instance[] } | null; revision?: unknown }>(
       `/api/v1/projects/${encodeURIComponent(projectId)}/runtimes`
-    ),
+    );
+    return { config: read.config, revision: typeof read.revision === 'string' ? read.revision : undefined };
+  },
   /**
    * Save `instances`, exactly these in this order, as the project's runtimes configuration. With
    * `cold`, every runtime it starts or replaces starts from its initial values. With `revision`,

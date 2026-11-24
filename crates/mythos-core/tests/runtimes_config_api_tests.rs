@@ -275,6 +275,33 @@ async fn a_configuration_changed_by_hand_changes_its_revision_and_a_save_of_the_
     rig.io.shutdown().await;
 }
 
+/// What the read's description says of an empty file, as it is: no bytes, so the revision of no
+/// file. The read refuses it, and a save with the revision of no file replaces it.
+#[tokio::test]
+async fn an_empty_file_has_the_revision_of_no_file_and_a_save_with_that_revision_replaces_it() {
+    let rig = rig().await;
+    assert_eq!(rig.revision("plant_b").await, NO_FILE);
+    std::fs::write(rig.file("plant_b"), b"").unwrap();
+    let (status, body) = rig
+        .request("GET", "/api/v1/projects/plant_b/runtimes", None)
+        .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("is not a runtimes configuration")),
+        "{body}"
+    );
+
+    let (status, body) = rig
+        .save("plant_b", &format!("?revision={NO_FILE}"), none())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["revision"], NO_INSTANCE, "{body}");
+    assert_eq!(rig.revision("plant_b").await, NO_INSTANCE);
+    rig.io.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_stale_save_is_refused_before_the_modules_check_its_programs() {
     let rig = rig().await;

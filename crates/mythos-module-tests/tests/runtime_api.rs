@@ -616,6 +616,88 @@ async fn two_watchers_of_one_runtime_each_read_their_own_list_through_the_server
     rig.io.shutdown().await;
 }
 
+/// A runtime whose module does not answer fails every list watched of it with the module's
+/// failure (502), at the exchange that finds it gone: not with the values read before it went,
+/// and not by a wait running out. Its process is killed, and each process started in its place
+/// is killed too, so that for a while every exchange finds no module (a process is not started
+/// again within `RESPAWN_BACKOFF` of the last start).
+#[tokio::test]
+async fn a_runtime_whose_module_does_not_answer_fails_every_list_watched_of_it() {
+    let rig = rig().await;
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/io",
+            Some(rig.io_config()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = rig
+        .send(
+            &rig.engineer,
+            "PUT",
+            "/api/v1/projects/plant/runtimes",
+            Some(runtimes("level")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    rig.speed_is("the program commands 300", 300).await;
+
+    let lists = [json!(["speed", "level"]), json!(["setpoint"])];
+    let watch = |list: &Value| {
+        rig.send(
+            &rig.viewer,
+            "POST",
+            "/api/v1/runtimes/tank/watch",
+            Some(json!({ "variables": list })),
+        )
+    };
+    for list in &lists {
+        let (status, body) = watch(list).await;
+        assert_eq!(status, StatusCode::OK, "{list}: {body}");
+    }
+
+    const GONE: &str = "the runtime's module does not answer: ";
+    let mut killed: Vec<u64> = Vec::new();
+    let mut failed: [Option<Value>; 2] = [None, None];
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while failed.iter().any(Option::is_none) {
+        assert!(
+            Instant::now() < deadline,
+            "not every list was told the module does not answer: {failed:?}; runtime {}",
+            rig.tank().await
+        );
+        if let Some(pid) = rig.tank().await["pid"].as_u64() {
+            if !killed.contains(&pid) {
+                kill(pid as u32);
+                killed.push(pid);
+            }
+        }
+        for (list, told) in lists.iter().zip(failed.iter_mut()) {
+            if told.is_some() {
+                continue;
+            }
+            let (status, body) = watch(list).await;
+            // A 502 in other words is a watch call that failed after an exchange that answered:
+            // not this rule's, and asked again.
+            if status == StatusCode::BAD_GATEWAY
+                && body["error"].as_str().is_some_and(|e| e.starts_with(GONE))
+            {
+                assert_eq!(
+                    body.as_object().map(|o| o.len()),
+                    Some(1),
+                    "no value: {body}"
+                );
+                *told = Some(body);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    rig.io.shutdown().await;
+}
+
 #[tokio::test]
 async fn an_engineer_forces_a_variable_everyone_sees_it_and_stopping_releases_it() {
     let rig = rig().await;
