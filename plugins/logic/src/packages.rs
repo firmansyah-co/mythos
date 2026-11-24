@@ -26,7 +26,7 @@ use mythos_logic_compiler::{Diagnostic, Sources};
 use mythos_logic_package::{
     Dependency, Manifest, Package, MAX_PACKAGE_BASE64_LEN, MAX_PACKAGE_BYTES, MAX_VERSION_LEN,
 };
-use mythos_logic_st::ast::PouKind;
+use mythos_logic_st::ast::{Lost, PouKind};
 use mythos_logic_st::project::MAX_SOURCES;
 use mythos_module::protocol::{HttpCall, HttpReply};
 use serde::{Deserialize, Serialize};
@@ -276,8 +276,17 @@ enum Kind {
 /// Each name `text` declares, with what it is, as the parser reads it (as `library_refusals`
 /// reads a library source).
 fn declarations(text: &str) -> Vec<(String, Kind)> {
+    read_declarations(text).0
+}
+
+/// [`declarations`], and whether `text` also declares a function, a function block or a type
+/// whose name the parser cannot read: one inside NAMESPACE, CLASS or INTERFACE, which it does
+/// not read yet, or one whose name is broken (the parser's `lost`). A program whose name is lost
+/// is not counted: no name a package declares is compared with a program's.
+fn read_declarations(text: &str) -> (Vec<(String, Kind)>, bool) {
     let (read, _) =
         mythos_logic_st::parser::Parser::new(mythos_logic_st::lexer::tokens(text)).source();
+    let lost = read.lost.iter().any(|l| *l != Lost::Program);
     let mut found: Vec<(String, Kind)> = read
         .types
         .iter()
@@ -290,7 +299,7 @@ fn declarations(text: &str) -> Vec<(String, Kind)> {
         };
         (p.name.clone(), kind)
     }));
-    found
+    (found, lost)
 }
 
 /// The name a package source is given for the compiler: `logic/packages/<id>/<version>/<path>`.
@@ -396,6 +405,38 @@ fn dependents_of(
     (dependents, untold)
 }
 
+/// The lowercase ids of the stored packages `entry` reaches through what it depends on,
+/// transitively, each read again; a package whose file does not read reaches nothing further.
+/// Empty when `entry`'s own file does not read.
+fn reached_from(data: &Path, file: &PackagesFile, entry: &PackageEntry) -> BTreeSet<String> {
+    let mut reached = BTreeSet::new();
+    let mut wanted: Vec<String> = match read_stored(data, entry) {
+        Ok(package) => package
+            .manifest()
+            .depends
+            .iter()
+            .map(|d| d.id.clone())
+            .collect(),
+        Err(_) => return reached,
+    };
+    while let Some(id) = wanted.pop() {
+        if !reached.insert(id.to_ascii_lowercase()) {
+            continue;
+        }
+        let Some(other) = file
+            .packages
+            .iter()
+            .find(|p| p.id.eq_ignore_ascii_case(&id))
+        else {
+            continue;
+        };
+        if let Ok(package) = read_stored(data, other) {
+            wanted.extend(package.manifest().depends.iter().map(|d| d.id.clone()));
+        }
+    }
+    reached
+}
+
 // -----------------------------------------------------------------------------
 // The add, assessed once for the add and for its check
 // -----------------------------------------------------------------------------
@@ -412,7 +453,18 @@ struct FileBody {
 /// The file a POST gives, decoded: the base64's length is checked before it is decoded.
 fn given_file(call: &HttpCall) -> Result<(Vec<u8>, Option<String>), Refusal> {
     let given: FileBody = body(call)?;
+    let not_base64 = || {
+        error(
+            400,
+            "the file is not base64 of the standard alphabet with padding",
+        )
+    };
     if given.file.len() > MAX_PACKAGE_BASE64_LEN {
+        // The bound is counted in bytes, which are characters only when the text is ASCII, as
+        // base64 is: a text that is not is said as what it is, not as a count it does not have.
+        if !given.file.is_ascii() {
+            return Err(not_base64());
+        }
         return Err(error(
             400,
             format!(
@@ -426,12 +478,7 @@ fn given_file(call: &HttpCall) -> Result<(Vec<u8>, Option<String>), Refusal> {
     }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(given.file.as_bytes())
-        .map_err(|_| {
-            error(
-                400,
-                "the file is not base64 of the standard alphabet with padding",
-            )
-        })?;
+        .map_err(|_| not_base64())?;
     Ok((bytes, given.file_name))
 }
 
@@ -456,7 +503,9 @@ struct Assessment {
     present: Option<PackageEntry>,
     /// Dependencies the project does not have.
     missing: Vec<Dependency>,
-    /// Stored packages whose file does not read: what they declare and depend on is unknown.
+    /// Stored packages whose file does not read, and sources of the project (library sources
+    /// and the data module's types) that do not read as text or declare something whose name
+    /// cannot be read: what they declare is unknown, so whether the package clashes is too.
     unreadable: Vec<String>,
     /// A TYPE or a PROGRAM in a source of the package.
     misplaced: Vec<String>,
@@ -527,19 +576,37 @@ fn assess(data: &Path, package: &Incoming) -> Result<Assessment, Refusal> {
         }
     }
 
-    // Every other declaration, with how its place is said.
-    let mut elsewhere: Vec<(String, String)> = Vec::new();
-    for (source, text) in &project.library {
-        for (name, kind) in declarations(text) {
-            if kind != Kind::Program {
-                elsewhere.push((name, format!("the library source '{source}'")));
-            }
-        }
+    // Every other declaration, with how its place is said; a source of which not every name
+    // is known is said, not taken as declaring nothing more.
+    let version = &package.manifest.version;
+    let unknown = |what: String| {
+        format!(
+            "{what}, so whether {id} {version} clashes with it is not known; correct it or take it out first"
+        )
+    };
+    for d in &project.unreadable_library {
+        unreadable.push(unknown(d.message.clone()));
     }
-    for (source, text) in &project.types {
-        for (name, kind) in declarations(text) {
-            if kind != Kind::Program {
-                elsewhere.push((name, format!("the type '{source}'")));
+    // A type file that is not text: its source is named; the data's other problems name none.
+    for d in project.problems.iter().filter(|d| d.source.is_some()) {
+        unreadable.push(unknown(d.message.clone()));
+    }
+    let mut elsewhere: Vec<(String, String)> = Vec::new();
+    for (sources, place) in [
+        (&project.library, "the library source"),
+        (&project.types, "the type"),
+    ] {
+        for (source, text) in sources {
+            let (declared, lost) = read_declarations(text);
+            if lost {
+                unreadable.push(unknown(format!(
+                    "{place} '{source}' declares something whose name cannot be read (inside NAMESPACE, CLASS or INTERFACE, which are not read yet, or a declaration whose name is broken)"
+                )));
+            }
+            for (name, kind) in declared {
+                if kind != Kind::Program {
+                    elsewhere.push((name, format!("{place} '{source}'")));
+                }
             }
         }
     }
@@ -853,6 +920,13 @@ fn remove(data: &Path, id: &str) -> Result<(Value, PackageEntry), Refusal> {
         .ok_or_else(|| no_package(id))?;
     let entry = file.packages[at].clone();
     let (dependents, untold) = dependents_of(data, &file, &entry.id);
+    // A dependent this package itself depends on, transitively, is in a cycle with it (made by
+    // hand: an add needs its dependencies present). Neither could be removed first, so it does
+    // not refuse the remove; it is answered.
+    let reached = reached_from(data, &file, &entry);
+    let (in_cycle, dependents): (Vec<String>, Vec<String>) = dependents
+        .into_iter()
+        .partition(|d| reached.contains(&d.to_ascii_lowercase()));
     if !dependents.is_empty() {
         return Err((
             409,
@@ -866,22 +940,22 @@ fn remove(data: &Path, id: &str) -> Result<(Value, PackageEntry), Refusal> {
             }),
         ));
     }
-    if !untold.is_empty() {
-        let words: Vec<String> = untold
-            .iter()
-            .map(|(other, problem)| {
-                format!(
-                    "whether package '{other}' depends on '{}' cannot be told: {problem}; remove that one or put its file back first",
-                    entry.id
-                )
-            })
-            .collect();
-        return Err(error(409, words.join("; ")));
-    }
     file.packages.remove(at);
     save(data, &mut file)?;
     let path = stored_path(data, &entry.id, &entry.version);
     let mut answer = json!({ "removed": { "id": entry.id, "version": entry.version } });
+    // A package whose file does not read may depend on this one; that cannot be told, and it
+    // does not refuse the remove (two such packages would otherwise refuse each other's): it is
+    // said, as `get` says it.
+    if !untold.is_empty() {
+        answer["dependents_unknown"] = untold
+            .iter()
+            .map(|(id, problem)| json!({ "id": id, "problem": problem }))
+            .collect();
+    }
+    if !in_cycle.is_empty() {
+        answer["dependents_in_a_cycle"] = json!(in_cycle);
+    }
     if let Err(why) = remove_stored(&path) {
         // The list no longer names it, so it is not a package; the file is said, not hidden.
         answer["left"] = json!(format!(

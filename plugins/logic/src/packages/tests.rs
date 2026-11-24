@@ -973,3 +973,275 @@ fn the_manifest_declares_the_five_package_routes_each_a_tool_that_says_programs_
         }
     }
 }
+
+// -----------------------------------------------------------------------------
+// Review findings of P1b: a remove always has a way out, the base64 bound said in what it
+// counts, a clash with what cannot be named is not taken as none, the tools name every refusal
+// -----------------------------------------------------------------------------
+
+const FN_A: &str = "FUNCTION FnA : INT\nFnA := FnB();\nEND_FUNCTION\n";
+const FN_B: &str = "FUNCTION FnB : INT\nFnB := 2;\nEND_FUNCTION\n";
+
+#[tokio::test]
+async fn a_package_whose_dependencys_file_is_lost_is_removed_and_then_the_dependency() {
+    let logic = Logic::default();
+    let p = project();
+    added(
+        &add(
+            &logic,
+            &p,
+            &package("org.ex.b", "1.0.0", &[], &[("b", FN_B)]),
+            None,
+        )
+        .await,
+    );
+    let a = package(
+        "org.ex.a",
+        "1.0.0",
+        &[("org.ex.b", "1.0.0")],
+        &[("a", FN_A)],
+    );
+    added(&add(&logic, &p, &a, None).await);
+    std::fs::remove_file(p.stored("org.ex.b", "1.0.0.zip")).unwrap();
+    let lost = "logic/packages/org.ex.b/1.0.0.zip is missing: logic/packages.json lists the package and its file is not there";
+    // The dependency is still named by a package that reads: refused, as R16 says.
+    let b = remove_one(&logic, &p, "org.ex.b").await;
+    assert_eq!(b.status, 409, "{}", b.body);
+    assert_eq!(b.body["dependents"], json!(["org.ex.a"]));
+    // The dependent is removed; that the lost one might depend on it is said, not a refusal.
+    let gone = remove_one(&logic, &p, "org.ex.a").await;
+    assert_eq!(gone.status, 200, "{}", gone.body);
+    assert_eq!(
+        gone.body,
+        json!({ "removed": { "id": "org.ex.a", "version": "1.0.0" },
+            "dependents_unknown": [{ "id": "org.ex.b", "problem": lost }] })
+    );
+    assert!(gone.event.is_some());
+    // Then the lost one, which nothing names any more.
+    let gone = remove_one(&logic, &p, "org.ex.b").await;
+    assert_eq!(gone.status, 200, "{}", gone.body);
+    assert_eq!(
+        gone.body,
+        json!({ "removed": { "id": "org.ex.b", "version": "1.0.0" } })
+    );
+    assert_eq!(listed(&logic, &p).await, json!({ "packages": [] }));
+    assert!(!p.logic.join("packages/org.ex.a").exists());
+}
+
+#[tokio::test]
+async fn two_listed_packages_whose_files_are_missing_can_each_be_removed() {
+    let logic = Logic::default();
+    let p = project();
+    added(
+        &add(
+            &logic,
+            &p,
+            &package("org.ex.a", "1.0.0", &[], &[("a", FN_B)]),
+            None,
+        )
+        .await,
+    );
+    let b = package(
+        "org.ex.b",
+        "1.0.0",
+        &[],
+        &[("b", "FUNCTION FnC : INT\nFnC := 3;\nEND_FUNCTION\n")],
+    );
+    added(&add(&logic, &p, &b, None).await);
+    std::fs::remove_dir_all(p.logic.join("packages")).unwrap();
+    for (id, other) in [("org.ex.a", Some("org.ex.b")), ("org.ex.b", None)] {
+        let gone = remove_one(&logic, &p, id).await;
+        assert_eq!(gone.status, 200, "{id}: {}", gone.body);
+        assert_eq!(
+            gone.body["dependents_unknown"]
+                .as_array()
+                .map(|u| u.iter().map(|d| d["id"].clone()).collect::<Vec<_>>()),
+            other.map(|o| vec![json!(o)]),
+            "{id}: {}",
+            gone.body
+        );
+    }
+    assert_eq!(listed(&logic, &p).await, json!({ "packages": [] }));
+}
+
+#[tokio::test]
+async fn a_dependency_cycle_made_by_hand_is_removed_one_package_at_a_time() {
+    let logic = Logic::default();
+    let p = project();
+    let a = package(
+        "org.ex.a",
+        "1.0.0",
+        &[("org.ex.b", "1.0.0")],
+        &[("a", FN_A)],
+    );
+    let b = package(
+        "org.ex.b",
+        "1.0.0",
+        &[("org.ex.a", "1.0.0")],
+        &[("b", FN_B)],
+    );
+    // c depends on a and is in no cycle: it still refuses a's remove.
+    let c = package(
+        "org.ex.c",
+        "1.0.0",
+        &[("org.ex.a", "1.0.0")],
+        &[("c", "FUNCTION FnC : INT\nFnC := FnA();\nEND_FUNCTION\n")],
+    );
+    let mut entries = Vec::new();
+    for (id, f) in [("org.ex.a", &a), ("org.ex.b", &b), ("org.ex.c", &c)] {
+        std::fs::create_dir_all(p.logic.join("packages").join(id)).unwrap();
+        std::fs::write(p.stored(id, "1.0.0.zip"), f).unwrap();
+        entries.push(
+            json!({ "id": id, "version": "1.0.0", "sha256": sha(f), "origin": { "kind": "file" } }),
+        );
+    }
+    std::fs::write(p.list_file(), json!({ "packages": entries }).to_string()).unwrap();
+    let refused = remove_one(&logic, &p, "org.ex.a").await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(
+        words(&refused),
+        "package 'org.ex.a' is a dependency of org.ex.c: remove those first"
+    );
+    assert_eq!(refused.body["dependents"], json!(["org.ex.c"]));
+    added_remove(
+        &logic,
+        &p,
+        "org.ex.c",
+        json!({ "removed": { "id": "org.ex.c", "version": "1.0.0" } }),
+    )
+    .await;
+    // Now only b depends on a, and a depends on b: the cycle does not refuse, it is said.
+    added_remove(
+        &logic,
+        &p,
+        "org.ex.a",
+        json!({ "removed": { "id": "org.ex.a", "version": "1.0.0" },
+        "dependents_in_a_cycle": ["org.ex.b"] }),
+    )
+    .await;
+    added_remove(
+        &logic,
+        &p,
+        "org.ex.b",
+        json!({ "removed": { "id": "org.ex.b", "version": "1.0.0" } }),
+    )
+    .await;
+    assert_eq!(listed(&logic, &p).await, json!({ "packages": [] }));
+}
+
+async fn added_remove(logic: &Logic, p: &Project, id: &str, answer: Value) {
+    let gone = remove_one(logic, p, id).await;
+    assert_eq!(gone.status, 200, "{id}: {}", gone.body);
+    assert_eq!(gone.body, answer);
+}
+
+#[tokio::test]
+async fn a_file_of_text_that_is_not_ascii_past_the_byte_bound_is_refused_as_not_base64() {
+    let logic = Logic::default();
+    let p = bare();
+    // Fewer characters than the bound, more bytes: no count is said that the text does not have.
+    let file = "é".repeat(MAX_PACKAGE_BASE64_LEN / 2 + 1);
+    assert!(file.chars().count() < MAX_PACKAGE_BASE64_LEN && file.len() > MAX_PACKAGE_BASE64_LEN);
+    for route in ["/packages", "/packages/check"] {
+        let a = send(
+            &logic,
+            &p,
+            "POST",
+            route,
+            &[],
+            Some(json!({ "file": file })),
+        )
+        .await;
+        assert_eq!(a.status, 400, "{}", a.body);
+        assert_eq!(
+            words(&a),
+            "the file is not base64 of the standard alphabet with padding"
+        );
+    }
+    assert!(!p.logic.exists());
+}
+
+#[tokio::test]
+async fn a_package_is_refused_while_a_project_source_declares_what_cannot_be_named() {
+    let logic = Logic::default();
+    let p = project();
+    let file = package(
+        "org.ex.m",
+        "1.0.0",
+        &[],
+        &[(
+            "m",
+            "FUNCTION_BLOCK Motor\nVAR_INPUT go : BOOL; END_VAR\nEND_FUNCTION_BLOCK\n",
+        )],
+    );
+    let library = p.logic.join(LIBRARY_DIR);
+    std::fs::create_dir_all(&library).unwrap();
+    let types = p.root.path().join("data/types");
+    std::fs::create_dir_all(&types).unwrap();
+    let unknown =
+        "so whether org.ex.m 1.0.0 clashes with it is not known; correct it or take it out first";
+    let cases: [(PathBuf, &[u8], String); 3] = [
+        (
+            library.join("Drives.st"),
+            b"NAMESPACE N\nFUNCTION_BLOCK Motor\nEND_FUNCTION_BLOCK\nEND_NAMESPACE\n",
+            format!("the library source 'logic/library/Drives.st' declares something whose name cannot be read (inside NAMESPACE, CLASS or INTERFACE, which are not read yet, or a declaration whose name is broken), {unknown}"),
+        ),
+        (
+            library.join("Drives.st"),
+            b"FUNCTION_BLOCK Motor\xff\nEND_FUNCTION_BLOCK\n",
+            "logic/library/Drives.st cannot be read as a library source: ".to_string(),
+        ),
+        (
+            types.join("Shapes.st"),
+            b"CLASS Motor\nEND_CLASS\n",
+            format!("the type 'data/types/Shapes.st' declares something whose name cannot be read (inside NAMESPACE, CLASS or INTERFACE, which are not read yet, or a declaration whose name is broken), {unknown}"),
+        ),
+    ];
+    for (path, text, said) in cases {
+        std::fs::write(&path, text).unwrap();
+        let checked = check_file(&logic, &p, &file).await;
+        assert_eq!(checked.status, 200, "{}", checked.body);
+        assert_eq!(checked.body["ok"], false, "{}", checked.body);
+        assert_eq!(checked.body["refusal"]["status"], 409, "{}", checked.body);
+        let error = checked.body["refusal"]["error"].as_str().unwrap();
+        assert!(
+            error.starts_with(&said) && error.ends_with(unknown),
+            "{error}"
+        );
+        let before = p.files();
+        let a = add(&logic, &p, &file, None).await;
+        assert_eq!(a.status, 409, "{}", a.body);
+        assert_eq!(words(&a), error);
+        assert!(a.event.is_none());
+        assert_eq!(p.files(), before);
+        std::fs::remove_file(&path).unwrap();
+    }
+    // With those gone, the same package is added.
+    added(&add(&logic, &p, &file, None).await);
+}
+
+#[test]
+fn the_package_tools_name_every_refusal_and_the_keys_that_carry_it() {
+    let manifest = crate::manifest();
+    let summary = |tool: &str| {
+        manifest
+            .routes
+            .iter()
+            .find(|r| r.tool == tool)
+            .unwrap_or_else(|| panic!("no tool {tool}"))
+            .summary
+            .clone()
+    };
+    for (tool, said) in [
+        ("add_logic_package", "when another package of the project has a file that does not read"),
+        ("add_logic_package", "declares something whose name cannot be read"),
+        ("add_logic_package", "Nothing of the package is written when it is refused (the module's lock file, logic/.lock.tmp, is made by every write route)"),
+        ("check_logic_package", "When 'ok' is false, 'refusal' holds the add's answer: {'status', 'error'}"),
+        ("get_logic_package", "answered with 'entry' and 'problem' only"),
+        ("get_logic_package", "'dependents_unknown'"),
+        ("remove_logic_package", "'dependents_in_a_cycle'"),
+        ("remove_logic_package", "'dependents_unknown'"),
+    ] {
+        assert!(summary(tool).contains(said), "{tool}: {said}");
+    }
+}

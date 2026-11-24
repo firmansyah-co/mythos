@@ -201,6 +201,7 @@ struct Rig {
     engineer: String,
     operator: String,
     viewer: String,
+    admin: String,
     project: PathBuf,
     _root: tempfile::TempDir,
     _modules: tempfile::TempDir,
@@ -242,6 +243,7 @@ async fn rig() -> Rig {
     }
     let session = |name: &str| auth.sign_in(name, "a good password").unwrap().1;
     let (engineer, operator, viewer) = (session("erin"), session("otto"), session("vera"));
+    let admin = auth.sign_in("root", "root password 1").unwrap().1;
 
     let catalog = Arc::new(RwLock::new(TagCatalog::new()));
     let dirs = vec![modules.path().to_path_buf()];
@@ -285,6 +287,7 @@ async fn rig() -> Rig {
         engineer,
         operator,
         viewer,
+        admin,
         project,
         _root: root_dir,
         _modules: modules,
@@ -1211,8 +1214,8 @@ async fn each_role_does_what_it_may_and_what_is_wrong_is_refused_and_not_saved()
     );
     assert!(!data.join("programs/Pump.st").exists());
 
-    // Library packages: reading and checking them is a viewer's, adding and removing an
-    // engineer's.
+    // Library packages: reading and checking them is a viewer's (so an operator's and an
+    // administrator's too), adding and removing an engineer's (and an administrator's).
     let packages = "/api/v1/projects/plant/logic/packages";
     let base = format!("{packages}/org.example.base");
     let file = json!({"file": base64_of(&package_file())});
@@ -1220,30 +1223,76 @@ async fn each_role_does_what_it_may_and_what_is_wrong_is_refused_and_not_saved()
         let (status, _) = rig.send(who, "POST", packages, Some(file.clone())).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
-    let (status, checked) = rig
-        .send(
-            &rig.viewer,
-            "POST",
-            &format!("{packages}/check"),
-            Some(file.clone()),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(checked["ok"], true, "{checked}");
+    for who in [&rig.viewer, &rig.operator, &rig.admin] {
+        let (status, checked) = rig
+            .send(
+                who,
+                "POST",
+                &format!("{packages}/check"),
+                Some(file.clone()),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(checked["ok"], true, "{checked}");
+    }
     assert!(!data.join("packages.json").exists());
     rig.eng("POST", packages, Some(file), 201).await;
     for who in [&rig.viewer, &rig.operator] {
         let (status, _) = rig.send(who, "DELETE", &base, None).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
-    let (status, listed) = rig.send(&rig.viewer, "GET", packages, None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(listed["packages"][0]["id"], "org.example.base", "{listed}");
-    let (status, got) = rig.send(&rig.viewer, "GET", &base, None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(got["sources"][0]["path"], "src/twice.st", "{got}");
+    for who in [&rig.viewer, &rig.operator, &rig.admin] {
+        let (status, listed) = rig.send(who, "GET", packages, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed["packages"][0]["id"], "org.example.base", "{listed}");
+        // Asked in another case, answered in the manifest's own spelling.
+        let (status, got) = rig
+            .send(who, "GET", &format!("{packages}/ORG.Example.BASE"), None)
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(got["entry"]["id"], "org.example.base", "{got}");
+        assert_eq!(got["sources"][0]["path"], "src/twice.st", "{got}");
+    }
+    // An unknown package is 404 in the module's words; a parameter that is not an id is 400,
+    // the same words for a read and a remove.
+    let (status, unknown) = rig
+        .send(
+            &rig.viewer,
+            "GET",
+            &format!("{packages}/org.example.nothere"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        unknown["error"], "the project has no package 'org.example.nothere'",
+        "{unknown}"
+    );
+    let mut said = Vec::new();
+    for (who, method) in [(&rig.viewer, "GET"), (&rig.engineer, "DELETE")] {
+        let (status, bad) = rig
+            .send(who, method, &format!("{packages}/org.CON"), None)
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{method}: {bad}");
+        let words = bad["error"].as_str().unwrap_or("").to_string();
+        assert!(words.contains("CON"), "{method}: {bad}");
+        said.push(words);
+    }
+    assert_eq!(said[0], said[1]);
     assert!(data.join("packages/org.example.base/1.0.0.zip").is_file());
-    rig.eng("DELETE", &base, None, 200).await;
+    let (status, removed) = rig
+        .send(
+            &rig.admin,
+            "DELETE",
+            &format!("{packages}/ORG.EXAMPLE.BASE"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert_eq!(
+        removed,
+        json!({"removed": {"id": "org.example.base", "version": "1.0.0"}})
+    );
     assert!(!data.join("packages/org.example.base/1.0.0.zip").exists());
 
     rig.close().await;
@@ -1995,9 +2044,26 @@ async fn an_agent_adds_lists_reads_and_removes_a_package_over_mcp() {
         Arc::new(RwLock::new(TagCatalog::new())),
         None,
     );
+    let mut events = state.hmi_events.subscribe();
     let services = ServiceHost::new(state.hmi_events.clone());
     services.sync(vec![module]).await;
     let app = create_router(state.with_services(Arc::clone(&services)));
+    // The next package event on the server's telemetry stream: the module's event, forwarded
+    // by the core under its own name.
+    macro_rules! package_event {
+        () => {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let e = events.recv().await.unwrap();
+                    if e.event == "LOGIC_PACKAGES_CHANGED" {
+                        break e.data;
+                    }
+                }
+            })
+            .await
+            .expect("no LOGIC_PACKAGES_CHANGED on the telemetry stream")
+        };
+    }
     let rpc = |method: &'static str, params: Value| {
         let app = app.clone();
         async move {
@@ -2090,6 +2156,10 @@ async fn an_agent_adds_lists_reads_and_removes_a_package_over_mcp() {
         json!({"kind": "file", "file_name": "base-1.0.0.zip"}),
         "{added}"
     );
+    assert_eq!(
+        package_event!(),
+        json!({"project": "plant", "package": "org.example.base", "version": "1.0.0", "what": "added"})
+    );
     let again = tool(
         "add_logic_package",
         json!({"project_id": "plant", "body": file}),
@@ -2097,6 +2167,11 @@ async fn an_agent_adds_lists_reads_and_removes_a_package_over_mcp() {
     .await;
     assert_eq!(again["isError"], true, "{again}");
     assert_eq!(again["structuredContent"]["status"], 409, "{again}");
+    assert_eq!(
+        again["structuredContent"]["body"]["error"],
+        "the project already has package 'org.example.base' 1.0.0; remove it first (an update is ADR-015 step 3)",
+        "{again}"
+    );
     let all = tool("list_logic_packages", json!({"project_id": "plant"})).await;
     assert_eq!(
         all["structuredContent"]["body"]["packages"][0]["name"], "Base blocks",
@@ -2110,6 +2185,10 @@ async fn an_agent_adds_lists_reads_and_removes_a_package_over_mcp() {
     assert_eq!(got["isError"], false, "{got}");
     assert_eq!(
         got["structuredContent"]["body"]["blocks"][0]["name"], "Twice",
+        "{got}"
+    );
+    assert_eq!(
+        got["structuredContent"]["body"]["entry"]["id"], "org.example.base",
         "{got}"
     );
     assert!(project
@@ -2126,5 +2205,9 @@ async fn an_agent_adds_lists_reads_and_removes_a_package_over_mcp() {
         "{removed}"
     );
     assert!(!project.join("logic/packages/org.example.base").exists());
+    assert_eq!(
+        package_event!(),
+        json!({"project": "plant", "package": "org.example.base", "version": "1.0.0", "what": "removed"})
+    );
     services.shutdown().await;
 }
