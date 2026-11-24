@@ -252,3 +252,55 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
     carries its own state and version.
   - The bytes of a name (above, not fixed), the Unload question's span (above, not fixed) and the
     writers of `runtimes.json` outside the lock (above, not fixed).
+
+  **Verification of the finished slice** (the orchestrator, after the review fixes, the stacking
+  on the palette slice and the version line; this is what "run after this text" above was
+  waiting for). The branch is stacked on PR #198 (library blocks in the palette), so every run
+  below holds that slice too.
+  - **The frontend gate** on `b42d0d8`: `./scripts/check.sh --frontend` printed "check.sh
+    --frontend: PASS — every gate green", tree clean: `pnpm lint`, `pnpm test` (59 test files,
+    887 tests) and `pnpm build`.
+  - **Rust** on `b42d0d8`: `cargo fmt --all --check` clean; `cargo clippy -p mythos-core
+    -p mythos-logic -p mythos-module-tests --all-targets -- -D warnings` clean;
+    `cargo test -p mythos-core --lib` 95 passed; `cargo test -p mythos-logic` 79 passed;
+    `cargo test -p mythos-module-tests --no-fail-fast` every suite green, among them
+    `runtime_api` 16, `runtime_vm` 27, `logic_module` 12 and `data_and_logic` 18 (the suites the
+    text above says the agents did not run). `cargo test -p mythos-core` (every test file of
+    the crate) was green one commit earlier, before the added test below took its final form.
+  - **The Windows lint** on `b42d0d8`: `win-clippy.sh` printed "win-clippy: GREEN".
+  - **Mutations**, with `scripts/mutation-check.py`, in a copy made by `git archive` with its own
+    install and target directory, both baselines green in every run. **27 of 27 red** in the end.
+    - Frontend, 7 (4 of stage 2, 2 for review fixes, 1 of the orchestrator's), on `28b77eb`
+      (the head of the branch before it was stacked again on the palette slice's corrections;
+      the slice's own files were the same),
+      against `runtime-load.test.tsx`, `runtime-editor.test.tsx`, `programs.test.tsx` and
+      `runtimes.test.ts`: 7 red.
+    - Rust, 20 (1 of stage 1, 6 of stage 2, 3 for review fixes, 10 of the orchestrator's written
+      against the storage of the watches as the fixer left it, because the stage's own no
+      longer applied), on `28b77eb`, against `runtimes::tests`, `mcp::tests`,
+      `runtimes_config_api_tests` and the two new tests of `runtime_api`: 18 red, 1 did not
+      compile, 1 survived.
+    - Did not compile: the fixer's mutation for "a module that does not answer" took out the
+      only caller of `watch_failed`, which the workspace refuses as dead code. Written again to
+      fail the lists of another runtime id, it is red in
+      `a_runtime_whose_module_does_not_answer_fails_every_list_watched_of_it`.
+    - Survived, a real gap: "a name twice in a list counted twice when added". With it, a list
+      that names a variable twice leaves that name read at every exchange after the list is let
+      go, as long as another list of the runtime stays. No test asked for a list with a repeated
+      name. The test `a_list_that_names_a_variable_twice_is_read_for_it_once_and_let_go_whole`
+      was added. Its first form did not catch the mutation either (with no other list, the
+      runtime's watches are dropped whole); with a second list it does: red on `b42d0d8`.
+    - The frontend mutations and the other 18 Rust ones were not run again after `28b77eb`:
+      since then the branch gained that one test and the palette slice's two corrections of
+      test files.
+  - **Read by one reader only.** The storage of the watches (`Watching`, `WatchRead`, the
+    counts of names, the numbered reads) was made by the fixer after both reviews. The
+    orchestrator read it line by line and wrote the ten mutations above against it; no second
+    reviewer did.
+  - **Not run by the orchestrator:** the full gate (`./scripts/check.sh`), macOS, and
+    `scripts/e2e.sh`. No green full gate of this commit exists from this machine; CI is the
+    gate. Nothing was looked at in a browser; the slice changes no screen except the words of
+    two refusals.
+  - **Not fixed, as above:** no bound on the bytes of a watch name (LATENT), the runtime
+    card's Unload reads the revision after its question (LIVE, low; for C8d-2), and the writers
+    of `runtimes.json` in the plant's install and restore are outside the lock (LATENT).
