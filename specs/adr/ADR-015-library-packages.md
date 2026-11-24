@@ -47,7 +47,8 @@ owner has not answered, §5 asks.
   version 0.10.0 (`plugins/logic/Cargo.toml:5`).
 - The workbench edits it in `frontend/packages/logic-ui/src/LibraryEditor.tsx`, `LibraryTree.tsx`,
   `librarystore.ts` and `library.ts`, in the tree section Library at order 25 (`entry.tsx:180`).
-  Library blocks are not in the LD and FBD palette (`ADR-014-…md:433-434`).
+  Library blocks are not in the LD and FBD palette on `dev` at this writing
+  (`ADR-014-…md:433-434`).
 
 ### 1.2 How library sources enter a compilation
 
@@ -61,7 +62,8 @@ owner has not answered, §5 asks.
   checked and only what a program uses is compiled (`project.rs:9-18`). A library source a
   program does not use does not change its bytecode.
 - A built program's version is a SHA-256 over its bytecode, interval, bindings and data uses,
-  truncated to 6 bytes (`plugins/logic/src/lib.rs:1175-1186`), without the compiler's version. The backend refuses an IR unit of another `IR_VERSION`
+  truncated to 6 bytes (`plugins/logic/src/lib.rs:1175-1186`), without the compiler's version.
+  The backend refuses an IR unit of another `IR_VERSION`
   (`crates/mythos-logic-backend-vm/src/lib.rs:383`). No language or compiler version constant
   exists that a package could name: UNKNOWN beyond `IR_VERSION`, the bytecode `format_version`
   of a target profile and the module protocol's `PROTOCOL_VERSION`.
@@ -374,9 +376,9 @@ UI piece. Each slice has its own evidence file.
 | P11 | 5 | OSCAT as a package, published to the store | license checked; P4; P8; whether it compiles |
 | P12 | 6 | The compiled form: its own design (unit format, link step), then its slices, with signatures | the IEC 62443 work; its own ADR |
 
-Library blocks in the LD and FBD palette (ADR-014 D4c, not built) are not a step of this ADR; a
-package's blocks join the palette when the project library's do. A package block is usable from
-ST at once and from LD and FBD by name, as a project library block is today.
+Library blocks in the LD and FBD palette are a slice of their own (not on `dev` at this
+writing) and not a step of this ADR; a package's blocks join the palette when the project
+library's do. A package block is usable from ST at once, as a project library block is today.
 
 ## 5. What is open
 

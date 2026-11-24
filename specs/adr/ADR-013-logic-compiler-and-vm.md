@@ -1449,9 +1449,9 @@ express is exposed as an intrinsic; OSCAT is to follow as the standard library.
   35 bytes, not 28) and a call of a standard block is a call (one more frame of call depth).
   From a program, the internal state is private (§6.6.3.2 rule 11), as a user block's is.
 - **OSCAT next.** The owner decided on 2026-11-24 that OSCAT comes as a library package
-  (ADR-015), not inside the compiler, its license still to be checked first. It is now an
-  Eclipse project under EPL-2.0 (https://eclipse.dev/oscat/); its license must be checked
-  before any of its source is copied in.
+  (ADR-015), not inside the compiler. It is now an Eclipse project under EPL-2.0
+  (https://eclipse.dev/oscat/); its license must be checked before any of its source is
+  copied in.
 
 ### 2.15 The Ladder Diagram front-end and its format (L3a)
 
