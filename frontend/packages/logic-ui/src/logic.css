@@ -308,6 +308,19 @@ button.logic-diagnostic:hover {
   align-items: end;
 }
 
+/* A field keeps to its column: a text or number input is by itself wider than a narrow column,
+   and would then lie over the next field and pass the edge of the form. */
+.logic-fields > .field {
+  min-width: 0;
+}
+
+.logic-fields > .field input:not([type='checkbox']):not([type='radio']),
+.logic-fields > .field select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
+
 .logic-binding {
   display: flex;
   flex-wrap: wrap;

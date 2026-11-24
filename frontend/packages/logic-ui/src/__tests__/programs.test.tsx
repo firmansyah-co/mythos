@@ -15,6 +15,7 @@ import {
   click,
   connection,
   doing,
+  emit,
   endTest,
   entryOf,
   ioStatus,
@@ -195,7 +196,9 @@ describe('editing, checking and saving', () => {
     await settle();
     expect(writes(calls)).toEqual(['PUT /projects/plant/logic/programs/Tank/settings']);
     expect(backend.programs[0]?.entry.interval_ms).toBe(20);
-    // The name and the language are not the client's to send.
+    // The name, the language and the mark of when it was made are not the client's to send: the
+    // module refuses a key it does not know, and the entry it answered holds `created`.
+    expect(backend.programs[0]?.entry.created).toBe('made-Tank');
     expect(Object.keys(calls.find((c) => c.method === 'PUT')?.body as object).sort()).toEqual([
       'inputs', 'interval_ms', 'outputs', 'published', 'run', 'runtime', 'target',
     ]);
@@ -1329,6 +1332,35 @@ describe('the Programs section of the tree', () => {
     expect(writes(calls)).toEqual(['POST /projects/plant/logic/programs']);
     expect(texts(tree, 'tree-program')).toEqual(['TankST', 'PumpST']);
     expect(openedEditors).toEqual(['Pump']);
+  });
+
+  it('follows two programs deleted elsewhere one after the other, and lists none that is gone', async () => {
+    // The answer to the first read of the list is held back until the second program is gone
+    // too: it still names the second, and must not be what the tree ends up showing.
+    const backend: Backend = { programs: [{ entry: entryOf('Tank'), source: TANK }, { entry: entryOf('Pump'), source: TANK }, { entry: entryOf('Fan'), source: TANK }] };
+    await opened(backend);
+    const tree = render(<ProgramsTree openEditor={() => undefined} />);
+    expect(texts(tree, 'tree-program')).toEqual(['TankST', 'PumpST', 'FanST']);
+
+    const held: Array<() => void> = [];
+    backend.intercept = (call) => {
+      if (call.method !== 'GET' || !/\/logic\/programs$/.test(call.path)) return undefined;
+      // The list as it is when asked, answered when let go.
+      const answer = Response.json({ programs: backend.programs.map((p) => p.entry) });
+      return new Promise<Response>((resolve) => held.push(() => resolve(answer)));
+    };
+    const gone = (name: string) => {
+      backend.programs = backend.programs.filter((p) => p.entry.name !== name);
+      emit('LOGIC_PROGRAMS_CHANGED', { project: 'plant', program: name, what: 'deleted' });
+    };
+    gone('Tank');
+    gone('Pump');
+    await until('both reads of the list are asked', () => held.length === 2);
+    // The newer read answers first, the older one after it.
+    await doing(() => held[1]?.());
+    await doing(() => held[0]?.());
+    await settle();
+    expect(texts(tree, 'tree-program')).toEqual(['FanST']);
   });
 
   it('marks a program with unsaved changes', async () => {

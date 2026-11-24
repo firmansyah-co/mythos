@@ -504,6 +504,8 @@ let runtimesAsked = 0;
 let runtimesApplied = 0;
 /** Nothing asked before this was applied: the store was reset after it was asked. */
 let floor = 0;
+/** The newest read of the list of programs: an answer to an older one is not applied. */
+let listAsked = 0;
 /** Fires when no read of the runtimes has come back for `RUNTIMES_STALE_AFTER_MS`. */
 let runtimesOverdue: ReturnType<typeof setTimeout> | null = null;
 /** The newest check applied (or failed) for each program, by program name. */
@@ -646,12 +648,16 @@ export const usePrograms = create<ProgramsState>((set, get) => {
         phase: 'reading',
         runtimes: { ...get().runtimes, configured: null, configuredError: null, assigned: null },
       });
+      // Asked again before this one answered (a program made or deleted elsewhere meanwhile):
+      // this answer may be older than the project is, and the newer read sets the list.
+      listAsked += 1;
+      const mine = listAsked;
       try {
         const listed = await api.list(projectId);
-        if (!still(projectId)) return;
+        if (!still(projectId) || mine !== listAsked) return;
         set({ phase: 'ready', programs: listed.programs.map(docOf) });
       } catch (cause) {
-        if (!still(projectId)) return;
+        if (!still(projectId) || mine !== listAsked) return;
         // Not an empty list: the programs are there or not, and this workbench does not know.
         set({ phase: 'unreadable', loadError: message(cause) });
         log.error(`The project's programs could not be read: ${message(cause)}`);
