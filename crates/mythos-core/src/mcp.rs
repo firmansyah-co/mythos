@@ -1296,7 +1296,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "watch_runtime",
         title: "Read a program's variables",
-        description: "The values of a running program's variables as its last scan left them: any variable, bound to a tag or not, and one element of an array as name[2] or name[1,3]. It changes nothing in the program. Each value comes with its type; a variable the program does not have, or one with no single value (a whole array, a structure), has an error instead. 'state' says which program and version answered and whether it is in run: values read from a stopped or faulted program are what it stopped with. 'age_ms' is how long ago the runtime was read, and 'state.scan_age_us' how long before that the program last completed a scan (absent before its first scan, from a module that does not say, and from a runtime of several tasks, whose state.tasks give each task's run_age_us instead): a program that has stopped scanning still answers in run, with its last values and a scan age that grows, so values are current only while the scan age is within two of the program's intervals (list_runtimes: interval_ms) plus its longest scan (state.max_scan_us). 'fresh_ms' is how old an answer may be and still be given at once. The first call waits for the runtime's next exchange; calls within a few seconds of each other answer at once.",
+        description: "The values of a running program's variables as its last scan left them: any variable, bound to a tag or not, and one element of an array as name[2] or name[1,3]. It changes nothing in the program. Each value comes with its type; a variable the program does not have, or one with no single value (a whole array, a structure), has an error instead. 'state' says which program and version answered and whether it is in run: values read from a stopped or faulted program are what it stopped with. 'age_ms' is how long ago the runtime was read, and 'state.scan_age_us' how long before that the program last completed a scan (absent before its first scan, from a module that does not say, and from a runtime of several tasks, whose state.tasks give each task's run_age_us instead): a program that has stopped scanning still answers in run, with its last values and a scan age that grows, so values are current only while the scan age is within two of the program's intervals (list_runtimes: interval_ms) plus its longest scan (state.max_scan_us). 'fresh_ms' is how old an answer may be and still be given at once. The first call waits for the runtime's next exchange; calls within a few seconds of each other answer at once. Each list of variables is a watch of its own: callers watching one runtime with other lists do not disturb each other, and callers with the very same list (the same names in the same order) share one watch and one answer. The runtime is read at each exchange for the union of every list watched of it, each name once, at most 256 names, and keeps at most 256 lists: a new list that would pass either is refused with 409 and words saying why, nothing is watched, and a list already watched is never refused. A list nobody asks for again within 5 s is let go and no longer counts. A name the runtime's module gave no value for has value null and an error, never a value.",
         method: "POST",
         path: "/api/v1/runtimes/:runtime/watch",
         query: &[],
@@ -1329,7 +1329,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "get_runtimes_config",
         title: "Get a project's runtimes",
-        description: "The programs a project is configured to run, with their bindings to tags, or null.",
+        description: "The programs a project is configured to run, with their bindings to tags, or null, and its revision: the lower hex SHA-256 of the stored file's bytes as read (of no bytes when the project has none), which changes with any change to the file's bytes, by a save or by hand. An empty file has no bytes either, so it has the revision of no file: the read refuses it (it is not a configuration), and a save passing the revision of no file replaces it. Pass the revision to save_runtimes_config: the save is then refused with 409 if the configuration has changed since this read. A save without it can overwrite a save made since the read.",
         method: "GET",
         path: "/api/v1/projects/:id/runtimes",
         query: &[],
@@ -1340,13 +1340,19 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "save_runtimes_config",
         title: "Save a project's runtimes",
-        description: "Check and save the programs a project runs. Each instance names a runtime module (list_runtimes shows them), whether to run at once, and a program: its code and symbols as the logic compiler made them, its data (each data block its code declares in VAR_EXTERNAL, as the compiler gave it; required when it declares any), the tags read into variables (inputs), the variables written to field tags with the safe value each tag takes whenever the program is not running (outputs), and the variables published as tags starting with internal. (published; writable makes one a setpoint an operator may write). A runtime of several programs gives them in programs instead of program, and tasks that say which task runs each (cyclic, cycle, startup or event, at a priority from 0, the highest, to 31); its variables are then named program.variable. A runtime module that does not say it runs tasks is refused such a runtime. An instance's data lists the data blocks its programs share: each block in one runtime only, each member written by one program at most, no tag read into a member and no member made a setpoint; a runtime module that does not say it hands data blocks over is refused a runtime with data. The layout hash, offsets and written flags of a block come only from the logic compiler: no route of this server returns them. The module loads each program to check it; anything that does not load is refused and nothing is saved. For the active project the runtimes are then made to match: 'applied' true says the configuration was put in force, not that every program started. 'changes.failed' lists each instance that did not start, with why; read list_runtimes for what runs. A new build of the same programs of the same project in run replaces it online (the same programs: by built_from and created when every program of both gives built_from, else by PROGRAM name, so a running instance that names no project program is replaced online by a build of any program of the same PROGRAM name; never a build of a project made active since the running one was started): it takes over every variable of the same name, type and size (RETAIN or not) and scans on, its outputs never going to their safe values; start=cold starts every program it starts or replaces from its initial values instead, RETAIN ones included. 'changes.runtimes' says for each how it started: start online (with carried, the count, and dropped and initialized, the variables that did not carry over and why), warm (RETAIN values kept, the rest initial; why says why not online) or cold. Forces are released by a load either way. A program may name the project program it is a build of (built_from, given by the logic module's builds): two instances holding programs of one built_from are refused, and nothing is saved. RETAIN values are kept per runtime id and per program: a start gives a program only the values kept for it (by built_from and created when both name one, else by program name; a program made again under its name is another program), and none when values kept for two programs could be it; 'changes.runtimes' lists in not_given each kept value it did not give, and why. The one exception is a retain file written before values were kept per program (a JSON array): it is given once, as it is, to whatever the runtime runs at its next warm start, not_given then empty, and written again per program.",
+        description: "Check and save the programs a project runs. Each instance names a runtime module (list_runtimes shows them), whether to run at once, and a program: its code and symbols as the logic compiler made them, its data (each data block its code declares in VAR_EXTERNAL, as the compiler gave it; required when it declares any), the tags read into variables (inputs), the variables written to field tags with the safe value each tag takes whenever the program is not running (outputs), and the variables published as tags starting with internal. (published; writable makes one a setpoint an operator may write). A runtime of several programs gives them in programs instead of program, and tasks that say which task runs each (cyclic, cycle, startup or event, at a priority from 0, the highest, to 31); its variables are then named program.variable. A runtime module that does not say it runs tasks is refused such a runtime. An instance's data lists the data blocks its programs share: each block in one runtime only, each member written by one program at most, no tag read into a member and no member made a setpoint; a runtime module that does not say it hands data blocks over is refused a runtime with data. The layout hash, offsets and written flags of a block come only from the logic compiler: no route of this server returns them. The module loads each program to check it; anything that does not load is refused and nothing is saved. For the active project the runtimes are then made to match: 'applied' true says the configuration was put in force, not that every program started. 'changes.failed' lists each instance that did not start, with why; read list_runtimes for what runs. A new build of the same programs of the same project in run replaces it online (the same programs: by built_from and created when every program of both gives built_from, else by PROGRAM name, so a running instance that names no project program is replaced online by a build of any program of the same PROGRAM name; never a build of a project made active since the running one was started): it takes over every variable of the same name, type and size (RETAIN or not) and scans on, its outputs never going to their safe values; start=cold starts every program it starts or replaces from its initial values instead, RETAIN ones included. 'changes.runtimes' says for each how it started: start online (with carried, the count, and dropped and initialized, the variables that did not carry over and why), warm (RETAIN values kept, the rest initial; why says why not online) or cold. Forces are released by a load either way. A program may name the project program it is a build of (built_from, given by the logic module's builds): two instances holding programs of one built_from are refused, and nothing is saved. RETAIN values are kept per runtime id and per program: a start gives a program only the values kept for it (by built_from and created when both name one, else by program name; a program made again under its name is another program), and none when values kept for two programs could be it; 'changes.runtimes' lists in not_given each kept value it did not give, and why. The one exception is a retain file written before values were kept per program (a JSON array): it is given once, as it is, to whatever the runtime runs at its next warm start, not_given then empty, and written again per program. Pass revision, the one get_runtimes_config gave: if the configuration has changed since that read (another client saved, or the file was changed by hand) the save is refused with 409 and words saying so, and nothing is saved or applied; read it again and decide again. A save without revision can overwrite a save made since the read. The answer's revision is that of what was saved.",
         method: "PUT",
         path: "/api/v1/projects/:id/runtimes",
-        query: &[(
-            "start",
-            "cold to start every program this starts or replaces from its initial values, RETAIN variables included; leave it out to change running programs online",
-        )],
+        query: &[
+            (
+                "start",
+                "cold to start every program this starts or replaces from its initial values, RETAIN variables included; leave it out to change running programs online",
+            ),
+            (
+                "revision",
+                "the revision get_runtimes_config answered: the save is refused with 409, and nothing is saved or applied, if the configuration has changed since that read; left out, the save is made whatever is stored and can overwrite a save made since the read",
+            ),
+        ],
         body: Some(runtimes_config_body),
         read_only: false,
         destructive: true,
@@ -2061,6 +2067,34 @@ mod tests {
     }
 
     #[test]
+    fn the_watch_tool_says_each_list_is_its_own_and_what_bounds_it() {
+        let watch = TOOLS
+            .iter()
+            .find(|t| t.name == "watch_runtime")
+            .expect("watch_runtime")
+            .description;
+        for said in [
+            "Each list of variables is a watch of its own",
+            "callers with the very same list (the same names in the same order) share one watch and one answer",
+            "the union of every list watched of it, each name once, at most 256 names, and keeps at most 256 lists",
+            "a new list that would pass either is refused with 409 and words saying why, nothing is watched, and a list already watched is never refused",
+            "A list nobody asks for again within 5 s is let go",
+        ] {
+            assert!(watch.contains(said), "watch_runtime: {said}");
+        }
+        assert_eq!(
+            crate::runtimes::WATCH_LIMIT,
+            256,
+            "the figure the words give"
+        );
+        assert_eq!(
+            crate::runtimes::WATCH_KEPT.as_secs(),
+            5,
+            "the time the words give"
+        );
+    }
+
+    #[test]
     fn the_runtime_tools_say_what_they_take_and_report_of_data_blocks() {
         let tool = |name: &str| {
             TOOLS
@@ -2084,6 +2118,34 @@ mod tests {
         ] {
             assert!(save.contains(said), "save_runtimes_config: {said}");
         }
+        // The precondition: what the read gives, what the save takes, and that a save without
+        // it is said to be able to overwrite another's.
+        for said in [
+            "Pass revision, the one get_runtimes_config gave",
+            "the save is refused with 409 and words saying so, and nothing is saved or applied",
+            "A save without revision can overwrite a save made since the read.",
+            "The answer's revision is that of what was saved.",
+        ] {
+            assert!(save.contains(said), "save_runtimes_config: {said}");
+        }
+        let read = tool("get_runtimes_config");
+        for said in [
+            "the lower hex SHA-256 of the stored file's bytes as read (of no bytes when the project has none)",
+            "Pass the revision to save_runtimes_config",
+            "A save without it can overwrite a save made since the read.",
+            "An empty file has no bytes either, so it has the revision of no file: the read refuses it (it is not a configuration), and a save passing the revision of no file replaces it.",
+        ] {
+            assert!(read.contains(said), "get_runtimes_config: {said}");
+        }
+        let saving = TOOLS
+            .iter()
+            .find(|t| t.name == "save_runtimes_config")
+            .unwrap();
+        assert_eq!(
+            saving.query.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+            ["start", "revision"],
+            "the save's query keys are those the route takes"
+        );
         assert!(tool("list_runtimes")
             .contains("lists them in data, each member with its writer: the program that writes it, null when none does"));
         let (used, held) = data_schemas();

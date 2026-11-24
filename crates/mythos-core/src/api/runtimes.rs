@@ -3,7 +3,9 @@
 
 use crate::api::state::ApiState;
 use crate::io::ConfigProblem;
-use crate::runtimes::{ForceAsk, ForceRefusal, RuntimesConfig, RUNTIMES_FILE, WATCH_LIMIT};
+use crate::runtimes::{
+    revision_of, stored_bytes, ForceAsk, ForceRefusal, RuntimesConfig, RUNTIMES_FILE, WATCH_LIMIT,
+};
 use crate::storage::StorageError;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -12,6 +14,7 @@ use axum::Json;
 use mythos_pal::PlatformShm;
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use tokio::sync::Mutex;
 
 type ApiError = (StatusCode, Json<Value>);
 
@@ -145,6 +148,12 @@ pub struct WatchBody {
 /// program that has stopped scanning still answers, with its last values and a growing scan
 /// age. A variable the program does not have, or one that has no single value (a whole array, a
 /// structure), has an `error` instead of a `value`.
+///
+/// Each list of names is a watch of its own: callers with other lists do not disturb each
+/// other, and callers with the same list share its answer. The runtime is read for every name
+/// of every list watched of it, each once, at most [`WATCH_LIMIT`] names and at most
+/// [`WATCH_LIMIT`] lists: a new list past either is refused with 409 and words, and nothing is
+/// watched. A list nobody asks for again within [`crate::runtimes::WATCH_KEPT`] is let go.
 pub async fn watch<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
     Path(id): Path<String>,
@@ -170,12 +179,17 @@ pub async fn watch<S: PlatformShm + 'static>(
         let woken = answered.notified();
         tokio::pin!(woken);
         woken.as_mut().enable();
-        // Asked again on every turn: the instance may have been unloaded while waiting.
-        if !runtimes.watch(&id, &body.variables) {
-            return Err(failure(
-                StatusCode::NOT_FOUND,
-                format!("no runtime '{id}' is loaded on this node"),
-            ));
+        // Asked again on every turn: the instance may have been unloaded while waiting. Asking
+        // again only renews a list already watched, which is never refused.
+        match runtimes.watch(&id, &body.variables) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(failure(
+                    StatusCode::NOT_FOUND,
+                    format!("no runtime '{id}' is loaded on this node"),
+                ))
+            }
+            Err(why) => return Err(failure(StatusCode::CONFLICT, why)),
         }
         if let Some((age, answer)) = runtimes.watched(&id, &body.variables) {
             if age <= WATCH_FRESH {
@@ -312,23 +326,112 @@ pub async fn release<S: PlatformShm + 'static>(
     forcing(&state, &id, ask, &who(identity)).await
 }
 
-/// `GET /api/v1/projects/:id/runtimes` — the project's runtimes, or `null` when it has none.
+/// `GET /api/v1/projects/:id/runtimes` — the project's runtimes, or `null` when it has none,
+/// and the `revision` of what is stored: the lower hex SHA-256 of the file's bytes as read (the
+/// same bytes that were parsed), of no bytes when there is no file. A save that passes it back
+/// is refused if the configuration has changed since. An empty file, which this read refuses
+/// (500: it is not a configuration), has no bytes either: a save passing the revision of no file
+/// replaces it.
 pub async fn get_config<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
     Path(project): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let path = config_path(&state, &project)?;
-    let config =
-        RuntimesConfig::load(&path).map_err(|e| failure(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    Ok(Json(json!({ "config": config })))
+    let (config, revision) = RuntimesConfig::load_with_revision(&path)
+        .map_err(|e| failure(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(json!({ "config": config, "revision": revision })))
 }
 
-/// How `PUT /api/v1/projects/:id/runtimes` starts what it loads.
-#[derive(serde::Deserialize)]
-pub struct LoadQuery {
+/// The query keys `PUT /api/v1/projects/:id/runtimes` takes.
+const LOAD_KEYS: [&str; 2] = ["start", "revision"];
+
+/// How `PUT /api/v1/projects/:id/runtimes` starts what it loads, and what it must find stored.
+struct LoadQuery {
     /// `cold`: every runtime it starts or replaces starts from its initial values, RETAIN
     /// variables included. Left out, a new build of a running program is changed online.
-    start: Option<String>,
+    cold: bool,
+    /// The revision the caller read (`GET`): the save is refused if what is stored has another.
+    /// Left out, the save is made whatever is stored.
+    revision: Option<String>,
+}
+
+impl LoadQuery {
+    /// The query as given, or why it is refused. A key this save does not take is refused, not
+    /// ignored: a misspelt `revision` would otherwise be a save without its precondition.
+    fn from_pairs(pairs: Vec<(String, String)>) -> Result<Self, ApiError> {
+        let mut given: Vec<(String, String)> = Vec::new();
+        for (key, value) in pairs {
+            if !LOAD_KEYS.contains(&key.as_str()) {
+                return Err(failure(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "'{key}' is not something this save takes, so nothing was saved: it takes start and revision"
+                    ),
+                ));
+            }
+            if given.iter().any(|(k, _)| *k == key) {
+                return Err(failure(
+                    StatusCode::BAD_REQUEST,
+                    format!("'{key}' is given more than once, so nothing was saved: give it once"),
+                ));
+            }
+            given.push((key, value));
+        }
+        let value = |key: &str| given.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        let cold = match value("start").as_deref() {
+            None => false,
+            Some("cold") => true,
+            Some(other) => {
+                return Err(failure(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "start={other} is not a way to start: 'cold' starts every program it loads from its initial values; leave it out to change a running program online"
+                    ),
+                ))
+            }
+        };
+        Ok(Self {
+            cold,
+            revision: value("revision"),
+        })
+    }
+}
+
+// The precondition is compared, the file written and the runtimes made to match it as one step
+// among the saves of this route: two saves of one revision cannot both be written, and of two
+// saves of this route each answer's `changes` is its own save's.
+//
+// Not covered, and not claimed: a slice install (`PUT /api/v1/slices/:project`, `plant::install`
+// and `plant::restore`) replaces the project's directory, this file included, without this lock;
+// and the I/O manager is reloaded from the stored file by other routes too (the I/O
+// configuration's save, an activation, a change of the node's role, `run_here`) without it. Such a reload between this save's
+// write and its own reload applies this file online, whatever `start` said, and this save's
+// `changes` then describe nothing. Closing it needs the lock taken by those writers and a reload
+// that applies the configuration it is given instead of reading the file again.
+static RUNTIMES_WRITES: Mutex<()> = Mutex::const_new(());
+
+/// Whether a save that read `expected` finds another `revision` stored. No revision given is
+/// never stale: such a save is made whatever is stored.
+fn stale(expected: Option<&str>, revision: &str) -> bool {
+    expected.is_some_and(|e| e != revision)
+}
+
+/// The revision stored now at `path`.
+fn stored_revision(path: &std::path::Path) -> Result<String, ApiError> {
+    stored_bytes(path)
+        .map(|bytes| revision_of(&bytes))
+        .map_err(|e| failure(StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+/// The refusal of a save whose revision is not the stored one.
+fn changed_since(expected: Option<&str>, revision: &str) -> ApiError {
+    failure(
+        StatusCode::CONFLICT,
+        format!(
+            "the project's runtimes have changed since they were read (revision {}, now {revision}), so nothing was saved: read them again",
+            expected.unwrap_or_default()
+        ),
+    )
 }
 
 /// `PUT /api/v1/projects/:id/runtimes` — check, save and, for the active project, apply.
@@ -339,24 +442,20 @@ pub struct LoadQuery {
 /// match: an instance whose published tags stay the same is replaced in place. A new build of
 /// a program in RUN takes over its variables (changed online) unless `?start=cold`; how each
 /// runtime started is in `changes.runtimes`.
+///
+/// `?revision=` is the revision a `GET` answered: when what is stored has another, the save is
+/// refused with 409 and nothing is written or applied. It is compared before the modules check
+/// the programs, and again under one lock with the write and the apply. Left out, the save is
+/// made whatever is stored. A query key other than `start` and `revision` is refused with 400.
+/// The answer's `revision` is that of the bytes written.
 pub async fn put_config<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
     Path(project): Path<String>,
-    Query(query): Query<LoadQuery>,
+    Query(pairs): Query<Vec<(String, String)>>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let cold = match query.start.as_deref() {
-        None => false,
-        Some("cold") => true,
-        Some(other) => {
-            return Err(failure(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "start={other} is not a way to start: 'cold' starts every program it loads from its initial values; leave it out to change a running program online"
-                ),
-            ))
-        }
-    };
+    let LoadQuery { cold, revision } = LoadQuery::from_pairs(pairs)?;
+    let expected = revision.as_deref();
     let path = config_path(&state, &project)?;
     let config: RuntimesConfig = serde_json::from_value(body).map_err(|e| {
         failure(
@@ -367,6 +466,12 @@ pub async fn put_config<S: PlatformShm + 'static>(
     config
         .validate()
         .map_err(|e| failure(StatusCode::BAD_REQUEST, e))?;
+
+    // A save stale already is refused before the modules load its programs to check them.
+    let now = stored_revision(&path)?;
+    if stale(expected, &now) {
+        return Err(changed_since(expected, &now));
+    }
 
     let Some(io) = &state.io_manager else {
         return Err(failure(
@@ -387,6 +492,12 @@ pub async fn put_config<S: PlatformShm + 'static>(
 
     let bytes = serde_json::to_vec_pretty(&config)
         .map_err(|e| failure(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let _writing = RUNTIMES_WRITES.lock().await;
+    // Another save may have been written while the modules checked this one.
+    let now = stored_revision(&path)?;
+    if stale(expected, &now) {
+        return Err(changed_since(expected, &now));
+    }
     state
         .storage
         .atomic_write_file(&path, &bytes)
@@ -401,7 +512,10 @@ pub async fn put_config<S: PlatformShm + 'static>(
     } else {
         (false, None)
     };
-    Ok(Json(
-        json!({ "config": config, "applied": applied, "changes": changes }),
-    ))
+    Ok(Json(json!({
+        "config": config,
+        "applied": applied,
+        "changes": changes,
+        "revision": revision_of(&bytes),
+    })))
 }

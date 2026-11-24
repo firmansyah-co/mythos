@@ -318,7 +318,7 @@ Each is one slice, built through the workflow topology, with its own evidence fi
 | D3 (done) | Data module: store, check, routes and MCP tools; the logic module builds with `<project>/data/` and its library | D1 |
 | C8c (done) | Logic module: runtimes and task configuration (ADR-013 §2.19) | D2, D3 |
 | D4a (done) | Workbench: editor for user types and data blocks, in the data module's UI | D3 |
-| D4b | Workbench: live values of a data block, per runtime | C8d, and a change in the core so that two watchers of one runtime do not replace each other's list |
+| D4b | Workbench: live values of a data block, per runtime | C8d-2; the change in the core so that two watchers of one runtime do not replace each other's list is built (C8d-core) |
 | D4c (done) | Workbench: the library editor (functions and function blocks), in the logic module's UI | C8c |
 | C8d-1 (done) | Workbench: edit and load runtimes and tasks (ADR-013 §2.19), in the logic module's UI | C8c, D2 |
 | C8d-2 | Workbench: the state of a task, and watch and force of a program in a configured runtime | C8d-1, and the core's watch lists |

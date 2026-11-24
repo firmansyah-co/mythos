@@ -5,7 +5,7 @@
 // shown. A runtime written here is "configured"; whether the controller runs it is the core's,
 // read elsewhere, and never said from this file.
 
-import { host, type ApplyAnswer, type Diagnostic, type RuntimesAnswer, type RuntimeStatus } from './bridge';
+import { host, saveQuery, type ApplyAnswer, type Diagnostic, type RuntimesAnswer, type RuntimeStatus } from './bridge';
 
 /** The runtime editor's kind; its target is the runtime's id. */
 export const RUNTIME_EDITOR = 'logic-runtime';
@@ -565,16 +565,26 @@ export const api = {
     host().api<RuntimeBuild>(`${runtimesPath(projectId)}/${encodeURIComponent(id)}/build`, { method: 'POST' }),
   /** The core's runtimes and installed modules (`GET /api/v1/runtimes`): here, the modules. */
   installed: () => host().api<RuntimesAnswer>('/api/v1/runtimes'),
-  /** The project's runtimes configuration as the core has it saved (`null`: none). */
-  config: (projectId: string) =>
-    host().api<{ config: { instances?: Instance[] } | null }>(`/api/v1/projects/${encodeURIComponent(projectId)}/runtimes`),
+  /**
+   * The project's runtimes configuration as the core has it saved (`null`: none), and the
+   * revision of what is stored: `undefined` when the core gave none (a core older than the
+   * revision gives none), never assumed.
+   */
+  config: async (projectId: string): Promise<{ config: { instances?: Instance[] } | null; revision: string | undefined }> => {
+    const read = await host().api<{ config: { instances?: Instance[] } | null; revision?: unknown }>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/runtimes`
+    );
+    return { config: read.config, revision: typeof read.revision === 'string' ? read.revision : undefined };
+  },
   /**
    * Save `instances`, exactly these in this order, as the project's runtimes configuration. With
-   * `cold`, every runtime it starts or replaces starts from its initial values.
+   * `cold`, every runtime it starts or replaces starts from its initial values. With `revision`,
+   * the one a read answered, the core refuses the save (409) if the configuration has changed
+   * since that read, and nothing is saved.
    */
-  setInstances: (projectId: string, instances: Instance[], cold = false) =>
+  setInstances: (projectId: string, instances: Instance[], cold = false, revision?: string) =>
     host().api<ApplyAnswer>(
-      `/api/v1/projects/${encodeURIComponent(projectId)}/runtimes${cold ? '?start=cold' : ''}`,
+      `/api/v1/projects/${encodeURIComponent(projectId)}/runtimes${saveQuery(cold, revision)}`,
       json('PUT', { instances })
     ),
 };

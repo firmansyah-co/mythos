@@ -458,3 +458,57 @@ async fn the_bodies_the_tools_document_are_what_the_routes_accept() {
 
     rig.io.shutdown().await;
 }
+
+#[tokio::test]
+async fn an_agent_saving_runtimes_it_read_before_another_save_is_refused_with_words() {
+    let rig = rig().await;
+    let (error, status, _) = rig
+        .tool(
+            "create_project",
+            json!({"body": {"id": "plant", "name": "Plant", "description": "d", "author": "agent"}}),
+        )
+        .await;
+    assert!(!error, "status {status}");
+
+    // Two agents read the project's runtimes: none yet.
+    let (error, _, read) = rig
+        .tool("get_runtimes_config", json!({"project_id": "plant"}))
+        .await;
+    assert!(!error, "{read}");
+    let revision = read["revision"].as_str().unwrap().to_string();
+    assert_eq!(
+        revision,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+
+    // The first saves with what it read, and is told the revision of what it saved.
+    let (error, status, saved) = rig
+        .tool(
+            "save_runtimes_config",
+            json!({"project_id": "plant", "revision": revision, "body": {"instances": []}}),
+        )
+        .await;
+    assert!(!error, "{status} {saved}");
+    let now = saved["revision"].as_str().unwrap().to_string();
+    assert_ne!(now, revision);
+
+    // The second, from the same read, is refused and nothing it sent is saved.
+    let (error, status, refused) = rig
+        .tool(
+            "save_runtimes_config",
+            json!({"project_id": "plant", "revision": revision, "start": "cold", "body": {"instances": []}}),
+        )
+        .await;
+    assert!(error, "{refused}");
+    assert_eq!(status, 409);
+    assert_eq!(
+        refused["error"],
+        format!("the project's runtimes have changed since they were read (revision {revision}, now {now}), so nothing was saved: read them again")
+    );
+    let (_, _, after) = rig
+        .tool("get_runtimes_config", json!({"project_id": "plant"}))
+        .await;
+    assert_eq!(after["revision"], now.as_str());
+
+    rig.io.shutdown().await;
+}

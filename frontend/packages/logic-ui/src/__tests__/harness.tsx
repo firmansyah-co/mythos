@@ -6,6 +6,7 @@
 // compiler that a test sets; it records every call. The stream's events are sent by the test
 // through `emit`: the one part of the host replaced, since happy-dom has no event stream.
 
+import { createHash } from 'node:crypto';
 import { act, type ReactElement } from 'react';
 import { vi } from 'vitest';
 import { activate, MODULE_ID } from '../entry';
@@ -318,6 +319,17 @@ const failure = (status: number, error: string) =>
 const STATUS: Record<number, string> = { 400: 'Bad Request', 404: 'Not Found', 409: 'Conflict', 500: 'Internal Server Error' };
 /** A refusal of the library's routes, with the status text the status has. */
 const refusal = (status: number, error: string) => Response.json({ error }, { status, statusText: STATUS[status] ?? '' });
+
+/**
+ * The revision the core answers for a stored runtimes configuration (crates/mythos-core/src/runtimes.rs
+ * `revision_of`): the lower hex SHA-256 of the stored bytes, of no bytes when there is no file. The fake
+ * keeps no file: it hashes `config` as JSON with two spaces, as the core writes it, so a test that changes
+ * `backend.config` (another client's save) changes the revision, as a save or a hand edit does.
+ */
+export const revisionOf = (config: Backend['config']): string =>
+  createHash('sha256')
+    .update(config === null || config === undefined ? '' : JSON.stringify(config, null, 2))
+    .digest('hex');
 
 /** The logic module's event after a runtime was saved or deleted (plugins/logic/src/lib.rs). */
 const RUNTIMES_CHANGED = 'LOGIC_RUNTIMES_CHANGED';
@@ -796,8 +808,26 @@ export function server(backend: Backend): Call[] {
           ? Response.json(backend.watch((body as { variables: string[] }).variables))
           : new Response('{"error":"the runtime\'s module does not answer"}', { status: 502, statusText: 'Bad Gateway' });
       }
-      if (/\/projects\/[^/]+\/runtimes(\?start=cold)?$/.test(path)) {
-        if (method === 'GET') return Response.json({ config: backend.config ?? null });
+      const coreRuntimes = /\/projects\/[^/]+\/runtimes(?:\?(.*))?$/.exec(path);
+      if (coreRuntimes) {
+        if (method === 'GET') return Response.json({ config: backend.config ?? null, revision: revisionOf(backend.config) });
+        // The query, as `LoadQuery::from_pairs` (crates/mythos-core/src/api/runtimes.rs) takes it,
+        // word for word: a key it does not take, or one given twice, is refused, never ignored.
+        const given = new Map<string, string>();
+        for (const [key, value] of new URLSearchParams(coreRuntimes[1] ?? '')) {
+          if (key !== 'start' && key !== 'revision') {
+            return refusal(400, `'${key}' is not something this save takes, so nothing was saved: it takes start and revision`);
+          }
+          if (given.has(key)) return refusal(400, `'${key}' is given more than once, so nothing was saved: give it once`);
+          given.set(key, value);
+        }
+        const start = given.get('start');
+        if (start !== undefined && start !== 'cold') {
+          return refusal(
+            400,
+            `start=${start} is not a way to start: 'cold' starts every program it loads from its initial values; leave it out to change a running program online`
+          );
+        }
         const sent = body as NonNullable<Backend['config']>;
         const instances = sent.instances ?? [];
         // `RuntimesConfig::validate` (crates/mythos-core/src/runtimes.rs), word for word, for the
@@ -849,6 +879,16 @@ export function server(backend: Backend): Call[] {
             seen.set(program.built_from.toLowerCase(), [program.built_from, String(instance.id)]);
           }
         }
+        // `put_config`'s precondition, in its words: a save with a revision the configuration no
+        // longer has is refused before the module checks, and nothing is saved.
+        const expected = given.get('revision');
+        const now = revisionOf(backend.config);
+        if (expected !== undefined && expected !== now) {
+          return refusal(
+            409,
+            `the project's runtimes have changed since they were read (revision ${expected}, now ${now}), so nothing was saved: read them again`
+          );
+        }
         const problems = backend.configProblems?.(instances) ?? [];
         if (problems.length > 0) {
           return Response.json(
@@ -859,9 +899,10 @@ export function server(backend: Backend): Call[] {
         backend.config = sent;
         const saving = decodeURIComponent(/\/projects\/([^/]+)\/runtimes/.exec(path)?.[1] ?? '');
         const applied = backend.applied ?? (backend.active === undefined || backend.active === saving);
-        const cold = path.endsWith('?start=cold');
+        const cold = start === 'cold';
         return Response.json({
           config: backend.config,
+          revision: revisionOf(backend.config),
           applied,
           changes:
             applied && !backend.fieldIoOff
