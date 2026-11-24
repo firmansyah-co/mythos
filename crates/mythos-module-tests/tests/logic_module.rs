@@ -390,6 +390,54 @@ fn settings() -> Value {
     })
 }
 
+/// A library package file (ADR-015 step 1): one source and its manifest, `checksums.json`
+/// right, built with the zip writer.
+fn package_file() -> Vec<u8> {
+    let source =
+        "FUNCTION Twice : INT\nVAR_INPUT x : INT; END_VAR\nTwice := x * 2;\nEND_FUNCTION\n";
+    let manifest = json!({
+        "format": 1, "id": "org.example.base", "name": "Base blocks", "version": "1.0.0",
+        "form": "source", "languages": ["st"], "files": ["src/twice.st"], "depends": [],
+        "license": "MIT"
+    })
+    .to_string();
+    let checksums = json!({
+        "manifest.json": mythos_core::auth::sha256_hex(&manifest),
+        "src/twice.st": mythos_core::auth::sha256_hex(source),
+    })
+    .to_string();
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, text) in [
+        ("manifest.json", manifest.as_str()),
+        ("src/twice.st", source),
+        ("checksums.json", checksums.as_str()),
+    ] {
+        writer
+            .start_file(name, zip::write::FileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut writer, text.as_bytes()).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+/// Base64 of the standard alphabet with padding, as the package routes take a file.
+fn base64_of(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let at = |i: usize| u32::from(chunk.get(i).copied().unwrap_or(0));
+        let n = (at(0) << 16) | (at(1) << 8) | at(2);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[(n >> (18 - 6 * i)) as usize & 63]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_program_is_written_checked_built_loaded_and_runs_the_plant() {
     let rig = rig().await;
@@ -1163,6 +1211,41 @@ async fn each_role_does_what_it_may_and_what_is_wrong_is_refused_and_not_saved()
     );
     assert!(!data.join("programs/Pump.st").exists());
 
+    // Library packages: reading and checking them is a viewer's, adding and removing an
+    // engineer's.
+    let packages = "/api/v1/projects/plant/logic/packages";
+    let base = format!("{packages}/org.example.base");
+    let file = json!({"file": base64_of(&package_file())});
+    for who in [&rig.viewer, &rig.operator] {
+        let (status, _) = rig.send(who, "POST", packages, Some(file.clone())).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+    let (status, checked) = rig
+        .send(
+            &rig.viewer,
+            "POST",
+            &format!("{packages}/check"),
+            Some(file.clone()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert!(!data.join("packages.json").exists());
+    rig.eng("POST", packages, Some(file), 201).await;
+    for who in [&rig.viewer, &rig.operator] {
+        let (status, _) = rig.send(who, "DELETE", &base, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+    let (status, listed) = rig.send(&rig.viewer, "GET", packages, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["packages"][0]["id"], "org.example.base", "{listed}");
+    let (status, got) = rig.send(&rig.viewer, "GET", &base, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got["sources"][0]["path"], "src/twice.st", "{got}");
+    assert!(data.join("packages/org.example.base/1.0.0.zip").is_file());
+    rig.eng("DELETE", &base, None, 200).await;
+    assert!(!data.join("packages/org.example.base/1.0.0.zip").exists());
+
     rig.close().await;
 }
 
@@ -1243,6 +1326,11 @@ async fn an_agent_writes_checks_and_builds_a_program_over_mcp() {
             "delete_logic_program",
             "check_logic_program",
             "build_logic_program",
+            "list_logic_packages",
+            "get_logic_package",
+            "check_logic_package",
+            "add_logic_package",
+            "remove_logic_package",
             "list_logic_library",
             "get_logic_library_source",
             "save_logic_library_source",
@@ -1883,5 +1971,160 @@ async fn an_agent_configures_a_runtime_over_mcp() {
         json!({"deleted": "Line"}),
         "{deleted}"
     );
+    services.shutdown().await;
+}
+
+/// The library packages over MCP alone (ADR-010): checked, added, listed, read and removed, each
+/// tool saying that programs are not compiled with a package yet.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_adds_lists_reads_and_removes_a_package_over_mcp() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Arc::new(ControllerStorage::new(dir.path()).unwrap());
+    storage
+        .create_project(&ProjectConfig::new("plant", "Plant"))
+        .unwrap();
+    let project = storage.project_dir("plant").unwrap();
+    let path = Path::new(LOGIC);
+    let module = Arc::new(ModuleBinary {
+        path: path.to_path_buf(),
+        manifest: read_manifest(path).await.unwrap(),
+        fingerprint: Fingerprint::of(path).unwrap(),
+    });
+    let state = ApiState::<mythos_pal::MemoryShm>::new(
+        storage,
+        Arc::new(RwLock::new(TagCatalog::new())),
+        None,
+    );
+    let services = ServiceHost::new(state.hmi_events.clone());
+    services.sync(vec![module]).await;
+    let app = create_router(state.with_services(Arc::clone(&services)));
+    let rpc = |method: &'static str, params: Value| {
+        let app = app.clone();
+        async move {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header(header::HOST, "127.0.0.1:8080")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json, text/event-stream")
+                .body(Body::from(
+                    json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                        .to_string(),
+                ))
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        }
+    };
+    let tool = |name: &'static str, arguments: Value| {
+        let call = rpc("tools/call", json!({"name": name, "arguments": arguments}));
+        async move { call.await["result"].clone() }
+    };
+
+    let listed = rpc("tools/list", json!({})).await;
+    let found = |name: &str| {
+        listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("no tool {name}"))
+            .clone()
+    };
+    for name in [
+        "list_logic_packages",
+        "get_logic_package",
+        "check_logic_package",
+        "add_logic_package",
+        "remove_logic_package",
+    ] {
+        let said = found(name)["description"].as_str().unwrap().to_string();
+        assert!(
+            said.contains("programs are not compiled with it yet"),
+            "{name}: {said}"
+        );
+    }
+    for name in ["check_logic_package", "add_logic_package"] {
+        let said = found(name)["description"].as_str().unwrap().to_string();
+        assert!(
+            said.contains("base64") && said.contains("1048576 bytes"),
+            "{name}: {said}"
+        );
+        assert_eq!(
+            found(name)["inputSchema"]["required"],
+            json!(["project_id", "body"]),
+            "{name}"
+        );
+    }
+    for name in ["get_logic_package", "remove_logic_package"] {
+        assert_eq!(
+            found(name)["inputSchema"]["required"],
+            json!(["project_id", "package"]),
+            "{name}"
+        );
+    }
+
+    let file = json!({"file": base64_of(&package_file()), "file_name": "base-1.0.0.zip"});
+    let checked = tool(
+        "check_logic_package",
+        json!({"project_id": "plant", "body": file}),
+    )
+    .await;
+    assert_eq!(checked["isError"], false, "{checked}");
+    assert_eq!(
+        checked["structuredContent"]["body"]["ok"], true,
+        "{checked}"
+    );
+    let added = tool(
+        "add_logic_package",
+        json!({"project_id": "plant", "body": file}),
+    )
+    .await;
+    assert_eq!(added["isError"], false, "{added}");
+    assert_eq!(
+        added["structuredContent"]["body"]["added"]["origin"],
+        json!({"kind": "file", "file_name": "base-1.0.0.zip"}),
+        "{added}"
+    );
+    let again = tool(
+        "add_logic_package",
+        json!({"project_id": "plant", "body": file}),
+    )
+    .await;
+    assert_eq!(again["isError"], true, "{again}");
+    assert_eq!(again["structuredContent"]["status"], 409, "{again}");
+    let all = tool("list_logic_packages", json!({"project_id": "plant"})).await;
+    assert_eq!(
+        all["structuredContent"]["body"]["packages"][0]["name"], "Base blocks",
+        "{all}"
+    );
+    let got = tool(
+        "get_logic_package",
+        json!({"project_id": "plant", "package": "ORG.EXAMPLE.BASE"}),
+    )
+    .await;
+    assert_eq!(got["isError"], false, "{got}");
+    assert_eq!(
+        got["structuredContent"]["body"]["blocks"][0]["name"], "Twice",
+        "{got}"
+    );
+    assert!(project
+        .join("logic/packages/org.example.base/1.0.0.zip")
+        .is_file());
+    let removed = tool(
+        "remove_logic_package",
+        json!({"project_id": "plant", "package": "org.example.base"}),
+    )
+    .await;
+    assert_eq!(
+        removed["structuredContent"]["body"],
+        json!({"removed": {"id": "org.example.base", "version": "1.0.0"}}),
+        "{removed}"
+    );
+    assert!(!project.join("logic/packages/org.example.base").exists());
     services.shutdown().await;
 }

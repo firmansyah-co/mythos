@@ -51,6 +51,7 @@ mythos-logic-vm = { path = "crates/mythos-logic-vm" }
 mythos-logic-backend-vm = { path = "crates/mythos-logic-backend-vm" }
 mythos-logic-compiler = { path = "crates/mythos-logic-compiler" }
 mythos-logic-graphic = { path = "crates/mythos-logic-graphic" }
+mythos-logic-package = { path = "crates/mythos-logic-package" }
 driver-modbus = { path = "plugins/drivers/driver-modbus" }
 
 # Concurrency and Async
