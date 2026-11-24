@@ -189,3 +189,45 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
     `frontend/e2e/` (it typechecks the five packages only), so it was not run.
   - The runtime editor's Load cold, Discard, a refused save, a viewer's read-only form, and a
     second tab were not driven.
+
+  **What was done about the findings, and the run after it** (the orchestrator; the text above is
+  of run 3, on dev as it was, with the product untouched). The cases found three defects of the
+  product. All three are corrected in the same pull request as the cases, each in a commit of its
+  own, and the whole script was run again on top of them.
+  - F2, LIVE since #192: a save of a program's settings was refused by the module ("unknown
+    field `created`"), so Load from the program editor failed once a setting had changed.
+    `saveSettings` (`bridge.ts`) now sends exactly the seven keys the route takes. The test that
+    held the body's keys had passed because the fake of the route in the test harness had no
+    `created` in its entries and refused nothing: the fake now carries `created` and refuses an
+    unknown key in the module's words. Mutation (the old body sent again): red in "keeps an edit
+    unsaved until it is saved, and saves only what changed".
+  - F1, LIVE: in the runtime's form a number field was wider than its column, lay over the next
+    field and passed the form's edge (Priority by 13 px at 1440 x 900; Interval under Phase).
+    A field of `.logic-fields` now keeps to its column (`logic.css`: `min-width: 0` on the field,
+    its text, number and select controls as wide as the field). No DOM test can see it; the
+    three "no control is past the edge" checks of group 8j are its test.
+  - F3, LIVE, found by run 4: a program deleted elsewhere stayed in the tree. While the list of
+    programs was being read again, a further change (a second and third program deleted by
+    another client) was dropped, and the answer that came back was older than the project. A
+    change that arrives while the list is read now asks for it again, and only the newest read is
+    applied (`entry.tsx`, `programs.ts`). Test: "follows two programs deleted elsewhere one
+    after the other, and lists none that is gone" (the first answer held back). Mutations (an
+    older answer applied over a newer one; a change during the read dropped): both red in it.
+  - **Run 4**, on the first two corrections: 306 checks passed, 1 failed ("the tree says each
+    program's language" listed `Counter`, deleted three checks earlier: F3). Sections 8c to 10
+    ran again for the first time since #192.
+  - **Run 5**, on all three: `./scripts/e2e.sh` printed "ALL CHECKS PASSED", "VERDICT: PASS",
+    exit 0; 307 checks, among them the 54 of groups 8j and 8k, the three edge checks of 8j with
+    an empty list, and "the programs made here are deleted, and the tree lists no program
+    again" with `[]`.
+  - `./scripts/check.sh --frontend` on the three corrections: "PASS — every gate green", 59 test
+    files, 888 tests. `cargo test -p mythos-core --test version_agreement_tests` 3 passed (the
+    logic module and its UI are 0.13.1).
+  - **Read by one reader only:** the three corrections were written by the orchestrator and read
+    by no reviewer; their tests, their mutations and run 5 are their check.
+  - Not corrected: O1 and O2 above (a long name cut with an ellipsis; the Library group closed
+    again when the card is drawn anew), which are for the owner's visual pass. Still NOT
+    VERIFIED of evidence 34: the suggestion list of a box's type, how pin fields wrap, and the
+    flicker after a library change in another tab.
+  - Not run: the full gate, the Rust suites (one version line of Rust changes), Windows and
+    macOS. CI is the gate; `scripts/e2e.sh` is still not part of it.
