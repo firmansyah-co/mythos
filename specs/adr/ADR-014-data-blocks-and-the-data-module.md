@@ -431,12 +431,12 @@ source at its line, and the Library node says DOES NOT CHECK with the module's c
 stored library does not check. The words of the LD and FBD editors for a box they do not know
 were corrected (the editor does not know a library block; the compiler accepts it at Check). No
 route, MCP tool or Rust behaviour changed. The checks in a real browser are NOT VERIFIED (ADR-013
-evidence, `31-d4c.md`). Not in D4c: library blocks in the LD and FBD palette with their pins (LIVE
-gap), a check in the module on save, a revision check (the last save wins, LATENT), and an answer
+evidence, `31-d4c.md`). Not in D4c: library blocks in the LD and FBD palette with their pins
+(built since by a slice of its own, ADR-013 evidence `34-library-blocks-in-the-palette.md`), a
+check in the module on save, a revision check (the last save wins, LATENT), and an answer
 naming the programs a library change breaks.
 
-**Not built.** The live values of a data block (D4b), library blocks in the LD and FBD palette
-(D4c), D5, T2 and T3 are not built. A runtime with data blocks is configured over the API and the MCP,
+**Not built.** The live values of a data block (D4b), D5, T2 and T3 are not built. A runtime with data blocks is configured over the API and the MCP,
 and since C8d-1 also in the workbench, which edits and loads runtimes and tasks and shows no
 live value of a data block (D4b). A retained block that moves into a configured
 runtime loses its kept values, since the core keeps them per runtime id, and no warning of the
