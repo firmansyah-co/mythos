@@ -18,8 +18,8 @@ pub mod profile;
 
 pub use mythos_logic_backend_vm::{ArrayInfo, MemberLayout, Symbol, TypeLayout};
 pub use mythos_logic_graphic::{At, Body, BodyOf, Holds, Probe};
-use mythos_logic_ir::Ty;
 pub use mythos_logic_ir::{Diagnostic, Element, Span, TextRange};
+use mythos_logic_ir::{PouKind, Section, Ty};
 pub use mythos_logic_st::DataBlock;
 pub use profile::TargetProfile;
 
@@ -224,6 +224,68 @@ pub fn check_project(sources: &Sources) -> Result<Vec<DataLayout>, Vec<Diagnosti
         .collect())
 }
 
+/// The interface of a FUNCTION or FUNCTION_BLOCK of the project's library, as the compiler
+/// checked it ([`library_blocks`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryBlock {
+    /// As the library declares it.
+    pub name: String,
+    /// A FUNCTION_BLOCK; a FUNCTION when false.
+    pub function_block: bool,
+    /// `(name, type)` of each `VAR_INPUT` variable, in declaration order, the name as
+    /// declared and the type as a program writes it ([`mythos_logic_ir::Unit::ty_name`]).
+    pub inputs: Vec<(String, String)>,
+    /// `(name, type)` of each `VAR_OUTPUT` variable, likewise. Empty for a function.
+    pub outputs: Vec<(String, String)>,
+    /// A function's result type; `None` for a function block.
+    pub result: Option<String>,
+}
+
+/// Check the project of `sources` as [`check_project`] does, refusing exactly what it
+/// refuses, and answer the interface of each FUNCTION and FUNCTION_BLOCK its library sources
+/// declare, in the order of the checked unit (the order of [`Sources::library`], then of
+/// each source's declarations). No POU of the standard library a library block uses and no
+/// PROGRAM is answered; a variable the front-end made ([`mythos_logic_ir::Var::hidden`]) is
+/// not a pin.
+pub fn library_blocks(sources: &Sources) -> Result<Vec<LibraryBlock>, Vec<Diagnostic>> {
+    let unit = mythos_logic_st::check_project(&sources.project())?;
+    mythos_logic_backend_vm::data_layouts(&unit).map_err(|d| vec![d])?;
+    Ok(blocks_of(&unit))
+}
+
+/// The functions and function blocks of `unit` that are not the standard library's, with
+/// their pins ([`library_blocks`]).
+fn blocks_of(unit: &mythos_logic_ir::Unit) -> Vec<LibraryBlock> {
+    let pin = |v: &mythos_logic_ir::Var| (v.name.clone(), unit.ty_name(v.ty));
+    unit.pous
+        .iter()
+        .filter(|p| p.kind != PouKind::Program)
+        .filter(|p| !mythos_logic_st::library::declares(&p.name.to_ascii_uppercase()))
+        .map(|p| LibraryBlock {
+            name: p.name.clone(),
+            function_block: p.kind == PouKind::FunctionBlock,
+            inputs: p
+                .vars
+                .iter()
+                .map(|v| (pin(v), v))
+                .filter(|(_, v)| v.section == Section::Input && !v.hidden)
+                .map(|(pin, _)| pin)
+                .collect(),
+            outputs: p
+                .vars
+                .iter()
+                .map(|v| (pin(v), v))
+                .filter(|(_, v)| v.section == Section::Output && !v.hidden)
+                .map(|(pin, _)| pin)
+                .collect(),
+            result: match p.kind {
+                PouKind::Function { result } => Some(unit.ty_name(p.vars[result].ty)),
+                PouKind::FunctionBlock | PouKind::Program => None,
+            },
+        })
+        .collect()
+}
+
 /// Each data block of `data` the program of `unit` declares, as `externals` lays it out, with
 /// which top-level members the program writes.
 fn data_uses(
@@ -404,4 +466,51 @@ fn compile_unit(
         probes: Vec::new(),
         data,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mythos_logic_ir::{Pou, Retention, Unit, Var};
+
+    fn var(name: &str, section: Section, hidden: bool) -> Var {
+        Var {
+            name: name.to_string(),
+            ty: Ty::Bool,
+            section,
+            retention: Retention::default(),
+            init: None,
+            hidden,
+            constant: false,
+        }
+    }
+
+    /// No front-end of a library source makes a hidden variable today (only a Ladder
+    /// Diagram's edges do), so the unit is made by hand: a hidden input or output is the
+    /// front-end's, never a pin.
+    #[test]
+    fn a_variable_the_front_end_made_is_not_a_pin() {
+        let mut unit = Unit::new();
+        unit.pous.push(Pou {
+            name: "Edge".to_string(),
+            kind: PouKind::FunctionBlock,
+            vars: vec![
+                var("clk", Section::Input, false),
+                var("__in", Section::Input, true),
+                var("q", Section::Output, false),
+                var("__out", Section::Output, true),
+            ],
+            body: Vec::new(),
+        });
+        assert_eq!(
+            blocks_of(&unit),
+            vec![LibraryBlock {
+                name: "Edge".to_string(),
+                function_block: true,
+                inputs: vec![("clk".to_string(), "BOOL".to_string())],
+                outputs: vec![("q".to_string(), "BOOL".to_string())],
+                result: None,
+            }]
+        );
+    }
 }
