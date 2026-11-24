@@ -587,8 +587,14 @@ fn assess(data: &Path, package: &Incoming) -> Result<Assessment, Refusal> {
     for d in &project.unreadable_library {
         unreadable.push(unknown(d.message.clone()));
     }
-    // A type file that is not text: its source is named; the data's other problems name none.
-    for d in project.problems.iter().filter(|d| d.source.is_some()) {
+    // A type file that is not text names its source; a directory of types that cannot be
+    // listed names none, and then no type of the project is known. The data's other problem
+    // (blocks.json) is not about a declaration.
+    for d in project
+        .problems
+        .iter()
+        .filter(|d| d.source.is_some() || d.message.starts_with(crate::TYPES_UNREADABLE))
+    {
         unreadable.push(unknown(d.message.clone()));
     }
     let mut elsewhere: Vec<(String, String)> = Vec::new();
@@ -923,7 +929,12 @@ fn remove(data: &Path, id: &str) -> Result<(Value, PackageEntry), Refusal> {
     // A dependent this package itself depends on, transitively, is in a cycle with it (made by
     // hand: an add needs its dependencies present). Neither could be removed first, so it does
     // not refuse the remove; it is answered.
-    let reached = reached_from(data, &file, &entry);
+    // Read only when something depends on it: it reads every stored file it reaches.
+    let reached = if dependents.is_empty() {
+        BTreeSet::new()
+    } else {
+        reached_from(data, &file, &entry)
+    };
     let (in_cycle, dependents): (Vec<String>, Vec<String>) = dependents
         .into_iter()
         .partition(|d| reached.contains(&d.to_ascii_lowercase()));

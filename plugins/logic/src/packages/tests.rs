@@ -1180,7 +1180,7 @@ async fn a_package_is_refused_while_a_project_source_declares_what_cannot_be_nam
     std::fs::create_dir_all(&types).unwrap();
     let unknown =
         "so whether org.ex.m 1.0.0 clashes with it is not known; correct it or take it out first";
-    let cases: [(PathBuf, &[u8], String); 3] = [
+    let cases: [(PathBuf, &[u8], String); 4] = [
         (
             library.join("Drives.st"),
             b"NAMESPACE N\nFUNCTION_BLOCK Motor\nEND_FUNCTION_BLOCK\nEND_NAMESPACE\n",
@@ -1190,6 +1190,11 @@ async fn a_package_is_refused_while_a_project_source_declares_what_cannot_be_nam
             library.join("Drives.st"),
             b"FUNCTION_BLOCK Motor\xff\nEND_FUNCTION_BLOCK\n",
             "logic/library/Drives.st cannot be read as a library source: ".to_string(),
+        ),
+        (
+            types.join("Shapes.st"),
+            b"TYPE Motor\xff : INT; END_TYPE\n",
+            "data/types/Shapes.st cannot be read as a type's source: ".to_string(),
         ),
         (
             types.join("Shapes.st"),
@@ -1217,6 +1222,47 @@ async fn a_package_is_refused_while_a_project_source_declares_what_cannot_be_nam
         std::fs::remove_file(&path).unwrap();
     }
     // With those gone, the same package is added.
+    added(&add(&logic, &p, &file, None).await);
+}
+
+#[tokio::test]
+async fn a_package_is_refused_while_the_project_s_types_cannot_be_listed() {
+    // Where the directory of types should be there is a file: which types the project has is
+    // not known, so whether the package clashes with one is not known either.
+    let logic = Logic::default();
+    let p = project();
+    let file = package(
+        "org.ex.m",
+        "1.0.0",
+        &[],
+        &[(
+            "m",
+            "FUNCTION_BLOCK Motor\nVAR_INPUT go : BOOL; END_VAR\nEND_FUNCTION_BLOCK\n",
+        )],
+    );
+    let data = p.root.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("types"), b"not a directory").unwrap();
+    let said = "data/types cannot be read as the project's types: ";
+    let unknown =
+        "so whether org.ex.m 1.0.0 clashes with it is not known; correct it or take it out first";
+    let checked = check_file(&logic, &p, &file).await;
+    assert_eq!(checked.status, 200, "{}", checked.body);
+    assert_eq!(checked.body["ok"], false, "{}", checked.body);
+    assert_eq!(checked.body["refusal"]["status"], 409, "{}", checked.body);
+    let error = checked.body["refusal"]["error"].as_str().unwrap();
+    assert!(
+        error.starts_with(said) && error.ends_with(unknown),
+        "{error}"
+    );
+    let before = p.files();
+    let a = add(&logic, &p, &file, None).await;
+    assert_eq!(a.status, 409, "{}", a.body);
+    assert_eq!(words(&a), error);
+    assert!(a.event.is_none());
+    assert_eq!(p.files(), before);
+    // With a directory there, the same package is added.
+    std::fs::remove_file(data.join("types")).unwrap();
     added(&add(&logic, &p, &file, None).await);
 }
 
