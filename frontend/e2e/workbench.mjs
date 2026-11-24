@@ -325,6 +325,356 @@ try {
   await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
   check('closing the module’s editor returns to the screen', await evaluate(`__t.has('[data-testid="io-field"]')`));
 
+  // 8j and 8k run here, before 8c, and leave the project as they found it: the programs they
+  // make, the runtime and the library source are deleted at their end, so the sections after
+  // them see what they saw before.
+  //
+  // Helpers of 8j and 8k. `set` gives a field a value the way a keystroke or a choice does for
+  // React. `reach` scrolls an element into view as far as its boxes let it, then measures how far
+  // it still lies past the window or past any box that cuts it off (both axes). `until` waits for
+  // what the page shows, since the page reads the controller on its own clock.
+  await evaluate(`window.__e2e = {
+    set(sel, value) {
+      const el = document.querySelector(sel);
+      if (!el) throw new Error('no field: ' + sel);
+      const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+      el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+      return true;
+    },
+    click(sel) { const el = document.querySelector(sel); if (!el) throw new Error('no element: ' + sel); if (el.disabled) throw new Error('disabled: ' + sel); el.click(); return true; },
+    reach(el) {
+      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      const r = el.getBoundingClientRect(); let worst = 0, kind = '';
+      const test = (b, k) => { const d = Math.max(r.right - b.right, b.left - r.left, r.bottom - b.bottom, b.top - r.top); if (d > worst) { worst = d; kind = k; } };
+      test({ left: 0, top: 0, right: innerWidth, bottom: innerHeight }, 'window');
+      for (let p = el.parentElement; p; p = p.parentElement) { const st = getComputedStyle(p);
+        if (st.overflowX !== 'visible' || st.overflowY !== 'visible') test(p.getBoundingClientRect(), (p.getAttribute('data-testid') || (p.className && typeof p.className === 'string' && p.className.split(' ')[0]) || p.tagName) + '/' + st.overflowX + ',' + st.overflowY); }
+      return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height), past: Math.round(worst * 10) / 10, by: kind };
+    },
+  }; window.__asked = []; window.confirm = (message) => { window.__asked.push(message); return true; }; true`);
+  const until = async (expression, ms = 20000) => {
+    const end = Date.now() + ms; let value;
+    do { value = await evaluate(expression); if (value) return value; await sleep(250); } while (Date.now() < end);
+    return value;
+  };
+  const textOf = async (testId) => (await evaluate(`__t.text('[data-testid="${testId}"]')[0]`)) ?? null;
+  const tabTo = (text) => evaluate(`(() => { const t = [...document.querySelectorAll('.editorbar__tab-label')].find((el) => el.textContent.includes(${JSON.stringify(text)})); if (!t) throw new Error('no tab: ' + ${JSON.stringify(text)}); t.click(); return true; })()`);
+  // A key at the element that has the focus, as the LD and FBD editors take their keys.
+  const keyAt = (key, ctrl = false) => evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(key)}, ctrlKey: ${ctrl}, bubbles: true, cancelable: true })); true`);
+  const newProgram = async (name, language) => {
+    await evaluate(`__t.clickTestId('tree-add-program')`); await sleep(200);
+    await evaluate(`__t.type('Program name', '${name}'); __t.type('Program language', '${language}'); __t.press('Program name', 'Enter'); true`);
+    return until(`__t.has('[data-testid="program-editor"]') && __t.text('.workarea__path')[0] === 'Boiler HousePrograms${name}'`);
+  };
+
+  // 8j. The runtimes editor (ADR-013 C8d-1, PR #196): an engineer writes a program Counter, makes
+  // a runtime in the Runtimes section of the tree, gives it a cyclic task that runs Counter, saves,
+  // checks, and Loads it (Load checks and builds it, then puts it into the controller's runtimes
+  // after asking); the runtime's card says RUN as the controller lists it; Stop and Run on the
+  // card; Unload; Delete.
+  {
+  await newProgram('Counter', 'st');
+  await evaluate(`__e2e.set('textarea[aria-label="Structured Text source"]', ${JSON.stringify('PROGRAM Counter\nVAR ticks : DINT; END_VAR\n  ticks := ticks + 1;\nEND_PROGRAM\n')})`); await sleep(300);
+  await evaluate(`__t.click('Save')`);
+  check('a program Counter is written and saved in the program editor', !!(await until(`!__t.has('[data-testid="program-unsaved"]')`))
+    && ((await (await api(`${base}/api/v1/projects/plant_a/logic/programs/Counter`)).json().catch(() => null))?.source ?? '').includes('ticks := ticks + 1'));
+  check('the logic module adds Runtimes to the project tree, with a row to add one, and says none is configured',
+    !!(await until(`__t.has('[data-testid="tree-runtimes"]') && __t.has('[data-testid="tree-add-runtime"]')`))
+      && (await textOf('tree-runtimes-empty')) === 'No runtime is configured: every program runs alone.',
+    await textOf('tree-runtimes-empty'));
+  await evaluate(`__t.clickTestId('tree-add-runtime')`); await sleep(300);
+  await evaluate(`__t.type('Runtime id', 'line1'); __t.press('Runtime id', 'Enter'); true`);
+  await until(`__t.has('[data-testid="runtime-editor"]')`);
+  check('a runtime added from the tree opens in the runtime editor, NOT SAVED YET, with no task',
+    (await textOf('runtime-new')) === 'NOT SAVED YET' && (await evaluate(`__t.has('[data-testid="runtime-no-task"]')`))
+      && (await evaluate(`__t.text('.workarea__path')[0]`)) === 'Boiler HouseRuntimesline1',
+    `${await textOf('runtime-new')} / ${await evaluate(`__t.text('.workarea__path')[0]`)}`);
+  const ed = '[data-testid="runtime-editor"]';
+  check('the module field offers the installed VM runtime module',
+    !!(await until(`[...document.querySelectorAll('${ed} select[data-testid="runtime-module"] option')].some((o) => o.value === 'vm')`)),
+    JSON.stringify(await evaluate(`[...document.querySelectorAll('${ed} [data-testid="runtime-module"] option')].map((o) => o.value)`)));
+  await evaluate(`__e2e.set('${ed} [data-testid="runtime-module"]', 'vm')`); await sleep(200);
+  await evaluate(`__e2e.set('${ed} [data-testid="runtime-target"]', 'pc')`); await sleep(200);
+  await evaluate(`__e2e.click('${ed} [data-testid="runtime-run"]')`); await sleep(200);
+  await evaluate(`__e2e.click('${ed} [data-testid="runtime-add-task"]')`); await sleep(300);
+  await evaluate(`__e2e.set('${ed} [data-testid="task-name"]', 'fast')`); await sleep(150);
+  await evaluate(`__e2e.set('${ed} [data-testid="task-kind"]', 'cyclic')`); await sleep(300);
+  await evaluate(`__e2e.set('${ed} [data-testid="task-interval"]', '100')`); await sleep(150);
+  await evaluate(`__e2e.set('${ed} [data-testid="task-priority"]', '1')`); await sleep(150);
+  check('the task offers the project’s programs, Counter among them',
+    !!(await until(`[...document.querySelectorAll('${ed} [data-testid="task-add-program-option"]')].some((o) => o.value === 'Counter' && !o.disabled)`)),
+    JSON.stringify(await evaluate(`[...document.querySelectorAll('${ed} [data-testid="task-add-program-option"]')].map((o) => o.textContent)`)));
+  await evaluate(`__e2e.set('${ed} [data-testid="task-add-program"]', 'Counter')`); await sleep(400);
+  const formNow = await evaluate(`({ programs: __t.text('${ed} [data-testid="task-program-name"]'), missing: __t.text('[data-testid="runtime-missing-field"]'),
+    save: !document.querySelector('[data-testid="runtime-save"]').disabled, load: !document.querySelector('[data-testid="runtime-load"]').disabled })`);
+  check('the form is complete: the task runs Counter, nothing is said to be missing, Save and Load are offered',
+    JSON.stringify(formNow.programs) === '["Counter"]' && formNow.missing.length === 0 && formNow.save && formNow.load, JSON.stringify(formNow));
+  await shot('e2e_11a_runtime_editor');
+  await evaluate(`__e2e.click('[data-testid="runtime-save"]')`);
+  const savedWords = await until(`__t.text('[data-testid="runtime-saved"]')[0] || __t.text('[data-testid="save-refused"]')[0]`);
+  const stored = await (await api(`${base}/api/v1/projects/plant_a/logic/runtimes/line1`)).json().catch(() => null);
+  check('Save stores the runtime in the logic module and says nothing was built or loaded',
+    savedWords === 'Saved; the module made the runtime. Nothing was built or loaded.' && !(await evaluate(`__t.has('[data-testid="runtime-new"]') || __t.has('[data-testid="runtime-unsaved"]')`))
+      && stored?.runtime?.module === 'vm' && stored.runtime.target === 'pc' && stored.runtime.tasks?.[0]?.programs?.[0] === 'Counter',
+    `${savedWords} / ${JSON.stringify(stored)}`);
+  check('the tree lists the saved runtime', JSON.stringify(await until(`__t.text('[data-testid="tree-runtime"]').length > 0 && __t.text('[data-testid="tree-runtime"]')`)) === '["line1"]',
+    JSON.stringify(await evaluate(`__t.text('[data-testid="tree-runtime"]')`)));
+  await evaluate(`__e2e.click('[data-testid="runtime-check"]')`);
+  const checked = await until(`(() => { const t = __t.text('[data-testid="runtime-check-state"]')[0]; return t === 'CHECKS' || t === 'DOES NOT CHECK' ? t : null; })()`);
+  check('Check: the module says the runtime checks', checked === 'CHECKS', `${checked} ${JSON.stringify(await evaluate(`__t.text('[data-testid="runtime-problem"], [data-testid="runtime-diagnostic"], [data-testid="runtime-binding-problem"]')`))}`);
+  const cardBefore = { mode: await until(`__t.text('[data-testid="runtime-status-mode"]')[0]`), why: await textOf('runtime-status-why') };
+  check('the Runtime card says it is configured, not loaded', cardBefore.mode === 'NOT LOADED' && cardBefore.why === 'The controller lists no runtime line1: it is configured, not loaded.', JSON.stringify(cardBefore));
+  await evaluate(`window.__asked = []; __e2e.click('[data-testid="runtime-load"]')`);
+  const loadedWords = await until(`__t.text('[data-testid="runtime-loaded-said"]')[0] || __t.text('[data-testid="load-refused"]')[0]`, 30000);
+  const askedLoad = await evaluate(`window.__asked`);
+  check('Load builds it and asks before it puts the runtime into the controller’s runtimes',
+    askedLoad.length === 1 && askedLoad[0].includes('line1') && askedLoad[0].includes('Counter'), JSON.stringify(askedLoad).slice(0, 400));
+  check('the controller applied it, as the result says in the core’s words',
+    loadedWords === "Saved into the project's runtimes and applied by the controller. Whether each runtime runs is on its card, as the controller lists it."
+      && !(await evaluate(`__t.has('[data-testid="load-failed"]')`)),
+    `${loadedWords} / start: ${await textOf('runtime-start-said')}`);
+  const cardRun = await until(`(() => { const m = __t.text('[data-testid="runtime-status-mode"]')[0]; return m === 'RUN' ? { mode: m,
+    version: __t.text('[data-testid="runtime-status-version"]')[0], why: __t.text('[data-testid="runtime-status-why"]')[0],
+    programs: [...document.querySelectorAll('[data-testid="runtime-program"]')].map((p) => p.getAttribute('data-program') + ': ' + p.querySelector('[data-testid="runtime-program-compare"]').textContent) } : null; })()`);
+  const apiLine1 = (await (await api(base + '/api/v1/runtimes')).json()).runtimes.find((r) => r.id === 'line1');
+  check('the Runtime card says RUN as the controller lists it, the program at the version built here',
+    cardRun?.mode === 'RUN' && cardRun.why === 'As the controller lists it.' && cardRun.programs.length === 1
+      && /^Counter: the same as the one built here$/i.test(cardRun.programs[0]) && apiLine1?.mode === 'run' && apiLine1.scans > 0,
+    `${JSON.stringify(cardRun)} / api ${JSON.stringify(apiLine1 && { mode: apiLine1.mode, scans: apiLine1.scans, program: apiLine1.program })}`);
+  await shot('e2e_11b_runtime_loaded');
+  await evaluate(`__e2e.click('[data-testid="runtime-card-stop"]')`);
+  const cardStop = await until(`__t.text('[data-testid="runtime-status-mode"]')[0] === 'STOP' && __t.text('[data-testid="runtime-status-mode"]')[0]`);
+  check('Stop on the card puts it in STOP, and the controller says the same',
+    cardStop === 'STOP' && (await textOf('runtime-commanded')) === 'Runtime line1 was asked to stop.'
+      && (await (await api(base + '/api/v1/runtimes')).json()).runtimes.find((r) => r.id === 'line1')?.mode === 'stop',
+    `${cardStop} / ${await textOf('runtime-commanded')}`);
+  await evaluate(`window.__asked = []; __e2e.click('[data-testid="runtime-card-run"]')`);
+  const cardAgain = await until(`__t.text('[data-testid="runtime-status-mode"]')[0] === 'RUN' && __t.text('[data-testid="runtime-status-mode"]')[0]`);
+  const askedRun = await evaluate(`window.__asked`);
+  check('Run on the card asks first, names the program, and it runs again',
+    cardAgain === 'RUN' && askedRun.length === 1 && askedRun[0].startsWith('Put runtime line1 in RUN? It runs Counter.')
+      && (await (await api(base + '/api/v1/runtimes')).json()).runtimes.find((r) => r.id === 'line1')?.mode === 'run',
+    `${cardAgain} / ${JSON.stringify(askedRun).slice(0, 200)}`);
+  await evaluate(`window.__asked = []; __e2e.click('[data-testid="runtime-card-unload"]')`);
+  const cardGone = await until(`__t.text('[data-testid="runtime-status-mode"]')[0] === 'NOT LOADED' && __t.text('[data-testid="runtime-status-mode"]')[0]`);
+  const askedUnload = await evaluate(`window.__asked`);
+  const unloadWords = await textOf('runtime-commanded');
+  check('Unload on the card asks, says the outputs go to their safe values, and takes it out of the controller’s runtimes',
+    cardGone === 'NOT LOADED' && askedUnload.length === 1 && askedUnload[0].startsWith('Take runtime line1 out') && askedUnload[0].includes('safe values')
+      && (unloadWords ?? '').startsWith("Runtime line1 was taken out of the project's runtimes.")
+      && !(await (await api(base + '/api/v1/runtimes')).json()).runtimes.some((r) => r.id === 'line1'),
+    `${cardGone} / ${unloadWords} / ${JSON.stringify(askedUnload).slice(0, 200)}`);
+  await shot('e2e_11c_runtime_unloaded');
+  await evaluate(`window.__asked = []; __e2e.click('[data-testid="runtime-delete"]')`);
+  const deleted = await until(`!__t.has('[data-testid="runtime-editor"]') && __t.text('[data-testid="tree-runtimes-empty"]')[0]`);
+  const askedDelete = await evaluate(`window.__asked`);
+  check('Delete asks first, closes the editor, and the tree again says no runtime is configured',
+    deleted === 'No runtime is configured: every program runs alone.' && askedDelete.length === 1 && askedDelete[0].startsWith('Delete runtime line1'),
+    `${deleted} / ${JSON.stringify(askedDelete).slice(0, 120)}`);
+  // The Counter editor is still open: closed here.
+  await tabTo('Counter'); await sleep(300);
+  await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400);
+  }
+
+  // 8k. The Library group of the Instructions card (ADR-013, PR #198; evidence 34's "NOT VERIFIED,
+  // nothing was looked at in a browser"). An engineer saves a library source with a function block
+  // of ten inputs and one with a name of 43 characters; the Ladder palette's Library group offers
+  // both, each item and its star inside the card; the ten-input block is placed in a rung and in
+  // an FBD network, its pins in declaration order and every pin field reachable; a source that does
+  // not check is said in the group, and a corrected one offered again without a reload; an input
+  // taken out of the block is said at the placed box, pin by pin, and the program stays saved.
+  {
+  const LONG = 'Conveyor_Speed_Controller_With_Long_Name_01';
+  const TEN = [['speed_set', 'INT'], ['k_run', 'BOOL'], ['a_stop', 'BOOL'], ['m_level', 'REAL'], ['b_temp', 'REAL'],
+    ['x_ok', 'BOOL'], ['c_mode', 'INT'], ['y_fault', 'BOOL'], ['d_reset', 'BOOL'], ['e_ack', 'BOOL']];
+  const PINS = TEN.map(([n]) => n.toUpperCase());
+  const library = (inputs, mistake = '') => `FUNCTION_BLOCK Big10
+VAR_INPUT
+${inputs.map(([n, t]) => `  ${n} : ${t};`).join('\n')}
+END_VAR
+VAR_OUTPUT
+  q : BOOL;
+END_VAR
+  q := k_run AND NOT a_stop${mistake};
+END_FUNCTION_BLOCK
+
+FUNCTION_BLOCK ${LONG}
+VAR_INPUT
+  run : BOOL;
+END_VAR
+VAR_OUTPUT
+  speed : INT;
+END_VAR
+  IF run THEN speed := 10; ELSE speed := 0; END_IF;
+END_FUNCTION_BLOCK
+`;
+  const libEd = '[data-testid="library-editor"]';
+  const saveLibrary = async (text, anyway = false) => {
+    await tabTo('Machines'); await sleep(500);
+    await evaluate(`__e2e.set('${libEd} textarea[aria-label="Structured Text source"]', ${JSON.stringify(text)})`); await sleep(300);
+    await evaluate(`__e2e.click('[data-testid="library-save"]')`);
+    if (anyway) {
+      await until(`__t.has('[data-testid="library-save-anyway"]')`);
+      await evaluate(`window.__asked = []; __e2e.click('[data-testid="library-save-anyway"]')`);
+    }
+    return until(`__t.text('[data-testid="library-saved"]')[0] || __t.text('[data-testid="save-refused"]')[0] || (${!anyway} && __t.text('[data-testid="save-held"]')[0])`);
+  };
+  check('B1: the long block name has 40 characters or more', LONG.length >= 40, `${LONG.length} characters`);
+  await evaluate(`__t.clickTestId('tree-add-library')`); await sleep(300);
+  await evaluate(`__t.type('Library source name', 'Machines'); __t.press('Library source name', 'Enter'); true`);
+  check('a library source added from the tree opens in the library editor', !!(await until(`__t.has('${libEd}')`)));
+  const firstSave = await saveLibrary(library(TEN));
+  check('the library source with Big10 (ten inputs) and the long-named block is saved through the Library editor',
+    firstSave === 'Saved; the module made the source.', firstSave);
+
+  // An LD program to place into; the Library group is closed at first and opened as an engineer opens it.
+  await newProgram('Rung10', 'ld');
+  await until(`__t.has('[data-testid="ld-editor"]')`);
+  const group = (p) => `[data-testid="${p}-palette"] details[data-group="Library"]`;
+  // The group is closed at first, and closed again when the card is drawn anew (another tab):
+  // it is opened as an engineer opens it, by its summary.
+  const openGroup = async (p) => {
+    await until(`__t.has('${group(p)}')`);
+    await evaluate(`(() => { const d = document.querySelector('${group(p)}'); if (!d.open) d.querySelector('summary').click(); return true; })()`);
+    await sleep(200);
+  };
+  await openGroup('ld');
+  const offeredIds = (p) => `[...document.querySelectorAll('${group(p)} [data-testid="${p}-palette-item"]')].map((b) => b.getAttribute('data-item'))`;
+  const offered = await until(`(() => { const ids = ${offeredIds('ld')}; return ids.length >= 2 ? ids : null; })()`);
+  const big10Id = (offered ?? []).find((i) => i.toLowerCase() === 'box:big10');
+  const longId = (offered ?? []).find((i) => i.toLowerCase() === `box:${LONG.toLowerCase()}`);
+  check('B1: the Library group of the Ladder palette offers both blocks', !!big10Id && !!longId,
+    `${JSON.stringify(offered)} / why: ${await textOf('ld-palette-library-why')}`);
+  // Each item (the button) and its star, against the edges of the Instructions card it is in.
+  const inCard = (p, id) => evaluate(`(() => {
+    const item = document.querySelector('${group(p)} [data-testid="${p}-palette-item"][data-item="' + ${JSON.stringify(id)} + '"]');
+    if (!item) return null;
+    const card = item.closest('[data-testid="module-task-card"]'); const c = card.getBoundingClientRect();
+    const m = (el) => { const r = el.getBoundingClientRect(); const e = { left: r.left - c.left, right: c.right - r.right, top: r.top - c.top, bottom: c.bottom - r.bottom };
+      return { ...Object.fromEntries(Object.entries(e).map(([k, v]) => [k, Math.round(v * 10) / 10])), w: Math.round(r.width), inside: Object.values(e).every((v) => v >= -0.5) }; };
+    const star = item.parentElement.querySelector('[data-testid="${p}-favourite-add"]');
+    const name = item.querySelector('.ld-instruction__name');
+    return { open: item.closest('details').open, visible: item.checkVisibility(), card: card.querySelector('.card__title')?.textContent + ' ' + Math.round(c.width) + 'x' + Math.round(c.height), item: m(item), star: m(star),
+      nameCutByEllipsis: name ? name.scrollWidth > name.clientWidth : null, starReach: __e2e.reach(star) }; })()`);
+  for (const [label, id] of [['Big10', big10Id], [`${LONG}`, longId]]) {
+    const at = id ? await inCard('ld', id) : null;
+    check(`B1: the item ${label} and its favourite star lie inside the Instructions card (left, right, top, bottom)`,
+      !!at && at.open && at.visible && at.item.inside && at.star.inside && at.starReach.past <= 0.5, JSON.stringify(at));
+  }
+  await shot('e2e_11d_library_palette');
+
+  // B2. Big10 placed in a rung: its instance proposed and declared with Enter.
+  const pinsAndReach = (p) => evaluate(`(() => {
+    const fields = document.querySelector('[data-testid="${p}-fields"]');
+    const block = document.querySelector('[data-testid="${p}-element"][data-kind="block"]');
+    if (!fields || !block) return null;
+    const pins = [...fields.querySelectorAll('[data-testid="${p}-pin"]')].map((x) => x.getAttribute('data-formal')).filter((f) => f !== '');
+    const svgPins = '${p}' === 'fbd' ? [...block.querySelectorAll('[data-testid="fbd-pin"]')].map((x) => x.getAttribute('data-pin'))
+      : [...block.querySelectorAll('text')].filter((t) => !t.getAttribute('text-anchor')).map((t) => t.textContent);
+    const reached = [...fields.querySelectorAll('[data-testid="${p}-pin"] input:not([type="checkbox"])')].map((i) => ({ pin: i.closest('[data-testid="${p}-pin"]').getAttribute('data-formal'), ...__e2e.reach(i) }));
+    const box = __e2e.reach(block);
+    return { pins, svgPins, box, cut: reached.filter((r) => r.past > 0.5), fields: reached.length }; })()`);
+  // Ctrl+R a network, then the Library group's Big10.
+  await evaluate(`document.querySelector('[data-testid="ld-editor"]').focus(); true`); await keyAt('r', true); await sleep(400);
+  await evaluate(`__e2e.click('${group('ld')} [data-testid="ld-palette-item"][data-item="${big10Id}"]')`); await sleep(400);
+  const ldInstance = await evaluate(`[document.activeElement?.getAttribute('data-testid'), document.activeElement?.value]`);
+  await keyAt('Enter'); await sleep(600);
+  const ldBox = await pinsAndReach('ld');
+  check('B2: Big10 from the Library group is placed in a rung, its instance proposed', ldInstance[0] === 'ld-box-instance' && /^big10/i.test(ldInstance[1] ?? ''), JSON.stringify(ldInstance));
+  check('B2: in the rung the box shows ten input pins in declaration order (fields and drawing; the drawing adds EN)',
+    JSON.stringify(ldBox?.pins) === JSON.stringify(PINS) && JSON.stringify(ldBox?.svgPins) === JSON.stringify(['EN', ...PINS]),
+    JSON.stringify({ pins: ldBox?.pins, svgPins: ldBox?.svgPins }));
+  check('B2: in the rung every pin field and the box lie inside the editor or can be scrolled to, cut by no box',
+    !!ldBox && ldBox.fields === 10 && ldBox.cut.length === 0 && ldBox.box.past <= 0.5, JSON.stringify({ box: ldBox?.box, fields: ldBox?.fields, cut: ldBox?.cut }));
+  await shot('e2e_11e_library_block_ld');
+  const rungUnsaved = await evaluate(`__t.has('[data-testid="program-unsaved"]')`);
+  await evaluate(`__t.click('Save')`);
+  check('B2: the rung with Big10, unsaved until then, is saved', rungUnsaved && !!(await until(`!__t.has('[data-testid="program-unsaved"]')`)), `unsaved before: ${rungUnsaved}`);
+
+  // The same block in a Function Block Diagram network.
+  await newProgram('Flow10', 'fbd');
+  await until(`__t.has('[data-testid="fbd-editor"]')`);
+  await openGroup('fbd');
+  const fbdOffered = await until(`(() => { const ids = ${offeredIds('fbd')}; return ids.length >= 2 ? ids : null; })()`);
+  check('B2: the FBD palette’s Library group offers both blocks too', (fbdOffered ?? []).includes(big10Id) && (fbdOffered ?? []).includes(longId), JSON.stringify(fbdOffered));
+  for (const [label, id] of [['Big10', big10Id], [`${LONG}`, longId]]) {
+    const at = id ? await inCard('fbd', id) : null;
+    check(`B2: in the FBD palette the item ${label} and its star lie inside the Instructions card`, !!at && at.open && at.visible && at.item.inside && at.star.inside && at.starReach.past <= 0.5, JSON.stringify(at));
+  }
+  // Ctrl+R a network, then the Library group's Big10.
+  await evaluate(`document.querySelector('[data-testid="fbd-editor"]').focus(); true`); await keyAt('r', true); await sleep(400);
+  await evaluate(`__e2e.click('${group('fbd')} [data-testid="fbd-palette-item"][data-item="${big10Id}"]')`); await sleep(400);
+  const fbdInstance = await evaluate(`[document.activeElement?.getAttribute('data-testid'), document.activeElement?.value]`);
+  await keyAt('Enter'); await sleep(600);
+  const fbdBox = await pinsAndReach('fbd');
+  check('B2: Big10 is placed in an FBD network, its instance proposed', fbdInstance[0] === 'fbd-box-instance' && /^big10/i.test(fbdInstance[1] ?? ''), JSON.stringify(fbdInstance));
+  check('B2: in the network the box shows ten input pins in declaration order (fields and drawing, then Q)',
+    JSON.stringify(fbdBox?.pins) === JSON.stringify(PINS) && JSON.stringify(fbdBox?.svgPins) === JSON.stringify([...PINS, 'Q']),
+    JSON.stringify({ pins: fbdBox?.pins, svgPins: fbdBox?.svgPins }));
+  check('B2: in the network every pin field and the box lie inside the editor or can be scrolled to, cut by no box',
+    !!fbdBox && fbdBox.fields === 10 && fbdBox.cut.length === 0 && fbdBox.box.past <= 0.5, JSON.stringify({ box: fbdBox?.box, fields: fbdBox?.fields, cut: fbdBox?.cut }));
+  await shot('e2e_11f_library_block_fbd');
+  const networkUnsaved = await evaluate(`__t.has('[data-testid="program-unsaved"]')`);
+  await evaluate(`__t.click('Save')`);
+  check('B2: the network with Big10, unsaved until then, is saved', networkUnsaved && !!(await until(`!__t.has('[data-testid="program-unsaved"]')`)), `unsaved before: ${networkUnsaved}`);
+
+  // B3. A source with a mistake: the save is held, and saved anyway after the question.
+  const heldSave = await saveLibrary(library(TEN, ' AND nope'), true);
+  const askedAnyway = await evaluate(`window.__asked`);
+  check('B3: a source that does not check is held, then saved anyway after asking', heldSave === 'Saved.' && askedAnyway.length === 1, `${heldSave} / ${JSON.stringify(askedAnyway).slice(0, 200)}`);
+  await tabTo('Rung10'); await sleep(500);
+  await openGroup('ld');
+  const why = await until(`(() => { const t = __t.text('[data-testid="ld-palette-library-why"]')[0]; return t && t.startsWith('The library does not check') ? t : null; })()`);
+  const whyAt = await evaluate(`(() => { const l = document.querySelector('[data-testid="ld-palette-library-why"]'); if (!l) return null;
+    const c = l.closest('[data-testid="module-task-card"]').getBoundingClientRect(); const r = l.getBoundingClientRect();
+    return { open: l.closest('details').open, visible: l.checkVisibility(), left: Math.round(r.left - c.left), right: Math.round(c.right - r.right), top: Math.round(r.top - c.top), bottom: Math.round(c.bottom - r.bottom), w: Math.round(r.width), h: Math.round(r.height),
+      cut: l.scrollWidth > l.clientWidth, items: ${offeredIds('ld')}.length, ...{ reach: __e2e.reach(l) } }; })()`);
+  check('B3: the Library group says why it offers nothing: the library does not check',
+    /^The library does not check \(\d+ diagnostics?\); its blocks are offered once it does\.$/.test(why ?? '') && whyAt?.items === 0, `${why} / items ${whyAt?.items}`);
+  check('B3: the group’s line lies inside the card, not cut', !!whyAt && whyAt.open && whyAt.visible && whyAt.left >= 0 && whyAt.right >= 0 && whyAt.top >= 0 && whyAt.bottom >= 0 && !whyAt.cut && whyAt.reach.past <= 0.5,
+    JSON.stringify(whyAt));
+  await shot('e2e_11g_library_does_not_check');
+  const mended = await saveLibrary(library(TEN));
+  await tabTo('Rung10'); await sleep(500);
+  await openGroup('ld');
+  const again = await until(`(() => { const ids = [...document.querySelectorAll('${group('ld')} [data-testid="ld-palette-item"]')].filter((b) => b.checkVisibility()).map((b) => b.getAttribute('data-item')); return ids.length >= 2 ? ids : null; })()`);
+  check('B3: corrected, the blocks are offered again without reloading the page',
+    mended === 'Saved.' && (again ?? []).includes(big10Id) && (again ?? []).includes(longId) && !(await evaluate(`__t.has('[data-testid="ld-palette-library-why"]')`)),
+    `${mended} / ${JSON.stringify(again)}`);
+
+  // B4. An input taken out of Big10 in the library: the placed boxes say so, pin by pin.
+  const lessOne = await saveLibrary(library(TEN.filter(([n]) => n !== 'e_ack')));
+  check('B4: Big10 without E_ACK is saved in the library', lessOne === 'Saved.', lessOne);
+  for (const [tab, p, label] of [['Rung10', 'ld', 'rung'], ['Flow10', 'fbd', 'network']]) {
+    await tabTo(tab); await sleep(800);
+    await evaluate(`document.querySelector('[data-testid="${p}-element"][data-kind="block"]').dispatchEvent(new MouseEvent('click', { bubbles: true })); true`); await sleep(500);
+    const said = await until(`(() => { const t = __t.text('[data-testid="${p}-element-problem"]'); return t.some((x) => x.includes('E_ACK')) ? t : null; })()`);
+    const unsaved = await evaluate(`__t.has('[data-testid="program-unsaved"]')`);
+    check(`B4: the box in the ${label} says the pin E_ACK is not a pin of Big10 as it is declared now`,
+      Array.isArray(said) && said.some((x) => /^E_ACK is not a pin of big10 as it is declared now\.$/i.test(x)), JSON.stringify(said ?? await evaluate(`__t.text('[data-testid="${p}-element-problem"]')`)));
+    check(`B4: and the ${label}'s program is not marked unsaved`, !unsaved);
+    await shot(`e2e_11h_library_block_changed_${p}`);
+  }
+  // What 8j and 8k made is taken away: the library source through its editor's Delete, the
+  // programs over the API, since the page has no command that deletes a program.
+  await tabTo('Machines'); await sleep(500);
+  await evaluate(`window.__asked = []; __e2e.click('[data-testid="library-delete"]')`);
+  check('the library source is deleted through its editor, after asking', !!(await until(`!__t.has('${libEd}') && !__t.text('[data-testid="tree-library-source"]').includes('Machines')`))
+    && (await evaluate(`window.__asked.length`)) === 1);
+  for (const name of ['Rung10', 'Flow10']) { await tabTo(name); await sleep(300); await evaluate(`document.querySelector('.workarea__close').click(); true`); await sleep(400); }
+  await tabTo('Boiler overview'); await sleep(400);
+  const removed = [];
+  for (const name of ['Rung10', 'Flow10', 'Counter']) {
+    const answer = await api(`${base}/api/v1/projects/plant_a/logic/programs/${name}`, { method: 'DELETE' });
+    removed.push(`${name} ${answer.status}`);
+  }
+  const left = await until(`(() => { const t = __t.text('[data-testid="tree-program"] .tree__label'); return t.length === 0 ? 'none' : null; })()`);
+  check('the programs made here are deleted, and the tree lists no program again, with the screen of 7 open',
+    left === 'none' && (await evaluate(`__t.has('[data-testid="io-field"]')`)),
+    `${removed.join(', ')} / ${JSON.stringify(await evaluate(`__t.text('[data-testid="tree-program"] .tree__label')`))}`);
+  }
+
   // 8c. Control logic (ADR-013): a program written in the workbench is checked by the logic
   // module, bound to a tag of the device, built, loaded into the VM runtime, and its result is
   // read back from the tag bus. Three module processes and a simulated device; nothing stubbed.
