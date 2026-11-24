@@ -530,6 +530,13 @@ describe('who may change a runtime', () => {
     for (const id of ['runtime-save', 'runtime-discard', 'runtime-delete', 'runtime-add-task', 'task-add-program', 'task-remove', 'runtime-load']) {
       expect(byTestId(container, id)).toBeNull();
     }
+    // The Runtime card is shown to a viewer, without a command: Run, Stop and Unload are an engineer's.
+    const card = byTestId(paneOf(container, 'task-cards', RUNTIME_STATUS_OWNER) ?? container, 'runtime-status');
+    expect(card).not.toBeNull();
+    for (const id of ['runtime-card-run', 'runtime-card-stop', 'runtime-card-unload']) {
+      expect(card?.querySelector(`[data-testid="${id}"]`) ?? null).toBeNull();
+      expect(byTestId(container, id)).toBeNull();
+    }
     expect(disabled(container, 'runtime-target')).toBe(true);
     expect(disabled(container, 'task-priority')).toBe(true);
     expect((byTestId(container, 'runtime-run-choice') as HTMLFieldSetElement | null)?.disabled).toBe(true);

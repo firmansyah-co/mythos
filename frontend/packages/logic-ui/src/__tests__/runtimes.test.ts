@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { refusalOf } from '../library';
-import { bodyOf, missingOf, newRuntime, newTask, sameId, sentOf, type RuntimeEntry } from '../runtimes';
+import { bodyOf, holdersOf, missingOf, newRuntime, newTask, sameId, sentOf, type Instance, type RuntimeEntry } from '../runtimes';
 
 const line: RuntimeEntry = {
   id: 'Line',
@@ -62,5 +62,15 @@ describe('the runtime rules', () => {
     const words = "program 'Tank' is in runtime 'Other' already; a program is in one runtime";
     const thrown = Object.assign(new Error(`409 Conflict: ${words}`), { status: 409, body: { error: words } });
     expect(refusalOf(thrown)).toEqual({ status: 409, error: words, diagnostics: null, withheld: false });
+  });
+
+  it('holdersOf names the other instances that hold a program of the build, never one it replaces', () => {
+    const holds = (id: string, from: string): Instance => ({ id, program: { name: from, built_from: from } });
+    const saved = [holds('Line', 'Tank'), holds('Old', 'tank'), holds('Other', 'TANK'), holds('Apart', 'Pump')];
+    const built: Instance = { id: 'Line', programs: [{ name: 'Tank', built_from: 'Tank' }] };
+    // By the project name, without case; never the instance itself.
+    expect(holdersOf(saved, built, []).map((i) => i.id)).toEqual(['Old', 'Other']);
+    // An instance the build replaces is replaced, not a holder taken out beside it.
+    expect(holdersOf(saved, built, ['Old']).map((i) => i.id)).toEqual(['Other']);
   });
 });
