@@ -1296,7 +1296,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "watch_runtime",
         title: "Read a program's variables",
-        description: "The values of a running program's variables as its last scan left them: any variable, bound to a tag or not, and one element of an array as name[2] or name[1,3]. It changes nothing in the program. Each value comes with its type; a variable the program does not have, or one with no single value (a whole array, a structure), has an error instead. 'state' says which program and version answered and whether it is in run: values read from a stopped or faulted program are what it stopped with. 'age_ms' is how long ago the runtime was read, and 'state.scan_age_us' how long before that the program last completed a scan (absent before its first scan, from a module that does not say, and from a runtime of several tasks, whose state.tasks give each task's run_age_us instead): a program that has stopped scanning still answers in run, with its last values and a scan age that grows, so values are current only while the scan age is within two of the program's intervals (list_runtimes: interval_ms) plus its longest scan (state.max_scan_us). 'fresh_ms' is how old an answer may be and still be given at once. The first call waits for the runtime's next exchange; calls within a few seconds of each other answer at once.",
+        description: "The values of a running program's variables as its last scan left them: any variable, bound to a tag or not, and one element of an array as name[2] or name[1,3]. It changes nothing in the program. Each value comes with its type; a variable the program does not have, or one with no single value (a whole array, a structure), has an error instead. 'state' says which program and version answered and whether it is in run: values read from a stopped or faulted program are what it stopped with. 'age_ms' is how long ago the runtime was read, and 'state.scan_age_us' how long before that the program last completed a scan (absent before its first scan, from a module that does not say, and from a runtime of several tasks, whose state.tasks give each task's run_age_us instead): a program that has stopped scanning still answers in run, with its last values and a scan age that grows, so values are current only while the scan age is within two of the program's intervals (list_runtimes: interval_ms) plus its longest scan (state.max_scan_us). 'fresh_ms' is how old an answer may be and still be given at once. The first call waits for the runtime's next exchange; calls within a few seconds of each other answer at once. Each list of variables is a watch of its own: callers watching one runtime with other lists do not disturb each other, and callers with the very same list (the same names in the same order) share one watch and one answer. The runtime is read at each exchange for the union of every list watched of it, each name once, at most 256 names, and keeps at most 256 lists: a new list that would pass either is refused with 409 and words saying why, nothing is watched, and a list already watched is never refused. A list nobody asks for again within 5 s is let go and no longer counts. A name the runtime's module gave no value for has value null and an error, never a value.",
         method: "POST",
         path: "/api/v1/runtimes/:runtime/watch",
         query: &[],
@@ -2058,6 +2058,34 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unknown field `written`"));
+    }
+
+    #[test]
+    fn the_watch_tool_says_each_list_is_its_own_and_what_bounds_it() {
+        let watch = TOOLS
+            .iter()
+            .find(|t| t.name == "watch_runtime")
+            .expect("watch_runtime")
+            .description;
+        for said in [
+            "Each list of variables is a watch of its own",
+            "callers with the very same list (the same names in the same order) share one watch and one answer",
+            "the union of every list watched of it, each name once, at most 256 names, and keeps at most 256 lists",
+            "a new list that would pass either is refused with 409 and words saying why, nothing is watched, and a list already watched is never refused",
+            "A list nobody asks for again within 5 s is let go",
+        ] {
+            assert!(watch.contains(said), "watch_runtime: {said}");
+        }
+        assert_eq!(
+            crate::runtimes::WATCH_LIMIT,
+            256,
+            "the figure the words give"
+        );
+        assert_eq!(
+            crate::runtimes::WATCH_KEPT.as_secs(),
+            5,
+            "the time the words give"
+        );
     }
 
     #[test]

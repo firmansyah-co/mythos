@@ -335,7 +335,11 @@ impl Plant {
         let variables: Vec<String> = variables.iter().map(|v| (*v).to_string()).collect();
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            assert!(self.states.watch("tank", &variables), "'tank' is loaded");
+            assert_eq!(
+                self.states.watch("tank", &variables),
+                Ok(true),
+                "'tank' is loaded"
+            );
             if let Some((age, answer)) = self.states.watched("tank", &variables) {
                 if age < Duration::from_millis(200) {
                     return answer;
@@ -1010,8 +1014,9 @@ async fn any_variable_is_read_as_the_last_scan_left_it_bound_to_a_tag_or_not() {
     let later = p.watched(&["level", "scans"]).await.unwrap();
     assert_eq!(value(&later, "scans").value, frozen, "no scan runs in STOP");
 
-    assert!(
-        !p.states.watch("nobody", &["level".to_string()]),
+    assert_eq!(
+        p.states.watch("nobody", &["level".to_string()]),
+        Ok(false),
         "an unknown runtime is not watched"
     );
     p.runtime.shutdown().await;

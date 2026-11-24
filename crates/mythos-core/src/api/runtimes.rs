@@ -145,6 +145,12 @@ pub struct WatchBody {
 /// program that has stopped scanning still answers, with its last values and a growing scan
 /// age. A variable the program does not have, or one that has no single value (a whole array, a
 /// structure), has an `error` instead of a `value`.
+///
+/// Each list of names is a watch of its own: callers with other lists do not disturb each
+/// other, and callers with the same list share its answer. The runtime is read for every name
+/// of every list watched of it, each once, at most [`WATCH_LIMIT`] names and at most
+/// [`WATCH_LIMIT`] lists: a new list past either is refused with 409 and words, and nothing is
+/// watched. A list nobody asks for again within [`crate::runtimes::WATCH_KEPT`] is let go.
 pub async fn watch<S: PlatformShm + 'static>(
     State(state): State<ApiState<S>>,
     Path(id): Path<String>,
@@ -170,12 +176,17 @@ pub async fn watch<S: PlatformShm + 'static>(
         let woken = answered.notified();
         tokio::pin!(woken);
         woken.as_mut().enable();
-        // Asked again on every turn: the instance may have been unloaded while waiting.
-        if !runtimes.watch(&id, &body.variables) {
-            return Err(failure(
-                StatusCode::NOT_FOUND,
-                format!("no runtime '{id}' is loaded on this node"),
-            ));
+        // Asked again on every turn: the instance may have been unloaded while waiting. Asking
+        // again only renews a list already watched, which is never refused.
+        match runtimes.watch(&id, &body.variables) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(failure(
+                    StatusCode::NOT_FOUND,
+                    format!("no runtime '{id}' is loaded on this node"),
+                ))
+            }
+            Err(why) => return Err(failure(StatusCode::CONFLICT, why)),
         }
         if let Some((age, answer)) = runtimes.watched(&id, &body.variables) {
             if age <= WATCH_FRESH {

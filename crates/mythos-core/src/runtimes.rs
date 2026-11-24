@@ -28,7 +28,8 @@ use mythos_module::protocol::{
     check_data, check_tasks, implied_task, program_set_keys, same_program, same_program_set, Call,
     CarryReport, DataBlock, DataSupport, ExchangeReply, ForcedValue, NotCarried, OutputBinding,
     ProgramIdentity, ProgramVariables, ProgramVersion, RetainedValue, RuntimeMode, RuntimeProgram,
-    RuntimeState, TaskConfig, TaskKind, TaskState, TaskSupport, WatchReply, WireInput,
+    RuntimeState, TaskConfig, TaskKind, TaskState, TaskSupport, WatchReply, WatchedValue,
+    WireInput,
 };
 use mythos_module::{ModuleBinary, ProcessDriver};
 use mythos_pal::PlatformShm;
@@ -57,7 +58,9 @@ const EXCHANGE_DEADLINE: Duration = Duration::from_millis(1_000);
 /// How long a runtime goes on being asked for the variables somebody watched, after the last
 /// time they were asked for. A watch nobody renews costs the runtime nothing.
 pub const WATCH_KEPT: Duration = Duration::from_secs(5);
-/// The most variables one watch may name.
+/// The most variables one watch may name, and the most a runtime is read for at one exchange:
+/// the names of every watch of it, each once. Also the most watches one runtime keeps (a design
+/// limit decided with C8d-core, not a figure of the protocol or of the VM).
 pub const WATCH_LIMIT: usize = 256;
 /// How often a program's RETAIN values are asked for and, when they changed, kept on disk. A
 /// restart of the server or the module takes the values kept last: at most this old.
@@ -717,13 +720,36 @@ struct PendingForce {
     reply: oneshot::Sender<ForceAnswer>,
 }
 
-/// The variables being watched of one instance, and what its module last said of them.
+/// One watch of an instance: one list of variables (kept as the key it is found by), when it
+/// was last asked for, and what its module last said of exactly those.
 struct Watch {
-    variables: Vec<String>,
     /// When they were last asked for.
     asked: Instant,
-    /// The module's answer for exactly these variables, or why it gave none, and when.
+    /// The module's answer for exactly these variables, in their order, or why it gave none,
+    /// and when.
     answer: Option<(Instant, Result<WatchReply, String>)>,
+}
+
+/// What a watch says of a name the module's answer has no value for. Never a value.
+pub const NOT_GIVEN: &str = "the runtime's module gave no value for it";
+
+impl Watch {
+    /// The value of `name` in a module's answer, found by the name as it was asked for, or
+    /// that the answer has none.
+    fn value_of(reply: &WatchReply, name: &str) -> WatchedValue {
+        reply
+            .values
+            .iter()
+            .find(|v| v.variable == *name)
+            .cloned()
+            .unwrap_or_else(|| WatchedValue {
+                variable: name.to_string(),
+                ty: None,
+                value: None,
+                error: Some(NOT_GIVEN.to_string()),
+                forced: false,
+            })
+    }
 }
 
 #[derive(Default)]
@@ -736,8 +762,8 @@ struct StatesInner {
     cold: HashSet<String>,
     /// Why the project's runtimes are not as configured, when they are not.
     problem: Option<String>,
-    /// What is being watched, by instance id.
-    watches: HashMap<String, Watch>,
+    /// What is being watched, by instance id: each list of names is a watch of its own.
+    watches: HashMap<String, HashMap<Vec<String>, Watch>>,
     /// Forces and releases waiting for the instance's next exchange, by instance id.
     forcing: HashMap<String, Vec<PendingForce>>,
     /// Asks of a new build for the variables of the running one, by instance id.
@@ -813,28 +839,52 @@ impl RuntimeStates {
     }
 
     /// Ask a loaded instance for these variables at its coming exchanges, for [`WATCH_KEPT`]
-    /// from now. `false` when there is no such instance. Asking for other variables than the
-    /// last time drops what was answered for those.
-    pub fn watch(&self, id: &str, variables: &[String]) -> bool {
+    /// from now. Each list of names (in its order, as spelt) is a watch of its own: asking with
+    /// another list leaves the others as they are, and asking with the same one again only
+    /// renews it. `Ok(false)` when there is no such instance.
+    ///
+    /// A new list is refused, with words, when the instance would then be read for more than
+    /// [`WATCH_LIMIT`] names at each exchange, or keep more than [`WATCH_LIMIT`] lists; a list
+    /// already watched never is. Lists nobody asked for within [`WATCH_KEPT`] are let go first.
+    pub fn watch(&self, id: &str, variables: &[String]) -> Result<bool, String> {
         let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
         if !inner.statuses.contains_key(id) {
-            return false;
+            return Ok(false);
+        }
+        let lists = inner.watches.entry(id.to_string()).or_default();
+        lists.retain(|_, w| w.asked.elapsed() <= WATCH_KEPT); // before the bounds
+        let watching = &*lists;
+        let other: HashSet<&String> = watching.keys().flatten().collect();
+        let union: HashSet<&String> = other.iter().copied().chain(variables).collect();
+        if !watching.contains_key(variables) && union.len() > WATCH_LIMIT {
+            return Err(format!(
+                "runtime '{id}' would be read for {n} variables at every exchange, and at most {WATCH_LIMIT} are: other watches name {other} of them; a watch nobody asks for again within {} s is let go",
+                WATCH_KEPT.as_secs(),
+                n = union.len(),
+                other = other.len(),
+            ));
+        }
+        if !watching.contains_key(variables) && watching.len() >= WATCH_LIMIT {
+            return Err(format!(
+                "runtime '{id}' has {n} watches already, and at most {WATCH_LIMIT} are kept: a watch nobody asks for again within {} s is let go",
+                WATCH_KEPT.as_secs(),
+                n = watching.len(),
+            ));
         }
         let now = Instant::now();
-        match inner.watches.get_mut(id) {
-            Some(watch) if watch.variables == variables => watch.asked = now,
-            _ => {
-                inner.watches.insert(
-                    id.to_string(),
+        match lists.get_mut(variables) {
+            Some(watch) => watch.asked = now,
+            None => {
+                lists.insert(
+                    variables.to_vec(),
                     Watch {
-                        variables: variables.to_vec(),
                         asked: now,
                         answer: None,
                     },
                 );
             }
         }
-        true
+        Ok(true)
     }
 
     /// Ask a loaded instance to force or release a variable at its next exchange. `None` when
@@ -941,18 +991,15 @@ impl RuntimeStates {
             .is_some_and(|(g, _)| *g != generation)
     }
 
-    /// What the instance's module last said of exactly these variables, and how long ago.
-    /// `None`: nothing yet, or the instance is gone.
+    /// What the instance's module last said of exactly these variables, in their order, and
+    /// how long ago. `None`: nothing yet for this list, or it is let go, or the instance is gone.
     pub fn watched(
         &self,
         id: &str,
         variables: &[String],
     ) -> Option<(Duration, Result<WatchReply, String>)> {
         let inner = self.0.read().unwrap_or_else(|e| e.into_inner());
-        let watch = inner.watches.get(id)?;
-        if watch.variables != variables {
-            return None;
-        }
+        let watch = inner.watches.get(id)?.get(variables)?;
         let (at, answer) = watch.answer.as_ref()?;
         Some((at.elapsed(), answer.clone()))
     }
@@ -962,23 +1009,66 @@ impl RuntimeStates {
         Arc::clone(&self.0.read().unwrap_or_else(|e| e.into_inner()).answered)
     }
 
-    /// The variables to ask the instance's module for now, if anybody still watches.
+    /// The variables to ask the instance's module for now, if anybody still watches: every
+    /// name of every list still asked for, each once. Lists nobody asked for within
+    /// [`WATCH_KEPT`] are let go here.
     fn watch_wanted(&self, id: &str) -> Option<Vec<String>> {
         let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
-        let watch = inner.watches.get(id)?;
-        if watch.asked.elapsed() > WATCH_KEPT {
+        let lists = inner.watches.get_mut(id)?;
+        lists.retain(|_, w| w.asked.elapsed() <= WATCH_KEPT); // at the exchange
+        if lists.is_empty() {
             inner.watches.remove(id);
             return None;
         }
-        Some(watch.variables.clone())
+        // In the order of the lists, so one runtime is asked the same way every time.
+        let mut ordered: Vec<&Vec<String>> = lists.keys().collect();
+        ordered.sort();
+        let mut seen = HashSet::new();
+        let mut union = Vec::new();
+        for name in ordered.into_iter().flatten() {
+            if seen.insert(name) {
+                union.push(name.clone());
+            }
+        }
+        Some(union)
     }
 
-    /// The module's answer for `variables`. Dropped when something else is watched by now.
-    fn watch_answer(&self, id: &str, variables: &[String], answer: Result<WatchReply, String>) {
+    /// The module's answer to the names `sent`, given to every list all of whose names were
+    /// sent: each list gets the values of its own names, in its own order, found by the name
+    /// as asked; a name the answer lacks has no value and says so ([`NOT_GIVEN`]). A list with a
+    /// name that was not sent (watched since) keeps no answer and waits for a read of its own.
+    fn watch_answer(&self, id: &str, sent: &[String], answer: Result<WatchReply, String>) {
         let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(watch) = inner.watches.get_mut(id) {
-            if watch.variables == variables {
-                watch.answer = Some((Instant::now(), answer));
+        let sent: HashSet<&String> = sent.iter().collect();
+        let now = Instant::now();
+        if let Some(lists) = inner.watches.get_mut(id) {
+            for (list, watch) in lists.iter_mut() {
+                if list.iter().all(|name| sent.contains(name)) {
+                    let own = match &answer {
+                        Ok(reply) => Ok(WatchReply {
+                            state: reply.state.clone(),
+                            values: list
+                                .iter()
+                                .map(|name| Watch::value_of(reply, name))
+                                .collect(),
+                        }),
+                        Err(why) => Err(why.clone()),
+                    };
+                    watch.answer = Some((now, own));
+                }
+            }
+        }
+        inner.answered.notify_waiters();
+    }
+
+    /// The module does not answer: every list of the instance is told why, and none keeps a
+    /// value.
+    fn watch_failed(&self, id: &str, why: String) {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        if let Some(lists) = inner.watches.get_mut(id) {
+            for watch in lists.values_mut() {
+                watch.answer = Some((now, Err(why.clone())));
             }
         }
         inner.answered.notify_waiters();
@@ -2207,13 +2297,9 @@ impl ProtocolDriver for RuntimeDriver {
                         "the running build's module does not answer: {e}"
                     )));
                 }
-                if let Some(variables) = self.env.states.watch_wanted(&id) {
-                    self.env.states.watch_answer(
-                        &id,
-                        &variables,
-                        Err(format!("the runtime's module does not answer: {e}")),
-                    );
-                }
+                self.env
+                    .states
+                    .watch_failed(&id, format!("the runtime's module does not answer: {e}"));
                 return Err(e);
             }
         };
@@ -2293,14 +2379,15 @@ impl ProtocolDriver for RuntimeDriver {
             let _ = pending.reply.send(answer);
         }
 
-        // The variables somebody watches, as this scan left them. Reading changes nothing in
-        // the program, and a module that cannot be watched says so.
-        if let Some(variables) = self.env.states.watch_wanted(&id) {
+        // The variables somebody watches, as this scan left them: one call for every list
+        // watched, each list answered from it by its own names. Reading changes nothing in the
+        // program, and a module that cannot be watched says so.
+        if let Some(union) = self.env.states.watch_wanted(&id) {
             let answer = self
                 .process
                 .call(
                     Call::Watch {
-                        variables: variables.clone(),
+                        variables: union.clone(),
                     },
                     EXCHANGE_DEADLINE,
                 )
@@ -2313,7 +2400,7 @@ impl ProtocolDriver for RuntimeDriver {
                     })
                 })
                 .map_err(|e| e.to_string());
-            self.env.states.watch_answer(&id, &variables, answer);
+            self.env.states.watch_answer(&id, &union, answer);
         }
 
         Ok(reply.samples.into_iter().map(Into::into).collect())
@@ -2533,11 +2620,11 @@ mod tests {
     fn a_watch_is_of_a_loaded_instance_and_its_answer_is_of_the_variables_asked() {
         let states = RuntimeStates::default();
         let (a, b) = (vec!["a".to_string()], vec!["b".to_string()]);
-        assert!(!states.watch("tank", &a), "nothing is loaded");
+        assert_eq!(states.watch("tank", &a), Ok(false), "nothing is loaded");
         assert_eq!(states.watch_wanted("tank"), None);
 
         loaded(&states, "tank", 1);
-        assert!(states.watch("tank", &a));
+        assert_eq!(states.watch("tank", &a), Ok(true));
         assert_eq!(states.watch_wanted("tank"), Some(a.clone()));
         assert!(states.watched("tank", &a).is_none(), "asked, not answered");
 
@@ -2546,45 +2633,304 @@ mod tests {
         assert_eq!(answer.unwrap().values[0].variable, "a");
         assert!(states.watched("tank", &b).is_none(), "not an answer for b");
 
-        // Other variables are asked for: what was answered for the first is dropped, and an
-        // answer for the first that arrives now is not taken for one of the second.
-        assert!(states.watch("tank", &b));
+        // Other variables are asked for: a watch of its own. What was answered for the first
+        // stays the first's, and an answer to the first's names is not taken for the second.
+        assert_eq!(states.watch("tank", &b), Ok(true));
         assert!(states.watched("tank", &b).is_none());
         states.watch_answer("tank", &a, Ok(reply("a")));
-        assert!(states.watched("tank", &b).is_none());
-        assert!(states.watched("tank", &a).is_none());
+        assert!(states.watched("tank", &b).is_none(), "b was not read");
+        let (_, answer) = states.watched("tank", &a).expect("a keeps its own answer");
+        assert_eq!(answer.unwrap().values[0].variable, "a");
         states.watch_answer("tank", &b, Err("the module does not answer".into()));
         let (_, answer) = states.watched("tank", &b).expect("answered");
         assert_eq!(answer.unwrap_err(), "the module does not answer");
+        assert!(
+            states.watched("tank", &a).unwrap().1.is_ok(),
+            "an answer to b's names is not a's"
+        );
     }
 
-    #[test]
-    fn a_watch_nobody_renews_stops_and_one_of_an_unloaded_instance_is_forgotten() {
-        let states = RuntimeStates::default();
-        let a = vec!["a".to_string()];
-        loaded(&states, "tank", 1);
-        assert!(states.watch("tank", &a));
-        // As if it was last asked for longer ago than a watch is kept.
-        let long_ago = Instant::now()
-            .checked_sub(WATCH_KEPT + Duration::from_secs(1))
+    /// As if `list` of `id` was last asked for `ago` back.
+    fn asked_back(states: &RuntimeStates, id: &str, list: &[String], ago: Duration) {
+        let then = Instant::now()
+            .checked_sub(ago)
             .expect("the clock has run that long");
         states
             .0
             .write()
             .unwrap()
             .watches
-            .get_mut("tank")
+            .get_mut(id)
             .unwrap()
-            .asked = long_ago;
+            .get_mut(list)
+            .unwrap()
+            .asked = then;
+    }
+
+    /// Longer ago than a watch is kept.
+    const LONG_AGO: Duration = Duration::from_secs(WATCH_KEPT.as_secs() + 1);
+
+    #[test]
+    fn a_watch_nobody_renews_stops_and_one_of_an_unloaded_instance_is_forgotten() {
+        let states = RuntimeStates::default();
+        let a = vec!["a".to_string()];
+        loaded(&states, "tank", 1);
+        assert_eq!(states.watch("tank", &a), Ok(true));
+        asked_back(&states, "tank", &a, LONG_AGO);
         assert_eq!(states.watch_wanted("tank"), None, "nobody watches any more");
         assert!(states.watched("tank", &a).is_none(), "and it is gone");
 
         // Renewed, it is asked for again; unloaded, it is forgotten with the instance.
-        assert!(states.watch("tank", &a));
+        assert_eq!(states.watch("tank", &a), Ok(true));
         assert_eq!(states.watch_wanted("tank"), Some(a.clone()));
         states.forget("tank", 1);
         assert_eq!(states.watch_wanted("tank"), None);
-        assert!(!states.watch("tank", &a));
+        assert_eq!(states.watch("tank", &a), Ok(false));
+    }
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// A module's answer giving each of `values` (name, value), in that order.
+    fn replying(values: &[(&str, i64)]) -> WatchReply {
+        let values: Vec<Value> = values
+            .iter()
+            .map(|(n, v)| json!({"variable": n, "type": "INT", "value": v}))
+            .collect();
+        serde_json::from_value(json!({
+            "state": {"mode": "run", "program": "P", "version": "1", "scans": 1,
+                      "last_scan_us": 1, "max_scan_us": 1, "overruns": 0},
+            "values": values
+        }))
+        .unwrap()
+    }
+
+    /// What a list was answered: each name as given, with its value and its error.
+    fn answered(
+        states: &RuntimeStates,
+        list: &[String],
+    ) -> Vec<(String, Option<Value>, Option<String>)> {
+        let (_, answer) = states.watched("tank", list).expect("answered");
+        answer
+            .expect("values")
+            .values
+            .into_iter()
+            .map(|v| (v.variable, v.value, v.error))
+            .collect()
+    }
+
+    fn given(name: &str, value: i64) -> (String, Option<Value>, Option<String>) {
+        (name.to_string(), Some(json!(value)), None)
+    }
+
+    #[test]
+    fn two_watchers_of_one_runtime_each_read_the_values_of_their_own_list() {
+        let states = RuntimeStates::default();
+        loaded(&states, "tank", 1);
+        let (first, second) = (names(&["b", "a"]), names(&["c"]));
+        assert_eq!(states.watch("tank", &first), Ok(true));
+        assert_eq!(states.watch("tank", &second), Ok(true));
+        let union = states.watch_wanted("tank").unwrap();
+        states.watch_answer(
+            "tank",
+            &union,
+            Ok(replying(&[("a", 1), ("b", 2), ("c", 3)])),
+        );
+        assert_eq!(
+            answered(&states, &first),
+            vec![given("b", 2), given("a", 1)],
+            "its own names, in its own order"
+        );
+        assert_eq!(answered(&states, &second), vec![given("c", 3)]);
+
+        // The same list asked again is the same watch: it keeps its answer.
+        assert_eq!(states.watch("tank", &names(&["b", "a"])), Ok(true));
+        assert_eq!(
+            answered(&states, &first),
+            vec![given("b", 2), given("a", 1)]
+        );
+        // The same names in another order are another list, not yet answered.
+        assert_eq!(states.watch("tank", &names(&["a", "b"])), Ok(true));
+        assert!(states.watched("tank", &names(&["a", "b"])).is_none());
+    }
+
+    #[test]
+    fn the_runtime_is_asked_for_the_union_of_its_lists_in_one_call() {
+        let states = RuntimeStates::default();
+        loaded(&states, "tank", 1);
+        for list in [&["c", "a", "d"][..], &["b", "c"], &["a", "b"], &["e"]] {
+            assert_eq!(states.watch("tank", &names(list)), Ok(true));
+        }
+        asked_back(&states, "tank", &names(&["e"]), LONG_AGO);
+        assert_eq!(
+            states.watch_wanted("tank"),
+            Some(names(&["a", "b", "c", "d"])),
+            "every name of every live list, each once, none of the list let go"
+        );
+    }
+
+    #[test]
+    fn a_list_is_answered_from_the_unions_reply_by_the_names_as_asked() {
+        let states = RuntimeStates::default();
+        loaded(&states, "tank", 1);
+        let list = names(&["x", "a", "A"]);
+        assert_eq!(states.watch("tank", &list), Ok(true));
+        let union = states.watch_wanted("tank").unwrap();
+        // The module gives a value for "a" only: "A" is another name, and "x" has none.
+        states.watch_answer("tank", &union, Ok(replying(&[("a", 7)])));
+        let none = |name: &str| (name.to_string(), None, Some(NOT_GIVEN.to_string()));
+        assert_eq!(
+            answered(&states, &list),
+            vec![none("x"), given("a", 7), none("A")]
+        );
+        let (_, answer) = states.watched("tank", &list).unwrap();
+        let x = &answer.unwrap().values[0];
+        assert_eq!(
+            (&x.ty, x.forced),
+            (&None, false),
+            "no type, not forced: {x:?}"
+        );
+    }
+
+    #[test]
+    fn a_list_added_after_the_runtime_was_read_waits_for_a_read_of_its_own() {
+        let states = RuntimeStates::default();
+        loaded(&states, "tank", 1);
+        let (a, ab) = (names(&["a"]), names(&["a", "b"]));
+        assert_eq!(states.watch("tank", &a), Ok(true));
+        let sent = states.watch_wanted("tank").unwrap();
+        // Asked for while the runtime was read for the names sent.
+        assert_eq!(states.watch("tank", &ab), Ok(true));
+        states.watch_answer("tank", &sent, Ok(replying(&[("a", 1)])));
+        assert_eq!(answered(&states, &a), vec![given("a", 1)]);
+        assert!(
+            states.watched("tank", &ab).is_none(),
+            "b was not read: no answer, not a's value with b missing"
+        );
+
+        let sent = states.watch_wanted("tank").unwrap();
+        assert_eq!(sent, ab);
+        states.watch_answer("tank", &sent, Ok(replying(&[("a", 2), ("b", 3)])));
+        assert_eq!(answered(&states, &ab), vec![given("a", 2), given("b", 3)]);
+        assert_eq!(answered(&states, &a), vec![given("a", 2)]);
+    }
+
+    #[test]
+    fn a_list_nobody_asks_for_again_within_5_s_stops_being_read_while_another_is_still_read() {
+        let states = RuntimeStates::default();
+        loaded(&states, "tank", 1);
+        let (a, b) = (names(&["a"]), names(&["b"]));
+        assert_eq!(states.watch("tank", &a), Ok(true));
+        assert_eq!(states.watch("tank", &b), Ok(true));
+        asked_back(&states, "tank", &a, LONG_AGO);
+        assert_eq!(states.watch_wanted("tank"), Some(b.clone()));
+        assert!(states.watched("tank", &a).is_none(), "a is let go");
+        states.watch_answer("tank", &b, Ok(replying(&[("b", 1)])));
+        assert_eq!(answered(&states, &b), vec![given("b", 1)]);
+    }
+
+    /// The names v{from} to v{to - 1}.
+    fn numbered(from: usize, to: usize) -> Vec<String> {
+        (from..to).map(|i| format!("v{i}")).collect()
+    }
+
+    #[test]
+    fn a_watch_that_would_make_the_runtime_read_more_than_256_variables_is_refused_with_words() {
+        let states = RuntimeStates::default();
+        loaded(&states, "tank", 1);
+        let (first, second) = (numbered(0, 200), numbered(200, 256));
+        assert_eq!(states.watch("tank", &first), Ok(true));
+        assert_eq!(states.watch("tank", &second), Ok(true));
+        // Names already read cost nothing more.
+        assert_eq!(states.watch("tank", &names(&["v255", "v0"])), Ok(true));
+
+        let third = names(&["v0", "new"]);
+        assert_eq!(
+            states.watch("tank", &third),
+            Err("runtime 'tank' would be read for 257 variables at every exchange, and at most 256 are: other watches name 256 of them; a watch nobody asks for again within 5 s is let go".to_string())
+        );
+        let wanted = states.watch_wanted("tank").unwrap();
+        assert_eq!(wanted.len(), 256);
+        assert!(
+            !wanted.contains(&"new".to_string()),
+            "nothing is registered"
+        );
+        assert!(!states.0.read().unwrap().watches["tank"].contains_key(&third));
+
+        // A list let go is dropped before the bound is counted, by the watch itself.
+        asked_back(&states, "tank", &second, LONG_AGO);
+        assert_eq!(states.watch("tank", &third), Ok(true));
+    }
+
+    #[test]
+    fn a_list_already_watched_is_never_refused_by_the_bound_when_it_is_asked_again() {
+        let states = RuntimeStates::default();
+        loaded(&states, "tank", 1);
+        let (first, second) = (numbered(0, 200), numbered(200, 256));
+        assert_eq!(states.watch("tank", &first), Ok(true));
+        assert_eq!(states.watch("tank", &second), Ok(true));
+        asked_back(&states, "tank", &second, Duration::from_secs(4));
+        assert_eq!(states.watch("tank", &second), Ok(true), "the union is full");
+        assert!(
+            states.0.read().unwrap().watches["tank"][&second]
+                .asked
+                .elapsed()
+                < Duration::from_secs(1),
+            "and it is renewed"
+        );
+
+        // Nor by the number of lists.
+        let states = RuntimeStates::default();
+        loaded(&states, "tank", 1);
+        for i in 0..WATCH_LIMIT {
+            assert_eq!(states.watch("tank", &numbered(i, i + 1)), Ok(true));
+        }
+        assert_eq!(states.watch("tank", &numbered(7, 8)), Ok(true), "256 lists");
+    }
+
+    #[test]
+    fn the_number_of_lists_of_one_instance_is_bounded() {
+        let states = RuntimeStates::default();
+        loaded(&states, "tank", 1);
+        for i in 0..WATCH_LIMIT {
+            assert_eq!(states.watch("tank", &numbered(i, i + 1)), Ok(true));
+        }
+        // No name more to read, one list more to keep.
+        let more = numbered(0, 2);
+        assert_eq!(
+            states.watch("tank", &more),
+            Err("runtime 'tank' has 256 watches already, and at most 256 are kept: a watch nobody asks for again within 5 s is let go".to_string())
+        );
+        assert_eq!(states.0.read().unwrap().watches["tank"].len(), 256);
+        assert!(!states.0.read().unwrap().watches["tank"].contains_key(&more));
+
+        asked_back(&states, "tank", &numbered(9, 10), LONG_AGO);
+        assert_eq!(states.watch("tank", &more), Ok(true), "one was let go");
+    }
+
+    #[test]
+    fn a_module_that_does_not_answer_fails_every_list() {
+        let states = RuntimeStates::default();
+        loaded(&states, "tank", 1);
+        let (a, b) = (names(&["a"]), names(&["b"]));
+        assert_eq!(states.watch("tank", &a), Ok(true));
+        assert_eq!(states.watch("tank", &b), Ok(true));
+        let union = states.watch_wanted("tank").unwrap();
+        states.watch_answer("tank", &union, Ok(replying(&[("a", 1), ("b", 2)])));
+
+        let why = "the runtime's module does not answer: gone";
+        states.watch_failed("tank", why.to_string());
+        for list in [&a, &b] {
+            let (_, answer) = states.watched("tank", list).expect("answered");
+            assert_eq!(answer.unwrap_err(), why, "{list:?} keeps no value");
+        }
+
+        // Unloaded, every list is dropped.
+        states.forget("tank", 1);
+        assert!(states.watched("tank", &a).is_none());
+        assert!(states.watched("tank", &b).is_none());
+        assert!(!states.0.read().unwrap().watches.contains_key("tank"));
     }
 
     #[test]
