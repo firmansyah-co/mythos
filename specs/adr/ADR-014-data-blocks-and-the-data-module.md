@@ -272,7 +272,8 @@ in his words, and what the author reads from each. Where a reading is the author
    from a project, how a project records which version it uses, and how what is downloaded is
    trusted. It gets its own design before any code. The author's reading: the project's own
    sources stay, as the place of blocks written in the project. The design of library packages
-   is ADR-015.
+   is ADR-015. P1a and P1b of ADR-015 are built (evidence 35); programs are not compiled with
+   packages yet.
 3. **Memory.** "A function block has memory, as a data block has. A function has none. A
    program's memory is the program's own." §2.6 follows this: a data block typed by a function
    block is that memory as an object of the project, and D5 stays in the order of work. The
