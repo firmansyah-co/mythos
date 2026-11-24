@@ -209,3 +209,46 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
   - SFC bodies: actions and conditions are kept as found and have no palette.
   - Not fixed: the twin case inside the POU's own body, and the word for a declared EN input
     (both above).
+
+  **Verification of the finished slice** (the orchestrator, after both reviews' fixes, the
+  rebase onto dev `fcfca27` and the version line; this is what "run after this text" above was
+  waiting for).
+  - **The frontend gate** on `40e5438`: `./scripts/check.sh --frontend` printed
+    "check.sh --frontend: PASS — every gate green": `pnpm lint`, `pnpm test` (59 test files,
+    883 tests) and `pnpm build`.
+  - **Rust**, narrow, on `40e5438`: `cargo fmt --all --check` clean;
+    `cargo test -p mythos-core --test version_agreement_tests` 3 passed;
+    `cargo test -p mythos-logic-compiler --test library_blocks --test ladder_from_the_editor
+    --test fbd_from_the_editor` 5 passed in each; `cargo test -p mythos-logic --lib` 79 passed;
+    `cargo clippy -p mythos-logic-compiler -p mythos-logic --all-targets -- -D warnings` clean.
+  - **Mutations**, with `scripts/mutation-check.py`, in a copy of `40e5438` made by `git archive`
+    with its own install and its own target directory, both baselines green in every run.
+    **33 of 33 red** in the end; two were not red in the first run, and in both the fault was the
+    orchestrator's run, not a missing test:
+    - Frontend, 23 (8 of stage 2, 6 of the orchestrator's, 9 for the review fixes), against
+      `libraryblocks.test.ts`, `library-palette.test.tsx`, `unknown-box.test.ts`,
+      `ldmodel.test.ts`, `fbdmodel.test.ts`, `ladder-editor.test.tsx` and `fbd-editor.test.tsx`:
+      22 red, 1 timed out. The one that timed out was the orchestrator's "a drifted box re-pinned
+      on a library change (LD)": as written it made an edit in an effect that the edit itself
+      runs again, so the test run never ended; a hang is not a red. Written again to re-pin once
+      per change of the library's blocks, it is red in 2 tests ("a library change rewrites no
+      diagram" and "a block saved in the library while the editor is open is offered once the
+      library is checked again").
+    - Rust, 10 (5 of stage 1, 4 of the orchestrator's, 1 for a review fix), against the three
+      compiler test files above and `mythos-logic --lib`: 9 red, 1 survived. The survivor, "a
+      hidden output answered as a pin", is caught by the unit test
+      `tests::a_variable_the_front_end_made_is_not_a_pin` in the compiler crate's `--lib`, which
+      the run's test command did not include; run again with
+      `cargo test -p mythos-logic-compiler --lib` it is red in that test.
+    - Stage 2's mutation M14 no longer applies (a review fix rewrote its lines; fix F6 covers
+      the same behaviour) and was not run.
+    - vitest does not typecheck, so a frontend "red" is of the behaviour; the vitest reporter
+      lists each test under two names, so the counts in the logs are twice the tests.
+  - **Not run by the orchestrator:** the full gate (`./scripts/check.sh`) and the Windows lint.
+    No green full gate of this commit exists from this machine; CI is the gate.
+  - **NOT VERIFIED in a browser:** the four views named above. The orchestrator had said it
+    would look at them and did not: it needs the server, the modules and a scripted browser
+    built for the purpose. They stay as written above until a browser check of the palette is
+    part of `scripts/e2e.sh`.
+  - **Read by one reader only:** the ten review fixes (`ba738bc`) were read by the orchestrator
+    and by no second reviewer.
