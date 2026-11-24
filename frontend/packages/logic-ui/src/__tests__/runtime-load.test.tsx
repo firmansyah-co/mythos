@@ -31,6 +31,7 @@ import {
   typeInto,
   until,
   useShell,
+  revisionOf,
   type Backend,
   type Call,
 } from './harness';
@@ -127,6 +128,7 @@ describe('loading a configured runtime', () => {
       runtimes: listing(runtimeOf('Tank', { version: 'v-old' })),
     });
     const { calls, container } = await opened(backend);
+    const read = revisionOf(backend.config);
     // A change not saved yet: Load saves it first.
     typeInto(byTestId(container, 'task-priority'), '2');
     await settle();
@@ -138,8 +140,11 @@ describe('loading a configured runtime', () => {
       'PUT /projects/plant/logic/runtimes/Line',
       'POST /projects/plant/logic/runtimes/Line/check',
       'POST /projects/plant/logic/runtimes/Line/build',
-      'PUT /projects/plant/runtimes',
+      // With the revision of the one read it planned from.
+      `PUT /projects/plant/runtimes?revision=${read}`,
     ]);
+    // Read once: not again after the question.
+    expect(calls.filter((c) => c.method === 'GET' && /\/projects\/plant\/runtimes$/.test(c.path))).toHaveLength(1);
     // The stored runtime is checked, not a draft.
     expect(calls.find((c) => c.path.endsWith('/Line/check'))?.body).toEqual({});
     // Asked once, before anything was sent to the core's configuration.
@@ -174,6 +179,7 @@ describe('loading a configured runtime', () => {
       config: { instances: [old, other] },
     });
     const { calls, container } = await opened(backend);
+    const read = revisionOf(backend.config);
     const asked = answering(calls, true);
     calls.length = 0;
     await load(container);
@@ -182,7 +188,7 @@ describe('loading a configured runtime', () => {
       'POST /projects/plant/logic/runtimes/Line/check',
       'POST /projects/plant/logic/runtimes/Line/build',
       'POST /projects/plant/logic/runtimes/Old/build',
-      'PUT /projects/plant/runtimes',
+      `PUT /projects/plant/runtimes?revision=${read}`,
     ]);
     const question = asked[0]?.question ?? '';
     expect(question).toContain(
@@ -357,6 +363,7 @@ describe('loading a configured runtime', () => {
     const spare = { id: 'Spare', module: 'vm', run: true, program: { name: 'Spare', built_from: 'Spare', version: 'v1' } };
     const backend = plant({ config: { instances: [spare] } });
     const { calls, container } = await opened(backend);
+    const read = revisionOf(backend.config);
     const agent = { id: 'Mixer', module: 'vm', run: true, program: { name: 'Mixer', built_from: 'Mixer', version: 'v-agent' } };
     const asked = answering(calls, () => {
       // While the engineer reads the question, an agent loads Mixer into the project's runtimes.
@@ -367,33 +374,17 @@ describe('loading a configured runtime', () => {
 
     expect(asked).toHaveLength(1);
     expect(asked[0]?.question).not.toContain('Mixer');
-    expect(coreSaves(calls)).toEqual([]);
+    // The plan is sent with the revision of the read it was made from, and the core refuses it.
+    expect(coreSaves(calls).map((c) => c.path)).toEqual([`/api/v1/projects/plant/runtimes?revision=${read}`]);
+    expect(sentIds(coreSaves(calls)[0])).toEqual(['Spare', 'Line']);
     expect(backend.config).toEqual({ instances: [spare, agent] });
     expect(byTestId(container, 'load-refused')?.querySelector('p')?.textContent).toBe(
-      "The project's runtimes were changed by someone else while the question was open, so nothing was loaded: what was asked is no longer what would be sent. Load again to be asked about what is there now."
+      "The project's runtimes were changed since this Load read them, so nothing was loaded. Load again."
+    );
+    expect(byTestId(container, 'load-refused-error')?.textContent).toBe(
+      `the project's runtimes have changed since they were read (revision ${read}, now ${revisionOf(backend.config)}), so nothing was saved: read them again`
     );
     expect(byTestId(container, 'runtime-loaded')).toBeNull();
-  });
-
-  it("the project's runtimes that cannot be read again after the question are not overwritten", async () => {
-    const backend = plant();
-    const { calls, container } = await opened(backend);
-    let reads = 0;
-    backend.intercept = (call) => {
-      if (call.method !== 'GET' || !/\/projects\/plant\/runtimes$/.test(call.path)) return undefined;
-      reads += 1;
-      // The read before the question answers; the one after it does not.
-      return reads === 2 ? Response.json({ error: 'the storage is busy' }, { status: 500, statusText: 'Internal Server Error' }) : undefined;
-    };
-    answering(calls, true);
-    await load(container);
-
-    expect(reads).toBe(2);
-    expect(coreSaves(calls)).toEqual([]);
-    expect(byTestId(container, 'load-refused')?.querySelector('p')?.textContent).toBe(
-      "The project's runtimes could not be read again after the question, so nothing was loaded."
-    );
-    expect(byTestId(container, 'load-refused-error')?.textContent).toBe('the storage is busy');
   });
 
   it('a program whose source declares another PROGRAM name is found where it runs, under that name', async () => {
@@ -472,6 +463,7 @@ describe('loading a configured runtime', () => {
       config: { instances: [old, third] },
     });
     const { calls, container } = await opened(backend);
+    const read = revisionOf(backend.config);
     const asked = answering(calls, true);
     calls.length = 0;
     await load(container);
@@ -481,7 +473,7 @@ describe('loading a configured runtime', () => {
       'POST /projects/plant/logic/runtimes/Line/build',
       'POST /projects/plant/logic/runtimes/Old/build',
       'POST /projects/plant/logic/runtimes/Third/build',
-      'PUT /projects/plant/runtimes',
+      `PUT /projects/plant/runtimes?revision=${read}`,
     ]);
     expect(asked[0]?.question).toContain('Runtime Third gives up the moved program');
     expect(sentIds(coreSaves(calls)[0])).toEqual(['Line', 'Old', 'Third']);
@@ -509,6 +501,7 @@ describe('loading a configured runtime', () => {
     expect(writes(calls)).toEqual([]);
 
     asked = answering(calls, true);
+    const read = revisionOf(backend.config);
     calls.length = 0;
     await cold();
     expect(asked).toHaveLength(2);
@@ -516,7 +509,7 @@ describe('loading a configured runtime', () => {
     const question = asked[1]?.question ?? '';
     expect(question).toContain('Load runtime Line cold? Every runtime this save starts or replaces starts from its initial values, RETAIN variables included.');
     expect(question).toContain('Runtime Old gives up the moved program: it is built again from the project\'s saved programs and restarts cold (not the same programs).');
-    expect(coreSaves(calls).map((c) => c.path)).toEqual(['/api/v1/projects/plant/runtimes?start=cold']);
+    expect(coreSaves(calls).map((c) => c.path)).toEqual([`/api/v1/projects/plant/runtimes?start=cold&revision=${read}`]);
     expect(sentIds(coreSaves(calls)[0])).toEqual(['Line', 'Old']);
   });
 
@@ -546,6 +539,26 @@ describe('loading a configured runtime', () => {
     expect(await refusedWith([{ ...a, programs: [{ name: 'B' }] }])).toBe("runtime 'A': give program or programs, not both");
     expect(await refusedWith([a, { ...a, id: 'B' }])).toBe("plc1.valve is an output of both 'A' and 'B': one tag has one writer");
     expect(backend.config).toEqual({ instances: [] });
+
+    // The revision: in the read and in a save's answer; a save with another refused, a key the
+    // save does not take refused, both in the core's words, and nothing saved.
+    const runtimes = '/api/v1/projects/plant/runtimes';
+    const read = (await (await fetch(runtimes)).json()) as { config: unknown; revision: string };
+    expect(read).toEqual({ config: { instances: [] }, revision: revisionOf({ instances: [] }) });
+    const misspelt = await post(`${runtimes}?revison=${read.revision}`, { instances: [a] });
+    expect([misspelt.status, ((await misspelt.json()) as { error: string }).error]).toEqual([
+      400,
+      "'revison' is not something this save takes, so nothing was saved: it takes start and revision",
+    ]);
+    const saved = await post(`${runtimes}?start=cold&revision=${read.revision}`, { instances: [a] });
+    expect(saved.status).toBe(200);
+    expect(((await saved.json()) as { revision: string }).revision).toBe(revisionOf({ instances: [a] }));
+    const stale = await post(`${runtimes}?revision=${read.revision}`, { instances: [] });
+    expect([stale.status, ((await stale.json()) as { error: string }).error]).toEqual([
+      409,
+      `the project's runtimes have changed since they were read (revision ${read.revision}, now ${revisionOf({ instances: [a] })}), so nothing was saved: read them again`,
+    ]);
+    expect(backend.config).toEqual({ instances: [a] });
   });
 
   it('a load into a project the controller does not run says nothing was started', async () => {
@@ -731,6 +744,36 @@ describe('the runtime card', () => {
     await until('unloaded', () => coreSaves(calls).length === 1);
     await settle();
     expect((coreSaves(calls)[0]?.body as { instances: unknown[] }).instances).toEqual([a, b]);
+    expect(coreSaves(calls)[0]?.path).toBe(`/api/v1/projects/plant/runtimes?revision=${revisionOf({ instances: [a, line, b] })}`);
     expect(byTestId(card(container), 'runtime-commanded')?.textContent).toBe("Runtime Line was taken out of the project's runtimes.");
+  });
+
+  it("Unload saved by someone else after it read the project's runtimes takes nothing out, in the core's words", async () => {
+    const a = { id: 'Spare', module: 'vm', run: true, program: { name: 'Spare', built_from: 'Spare' } };
+    const line = { id: 'Line', module: 'vm', run: true, programs: [{ name: 'Tank', built_from: 'Tank' }, { name: 'Pump', built_from: 'Pump' }] };
+    const agent = { id: 'Mixer', module: 'vm', run: true, program: { name: 'Mixer', built_from: 'Mixer' } };
+    const backend = plant({ config: { instances: [a, line] }, runtimes: listing(runtimeOf('Line', { program: 'Tank, Pump' })) });
+    const { calls, container } = await opened(backend);
+    const read = revisionOf(backend.config);
+    // Between Unload's read and its save, an agent loads Mixer.
+    backend.intercept = (call) => {
+      if (call.method === 'PUT' && /\/projects\/plant\/runtimes(\?|$)/.test(call.path)) backend.config = { instances: [a, line, agent] };
+      return undefined;
+    };
+    answering(calls, true);
+    calls.length = 0;
+    click(byTestId(card(container), 'runtime-card-unload'));
+    await until('refused', () => byTestId(card(container), 'command-refused') !== null);
+    await settle();
+
+    expect(coreSaves(calls).map((c) => c.path)).toEqual([`/api/v1/projects/plant/runtimes?revision=${read}`]);
+    expect(backend.config).toEqual({ instances: [a, line, agent] });
+    expect(byTestId(card(container), 'command-refused')?.querySelector('p')?.textContent).toBe(
+      "The project's runtimes were not saved, so runtime Line was not taken out."
+    );
+    expect(byTestId(card(container), 'command-refused-error')?.textContent).toBe(
+      `the project's runtimes have changed since they were read (revision ${read}, now ${revisionOf(backend.config)}), so nothing was saved: read them again`
+    );
+    expect(byTestId(card(container), 'runtime-commanded')).toBeNull();
   });
 });

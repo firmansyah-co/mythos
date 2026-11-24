@@ -366,6 +366,13 @@ interface RuntimesConfig {
   instances: Array<{ id: string } & Record<string, unknown>>;
 }
 
+/** What the core's read of the project's runtimes configuration answers (`GET …/runtimes`). */
+export interface StoredRuntimes {
+  config: RuntimesConfig | null;
+  /** The revision of what is stored: passed back with a save, which is refused if it changed. */
+  revision: string;
+}
+
 /** A variable that did not carry over from the running version, and why. */
 export interface NotCarried {
   variable: string;
@@ -436,6 +443,16 @@ const logicOf = (projectId: string) =>
   `/api/v1/projects/${encodeURIComponent(projectId)}/logic/programs`;
 const runtimesOf = (projectId: string) =>
   `/api/v1/projects/${encodeURIComponent(projectId)}/runtimes`;
+
+/**
+ * The query of a save of the project's runtimes configuration (`PUT …/runtimes`): `start=cold`
+ * with `cold`, and the `revision` the read answered, so that the core refuses the save (409)
+ * when the configuration has changed since that read instead of overwriting the change.
+ */
+export function saveQuery(cold: boolean, revision: string | undefined): string {
+  const keys = [...(cold ? ['start=cold'] : []), ...(revision === undefined ? [] : [`revision=${encodeURIComponent(revision)}`])];
+  return keys.length === 0 ? '' : `?${keys.join('&')}`;
+}
 const json = (method: string, body: unknown): RequestInit => ({
   method,
   headers: { 'Content-Type': 'application/json' },
@@ -485,8 +502,10 @@ export const api = {
   /**
    * Put `instance` into the project's runtimes in place of the one with its id, or take the
    * one called `id` out when `instance` is `null`. Every other instance is sent back as it was
-   * read. With `cold`, what this starts starts from its initial values, RETAIN ones included;
-   * otherwise a new version of a running program is changed online.
+   * read, with the revision of that read: if another client saved since, the core refuses the
+   * save (409, its words in the error) and nothing is changed. With `cold`, what this starts
+   * starts from its initial values, RETAIN ones included; otherwise a new version of a running
+   * program is changed online.
    */
   setInstance: async (
     projectId: string,
@@ -494,10 +513,10 @@ export const api = {
     instance: ({ id: string } & Record<string, unknown>) | null,
     cold = false
   ): Promise<ApplyAnswer> => {
-    const saved = await host().api<{ config: RuntimesConfig | null }>(runtimesOf(projectId));
+    const saved = await host().api<StoredRuntimes>(runtimesOf(projectId));
     const others = (saved.config?.instances ?? []).filter((other) => other.id !== id);
     return host().api<ApplyAnswer>(
-      `${runtimesOf(projectId)}${cold ? '?start=cold' : ''}`,
+      `${runtimesOf(projectId)}${saveQuery(cold, saved.revision)}`,
       json('PUT', { instances: instance ? [...others, instance] : others })
     );
   },

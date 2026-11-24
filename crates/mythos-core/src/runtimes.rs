@@ -40,6 +40,7 @@ use mythos_plugin_sdk::{
 use mythos_shm::{QualityCode, ShmReaderHandle};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock as StdRwLock};
@@ -359,18 +360,42 @@ fn valid_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// The revision of a stored runtimes configuration: the lower hex SHA-256 of its bytes, as
+/// they are on disk. No file is the revision of no bytes. Any byte changed, by a save or by
+/// hand (whitespace too), gives another revision.
+pub fn revision_of(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+/// The bytes of the stored runtimes configuration at `path`; none when there is no file.
+pub fn stored_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+    }
+}
+
 impl RuntimesConfig {
     /// `Ok(None)` when the project has none.
     pub fn load(path: &Path) -> Result<Option<Self>, String> {
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Self::load_with_revision(path).map(|(config, _)| config)
+    }
+
+    /// [`Self::load`], with the [`revision_of`] the very bytes it parsed: one read, so the
+    /// revision is of what is answered.
+    pub fn load_with_revision(path: &Path) -> Result<(Option<Self>, String), String> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((None, revision_of(&[])))
+            }
             Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
         };
-        let config: Self = serde_json::from_str(&text)
+        let config: Self = serde_json::from_slice(&bytes)
             .map_err(|e| format!("{} is not a runtimes configuration: {e}", path.display()))?;
         config.validate()?;
-        Ok(Some(config))
+        Ok((Some(config), revision_of(&bytes)))
     }
 
     /// What can be checked without asking a runtime module.

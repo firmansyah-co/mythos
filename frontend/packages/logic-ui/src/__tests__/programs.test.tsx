@@ -38,6 +38,7 @@ import {
   useShell,
   useTelemetry,
   timeScale,
+  revisionOf,
   type Backend,
 } from './harness';
 
@@ -449,6 +450,7 @@ describe('loading into a runtime', () => {
     const old = { id: 'Tank', module: 'vm', run: true, program: { name: 'Tank', source: 'old' } };
     const backend = tank({ config: { instances: [other, old] } });
     const { calls, container } = await opened(backend);
+    const read = revisionOf(backend.config);
     typeSource(container, `${TANK}(* v2 *)`);
     calls.length = 0;
     click(byTestId(container, 'program-load'));
@@ -458,7 +460,8 @@ describe('loading into a runtime', () => {
       'PUT /projects/plant/logic/programs/Tank/source',
       'POST /projects/plant/logic/programs/Tank/check',
       'POST /projects/plant/logic/programs/Tank/build',
-      'PUT /projects/plant/runtimes',
+      // With the revision of what it read, so that a save made since is not overwritten.
+      `PUT /projects/plant/runtimes?revision=${read}`,
     ]);
     expect(backend.config?.instances).toEqual([
       other,
@@ -517,7 +520,7 @@ describe('loading into a runtime', () => {
   it('says a program the controller saved but did not start did not start, and why', async () => {
     const backend = tank({
       intercept: (call) =>
-        call.method === 'PUT' && call.path.endsWith('/runtimes')
+        call.method === 'PUT' && /\/runtimes(\?|$)/.test(call.path)
           ? Response.json({ applied: true, changes: { started: [], failed: [['runtime:Tank', 'the module exited at start']] } })
           : undefined,
     });
@@ -536,7 +539,7 @@ describe('loading into a runtime', () => {
   it('is not troubled by another runtime that did not start', async () => {
     const backend = tank({
       intercept: (call) =>
-        call.method === 'PUT' && call.path.endsWith('/runtimes')
+        call.method === 'PUT' && /\/runtimes(\?|$)/.test(call.path)
           ? Response.json({ applied: true, changes: { started: ['runtime:Tank'], failed: [['runtime:Pump', 'no such module']] } })
           : undefined,
     });
@@ -551,7 +554,7 @@ describe('loading into a runtime', () => {
   it('says a build that was refused by the controller was not loaded', async () => {
     const backend = tank({
       intercept: (call) =>
-        call.method === 'PUT' && call.path.endsWith('/runtimes')
+        call.method === 'PUT' && /\/runtimes(\?|$)/.test(call.path)
           ? new Response('{"error":"the runtimes configuration has problems and was not saved"}', { status: 400, statusText: 'Bad Request' })
           : undefined,
     });
@@ -567,7 +570,7 @@ describe('loading into a runtime', () => {
     const backend = tank({
       config: { instances: [] },
       intercept: (call) =>
-        call.method === 'PUT' && call.path.endsWith('/runtimes')
+        call.method === 'PUT' && /\/runtimes(\?|$)/.test(call.path)
           ? Response.json(
               {
                 error: 'the runtimes configuration has problems and was not saved',
@@ -592,6 +595,44 @@ describe('loading into a runtime', () => {
       'plc1: the connection has no tag external.Plant.P1.speed',
     ]);
     expect(backend.config?.instances).toEqual([]);
+  });
+
+  it("a Load and an Unload are refused, in the core's words, when the project's runtimes were saved by someone else after they were read", async () => {
+    const pump = { id: 'Pump', module: 'vm', run: true, program: { name: 'Pump' } };
+    const agent = { id: 'Mixer', module: 'vm', run: true, program: { name: 'Mixer' } };
+    const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')), config: { instances: [{ id: 'Tank' }, pump] } });
+    const { calls, container } = await opened(backend);
+    vi.stubGlobal('confirm', () => true);
+    // Between the program's read of the runtimes and its save, an agent saves them.
+    let read = '';
+    let saving: NonNullable<Backend['config']> = { instances: [{ id: 'Tank' }, pump, agent] };
+    backend.intercept = (call) => {
+      if (call.method === 'PUT' && /\/projects\/plant\/runtimes(\?|$)/.test(call.path) && read === '') {
+        read = revisionOf(backend.config);
+        backend.config = saving;
+      }
+      return undefined;
+    };
+    const now = () => revisionOf(backend.config);
+    const words = () =>
+      `the project's runtimes have changed since they were read (revision ${read}, now ${now()}), so nothing was saved: read them again`;
+
+    click(byTestId(container, 'program-load'));
+    await settle();
+    expect(calls.filter((c) => c.method === 'PUT' && c.path.includes('/projects/plant/runtimes')).map((c) => c.path)).toEqual([
+      `/api/v1/projects/plant/runtimes?revision=${read}`,
+    ]);
+    expect(byTestId(container, 'program-error')?.querySelector('p')?.textContent).toBe(`Program Tank was not loaded: 409 Conflict: ${words()}`);
+    expect(backend.config?.instances).toEqual([{ id: 'Tank' }, pump, agent]);
+    expect(byTestId(container, 'program-built')?.textContent).toContain('was built and is not loaded.');
+
+    // Again, before the Unload's save: the agent takes Pump out.
+    read = '';
+    saving = { instances: [{ id: 'Tank' }, agent] };
+    click(byTestId(container, 'runtime-unload'));
+    await settle();
+    expect(byTestId(container, 'program-error')?.querySelector('p')?.textContent).toBe(`Program Tank was not unloaded: 409 Conflict: ${words()}`);
+    expect(backend.config?.instances).toEqual([{ id: 'Tank' }, agent]);
   });
 });
 
@@ -712,7 +753,7 @@ describe('how a loaded program started', () => {
     expect(writes(calls)).toEqual([
       'POST /projects/plant/logic/programs/Tank/check',
       'POST /projects/plant/logic/programs/Tank/build',
-      'PUT /projects/plant/runtimes?start=cold',
+      `PUT /projects/plant/runtimes?start=cold&revision=${revisionOf(backend.config)}`,
     ]);
     expect(line(container)).toBe('Loaded cold: every variable starts from its initial value, RETAIN ones included.');
 
@@ -721,7 +762,7 @@ describe('how a loaded program started', () => {
     calls.length = 0;
     click(byTestId(container, 'program-load'));
     await settle();
-    expect(writes(calls).at(-1)).toBe('PUT /projects/plant/runtimes');
+    expect(writes(calls).at(-1)).toBe(`PUT /projects/plant/runtimes?revision=${revisionOf(backend.config)}`);
   });
 });
 
@@ -811,6 +852,7 @@ describe('what the runtime is doing', () => {
     const other = { id: 'Pump', module: 'vm', run: true, program: {} };
     const backend = tank({ runtimes: runtimesOf(runtimeOf('Tank')), config: { instances: [{ id: 'Tank' }, other] } });
     const { calls, container } = await opened(backend);
+    const read = revisionOf(backend.config);
     calls.length = 0;
     const asked: string[] = [];
     let agree = false;
@@ -835,7 +877,7 @@ describe('what the runtime is doing', () => {
     click(byTestId(container, 'runtime-unload'));
     await settle();
 
-    expect(writes(calls)).toEqual(['POST /runtimes/Tank/stop', 'POST /runtimes/Tank/run', 'PUT /projects/plant/runtimes']);
+    expect(writes(calls)).toEqual(['POST /runtimes/Tank/stop', 'POST /runtimes/Tank/run', `PUT /projects/plant/runtimes?revision=${read}`]);
     expect(backend.config?.instances).toEqual([other]);
   });
 
