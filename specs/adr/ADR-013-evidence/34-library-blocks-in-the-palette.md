@@ -267,3 +267,15 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
     fixtures 102 passed; `cargo fmt --all --check` clean. The emulators themselves were not run
     here (QEMU is not installed on this machine): CI's job is that check. The mutations above
     were not run again: the change moves two files and the paths that name them.
+  - **A second red of this slice found by CI, and its correction.** On `4634f8f` "Rust Workspace
+    Test Suite & Lints" failed. Reproduced here: `cargo test -p mythos-module-tests --test
+    logic_module` 11 passed, 1 failed,
+    `the_library_is_written_read_checked_and_deleted_through_the_server`, which held the check's
+    answer equal to `{"ok": true, "diagnostics": []}`; the answer now carries `blocks`. The
+    server suites of `mythos-module-tests` had been run by nobody in this slice. The test now
+    pins the whole answer through the server, with the one function of its library (`Twice`,
+    input `x: INT`, no outputs, result `INT`). After it: `cargo test -p mythos-module-tests
+    --test logic_module --test data_and_logic --test data_module` 12, 18 and 5 passed. No other
+    file outside the frontend and the module names the route (`git grep` for `library/check`
+    and `library_check`). The cause of the earlier Rust red on `648054e` was not read: the job's
+    log could not be fetched from this network.
