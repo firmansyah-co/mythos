@@ -1,0 +1,18 @@
+[package]
+name = "mythos-logic-package"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Reads a MythOS library package (ADR-015): a zip of a manifest, checksums and Structured Text sources, given whole or refused with words"
+
+[lints]
+workspace = true
+
+[dependencies]
+zip.workspace = true
+sha2.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true

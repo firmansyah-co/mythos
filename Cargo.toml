@@ -15,6 +15,7 @@ members = [
     "crates/mythos-logic-backend-vm",
     "crates/mythos-logic-compiler",
     "crates/mythos-logic-graphic",
+    "crates/mythos-logic-package",
     "plugins/drivers/driver-modbus",
     "plugins/hmi",
     "plugins/discovery",
