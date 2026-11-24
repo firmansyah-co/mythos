@@ -125,36 +125,43 @@ fn ladder_with_library(file: &str) -> Run {
 
 #[test]
 fn editor_library_blocks_are_what_the_workbench_tests_place() {
-    // The pins the workbench's tests give the boxes (libraryanswer.ts) are the module's answer.
-    let pins = |list: &[(&str, &str)]| {
-        list.iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<Vec<_>>()
-    };
+    // The pins the workbench's tests give the boxes are the answer `ANSWER` of
+    // `libraryanswer.ts`, read here from that file: it is what `library_blocks` answers for
+    // the library the editor's fixtures compile with, in the shape the logic module writes.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../frontend/packages/logic-ui/src/__tests__/libraryanswer.ts");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let (_, after) = text
+        .split_once("const ANSWER = `")
+        .unwrap_or_else(|| panic!("{}: no `const ANSWER = `", path.display()));
+    let (json, _) = after
+        .split_once('`')
+        .unwrap_or_else(|| panic!("{}: ANSWER is not closed", path.display()));
+    let fixture: serde_json::Value =
+        serde_json::from_str(json).unwrap_or_else(|e| panic!("{}: ANSWER: {e}", path.display()));
     let blocks = library_blocks(&Sources {
         library: &[MOTOR_LIBRARY],
         ..Default::default()
     })
     .unwrap_or_else(|d| panic!("{d:?}"));
-    assert_eq!(
-        blocks,
-        [
-            LibraryBlock {
-                name: "Motor".into(),
-                function_block: true,
-                inputs: pins(&[("run", "BOOL"), ("speed", "INT")]),
-                outputs: pins(&[("running", "BOOL"), ("rpm", "INT")]),
-                result: None,
-            },
-            LibraryBlock {
-                name: "Scale".into(),
-                function_block: false,
-                inputs: pins(&[("raw", "INT"), ("factor", "INT")]),
-                outputs: vec![],
-                result: Some("INT".into()),
-            },
-        ]
-    );
+    let pins = |list: &[(String, String)]| -> Vec<serde_json::Value> {
+        list.iter()
+            .map(|(name, ty)| serde_json::json!({ "name": name, "type": ty }))
+            .collect()
+    };
+    let answered: Vec<serde_json::Value> = blocks
+        .iter()
+        .map(|b: &LibraryBlock| {
+            serde_json::json!({
+                "name": b.name,
+                "kind": if b.function_block { "function_block" } else { "function" },
+                "inputs": pins(&b.inputs),
+                "outputs": pins(&b.outputs),
+                "result": b.result,
+            })
+        })
+        .collect();
+    assert_eq!(serde_json::Value::Array(answered), fixture);
 }
 
 #[test]

@@ -8,6 +8,7 @@
 // one: one entry of another shape makes the whole list unknown. The pin names are upper-cased,
 // as the document's own POUs' are (ldmodel.ts `boxOfPou`), and the types kept as answered.
 
+import { findFbdBox } from './fbdcatalog';
 import type { BoxDef, PinDef } from './ldcatalog';
 import type { Pin } from './library';
 import type { StoredCheck } from './librarystore';
@@ -19,11 +20,18 @@ export const LIBRARY_GROUP = 'Library';
 export type LibraryBoxes = { boxes: BoxDef[]; why: null } | { boxes: null; why: string };
 
 export const BEING_CHECKED = 'The library is being checked; its blocks are offered once it answers.';
+/** The list of the library's sources could not be read, so its check was never asked. */
+export const notReadWords = (error: string) => `The library could not be read: ${error}; its blocks are not offered.`;
 export const notCheckedWords = (error: string) => `The library could not be checked: ${error}; its blocks are not offered.`;
 export const doesNotCheckWords = (n: number) =>
   `The library does not check (${n} ${n === 1 ? 'diagnostic' : 'diagnostics'}); its blocks are offered once it does.`;
 export const NOT_ANSWERED = "This logic module does not answer the library's blocks.";
 export const OTHER_SHAPE = "The library's blocks were answered in a shape this workbench does not read.";
+/**
+ * An answer that names a block twice (in any case) or names one like a standard block: every
+ * lookup of the editors would take one for the other, so none is offered.
+ */
+export const NAMES_UNREAD = "The library's blocks were answered with a name twice or with a standard block's name; this workbench does not offer them.";
 /** Said in the palette's group when the library answered that it declares none. */
 export const NO_BLOCKS = "The project's library declares no function or function block.";
 
@@ -60,17 +68,26 @@ function checked(entry: unknown): Checked | null {
   return null;
 }
 
-/** The blocks of the stored library's last check, as boxes, or why they are not known. */
-export function libraryBoxes(stored: StoredCheck | null): LibraryBoxes {
+/**
+ * The blocks of the stored library's last check, as boxes, or why they are not known.
+ * `listError`: why the list of the library's sources could not be read, when it could not (no
+ * check of the library is asked then, so none is said to be under way).
+ */
+export function libraryBoxes(stored: StoredCheck | null, listError: string | null = null): LibraryBoxes {
+  if (stored === null && listError !== null) return { boxes: null, why: notReadWords(listError) };
   if (stored === null) return { boxes: null, why: BEING_CHECKED };
   if (stored.answer === null) return { boxes: null, why: notCheckedWords(stored.error) };
   const answer = stored.answer;
   if (!answer.ok) return { boxes: null, why: doesNotCheckWords(Array.isArray(answer.diagnostics) ? answer.diagnostics.length : 0) };
   if (!Array.isArray(answer.blocks)) return { boxes: null, why: NOT_ANSWERED };
   const boxes: BoxDef[] = [];
+  const names = new Set<string>();
   for (const entry of answer.blocks as unknown[]) {
     const b = checked(entry);
     if (b === null) return { boxes: null, why: OTHER_SHAPE };
+    const upper = b.name.toUpperCase();
+    if (names.has(upper) || findFbdBox(upper, []) !== null) return { boxes: null, why: NAMES_UNREAD };
+    names.add(upper);
     boxes.push({
       name: b.name,
       kind: b.kind === 'function_block' ? 'functionBlock' : 'function',
@@ -88,14 +105,16 @@ export const editorDoesNotKnow = (type: string) =>
 
 /**
  * What is said of a box naming a block the editor does not find. With the library's blocks
- * known: that neither the program, the library nor the standard declares it. Not known: the
+ * known: that neither the program nor the library declares it, and that it is not a standard
+ * block this editor knows (the compiler declares standard blocks this editor does not hold,
+ * CTU_DINT and TON_TIME among them, so the editor never says a name is not standard). Not known: the
  * words of D4c, and why the library's are not known. Not given (a caller that has no library):
  * the words of D4c alone.
  */
 export function unknownBoxWords(type: string, library?: LibraryBoxes): string[] {
   if (library === undefined) return [editorDoesNotKnow(type)];
   if (library.boxes !== null) {
-    return [`${type} is not a function or function block of this program, of the project's library or of the standard ones.`];
+    return [`${type} is not a function or function block of this program or of the project's library, nor a standard one this editor knows.`];
   }
   const why = library.why.charAt(0).toLowerCase() + library.why.slice(1);
   return [editorDoesNotKnow(type), `The project's library's blocks are not known here: ${why}`];
@@ -135,3 +154,27 @@ export function pinProblems(inputs: ReadonlyArray<{ formal: string }>, outputs: 
 export function declaredType(def: BoxDef | null, which: 'inputs' | 'outputs', formal: string, stored: string): string {
   return def?.[which].find((p) => p.name.toUpperCase() === formal.toUpperCase())?.type ?? stored;
 }
+
+/**
+ * Said of a box of a block this document declares when the project's library declares a block
+ * of the same name too: the box has this document's pins, and the library's block is not offered.
+ */
+export const twinWords = (name: string) => `${name} is declared both by this document and by the project's library; this box has this document's pins.`;
+
+/** The library's blocks named like one of the document's own POUs (`own` holds the document's). */
+export function twinsOf(own: readonly BoxDef[], library: LibraryBoxes): BoxDef[] {
+  const document = new Set(own.filter((d) => d.group !== LIBRARY_GROUP).map((d) => d.name.toUpperCase()));
+  return (library.boxes ?? []).filter((b) => document.has(b.name.toUpperCase()));
+}
+
+/** Said in the library's group of the blocks it does not offer because the document declares the same name. */
+export const twinsWords = (twins: readonly BoxDef[]) =>
+  `Not offered: ${twins.map((d) => d.name).join(', ')}, which this document declares too.`;
+
+/** Said of a box that keeps an instance while its block is declared a function now. */
+export const instanceOfFunctionWords = (name: string, instance: string) =>
+  `${name} is a function as it is declared now, which has no instance; this box still names ${instance}.`;
+
+/** Said of a box's power pin (LD) whose declaration is not a BOOL now. */
+export const powerPinWords = (formal: string, name: string, type: string) =>
+  `${formal} carries the rung's power, a BOOL; ${name} declares it ${type} now.`;

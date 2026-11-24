@@ -168,6 +168,14 @@ async function librarySaved() {
   await settle();
 }
 
+/** `lang.written` with a POU Motor of the document's own, its pins other than the library's Motor. */
+const withOwnMotor = (lang: Lang) =>
+  lang.written.replace(
+    '<pous>',
+    `<pous>
+      <pou name="Motor" pouType="functionBlock"><interface><inputVars><variable name="x"><type><INT/></type></variable></inputVars><outputVars><variable name="done"><type><BOOL/></type></variable></outputVars></interface><body><ST><xhtml:p xmlns:xhtml="http://www.w3.org/1999/xhtml">done := x &gt; 0;</xhtml:p></ST></body></pou>`
+  );
+
 const withoutSpeed: LibraryBlock = { ...MOTOR, inputs: [{ name: 'run', type: 'BOOL' }] };
 const withLimit: LibraryBlock = { ...MOTOR, inputs: [...MOTOR.inputs, { name: 'limit', type: 'INT' }] };
 
@@ -240,6 +248,33 @@ for (const lang of [LD, FBD]) {
       expect(libraryGroup(container, p).why).toEqual([
         'The library could not be checked: logic/library: Permission denied (os error 13); its blocks are not offered.',
       ]);
+    });
+
+    it('a library whose list could not be read asks no check and does not say one is under way', async () => {
+      const { calls, container } = await opened(
+        lang,
+        backendOf(lang, lang.empty, checksWith(MOTOR), {
+          intercept: (call: Call) =>
+            call.method === 'GET' && /\/logic\/library$/.test(call.path)
+              ? Response.json({ error: 'logic/library: Permission denied (os error 13)' }, { status: 500, statusText: 'Internal Server Error' })
+              : undefined,
+        })
+      );
+      expect(calls.filter((c) => c.method === 'POST' && c.path.endsWith('/logic/library/check'))).toEqual([]);
+      expect(libraryGroup(container, p)).toEqual({
+        items: [],
+        names: [],
+        why: ['The library could not be read: logic/library: Permission denied (os error 13); its blocks are not offered.'],
+      });
+    });
+
+    it('a library block named like one of the document’s own is not offered, and the group says so', async () => {
+      const { container } = await opened(lang, backendOf(lang, withOwnMotor(lang), checksWith(MOTOR, SCALE)));
+      expect(libraryGroup(container, p).items).toEqual(['box:Scale']);
+      const group = [...container.querySelectorAll(`[data-testid="${p}-palette-group"]`)].find((g) => g.getAttribute('data-group') === 'Library');
+      expect(texts(group as HTMLElement, `${p}-palette-library-twins`)).toEqual(['Not offered: Motor, which this document declares too.']);
+      const document = [...container.querySelectorAll(`[data-testid="${p}-palette-group"]`)].find((g) => g.getAttribute('data-group') === 'This document');
+      expect([...(document?.querySelectorAll(`[data-testid="${p}-palette-item"]`) ?? [])].map((x) => x.getAttribute('data-item'))).toEqual(['box:Motor']);
     });
 
     it('an answer without blocks says so', async () => {
@@ -341,7 +376,7 @@ for (const lang of [LD, FBD]) {
     it('a box of a library block that was deleted says the library does not declare it', async () => {
       const { container } = await opened(lang, backendOf(lang, lang.written, checksWith(SCALE)));
       selectBox(container, p, lang.written, 'Motor');
-      expect(said(container, p)).toEqual(["Motor is not a function or function block of this program, of the project's library or of the standard ones."]);
+      expect(said(container, p)).toEqual(["Motor is not a function or function block of this program or of the project's library, nor a standard one this editor knows."]);
     });
 
     it('while the library’s blocks are not known, a box the editor does not know says why', async () => {
@@ -365,6 +400,16 @@ for (const lang of [LD, FBD]) {
       const { container } = await opened(lang, backendOf(lang, lang.written, checksWith(withLimit, SCALE)));
       selectBox(container, p, lang.written, 'Motor');
       expect(said(container, p)).toEqual(['Motor declares the input LIMIT, which this box does not have.']);
+      expect(source()).toBe(lang.written);
+    });
+
+    it('a box whose library block is a function now shows the instance it keeps, so it can be cleared', async () => {
+      const fn: LibraryBlock = { name: 'Motor', kind: 'function', inputs: MOTOR.inputs, outputs: [], result: 'BOOL' };
+      const { container } = await opened(lang, backendOf(lang, lang.written, checksWith(fn, SCALE)));
+      selectBox(container, p, lang.written, 'Motor');
+      expect(said(container, p)).toContain('Motor is a function as it is declared now, which has no instance; this box still names motor1.');
+      const instance = byTestId(container, `${p}-box-instance`) as HTMLInputElement | null;
+      expect(instance?.value).toBe('motor1');
       expect(source()).toBe(lang.written);
     });
 

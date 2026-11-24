@@ -902,20 +902,25 @@ function Fields({
         }}
         onLeave={onLeave}
       />
-      {def?.kind === 'functionBlock' && (
+      {/* A function's box shows the instance it still keeps (its block was a function block), so it can be cleared. */}
+      {def !== null && (def.kind === 'functionBlock' || box.instance !== '') && (
         <OperandField
           label={`Instance of box ${box.id}`}
           testId="fbd-box-instance"
           value={box.instance}
-          suggestions={suggestions.filter((v) => v.type.toUpperCase() === def.name.toUpperCase())}
+          suggestions={def.kind === 'functionBlock' ? suggestions.filter((v) => v.type.toUpperCase() === def.name.toUpperCase()) : []}
           focusToken={token(instanceKey(box.id))}
           onFocused={onFocused}
-          declareOnEnter
+          declareOnEnter={def.kind === 'functionBlock'}
           onCommit={(text) => onEdit((m, ids) => setInstance(m, ids, pou, net, box.id, text))}
-          onDeclare={(text) => {
-            onEdit((m, ids) => setInstance(m, ids, pou, net, box.id, text));
-            declareNow(text, { instance: def.name });
-          }}
+          onDeclare={
+            def.kind === 'functionBlock'
+              ? (text) => {
+                  onEdit((m, ids) => setInstance(m, ids, pou, net, box.id, text));
+                  declareNow(text, { instance: def.name });
+                }
+              : undefined
+          }
           onLeave={onLeave}
         />
       )}

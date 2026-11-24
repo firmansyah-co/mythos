@@ -12,8 +12,17 @@
 // below it gets the insertion point. An empty branch is a wire, so what is in parallel with it
 // is bypassed until something is put into it, and the editor's check says so.
 
-import { family, findBox, pinsOf, type BoxDef, STANDARD } from './ldcatalog';
-import { declaredType, LIBRARY_GROUP, pinProblems, unknownBoxWords, type LibraryBoxes } from './libraryblocks';
+import { family, findBox, pinsOf, type BoxDef, type PinDef, STANDARD } from './ldcatalog';
+import {
+  declaredType,
+  instanceOfFunctionWords,
+  LIBRARY_GROUP,
+  pinProblems,
+  powerPinWords,
+  twinWords,
+  unknownBoxWords,
+  type LibraryBoxes,
+} from './libraryblocks';
 import type { BoxPin, Declared, DocModel, El, Ids, Item, Network, PouModel, Section, VarInfo } from './ldmodel';
 
 /** What is selected: a network, an element (or a run of elements of one series), or a point between two. */
@@ -137,7 +146,11 @@ function retype(el: El, type: string, own: readonly BoxDef[]): void {
     el.powerOut = 'ENO';
     return;
   }
-  const pins = pinsOf(def);
+  const all = pinsOf(def);
+  // Each formal parameter once: a block that declares an input EN (or an output ENO) of its own
+  // gets the one EN (ENO) a box has, which is the box's enable in a diagram, never a second one.
+  const once = (list: readonly PinDef[]) => list.filter((p, i) => list.findIndex((q) => q.name.toUpperCase() === p.name.toUpperCase()) === i);
+  const pins = { ...all, inputs: once(all.inputs), outputs: once(all.outputs) };
   const keep = (list: BoxPin[], formal: string) => list.find((p) => p.formal.toUpperCase() === formal.toUpperCase());
   el.inputs = pins.inputs.map((p) => {
     const was = keep(el.inputs, p.name);
@@ -553,7 +566,19 @@ export function check(pou: PouModel, vars: readonly VarInfo[], own: readonly Box
           // A block whose declaration can change under the diagram: said per pin, never re-pinned.
           if (def.group === LIBRARY_GROUP || def.group === 'This document') {
             for (const words of pinProblems(el.inputs, el.outputs, def)) problem(words);
+            // The rung's power goes into and out of a BOOL: a power pin the declaration retyped is said.
+            for (const [which, formal] of [
+              ['inputs', el.powerIn],
+              ['outputs', el.powerOut],
+            ] as const) {
+              const type = declaredType(def, which, formal, 'BOOL');
+              if (family(type) !== null && family(type) !== 'BOOL') problem(powerPinWords(formal, def.name, type));
+            }
           }
+          if (def.group === 'This document' && library?.boxes?.some((b) => b.name.toUpperCase() === def.name.toUpperCase())) {
+            problem(twinWords(def.name));
+          }
+          if (def.kind === 'function' && el.instance !== '') problem(instanceOfFunctionWords(def.name, el.instance));
           if (def.kind === 'functionBlock') {
             if (el.instance === '') problem(`A ${def.name} needs an instance: name the variable that keeps its state.`);
             else {

@@ -24,8 +24,10 @@ import { EXTENSIBLE, FBD_STANDARD, findFbdBox, mainOutput } from "./fbdcatalog";
 import { family, type BoxDef } from "./ldcatalog";
 import {
   declaredType,
+  instanceOfFunctionWords,
   LIBRARY_GROUP,
   pinProblems,
+  twinWords,
   unknownBoxWords,
   type LibraryBoxes,
 } from "./libraryblocks";
@@ -791,11 +793,17 @@ export function orAt(
   const found = netOf(m, sel);
   if (typeof found === "string") return { ok: false, error: found };
   const root = found.net.root;
-  const pin =
+  const box =
     root?.t === "sink" && root.sink.id === sel.box
       ? null
-      : findBoxIn(root, sel.box)?.inputs.find((p) => p.formal === sel.formal);
-  const type = pin?.type ?? "BOOL";
+      : findBoxIn(root, sel.box);
+  const pin = box?.inputs.find((p) => p.formal === sel.formal);
+  // The type the box's block declares now (a pin read from the text before the library's
+  // blocks were known is typed ANY), else the one the model took.
+  const type =
+    box && pin
+      ? declaredType(findFbdBox(box.typeName, own), "inputs", pin.formal, pin.type)
+      : "BOOL";
   if (family(type) !== null && family(type) !== "BOOL")
     return {
       ok: false,
@@ -1048,6 +1056,15 @@ export function check(
         for (const words of pinProblems(box.inputs, box.outputs, def))
           problem(words);
       }
+      if (
+        def.group === "This document" &&
+        library?.boxes?.some(
+          (b) => b.name.toUpperCase() === def.name.toUpperCase(),
+        )
+      )
+        problem(twinWords(def.name));
+      if (def.kind === "function" && box.instance !== "")
+        problem(instanceOfFunctionWords(def.name, box.instance));
       if (def.kind === "functionBlock") {
         if (box.instance === "")
           problem(

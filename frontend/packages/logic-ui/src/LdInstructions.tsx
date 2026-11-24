@@ -11,7 +11,7 @@ import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import { Star, X } from 'lucide-react';
 import { GROUPS, type BoxDef } from './ldcatalog';
 import { STANDARD_BOXES, type Spec } from './ldedit';
-import { LIBRARY_GROUP, libraryBoxes, NO_BLOCKS, type LibraryBoxes } from './libraryblocks';
+import { LIBRARY_GROUP, libraryBoxes, NO_BLOCKS, twinsOf, twinsWords, type LibraryBoxes } from './libraryblocks';
 import { useLibrary } from './librarystore';
 
 /** What a Ladder Diagram instruction does: put an element, or open or close a branch, or name the network. */
@@ -74,20 +74,32 @@ type AnyInstruction = Instruction<any>;
  */
 export function useLibraryBoxes(): LibraryBoxes {
   const stored = useLibrary((state) => state.stored);
-  return useMemo(() => libraryBoxes(stored), [stored]);
+  // When the list of the library could not be read, no check of it is asked: that is said.
+  const listError = useLibrary((state) => state.namesError);
+  return useMemo(() => libraryBoxes(stored, listError), [stored, listError]);
 }
 
-/** The boxes a document may call besides the standard ones: its own POUs, then the library's blocks. */
-export const callable = (own: readonly BoxDef[], library: LibraryBoxes): BoxDef[] => [...own, ...(library.boxes ?? [])];
+/**
+ * The boxes a document may call besides the standard ones: its own POUs, then the library's
+ * blocks. A library block named like one of the document's own is left out: every lookup finds
+ * the document's, so offering the library's would place the document's under its name.
+ */
+export const callable = (own: readonly BoxDef[], library: LibraryBoxes): BoxDef[] => {
+  const twins = new Set(twinsOf(own, library));
+  return [...own, ...(library.boxes ?? []).filter((b) => !twins.has(b))];
+};
 
 /**
  * The library's group: its blocks (`own`'s of group Library), or the one line that says why
- * there are none to offer. Never an empty list for a list that is not known.
+ * there are none to offer. Never an empty list for a list that is not known. Its fourth element
+ * names the blocks it leaves out because the document declares the same name.
  */
-export function libraryGroup<I>(own: readonly BoxDef[], library: LibraryBoxes, as: (d: BoxDef) => I): [string, I[], string?] {
+export function libraryGroup<I>(own: readonly BoxDef[], library: LibraryBoxes, as: (d: BoxDef) => I): [string, I[], string?, string?] {
   if (library.boxes === null) return [LIBRARY_GROUP, [], library.why];
   const blocks = own.filter((d) => d.group === LIBRARY_GROUP);
-  return blocks.length > 0 ? [LIBRARY_GROUP, blocks.map(as)] : [LIBRARY_GROUP, [], NO_BLOCKS];
+  const twins = twinsOf(own, library);
+  const note = twins.length > 0 ? twinsWords(twins) : undefined;
+  return blocks.length > 0 ? [LIBRARY_GROUP, blocks.map(as), undefined, note] : [LIBRARY_GROUP, [], twins.length > 0 ? undefined : NO_BLOCKS, note];
 }
 
 /** Every instruction there is, with the document's own blocks (and the library's, when `own` holds them). */
@@ -157,8 +169,11 @@ export interface Kit {
   prefix: string;
   /** `own`: the document's own blocks, then the library's (group Library). */
   all: (own: readonly BoxDef[]) => AnyInstruction[];
-  /** A group's third element is the one line it shows in place of items it does not have. */
-  groups: (own: readonly BoxDef[], library: LibraryBoxes) => Array<[string, AnyInstruction[], string?]>;
+  /**
+   * A group's third element is the one line it shows in place of items it does not have; its
+   * fourth, a line it shows beside them (the library's blocks the document declares too).
+   */
+  groups: (own: readonly BoxDef[], library: LibraryBoxes) => Array<[string, AnyInstruction[], string?, string?]>;
   /** The groups open at first. */
   open: string[];
   idle: string;
@@ -267,12 +282,17 @@ export function InstructionsCard({ kit = LD_KIT }: { kit?: Kit }) {
           {kit.idle}
         </p>
       )}
-      {kit.groups(callable(own, library), library).map(([title, items, line]) => (
+      {kit.groups(callable(own, library), library).map(([title, items, line, note]) => (
         <details key={title} open={kit.open.includes(title)} className="ld-palette__group" data-testid={`${p}-palette-group`} data-group={title}>
           <summary>{title}</summary>
           {line !== undefined && (
             <p className="muted" data-testid={`${p}-palette-library-why`}>
               {line}
+            </p>
+          )}
+          {note !== undefined && (
+            <p className="muted" data-testid={`${p}-palette-library-twins`}>
+              {note}
             </p>
           )}
           {items.map((x) => (
