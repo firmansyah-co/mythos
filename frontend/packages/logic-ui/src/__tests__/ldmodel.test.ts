@@ -631,7 +631,7 @@ describe('the compiler runs what the editor writes with the library', () => {
     const own = motorLibrary();
     const problems = check(pou, opened.source.pous[0]?.vars ?? [], own, { boxes: own, why: null });
     expect([...problems.elements.values(), ...problems.networks.values()].flat()).toEqual([]);
-    guardedFixture('editor_library.xml', r.text);
+    guardedFixture('../ladder_library/editor_library.xml', r.text);
   });
 });
 

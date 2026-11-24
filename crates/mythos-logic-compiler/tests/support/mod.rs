@@ -9,8 +9,8 @@ use mythos_logic_vm::{
 
 pub const MS: i64 = 1_000_000;
 
-/// The project library the editors' library fixtures (`ladder/editor_library.xml`,
-/// `fbd/editor_library.xml`) are compiled with: a function block whose first input is a BOOL
+/// The project library the editors' library fixtures (`ladder_library/editor_library.xml`,
+/// `fbd_library/editor_library.xml`) are compiled with: a function block whose first input is a BOOL
 /// declared in lower case, and a function. The workbench's tests place them with the pins the
 /// logic module answers for it (`frontend/packages/logic-ui/src/__tests__/libraryanswer.ts`).
 pub const MOTOR_LIBRARY: (&str, &str) = (

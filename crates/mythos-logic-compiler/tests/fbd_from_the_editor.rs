@@ -120,7 +120,7 @@ fn the_network_the_editor_wrote_with_a_library_block_runs_as_the_same_program_in
     // RUN and SPEED as the editor writes a pin (declared in lower case), and Scale's OUT.
     let compiled = |sources: Sources| Run::of(compile_sources(&sources, &TargetProfile::pc()));
     let path = format!(
-        "{}/tests/fbd/editor_library.xml",
+        "{}/tests/fbd_library/editor_library.xml",
         env!("CARGO_MANIFEST_DIR")
     );
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));

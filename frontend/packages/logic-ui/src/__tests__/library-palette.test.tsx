@@ -43,8 +43,8 @@ import { checksWith, MOTOR, SCALE } from './libraryanswer';
 
 const FIXTURES = resolve(__dirname, '../../../../../crates/mythos-logic-compiler/tests');
 /** What the editors wrote with Motor and Scale (ldmodel.test.ts, fbdmodel.test.ts), compiled and run by the compiler's tests. */
-const LD_WRITTEN = readFileSync(resolve(FIXTURES, 'ladder/editor_library.xml'), 'utf8');
-const FBD_WRITTEN = readFileSync(resolve(FIXTURES, 'fbd/editor_library.xml'), 'utf8');
+const LD_WRITTEN = readFileSync(resolve(FIXTURES, 'ladder_library/editor_library.xml'), 'utf8');
+const FBD_WRITTEN = readFileSync(resolve(FIXTURES, 'fbd_library/editor_library.xml'), 'utf8');
 
 const LIBRARY_CHANGED = 'LOGIC_LIBRARY_CHANGED';
 const DIAGNOSTIC = { line: 2, col: 1, end_line: 2, end_col: 4, message: 'expected END_VAR', source: 'logic/library/Motors.st' };

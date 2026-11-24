@@ -115,8 +115,8 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
     operand of the wrong family and a declared type, a deleted block, a block that lost a pin or
     gained an input, no diagram rewritten, a block of a project closed before, a twin, a list
     that could not be read, the instance a box keeps.
-  - `ldmodel.test.ts` and `fbdmodel.test.ts`: the editor writes `ladder/editor_library.xml` and
-    `fbd/editor_library.xml` with the module's boxes, held equal to the committed fixture, a
+  - `ldmodel.test.ts` and `fbdmodel.test.ts`: the editor writes `ladder_library/editor_library.xml` and
+    `fbd_library/editor_library.xml` with the module's boxes, held equal to the committed fixture, a
     missing fixture failing (H11); the FBD corpus test reads the new fixture too.
   Proof that it compiles, `crates/mythos-logic-compiler/tests`:
   - `ladder_from_the_editor.rs` `the_rung_the_editor_wrote_with_a_library_block_runs_as_the_same_program_in_st`
@@ -252,3 +252,18 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
     part of `scripts/e2e.sh`.
   - **Read by one reader only:** the ten review fixes (`ba738bc`) were read by the orchestrator
     and by no second reviewer.
+  - **A red of this slice found by CI, and its correction.** On `648054e` the job "Logic VM on
+    Bare Metal" failed in the step that runs `scripts/logic-vm-on-emulators.sh`. The script
+    compiles every `*.xml` of `tests/ladder/` and `tests/fbd/` by itself, and the two fixtures
+    this slice added there (`editor_library.xml`) call a block of a library, so they do not
+    compile alone. Reproduced here without the emulators: `expected_scans` on each of the two
+    files exits 1 with "Motor is not a type this compiler knows". The test
+    `runs_in_pieces.rs` reads the same two folders the same way; neither it nor the script had
+    been run by the agents or by the orchestrator, whose narrow commands named three test files
+    only. The fixtures now live in `tests/ladder_library/` and `tests/fbd_library/`, which
+    nothing sweeps. After the move: `cargo test -p mythos-logic-compiler` (the whole crate) every
+    test file green, `runs_in_pieces` 8 passed; `expected_scans` over every program the script
+    takes, for both target profiles, no failure; the four frontend test files that read the
+    fixtures 102 passed; `cargo fmt --all --check` clean. The emulators themselves were not run
+    here (QEMU is not installed on this machine): CI's job is that check. The mutations above
+    were not run again: the change moves two files and the paths that name them.

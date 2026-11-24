@@ -345,7 +345,7 @@ describe('the compiler runs what the editor writes with the library', () => {
     const own = motorLibrary();
     const problems = check(opened.model.pous[0] as DocModel['pous'][number], opened.source.pous[0]?.vars ?? [], own, { boxes: own, why: null });
     expect([...problems.elements.values(), ...problems.networks.values()].flat()).toEqual([]);
-    fixture('editor_library.xml', r.text);
+    fixture('../fbd_library/editor_library.xml', r.text);
   });
 });
 

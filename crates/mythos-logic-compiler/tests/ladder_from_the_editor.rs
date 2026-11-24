@@ -111,7 +111,7 @@ fn another_tools_document_runs_the_same_after_the_editor_changed_one_rung_of_it(
 
 /// A Ladder Diagram compiled with the project's library, as every program is (ADR-014 §2.8).
 fn ladder_with_library(file: &str) -> Run {
-    let path = format!("{}/tests/ladder/{file}", env!("CARGO_MANIFEST_DIR"));
+    let path = format!("{}/tests/ladder_library/{file}", env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
     Run::of(compile_sources(
         &Sources {

@@ -247,8 +247,8 @@ describe('the palette groups', () => {
 
 const FIXTURES = resolve(__dirname, '../../../../../crates/mythos-logic-compiler/tests');
 /** What the editors wrote with Motor and Scale, compiled and run by the compiler's tests. */
-const LD_WRITTEN = readFileSync(resolve(FIXTURES, 'ladder/editor_library.xml'), 'utf8');
-const FBD_WRITTEN = readFileSync(resolve(FIXTURES, 'fbd/editor_library.xml'), 'utf8');
+const LD_WRITTEN = readFileSync(resolve(FIXTURES, 'ladder_library/editor_library.xml'), 'utf8');
+const FBD_WRITTEN = readFileSync(resolve(FIXTURES, 'fbd_library/editor_library.xml'), 'utf8');
 const everything = (p: { elements: Map<number, string[]>; networks: Map<number, string[]> }) => [...p.elements.values(), ...p.networks.values()].flat();
 
 /** What the LD editor's check says of the first POU of `text`, with `own` and the library `known`. */
