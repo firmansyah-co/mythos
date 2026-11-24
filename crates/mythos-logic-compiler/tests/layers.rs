@@ -8,7 +8,9 @@
 //!   Function Block Diagram, one crate because one PLCopen TC6 document holds POUs of both)
 //!   also on the Structured Text front-end, whose declarations, types, literals, text and
 //!   standard library it shares (ADR-013 §2.15, §2.16), and never on a backend or the VM;
-//! - a backend depends on the IR and on its own target only.
+//! - a backend depends on the IR and on its own target only;
+//! - the reader of a library package file (ADR-015) depends on nothing of the workspace: no
+//!   language, no backend, no VM, so the command line and any module can read a package.
 //!
 //! Every `mythos-logic-*` crate must be listed here with its layer; a new one that is not is a
 //! failure, so nobody adds one without deciding where it sits.
@@ -22,6 +24,7 @@ use std::path::Path;
 const LAYERS: &[(&str, &[&str])] = &[
     ("mythos-logic-ir", &[]),
     ("mythos-logic-vm", &[]),
+    ("mythos-logic-package", &[]),
     ("mythos-logic-st", &["mythos-logic-ir"]),
     (
         "mythos-logic-graphic",

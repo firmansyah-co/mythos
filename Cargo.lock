@@ -2586,6 +2586,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mythos-logic-package"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "zip",
+]
+
+[[package]]
 name = "mythos-logic-st"
 version = "0.1.0"
 dependencies = [

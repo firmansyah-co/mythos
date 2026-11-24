@@ -1,6 +1,6 @@
 # ADR-015: Library Packages
 
-- **Status**: PROPOSED (design; nothing of it is built: §7)
+- **Status**: PROPOSED (design; P1a, the package file, is built with evidence 35; P1b and P1c are not built: §7)
 - **Date**: 2026-11-24
 - **Requested by**: Adrian (2026-11-23 and 2026-11-24, in Indonesian; the words quoted below are
   translated into English)
@@ -362,7 +362,7 @@ UI piece. Each slice has its own evidence file.
 
 | Slice | Step | What | Needs first |
 |-------|------|------|-------------|
-| P1 | 1 | Logic module: the package file (zip, manifest with `form` and `languages`, checksums), `packages.json`, the step-1 routes and event, packages compiled with the project, clashes and removals refused, origin and SHA-256 recorded, logic module version and package hashes in the build answer | §5 questions 2, 3 |
+| P1 | 1 | P1a (the package file, crate `mythos-logic-package`) is built: evidence 35; P1b and P1c are not built. Logic module: the package file (zip, manifest with `form` and `languages`, checksums), `packages.json`, the step-1 routes and event, packages compiled with the project, clashes and removals refused, origin and SHA-256 recorded, logic module version and package hashes in the build answer | §5 questions 2, 3 |
 | P2 | 1 | CLI: pack a directory into a package, as `mythos module pack` does for modules | P1; the command's word (§5 question 7) |
 | P3 | 1 | logic-ui: a Packages node in the Library section; add from a file, details, remove with the users named on refusal | P1 |
 | P4 | 2 | Logic module and data module: types in a package; the data module reads them as a contract; a data block typed by one | P1 |
@@ -426,7 +426,7 @@ recommendation.
 
 ## 7. Status
 
-Nothing of this ADR is built. The project's own library (ADR-014 D4c) is built and unchanged by
+P1a (the package file, read by the crate `mythos-logic-package`, nothing uses it yet) is built, with evidence 35 in ADR-013's evidence directory. P1b and P1c are not built, and nothing else of this ADR is. The project's own library (ADR-014 D4c) is built and unchanged by
 it. The routes, tools, fields and module named here are a plan. The store does not exist.
 
 ## 8. Public concepts referred to
