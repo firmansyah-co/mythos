@@ -6,11 +6,13 @@
 // document's own blocks it offers; the card and the editor's favourites bar both put through
 // it. What is dragged from the card is kept here too, since a drop on a network is the editor's.
 
-import type { DragEvent } from 'react';
+import { useMemo, type DragEvent } from 'react';
 import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import { Star, X } from 'lucide-react';
 import { GROUPS, type BoxDef } from './ldcatalog';
 import { STANDARD_BOXES, type Spec } from './ldedit';
+import { LIBRARY_GROUP, libraryBoxes, NO_BLOCKS, type LibraryBoxes } from './libraryblocks';
+import { useLibrary } from './librarystore';
 
 /** What a Ladder Diagram instruction does: put an element, or open or close a branch, or name the network. */
 export type LdSpec = Spec | 'branch-open' | 'branch-close' | 'label';
@@ -65,7 +67,30 @@ export const boxInstruction = (def: BoxDef): Instruction => ({
 type AnyInstruction = Instruction<any>;
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
-/** Every instruction there is, with the document's own blocks. */
+/**
+ * The project library's blocks as the open project's last check of its stored library answered
+ * them, or why they are not known: followed as the library is checked again, and dropped with
+ * the project.
+ */
+export function useLibraryBoxes(): LibraryBoxes {
+  const stored = useLibrary((state) => state.stored);
+  return useMemo(() => libraryBoxes(stored), [stored]);
+}
+
+/** The boxes a document may call besides the standard ones: its own POUs, then the library's blocks. */
+export const callable = (own: readonly BoxDef[], library: LibraryBoxes): BoxDef[] => [...own, ...(library.boxes ?? [])];
+
+/**
+ * The library's group: its blocks (`own`'s of group Library), or the one line that says why
+ * there are none to offer. Never an empty list for a list that is not known.
+ */
+export function libraryGroup<I>(own: readonly BoxDef[], library: LibraryBoxes, as: (d: BoxDef) => I): [string, I[], string?] {
+  if (library.boxes === null) return [LIBRARY_GROUP, [], library.why];
+  const blocks = own.filter((d) => d.group === LIBRARY_GROUP);
+  return blocks.length > 0 ? [LIBRARY_GROUP, blocks.map(as)] : [LIBRARY_GROUP, [], NO_BLOCKS];
+}
+
+/** Every instruction there is, with the document's own blocks (and the library's, when `own` holds them). */
 export function allInstructions(own: readonly BoxDef[]): Instruction[] {
   return [...BIT_LOGIC, EMPTY_BOX, ...STANDARD_BOXES.map(boxInstruction), ...own.map(boxInstruction), ...CONTROL];
 }
@@ -95,7 +120,7 @@ function saveFavourites(key: string, list: string[]): void {
 export interface PaletteState {
   /** What putting an instruction does in the open editor; `null` while none can take one. */
   place: ((instruction: AnyInstruction) => void) | null;
-  /** The function blocks and functions the open document declares itself. */
+  /** The function blocks and functions the open document declares itself (the library's are read where they are shown). */
   own: BoxDef[];
   favourites: string[];
   toggleFavourite: (id: string) => void;
@@ -130,8 +155,10 @@ export const useLdPalette = paletteStore(FAVOURITES_KEY, DEFAULT_FAVOURITES);
 export interface Kit {
   store: PaletteStore;
   prefix: string;
+  /** `own`: the document's own blocks, then the library's (group Library). */
   all: (own: readonly BoxDef[]) => AnyInstruction[];
-  groups: (own: readonly BoxDef[]) => Array<[string, AnyInstruction[]]>;
+  /** A group's third element is the one line it shows in place of items it does not have. */
+  groups: (own: readonly BoxDef[], library: LibraryBoxes) => Array<[string, AnyInstruction[], string?]>;
   /** The groups open at first. */
   open: string[];
   idle: string;
@@ -141,15 +168,19 @@ export const LD_KIT: Kit = {
   store: useLdPalette,
   prefix: 'ld',
   all: (own) => allInstructions(own),
-  groups: (own) => [
-    ['Bit logic', BIT_LOGIC],
-    ...GROUPS.map((g): [string, Instruction[]] => [
-      g,
-      [...(g === 'Timers' ? [EMPTY_BOX] : []), ...STANDARD_BOXES.filter((d) => d.group === g).map(boxInstruction)],
-    ]),
-    ...(own.length > 0 ? [['This document', own.map(boxInstruction)] as [string, Instruction[]]] : []),
-    ['Program control', CONTROL],
-  ],
+  groups: (own, library) => {
+    const document = own.filter((d) => d.group !== LIBRARY_GROUP);
+    return [
+      ['Bit logic', BIT_LOGIC],
+      ...GROUPS.map((g): [string, Instruction[]] => [
+        g,
+        [...(g === 'Timers' ? [EMPTY_BOX] : []), ...STANDARD_BOXES.filter((d) => d.group === g).map(boxInstruction)],
+      ]),
+      libraryGroup(own, library, boxInstruction),
+      ...(document.length > 0 ? [['This document', document.map(boxInstruction)] as [string, Instruction[]]] : []),
+      ['Program control', CONTROL],
+    ];
+  },
   open: ['Bit logic', 'Timers'],
   idle: 'No Ladder Diagram can take an instruction now.',
 };
@@ -209,7 +240,8 @@ export function InstructionButton({ x, where, kit = LD_KIT }: { x: AnyInstructio
 export function Favourites({ kit = LD_KIT }: { kit?: Kit }) {
   const favourites = kit.store((s) => s.favourites);
   const own = kit.store((s) => s.own);
-  const all = kit.all(own);
+  const library = useLibraryBoxes();
+  const all = kit.all(callable(own, library));
   return (
     <>
       {favourites
@@ -226,6 +258,7 @@ export function Favourites({ kit = LD_KIT }: { kit?: Kit }) {
 export function InstructionsCard({ kit = LD_KIT }: { kit?: Kit }) {
   const own = kit.store((s) => s.own);
   const place = kit.store((s) => s.place);
+  const library = useLibraryBoxes();
   const p = kit.prefix;
   return (
     <div className="ld-palette" data-testid={`${p}-palette`} aria-label="Instructions">
@@ -234,9 +267,14 @@ export function InstructionsCard({ kit = LD_KIT }: { kit?: Kit }) {
           {kit.idle}
         </p>
       )}
-      {kit.groups(own).map(([title, items]) => (
-        <details key={title} open={kit.open.includes(title)} className="ld-palette__group">
+      {kit.groups(callable(own, library), library).map(([title, items, line]) => (
+        <details key={title} open={kit.open.includes(title)} className="ld-palette__group" data-testid={`${p}-palette-group`} data-group={title}>
           <summary>{title}</summary>
+          {line !== undefined && (
+            <p className="muted" data-testid={`${p}-palette-library-why`}>
+              {line}
+            </p>
+          )}
           {items.map((x) => (
             <InstructionButton key={x.id} x={x} where="palette" kit={kit} />
           ))}

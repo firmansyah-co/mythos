@@ -10,9 +10,11 @@
 
 mod support;
 
-use mythos_logic_compiler::{compile_in, Language, TargetProfile};
+use mythos_logic_compiler::{
+    compile_in, compile_sources, library_blocks, Language, LibraryBlock, Sources, TargetProfile,
+};
 use mythos_logic_vm::Value;
-use support::{Run, MS};
+use support::{Run, MOTOR_LIBRARY, MS};
 
 fn ladder(file: &str) -> Run {
     let path = format!("{}/tests/ladder/{file}", env!("CARGO_MANIFEST_DIR"));
@@ -105,4 +107,111 @@ fn another_tools_document_runs_the_same_after_the_editor_changed_one_rung_of_it(
         assert_eq!(before.int("elapsed"), after.int("elapsed"), "scan {scan}");
         assert_eq!(after.bool("high"), level > 10, "scan {scan}");
     }
+}
+
+/// A Ladder Diagram compiled with the project's library, as every program is (ADR-014 §2.8).
+fn ladder_with_library(file: &str) -> Run {
+    let path = format!("{}/tests/ladder/{file}", env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    Run::of(compile_sources(
+        &Sources {
+            tc6: &[(file, &text)],
+            library: &[MOTOR_LIBRARY],
+            ..Default::default()
+        },
+        &TargetProfile::pc(),
+    ))
+}
+
+#[test]
+fn editor_library_blocks_are_what_the_workbench_tests_place() {
+    // The pins the workbench's tests give the boxes (libraryanswer.ts) are the module's answer.
+    let pins = |list: &[(&str, &str)]| {
+        list.iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect::<Vec<_>>()
+    };
+    let blocks = library_blocks(&Sources {
+        library: &[MOTOR_LIBRARY],
+        ..Default::default()
+    })
+    .unwrap_or_else(|d| panic!("{d:?}"));
+    assert_eq!(
+        blocks,
+        [
+            LibraryBlock {
+                name: "Motor".into(),
+                function_block: true,
+                inputs: pins(&[("run", "BOOL"), ("speed", "INT")]),
+                outputs: pins(&[("running", "BOOL"), ("rpm", "INT")]),
+                result: None,
+            },
+            LibraryBlock {
+                name: "Scale".into(),
+                function_block: false,
+                inputs: pins(&[("raw", "INT"), ("factor", "INT")]),
+                outputs: vec![],
+                result: Some("INT".into()),
+            },
+        ]
+    );
+}
+
+#[test]
+fn the_rung_the_editor_wrote_with_a_library_block_runs_as_the_same_program_in_st() {
+    // Written by the editor with the library's boxes: Motor's power at its BOOL input `run`,
+    // written RUN as the editor writes a pin (the declared spelling is lower case), and Scale
+    // under EN.
+    let mut ld = ladder_with_library("editor_library.xml");
+    let mut st = Run::of(compile_sources(
+        &Sources {
+            st: Some((
+                "main.st",
+                "PROGRAM Main
+VAR_INPUT start : BOOL; enable : BOOL; speed : INT; END_VAR
+VAR_OUTPUT running : BOOL; done : BOOL; rpm : INT; scaled : INT; END_VAR
+VAR motor1 : Motor; END_VAR
+motor1(run := start, speed := speed);
+running := motor1.running;
+rpm := motor1.rpm;
+IF enable THEN scaled := Scale(raw := rpm, factor := 3); END_IF;
+done := enable;
+END_PROGRAM",
+            )),
+            library: &[MOTOR_LIBRARY],
+            ..Default::default()
+        },
+        &TargetProfile::pc(),
+    ));
+    let mut seed: u32 = 0x9e37_79b9;
+    let mut ran = (false, false);
+    for scan in 0..400 {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let (start, enable) = (seed & 1 != 0, seed & 2 != 0);
+        let speed = ((seed >> 8) % 100) as i16;
+        for r in [&mut ld, &mut st] {
+            set(r, "start", start);
+            set(r, "enable", enable);
+            r.set("speed", Value::Int(speed));
+            r.scan_at(scan * 10);
+        }
+        for var in ["running", "done"] {
+            assert_eq!(ld.bool(var), st.bool(var), "{var} at scan {scan}");
+        }
+        for var in ["rpm", "scaled"] {
+            assert_eq!(ld.int(var), st.int(var), "{var} at scan {scan}");
+        }
+        // The library's code ran: rpm is ten times speed while started, and scaled three times that.
+        if start {
+            assert_eq!(ld.int("rpm"), i64::from(speed) * 10, "scan {scan}");
+            ran.0 = true;
+        }
+        if enable {
+            assert_eq!(ld.int("scaled"), ld.int("rpm") * 3, "scan {scan}");
+            ran.1 = true;
+        }
+    }
+    assert_eq!(ran, (true, true), "both blocks were called with power");
 }

@@ -4,7 +4,8 @@
 // operators and MOD, which IEC 61131-3 gives a graphical form (Tables 29 and 31) and the FBD
 // front-end takes as blocks: AND, OR and XOR of IN1, IN2, … (two or more), NOT of IN, MOD of IN1
 // and IN2. The functions and function blocks of the project's library (ADR-014 §2.8), which
-// every program is compiled with, are not known here yet: the compiler decides them at Check.
+// every program is compiled with, are not held here: the editors add them after the document's
+// own, as the logic module answers them (libraryblocks.ts).
 //
 // Unlike a Ladder Diagram's box, an FBD box carries no rung: its pins are its declaration's, and
 // EN and ENO are written only where the document already has them (a box read from another tool),

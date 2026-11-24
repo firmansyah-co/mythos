@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <fileHeader companyName="" productName="MythOS logic" productVersion="0.3.0" creationDateTime="2026-11-18T00:00:00"/>
+  <contentHeader name="Main">
+    <coordinateInfo>
+      <fbd><scaling x="1" y="1"/></fbd>
+      <ld><scaling x="1" y="1"/></ld>
+      <sfc><scaling x="1" y="1"/></sfc>
+    </coordinateInfo>
+  </contentHeader>
+  <types>
+    <dataTypes/>
+    <pous>
+      <pou name="Main" pouType="program">
+        <interface><inputVars><variable name="start"><type><BOOL/></type></variable><variable name="enable"><type><BOOL/></type></variable><variable name="speed"><type><INT/></type></variable></inputVars><outputVars><variable name="running"><type><BOOL/></type></variable><variable name="done"><type><BOOL/></type></variable><variable name="rpm"><type><INT/></type></variable><variable name="scaled"><type><INT/></type></variable></outputVars><localVars><variable name="motor1"><type><derived name="Motor"/></type></variable></localVars></interface>
+        <body>
+          <LD>
+            <leftPowerRail localId="1">
+              <position x="0" y="0"/>
+              <connectionPointOut formalParameter=""/>
+            </leftPowerRail>
+            <contact localId="3" width="30" height="20"><position x="50" y="40"/><connectionPointIn><relPosition x="0" y="10"/><connection refLocalId="1"/></connectionPointIn><connectionPointOut><relPosition x="30" y="10"/></connectionPointOut><variable>start</variable></contact>
+            <block localId="4" width="180" height="60" typeName="Motor" instanceName="motor1"><position x="110" y="20"/><inputVariables><variable formalParameter="RUN"><connectionPointIn><relPosition x="0" y="30"/><connection refLocalId="3"/></connectionPointIn></variable><variable formalParameter="SPEED"><connectionPointIn><relPosition x="0" y="50"/><expression>speed</expression></connectionPointIn></variable></inputVariables><inOutVariables/><outputVariables><variable formalParameter="RUNNING"><connectionPointOut><relPosition x="180" y="30"/></connectionPointOut></variable><variable formalParameter="RPM"><connectionPointOut><relPosition x="180" y="50"/></connectionPointOut></variable></outputVariables></block>
+            <outVariable localId="5" width="60" height="20"><position x="310" y="60"/><connectionPointIn><relPosition x="0" y="10"/><connection refLocalId="4" formalParameter="RPM"/></connectionPointIn><expression>rpm</expression></outVariable>
+            <coil localId="6" width="30" height="20"><position x="420" y="40"/><connectionPointIn><relPosition x="0" y="10"/><connection refLocalId="4" formalParameter="RUNNING"/></connectionPointIn><connectionPointOut><relPosition x="30" y="10"/></connectionPointOut><variable>running</variable></coil>
+            <contact localId="7" width="30" height="20"><position x="50" y="160"/><connectionPointIn><relPosition x="0" y="10"/><connection refLocalId="1"/></connectionPointIn><connectionPointOut><relPosition x="30" y="10"/></connectionPointOut><variable>enable</variable></contact>
+            <block localId="8" width="130" height="80" typeName="Scale"><position x="120" y="140"/><inputVariables><variable formalParameter="EN"><connectionPointIn><relPosition x="0" y="30"/><connection refLocalId="7"/></connectionPointIn></variable><variable formalParameter="RAW"><connectionPointIn><relPosition x="0" y="50"/><expression>rpm</expression></connectionPointIn></variable><variable formalParameter="FACTOR"><connectionPointIn><relPosition x="0" y="70"/><expression>3</expression></connectionPointIn></variable></inputVariables><inOutVariables/><outputVariables><variable formalParameter="ENO"><connectionPointOut><relPosition x="130" y="30"/></connectionPointOut></variable><variable formalParameter="OUT"><connectionPointOut><relPosition x="130" y="50"/></connectionPointOut></variable></outputVariables></block>
+            <outVariable localId="9" width="70" height="20"><position x="270" y="180"/><connectionPointIn><relPosition x="0" y="10"/><connection refLocalId="8" formalParameter="OUT"/></connectionPointIn><expression>scaled</expression></outVariable>
+            <coil localId="10" width="30" height="20"><position x="380" y="160"/><connectionPointIn><relPosition x="0" y="10"/><connection refLocalId="8" formalParameter="ENO"/></connectionPointIn><connectionPointOut><relPosition x="30" y="10"/></connectionPointOut><variable>done</variable></coil>
+            <rightPowerRail localId="2"><position x="480" y="0"/><connectionPointIn><connection refLocalId="6"/></connectionPointIn><connectionPointIn><connection refLocalId="10"/></connectionPointIn></rightPowerRail>
+          </LD>
+        </body><addData><data name="urn:mythos:logic:ld-editor" handleUnknown="preserve"><localIds xmlns="urn:mythos:logic:ld-editor" next="11"/></data></addData>
+      </pou>
+    </pous>
+  </types>
+  <instances>
+    <configurations/>
+  </instances>
+</project>

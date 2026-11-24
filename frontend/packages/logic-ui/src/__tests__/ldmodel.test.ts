@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 import {
   addNetwork,
   branch,
+  check,
   declareVariable,
   elementsOf,
   findEl,
@@ -34,6 +35,7 @@ import {
 import { idsFor, NETWORK_DATA, open, ownBoxes, write, type DocModel, type Ids, type Item, type Source } from '../ldmodel';
 import { parseXml, type XNode } from '../ldxml';
 import { readLadder } from '../ladder';
+import { motorLibrary } from './libraryanswer';
 
 const FIXTURES = resolve(__dirname, '../../../../../crates/mythos-logic-compiler/tests/ladder');
 
@@ -550,6 +552,86 @@ describe('variables', () => {
 describe('the compiler runs what the editor writes', () => {
   it('writes the seal-in and timer rungs the compiler tests run (editor_seal_in.xml)', () => {
     fixture('editor_seal_in.xml', sealIn().text);
+  });
+});
+
+/**
+ * `text` equals the committed fixture `name`. One that is missing is written only with
+ * MYTHOS_UPDATE_FIXTURES=1, never on its own: a fixture written by the run that compares it is
+ * compared with itself.
+ */
+function guardedFixture(name: string, text: string): void {
+  const path = resolve(FIXTURES, name);
+  if (process.env.MYTHOS_UPDATE_FIXTURES === '1') writeFileSync(path, text);
+  expect(existsSync(path), `${path} is missing; MYTHOS_UPDATE_FIXTURES=1 writes it`).toBe(true);
+  expect(text).toBe(readFileSync(path, 'utf8'));
+}
+
+/**
+ * A library function block and a library function put as the editor puts them from the palette,
+ * with the boxes the module's answer gives (libraryanswer.ts): Motor with its instance, its power
+ * at RUN and from RUNNING; Scale with EN and ENO.
+ */
+function withLibrary(): Run {
+  const own = motorLibrary();
+  const r = new Run(TEMPLATE('Main'));
+  r.step((m) => addNetwork(m, 0, 0));
+  r.step((m) => insert(m, r.ids, network(0), { kind: 'contact' }, own));
+  const start = r.id;
+  r.step((m) => setOperand(m, r.ids, 0, start, 'start'));
+  r.step((m) => insert(m, r.ids, element(0, start), { kind: 'box', type: 'Motor' }, own));
+  const motor = r.id;
+  // The instance the editor proposes (LadderEditor `instanceName`), declared with the block's name as its type.
+  r.step((m) => setInstance(m, r.ids, 0, motor, 'motor1'));
+  r.step((m) => setPin(m, r.ids, 0, motor, 'inputs', 'SPEED', 'speed'));
+  r.step((m) => setPin(m, r.ids, 0, motor, 'outputs', 'RPM', 'rpm'));
+  r.step((m) => insert(m, r.ids, element(0, motor), { kind: 'coil' }, own));
+  const running = r.id;
+  r.step((m) => setOperand(m, r.ids, 0, running, 'running'));
+  r.step((m) => addNetwork(m, 0, 1));
+  r.step((m) => insert(m, r.ids, network(1), { kind: 'contact' }, own));
+  const enable = r.id;
+  r.step((m) => setOperand(m, r.ids, 0, enable, 'enable'));
+  r.step((m) => insert(m, r.ids, element(1, enable), { kind: 'box', type: 'Scale' }, own));
+  const scale = r.id;
+  r.step((m) => setPin(m, r.ids, 0, scale, 'inputs', 'RAW', 'rpm'));
+  r.step((m) => setPin(m, r.ids, 0, scale, 'inputs', 'FACTOR', '3'));
+  r.step((m) => setPin(m, r.ids, 0, scale, 'outputs', 'OUT', 'scaled'));
+  r.step((m) => insert(m, r.ids, element(1, scale), { kind: 'coil' }, own));
+  const done = r.id;
+  r.step((m) => setOperand(m, r.ids, 0, done, 'done'));
+  for (const [name, type, section] of [
+    ['start', 'BOOL', 'inputVars'],
+    ['enable', 'BOOL', 'inputVars'],
+    ['speed', 'INT', 'inputVars'],
+    ['running', 'BOOL', 'outputVars'],
+    ['done', 'BOOL', 'outputVars'],
+    ['rpm', 'INT', 'outputVars'],
+    ['scaled', 'INT', 'outputVars'],
+    ['motor1', 'Motor', 'localVars'],
+  ] as const) {
+    r.step((m) => declareVariable(m, 0, { name, type, section }, r.source.pous[0]?.vars ?? []));
+  }
+  return r;
+}
+
+describe('the compiler runs what the editor writes with the library', () => {
+  it('writes a rung with a library function block and a library function the compiler tests run (editor_library.xml)', () => {
+    const r = withLibrary();
+    expect([r.rung(0), r.rung(1)]).toEqual([
+      'contact start Motor[motor1 SPEED:=speed RPM=>rpm] coil running',
+      'contact enable Scale[ RAW:=rpm FACTOR:=3 OUT=>scaled] coil done',
+    ]);
+    expect(r.text).toContain('<variable name="motor1"><type><derived name="Motor"/></type></variable>');
+    // Nothing the editor's own check says is wrong, with the library's blocks known.
+    const opened = open(r.text);
+    if (!opened.ok) throw new Error(opened.error);
+    const pou = opened.model.pous[0];
+    if (!pou) throw new Error('no POU');
+    const own = motorLibrary();
+    const problems = check(pou, opened.source.pous[0]?.vars ?? [], own, { boxes: own, why: null });
+    expect([...problems.elements.values(), ...problems.networks.values()].flat()).toEqual([]);
+    guardedFixture('editor_library.xml', r.text);
   });
 });
 

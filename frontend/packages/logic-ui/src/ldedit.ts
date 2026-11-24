@@ -13,6 +13,7 @@
 // is bypassed until something is put into it, and the editor's check says so.
 
 import { family, findBox, pinsOf, type BoxDef, STANDARD } from './ldcatalog';
+import { declaredType, LIBRARY_GROUP, pinProblems, unknownBoxWords, type LibraryBoxes } from './libraryblocks';
 import type { BoxPin, Declared, DocModel, El, Ids, Item, Network, PouModel, Section, VarInfo } from './ldmodel';
 
 /** What is selected: a network, an element (or a run of elements of one series), or a point between two. */
@@ -511,7 +512,12 @@ export interface Problems {
   networks: Map<number, string[]>;
 }
 
-export function check(pou: PouModel, vars: readonly VarInfo[], own: readonly BoxDef[]): Problems {
+/**
+ * `own`: the boxes this program may call besides the standard ones (the document's own POUs, then
+ * the library's blocks). `library`: whether the library's blocks are known, and why not; left
+ * out, the editor says only what it does not know.
+ */
+export function check(pou: PouModel, vars: readonly VarInfo[], own: readonly BoxDef[], library?: LibraryBoxes): Problems {
   const elements = new Map<number, string[]>();
   const networks = new Map<number, string[]>();
   const say = (map: Map<number, string[]>, key: number, text: string) => map.set(key, [...(map.get(key) ?? []), text]);
@@ -541,10 +547,12 @@ export function check(pou: PouModel, vars: readonly VarInfo[], own: readonly Box
           }
           const def = findBox(el.typeName, own);
           if (!def) {
-            problem(
-              `${el.typeName} is not a function or function block this editor knows: it knows this program's own and the standard ones. If the project's library declares it, Check compiles the program with it.`
-            );
+            for (const words of unknownBoxWords(el.typeName, library)) problem(words);
             continue;
+          }
+          // A block whose declaration can change under the diagram: said per pin, never re-pinned.
+          if (def.group === LIBRARY_GROUP || def.group === 'This document') {
+            for (const words of pinProblems(el.inputs, el.outputs, def)) problem(words);
           }
           if (def.kind === 'functionBlock') {
             if (el.instance === '') problem(`A ${def.name} needs an instance: name the variable that keeps its state.`);
@@ -563,12 +571,12 @@ export function check(pou: PouModel, vars: readonly VarInfo[], own: readonly Box
               if (def.kind === 'function') problem(`${pin.formal} has no operand.`);
               continue;
             }
-            const p = operandProblem(pin.operand, pin.type, false, vars, own);
+            const p = operandProblem(pin.operand, declaredType(def, 'inputs', pin.formal, pin.type), false, vars, own);
             if (p) problem(`${pin.formal}: ${p}`);
           }
           for (const pin of el.outputs) {
             if (pin.formal === el.powerOut || pin.operand === '') continue;
-            const p = operandProblem(pin.operand, pin.type, true, vars, own);
+            const p = operandProblem(pin.operand, declaredType(def, 'outputs', pin.formal, pin.type), true, vars, own);
             if (p) problem(`${pin.formal}: ${p}`);
           }
         }
@@ -585,12 +593,20 @@ export function check(pou: PouModel, vars: readonly VarInfo[], own: readonly Box
   return { elements, networks };
 }
 
-/** The type a new variable named at an element should be declared with, and where. */
-export function declarationFor(el: El, where: { pin?: string; which?: 'inputs' | 'outputs'; instance?: boolean }): { type: string; section: Section } {
+/**
+ * The type a new variable named at an element should be declared with, and where. A pin's type
+ * is the one its box's block declares now (`own`), else the one the model took when it was read.
+ */
+export function declarationFor(
+  el: El,
+  where: { pin?: string; which?: 'inputs' | 'outputs'; instance?: boolean },
+  own: readonly BoxDef[] = []
+): { type: string; section: Section } {
   if (where.instance) return { type: el.typeName, section: 'localVars' };
   if (where.pin) {
-    const pin = el[where.which ?? 'inputs'].find((p) => p.formal === where.pin);
-    const t = pin?.type ?? '';
+    const which = where.which ?? 'inputs';
+    const pin = el[which].find((p) => p.formal === where.pin);
+    const t = pin ? declaredType(el.kind === 'block' ? findBox(el.typeName, own) : null, which, pin.formal, pin.type) : '';
     return { type: family(t) === null || t.startsWith('ANY') ? '' : t, section: 'localVars' };
   }
   return { type: 'BOOL', section: el.kind === 'coil' ? 'outputVars' : 'inputVars' };

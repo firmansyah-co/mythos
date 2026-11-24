@@ -37,7 +37,25 @@ export interface LibraryCheck {
    * checked without them: why, in the shape of the diagnostics.
    */
   project_problems?: Diagnostic[];
+  /**
+   * Only when `ok` is true: each FUNCTION and FUNCTION_BLOCK the library declares, in the
+   * module's order (`check_logic_library`). Absent when the library does not check.
+   */
+  blocks?: LibraryBlock[];
 }
+
+/** A pin of a library block, as the module answers it: the name as declared, the type as a program writes it. */
+export interface Pin {
+  name: string;
+  type: string;
+}
+
+/**
+ * A function or function block of the project's library, as `POST /library/check` answers it:
+ * its VAR_INPUT and VAR_OUTPUT variables in declaration order, and a function's result type
+ * (`null` for a function block).
+ */
+export type LibraryBlock = { name: string; kind: 'function' | 'function_block'; inputs: Pin[]; outputs: Pin[]; result: string | null };
 
 /** `LOGIC_LIBRARY_CHANGED`'s data. */
 export interface LibraryChanged {
