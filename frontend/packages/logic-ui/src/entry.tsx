@@ -148,6 +148,12 @@ export function activate(host: WorkbenchHost): Dispose {
         return;
       }
       if (state.busy !== null || anyDirty(state)) return;
+      // The list is being read: its answer may be older than this change, so it is read again
+      // (the store applies only the newest read).
+      if (state.phase === 'reading' && (what === 'created' || what === 'deleted')) {
+        void state.load(state.projectId);
+        return;
+      }
       const listed = new Set(state.programs.map((doc) => doc.entry.name));
       // This workbench's own saves come back as events too; only a list that changed is read.
       if ((what === 'created' && !listed.has(String(program))) || (what === 'deleted' && listed.has(String(program)))) {
