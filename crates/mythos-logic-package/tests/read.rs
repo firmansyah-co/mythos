@@ -1229,6 +1229,8 @@ struct Stored {
     flags: u16,
     /// The same extra fields in its local and its central header.
     extra: Vec<u8>,
+    /// Extra fields its local header alone holds, after those.
+    local_extra: Vec<u8>,
     /// Bytes written after its data (a data descriptor); when there are any, the local header
     /// holds zero for the checksum and sizes.
     after: Vec<u8>,
@@ -1242,6 +1244,7 @@ fn stored(name: &str, data: &[u8]) -> Stored {
         external: 0o100644 << 16,
         flags: 0,
         extra: Vec::new(),
+        local_extra: Vec::new(),
         after: Vec::new(),
     }
 }
@@ -1273,9 +1276,10 @@ fn zip_by_hand(entries: &[Stored]) -> Vec<u8> {
             out.extend(sum.to_le_bytes());
         }
         out.extend((e.name.len() as u16).to_le_bytes());
-        out.extend((e.extra.len() as u16).to_le_bytes());
+        out.extend(((e.extra.len() + e.local_extra.len()) as u16).to_le_bytes());
         out.extend(e.name.as_bytes());
         out.extend(&e.extra);
+        out.extend(&e.local_extra);
         out.extend(&e.data);
         out.extend(&e.after);
     }
@@ -1461,6 +1465,84 @@ fn a_stored_entry_with_a_data_descriptor_is_refused() {
 }
 
 #[test]
+fn an_extra_field_that_only_the_local_header_holds_is_refused_by_its_id() {
+    // A reader that streams the file reads the local header: a second name given there alone
+    // (0x7075, the Unicode path) is as much a second name as one in the central directory.
+    const TAKEN: &str = "a package takes only the extra fields 0x000a, 0x5455, 0x7875";
+    for (id, words) in [
+        (
+            0x7075u16,
+            format!("src/motor.st carries an extra field of id 0x7075; {TAKEN}"),
+        ),
+        (
+            0x756e,
+            format!("src/motor.st carries an extra field of id 0x756e; {TAKEN}"),
+        ),
+        (
+            0x9901,
+            "src/motor.st declares AES encryption; a package holds files that are not encrypted"
+                .to_string(),
+        ),
+        (
+            0x0001,
+            "it is not a zip file: src/motor.st carries zip64 sizes".to_string(),
+        ),
+    ] {
+        let mut motor = stored("src/motor.st", MOTOR.as_bytes());
+        motor.local_extra = extra_field(id, b"\x01\x00\x00\x00\x00src/pump.st");
+        let file = zip_by_hand(&by_hand(vec![motor]));
+        assert_eq!(refused(&file), words, "{id:#06x}");
+    }
+}
+
+#[test]
+fn an_entry_whose_dos_attributes_mark_it_a_directory_is_refused() {
+    // The low byte of the external attributes: 7-Zip and bsdtar make a directory of the entry.
+    for name in ["src/motor.st", "manifest.json"] {
+        let mut entries = by_hand(vec![stored("src/motor.st", MOTOR.as_bytes())]);
+        let entry = entries.iter_mut().find(|e| e.name == name).unwrap();
+        entry.host = 0;
+        entry.external = 0x10;
+        assert_eq!(
+            refused(&zip_by_hand(&entries)),
+            format!("{name} is not a plain file: its attributes mark it a directory; a package holds files")
+        );
+    }
+}
+
+/// bsdtar's package with the local header of src/motor.st holding `size` as its size: bsdtar
+/// leaves the checksum and both sizes zero there and tells them in the data descriptor.
+fn bsdtar_with_local_size(size: impl FnOnce(u32) -> u32) -> Vec<u8> {
+    let mut file = writers::BSDTAR.to_vec();
+    let (local, central) = headers_of(&file, "src/motor.st");
+    assert_eq!(
+        &file[local + 14..local + 26],
+        &[0u8; 12],
+        "bsdtar's local sums are zero"
+    );
+    let real = u32::from_le_bytes(file[central + 24..central + 28].try_into().unwrap());
+    file[local + 22..local + 26].copy_from_slice(&size(real).to_le_bytes());
+    file
+}
+
+#[test]
+fn a_package_written_to_a_stream_with_its_size_in_the_local_header_is_read() {
+    // Info-ZIP writing to a pipe: checksum and compressed size zero, the size written, and a
+    // data descriptor that holds all three.
+    let package = read(&bsdtar_with_local_size(|real| real)).unwrap();
+    assert_eq!(package.sources()[0].0, "src/motor.st");
+    assert_eq!(package.sources()[0].1, writers::MOTOR);
+}
+
+#[test]
+fn a_local_header_size_that_is_neither_zero_nor_the_central_one_is_refused() {
+    assert_eq!(
+        refused(&bsdtar_with_local_size(|real| real + 1)),
+        "it is not a zip file: the local header of src/motor.st disagrees with its central directory"
+    );
+}
+
+#[test]
 fn a_data_descriptor_that_disagrees_with_the_central_directory_is_refused() {
     // bsdtar writes each deflated entry with a data descriptor: its checksum, then its sizes.
     let file = writers::BSDTAR.to_vec();
@@ -1542,12 +1624,14 @@ fn with_manifest_text(text: &str) -> Vec<u8> {
 }
 
 #[test]
-fn a_format_past_u64_is_refused_as_a_newer_format_stating_it_as_written() {
-    for format in ["18446744073709551616", "99999999999999999999999"] {
+fn a_format_past_u64_is_refused_as_a_newer_format() {
+    // Its digits are not kept by the JSON reader, so the words give the bound it is past.
+    for format in ["18446744073709551616", "99999999999999999999999", "1e20"] {
         let text = format!(r#"{{"format": {format}, "id": "org.example.motors"}}"#);
         assert_eq!(
             refused(&with_manifest_text(&text)),
-            format!("the package is of format {format}; this logic module takes format 1")
+            "the package is of a format past 18446744073709551615; this logic module takes format 1",
+            "{format}"
         );
     }
     let text = r#"{"format": 18446744073709551615, "id": "org.example.motors"}"#;
@@ -1558,9 +1642,53 @@ fn a_format_past_u64_is_refused_as_a_newer_format_stating_it_as_written() {
 }
 
 #[test]
+fn a_format_of_more_digits_than_a_json_reader_takes_is_not_a_manifest() {
+    let text = format!(
+        r#"{{"format": {}, "id": "org.example.motors"}}"#,
+        "9".repeat(400)
+    );
+    let words = refused(&with_manifest_text(&text));
+    assert!(
+        words.starts_with("manifest.json is not a package manifest: number out of range"),
+        "{words}"
+    );
+}
+
+#[test]
+fn a_manifest_field_wrapped_in_a_private_key_of_the_json_library_is_refused() {
+    // With serde_json's `raw_value` feature anywhere in a build, an object of this one key is
+    // read as the value its string holds: a field every other JSON reader sees as an object.
+    const KEY: &str = "$serde_json::private::RawValue";
+    let files = with_manifest(|m| {
+        m.insert(
+            "files".into(),
+            json!({ KEY: r#"["src/motor.st","src/ramp.st"]"# }),
+        );
+    });
+    assert_eq!(
+        refused(&files),
+        "manifest.json's files is not a list of strings"
+    );
+    let depends = with_manifest(|m| {
+        m.insert(
+            "depends".into(),
+            json!({ KEY: r#"[{"id":"org.example.evil","version":"1.0.0","id":"org.example.base"}]"# }),
+        );
+    });
+    assert_eq!(refused(&depends), "manifest.json's depends is not a list");
+    let format = with_manifest(|m| {
+        m.insert("format".into(), json!({ KEY: "1" }));
+    });
+    assert_eq!(
+        refused(&format),
+        "manifest.json has no format: an integer from 1"
+    );
+}
+
+#[test]
 fn a_format_written_as_a_fraction_or_an_exponent_is_no_format() {
     for format in [
-        "1.0", "1e0", "1E0", "2.0", "1e20", "null", "true", "\"1\"", "-0",
+        "1.0", "1e0", "1E0", "2.0", "1.5e19", "-1e20", "null", "true", "\"1\"", "-0", "-1",
     ] {
         let text = format!(r#"{{"format": {format}, "id": "org.example.motors"}}"#);
         assert_eq!(

@@ -115,8 +115,9 @@ impl Package {
 }
 
 /// A package's `manifest.json`, format 1. An optional field that is absent is `None` and is
-/// left out when serialised: it is never filled with a default. Its fields are read directly,
-/// but only this crate makes one, so a manifest is one [`read`] took:
+/// left out when serialised: it is never filled with a default. Its fields are read directly
+/// and only this crate makes one. The one a [`Package`] gives is the one [`read`] took; a clone
+/// is its holder's to change, so what was checked is read from the package, never from a copy:
 ///
 /// ```compile_fail,E0639
 /// use mythos_logic_package::Manifest;
@@ -475,6 +476,12 @@ fn read_entry(
             "{name} is not a plain file: its attributes give it the file type {file_type:#o}; a package holds files"
         ));
     }
+    if central.dos_directory && name != SOURCE_DIR {
+        // 7-Zip and bsdtar make a directory of it, whatever its mode says.
+        return Err(format!(
+            "{name} is not a plain file: its attributes mark it a directory; a package holds files"
+        ));
+    }
     if let Some(id) = central.foreign_extra {
         return Err(format!(
             "{name} carries an extra field of id {id:#06x}; a package takes only the extra fields {}",
@@ -548,38 +555,37 @@ fn manifest_object(bytes: &[u8]) -> Result<Map<String, Value>, String> {
             "{MANIFEST_FILE} is not a package manifest: it is not a JSON object"
         ));
     };
-    // The format as written: a JSON integer is digits only (JSON has no leading zero and no
-    // plus sign), so `1.0`, `1e0`, `-1`, `"1"` and `0` are no format. Its text is read, not its
-    // value: serde_json holds an integer past u64 as a float, which would tell it as no format.
+    // A JSON integer from 1: `1.0`, `1e0`, `-1`, `"1"` and `0` are no format. serde_json holds
+    // an integer past u64 as a float and its digits are lost (the feature that keeps them,
+    // `raw_value`, changes how every `Value` of a build is read: an object of one private key
+    // is then taken for the value its string holds). A whole number from 2^64 is past
+    // PACKAGE_FORMAT whatever its digits were, and is told so.
     let no_format = || format!("{MANIFEST_FILE} has no format: an integer from 1");
-    let newer = |format: &str| {
-        format!(
-            "the package is of format {format}; this logic module takes format {PACKAGE_FORMAT}"
-        )
+    let Some(Value::Number(number)) = map.get("format") else {
+        return Err(no_format());
     };
-    let digits = format_text(bytes)
-        .map_err(|why| format!("{MANIFEST_FILE} is not a package manifest: {why}"))?
-        .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
-        .filter(|text| text != "0")
-        .ok_or_else(no_format)?;
-    let Ok(format) = digits.parse::<u64>() else {
-        // Digits only and not a u64: a number past u64::MAX, so past PACKAGE_FORMAT.
-        return Err(newer(&shown(&digits)));
+    let Some(format) = number.as_u64() else {
+        return Err(match number.as_f64() {
+            Some(f) if f.fract() == 0.0 && f >= PAST_U64 => format!(
+                "the package is of a format past {}; this logic module takes format {PACKAGE_FORMAT}",
+                u64::MAX
+            ),
+            _ => no_format(),
+        });
     };
+    if format == 0 {
+        return Err(no_format());
+    }
     if format > u64::from(PACKAGE_FORMAT) {
-        return Err(newer(&format.to_string()));
+        return Err(format!(
+            "the package is of format {format}; this logic module takes format {PACKAGE_FORMAT}"
+        ));
     }
     Ok(map)
 }
 
-/// The text of the manifest's top-level `format` value exactly as written, when it has one.
-fn format_text(bytes: &[u8]) -> Result<Option<String>, String> {
-    let raw: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
-        serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-    Ok(raw
-        .get("format")
-        .map(|value| value.get().trim().to_string()))
-}
+/// 2^64 as a float: the first whole number a u64 does not hold.
+const PAST_U64: f64 = 18_446_744_073_709_551_616.0;
 
 /// Every other field of a format 1 manifest, each refused with words naming it.
 fn manifest_of(map: Map<String, Value>) -> Result<Manifest, String> {
@@ -916,6 +922,8 @@ const SIGNED_DATA_DESCRIPTOR_LEN: usize = 16;
 /// The file type bits of the mode in an entry's external attributes (`S_IFMT`), and the two
 /// types a package's entries may have: none or a regular file, and a directory for `src/`.
 const FILE_TYPE_MASK: u32 = 0o170000;
+/// The directory bit of the DOS attributes, the lowest byte of the external attributes.
+const DOS_DIRECTORY: u32 = 0x10;
 const FILE_TYPE_REGULAR: u32 = 0o100000;
 const FILE_TYPE_DIRECTORY: u32 = 0o040000;
 /// The extra fields a package's entries may carry, in their local or central header: the
@@ -931,6 +939,8 @@ struct CentralEntry {
     name: Vec<u8>,
     /// The upper half of its external attributes, where Unix-like systems keep the mode.
     mode: u32,
+    /// The directory bit of the lower half, where DOS and Windows keep theirs.
+    dos_directory: bool,
     /// The first id of its extra fields, local or central, that is not in [`TAKEN_EXTRA_IDS`].
     foreign_extra: Option<u16>,
 }
@@ -1159,8 +1169,15 @@ fn zip_layout(file: &[u8]) -> Result<Vec<CentralEntry>, String> {
         };
         let central_sums = (Some(crc), Some(compressed), Some(size));
         let local_sums = sums_at(local + 14);
-        let local_sums_ok =
-            local_sums == central_sums || (descriptor && local_sums == (Some(0), Some(0), Some(0)));
+        // A writer to a stream leaves in the local header what it does not know yet as zero
+        // and tells it in the descriptor (Info-ZIP leaves the checksum and the compressed size
+        // and writes the size): with a descriptor, each of the three is zero or the central one.
+        let zero_or = |local: Option<u32>, central: u32| local == Some(0) || local == Some(central);
+        let local_sums_ok = local_sums == central_sums
+            || (descriptor
+                && zero_or(local_sums.0, crc)
+                && zero_or(local_sums.1, compressed)
+                && zero_or(local_sums.2, size));
         if !local_sums_ok {
             return Err(disagree());
         }
@@ -1197,6 +1214,7 @@ fn zip_layout(file: &[u8]) -> Result<Vec<CentralEntry>, String> {
         entries.push(CentralEntry {
             name,
             mode: external >> 16,
+            dos_directory: external & DOS_DIRECTORY != 0,
             foreign_extra: foreign,
         });
         at += entry_len;
