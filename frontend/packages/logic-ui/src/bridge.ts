@@ -83,6 +83,11 @@ export type Language = 'st' | 'ld' | 'fbd' | 'sfc';
 /** A program's settings, as the logic module stores them. */
 export interface ProgramEntry {
   name: string;
+  /**
+   * The mark the module gave the program when it was made; a program made before there was a
+   * mark has none. The module's, never sent back.
+   */
+  created?: string;
   /** `st`, `ld`, `fbd` or `sfc`; set when the program is created. */
   language: string;
   interval_ms: number;
@@ -475,7 +480,10 @@ export const api = {
   saveSource: (projectId: string, program: string, source: string) =>
     host().api(`${logicOf(projectId)}/${name(program)}/source`, json('PUT', { source })),
   saveSettings: (projectId: string, program: string, entry: ProgramEntry) => {
-    const { name: _name, language: _language, ...settings } = entry;
+    // Exactly what the route takes: it refuses a key it does not know, and an entry holds what
+    // is not the client's to send (its name, its language, the mark of when it was made).
+    const { interval_ms, runtime, target, run, inputs, outputs, published } = entry;
+    const settings = { interval_ms, runtime, target, run, inputs, outputs, published };
     return host().api<{ program: ProgramEntry }>(
       `${logicOf(projectId)}/${name(program)}/settings`,
       json('PUT', settings)

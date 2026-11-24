@@ -195,7 +195,9 @@ describe('editing, checking and saving', () => {
     await settle();
     expect(writes(calls)).toEqual(['PUT /projects/plant/logic/programs/Tank/settings']);
     expect(backend.programs[0]?.entry.interval_ms).toBe(20);
-    // The name and the language are not the client's to send.
+    // The name, the language and the mark of when it was made are not the client's to send: the
+    // module refuses a key it does not know, and the entry it answered holds `created`.
+    expect(backend.programs[0]?.entry.created).toBe('made-Tank');
     expect(Object.keys(calls.find((c) => c.method === 'PUT')?.body as object).sort()).toEqual([
       'inputs', 'interval_ms', 'outputs', 'published', 'run', 'runtime', 'target',
     ]);

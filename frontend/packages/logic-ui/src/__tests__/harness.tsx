@@ -191,8 +191,13 @@ export interface Backend {
   libraryStores?: (source: string) => string;
 }
 
+/** The keys of the module's `Settings` (plugins/logic/src/lib.rs), which refuses any other. */
+const SETTINGS_KEYS = ['interval_ms', 'runtime', 'target', 'run', 'inputs', 'outputs', 'published'];
+
 export const entryOf = (name: string, over: Partial<ProgramEntry> = {}): ProgramEntry => ({
   name,
+  // As the module answers an entry since a program carries the mark of when it was made.
+  created: `made-${name}`,
   language: 'st',
   interval_ms: 100,
   runtime: 'vm',
@@ -960,6 +965,14 @@ export function server(backend: Backend): Call[] {
         return Response.json({ saved: true });
       }
       if (action === 'settings') {
+        // As the module: a key the settings do not have is refused, in serde's words.
+        const unknown = Object.keys(body as object).find((key) => !SETTINGS_KEYS.includes(key));
+        if (unknown !== undefined) {
+          return Response.json(
+            { error: `the body is not what this route takes: unknown field \`${unknown}\`, expected one of ${SETTINGS_KEYS.map((k) => `\`${k}\``).join(', ')}` },
+            { status: 400, statusText: 'Bad Request' }
+          );
+        }
         program.entry = { ...program.entry, ...(body as Partial<ProgramEntry>) };
         return Response.json({ program: program.entry });
       }
