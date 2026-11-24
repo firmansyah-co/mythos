@@ -66,7 +66,9 @@ import { readSfc, type Sfc } from './sfc';
 import { SfcEditor } from './SfcEditor';
 import { SFC_KIT } from './SfcInstructions';
 import { SfcView } from './SfcView';
+import { describeKind, RUNTIME_EDITOR, type TaskConfig } from './runtimes';
 import {
+  assignmentOf,
   checkIsCurrent,
   currencyOf,
   describeStart,
@@ -172,6 +174,20 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
           <span className="muted" data-testid="runtime-unknown-why">
             {state.why}
           </span>
+          {state.runtime !== undefined && (
+            <>
+              {' '}
+              <button
+                type="button"
+                className="btn btn--flat"
+                data-testid="runtime-open"
+                title={`Runtime ${state.runtime} is shown, built and loaded in its own editor.`}
+                onClick={() => state.runtime !== undefined && host().openEditor(RUNTIME_EDITOR, state.runtime)}
+              >
+                Open runtime {state.runtime}
+              </button>
+            </>
+          )}
         </p>
       )}
       {state.kind === 'not-loaded' && (
@@ -223,7 +239,7 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
             <dt>Module</dt>
             <dd className="mono">{state.runtime.module}</dd>
             <dt>Interval</dt>
-            <dd className="mono">{state.runtime.interval_ms} ms</dd>
+            <dd className="mono">{state.runtime.interval_ms === null ? 'none: it has no cyclic task' : `${state.runtime.interval_ms} ms`}</dd>
             <dt>Scans</dt>
             <dd className="mono" data-testid="runtime-scans">
               {state.runtime.scans ?? 'NOT MEASURED'}
@@ -335,10 +351,51 @@ function RuntimePanel({ name, state, busy }: { name: string; state: RunState; bu
   );
 }
 
-/** How the program is run: its task. */
+/**
+ * The task of a program a configured runtime runs, as the logic module's configuration says: the
+ * program's own interval, module, target and run are not used then, and are not offered.
+ */
+function AssignedTask({ runtime, task }: { runtime: string; task: TaskConfig }) {
+  return (
+    <section className="logic-panel" aria-label="Task" data-testid="program-task">
+      <h3 className="logic-panel__title">Task</h3>
+      <p data-testid="program-task-runs">
+        Runs in task <span className="mono">{task.name}</span> of runtime <span className="mono">{runtime}</span>.
+      </p>
+      <dl className="logic-facts">
+        <dt>Kind (configured)</dt>
+        <dd className="mono" data-testid="program-task-kind">
+          {describeKind(task.kind)}
+        </dd>
+        <dt>Priority (configured)</dt>
+        <dd className="mono" data-testid="program-task-priority">
+          {task.priority === null ? 'UNKNOWN' : task.priority}
+        </dd>
+        <dt>Watchdog (configured)</dt>
+        <dd className="mono" data-testid="program-task-watchdog">
+          {task.watchdog_ms === null || task.watchdog_ms === undefined ? "the runtime's default" : `${task.watchdog_ms} ms`}
+        </dd>
+      </dl>
+      <p className="muted" data-testid="program-task-unused">
+        The program's own interval, runtime module, target and run are not used while the program is in a runtime: the
+        runtime's are.
+      </p>
+      <div className="logic-panel__actions">
+        <button type="button" className="btn" data-testid="program-task-open" onClick={() => host().openEditor(RUNTIME_EDITOR, runtime)}>
+          Open runtime {runtime}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/** How the program is run: its task, or the configured runtime's task that runs it. */
 function SettingsPanel({ doc, readOnly }: { doc: ProgramDoc; readOnly: boolean }) {
   const setSettings = usePrograms((s) => s.setSettings);
   const modules = usePrograms((s) => s.runtimes.modules);
+  const view = usePrograms((s) => s.runtimes);
+  const assignment = assignmentOf(doc.entry.name, view);
+  if (assignment) return <AssignedTask runtime={assignment.runtime} task={assignment.task} />;
   const { entry } = doc;
   const set = (change: Partial<ProgramEntry>) => setSettings(entry.name, change);
   // The module the program names is always offered, installed or not: it is what is saved.
@@ -408,6 +465,12 @@ function SettingsPanel({ doc, readOnly }: { doc: ProgramDoc; readOnly: boolean }
           Run when loaded
         </label>
       </div>
+      {assignment === undefined && (
+        <p className="muted" data-testid="program-task-unknown">
+          Whether a runtime configured in the logic module runs this program is not known
+          {view.configuredError ? `: ${view.configuredError}` : ' yet'}. These settings are used only while it runs alone.
+        </p>
+      )}
     </section>
   );
 }
@@ -1392,6 +1455,18 @@ function StartFacts({ load }: { load: ReturnType<typeof loadOf> }) {
           .
         </p>
       )}
+      {load !== null && (load.not_given ?? []).length > 0 && (
+        <p>
+          Not given the value kept for it:{' '}
+          {(load.not_given ?? []).map((d, i) => (
+            <span key={d.variable} data-testid="program-not-given">
+              {i > 0 ? '; ' : ''}
+              <span className="mono">{d.variable}</span> ({d.why})
+            </span>
+          ))}
+          .
+        </p>
+      )}
     </>
   );
 }
@@ -1501,6 +1576,7 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
   const doc = usePrograms((s) => s.programs.find((d) => d.entry.name === name));
   const busy = usePrograms((s) => s.busy);
   const error = usePrograms((s) => s.error);
+  const refusedProblems = usePrograms((s) => s.refusedProblems);
   const runtimes = usePrograms((s) => s.runtimes);
   const open = usePrograms((s) => s.open);
   const check = usePrograms((s) => s.check);
@@ -1762,6 +1838,16 @@ export function ProgramEditor({ name, onRemoved }: { name: string; onRemoved?: (
       {error && (
         <div className="logic-note logic-note--bad" role="alert" data-testid="program-error">
           <p>{error}</p>
+          {refusedProblems !== null && refusedProblems.error === error && (
+            <ul aria-label="The controller's problems">
+              {refusedProblems.problems.map((problem, index) => (
+                <li key={index} data-testid="program-load-problem">
+                  {problem.connection_id !== '' && <span className="mono">{problem.connection_id}: </span>}
+                  {problem.message}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
       {doc.built && (

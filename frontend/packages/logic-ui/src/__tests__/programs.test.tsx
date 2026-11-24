@@ -562,6 +562,37 @@ describe('loading into a runtime', () => {
     expect(byTestId(container, 'program-error')?.textContent).toContain('was not saved');
     expect(byTestId(container, 'program-built')?.textContent).toContain('was built and is not loaded.');
   });
+
+  it("a refused Load shows the core's problems", async () => {
+    const backend = tank({
+      config: { instances: [] },
+      intercept: (call) =>
+        call.method === 'PUT' && call.path.endsWith('/runtimes')
+          ? Response.json(
+              {
+                error: 'the runtimes configuration has problems and was not saved',
+                problems: [
+                  { connection_id: 'runtime:Tank', message: `output ${SPEED} is written by runtime Line too` },
+                  { connection_id: 'plc1', message: 'the connection has no tag external.Plant.P1.speed' },
+                ],
+              },
+              { status: 400, statusText: 'Bad Request' }
+            )
+          : undefined,
+    });
+    const { container } = await opened(backend);
+    click(byTestId(container, 'program-load'));
+    await settle();
+
+    expect(byTestId(container, 'program-error')?.querySelector('p')?.textContent).toBe(
+      'Program Tank was not loaded: 400 Bad Request: the runtimes configuration has problems and was not saved'
+    );
+    expect(texts(container, 'program-load-problem')).toEqual([
+      `runtime:Tank: output ${SPEED} is written by runtime Line too`,
+      'plc1: the connection has no tag external.Plant.P1.speed',
+    ]);
+    expect(backend.config?.instances).toEqual([]);
+  });
 });
 
 describe('how a loaded program started', () => {
@@ -623,6 +654,33 @@ describe('how a loaded program started', () => {
     );
     expect(line(container)).not.toContain('Changed online');
     expect(texts(container, 'program-dropped')).toEqual([]);
+  });
+
+  it('a warm start that withheld values lists them and does not say every RETAIN value was given', async () => {
+    const { container } = await opened(
+      starting({
+        runtime: 'Tank',
+        start: 'warm',
+        why: 'its build was made again under its name',
+        carried: null,
+        dropped: [],
+        initialized: [],
+        not_given: [
+          { variable: 'total', why: 'the values kept are of another program of that name' },
+          { variable: 'hours', why: 'its type is DINT now, not INT' },
+        ],
+      })
+    );
+    click(byTestId(container, 'program-load'));
+    await settle();
+
+    expect(line(container)).toBe(
+      'Not changed online: its build was made again under its name. Its RETAIN variables start from the values kept for them, except those listed as not given, every other variable from its initial value.'
+    );
+    expect(texts(container, 'program-not-given')).toEqual([
+      'total (the values kept are of another program of that name)',
+      '; hours (its type is DINT now, not INT)',
+    ]);
   });
 
   it('claims nothing of how it started when the controller does not say', async () => {
@@ -908,6 +966,50 @@ describe('what the runtime is doing', () => {
     backend.runtimes = runtimesOf(runtimeOf('Tank', { version: 'build1' }));
     await doing(() => state().readRuntimes());
     expect(byTestId(container, 'program-version-differs')).toBeNull();
+  });
+});
+
+describe('a program a configured runtime runs', () => {
+  it("an assigned program's Task panel names its runtime and task and edits nothing the runtime ignores", async () => {
+    const line = {
+      id: 'Line',
+      module: 'vm',
+      target: 'pc',
+      run: true,
+      tasks: [
+        { name: 'slow', kind: { type: 'cyclic' as const, interval_ms: 250, phase_ms: 5 }, priority: 4, watchdog_ms: 3000, programs: ['Pump'] },
+        { name: 'fast', kind: { type: 'cyclic' as const, interval_ms: 10, phase_ms: 0 }, priority: 1, programs: ['tank'] },
+      ],
+    };
+    const { container } = await opened(tank({ configured: [line], runtimes: runtimesOf(runtimeOf('Line', { program: 'Pump, Tank' })) }));
+    await until('the configured runtimes are read', () => byTestId(container, 'program-task') !== null);
+    const inspector = paneOf(container, 'inspector', PANES.program);
+    if (!inspector) throw new Error('no properties');
+
+    expect(byTestId(inspector, 'program-task-runs')?.textContent).toBe('Runs in task fast of runtime Line.');
+    expect(byTestId(inspector, 'program-task-kind')?.textContent).toBe('cyclic, every 10 ms');
+    expect(byTestId(inspector, 'program-task-priority')?.textContent).toBe('1');
+    expect(byTestId(inspector, 'program-task-watchdog')?.textContent).toBe("the runtime's default");
+    expect(byTestId(inspector, 'program-task-unused')?.textContent).toContain('not used while the program is in a runtime');
+    // The program's own interval, module, target and run are not offered: the runtime ignores them.
+    for (const label of ['Interval in milliseconds', 'Runtime module', 'Target profile']) expect(byLabel(inspector, label), label).toBeNull();
+    expect(inspector.querySelector('input[type="checkbox"]')).toBeNull();
+
+    // The way to the runtime, from the panel and from the UNKNOWN reason beside the runtime.
+    click(byTestId(inspector, 'program-task-open'));
+    expect(useShell.getState().editors.map((e) => `${e.kind}:${e.target ?? ''}`)).toContain('logic-runtime:Line');
+    expect(byTestId(container, 'runtime-open')?.textContent).toBe('Open runtime Line');
+  });
+
+  it('a program in no runtime shows its own task settings', async () => {
+    const { container } = await opened(tank({ configured: [] }));
+    await until('the configured runtimes are read', () => usePrograms.getState().runtimes.assigned !== null);
+    const inspector = paneOf(container, 'inspector', PANES.program);
+    if (!inspector) throw new Error('no properties');
+    expect(byTestId(inspector, 'program-task')).toBeNull();
+    expect((byLabel(inspector, 'Interval in milliseconds') as HTMLInputElement | null)?.value).toBe('100');
+    expect(byTestId(inspector, 'program-task-unknown')).toBeNull();
+    expect(byTestId(container, 'runtime-open')).toBeNull();
   });
 });
 

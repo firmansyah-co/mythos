@@ -213,7 +213,7 @@ describe('the Library section of the project tree', () => {
     const deactivateData = activateData(createHost('org.mythos.data'));
     try {
       const ids = orderedTreeSections(useModuleUi.getState().treeSections).map((s) => s.item.id);
-      expect(ids).toEqual(['logic-programs', 'logic-library', 'data']);
+      expect(ids).toEqual(['logic-programs', 'logic-runtimes', 'logic-library', 'data']);
       expect(useModuleUi.getState().treeSections.find((s) => s.item.id === 'logic-library')?.item.order).toBe(25);
     } finally {
       deactivateData();

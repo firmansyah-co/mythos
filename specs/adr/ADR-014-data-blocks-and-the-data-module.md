@@ -319,7 +319,8 @@ Each is one slice, built through the workflow topology, with its own evidence fi
 | D4a (done) | Workbench: editor for user types and data blocks, in the data module's UI | D3 |
 | D4b | Workbench: live values of a data block, per runtime | C8d, and a change in the core so that two watchers of one runtime do not replace each other's list |
 | D4c (done) | Workbench: the library editor (functions and function blocks), in the logic module's UI | C8c |
-| C8d | Workbench: tasks (ADR-013 §2.19) | C8c, D2 |
+| C8d-1 (done) | Workbench: edit and load runtimes and tasks (ADR-013 §2.19), in the logic module's UI | C8c, D2 |
+| C8d-2 | Workbench: the state of a task, and watch and force of a program in a configured runtime | C8d-1, and the core's watch lists |
 | D5 | Data blocks typed by a function block (§2.6) | D2, D3 |
 | T2 | Tier 2: data segments between runtimes of one device | D2; after alarms and historian |
 | T3 | Tier 3: data blocks between devices | T2 and the IEC 62443 foundation |
@@ -435,7 +436,8 @@ naming the programs a library change breaks.
 
 **Not built.** The live values of a data block (D4b), library blocks in the LD and FBD palette
 (D4c), D5, T2 and T3 are not built. A runtime with data blocks is configured over the API and the MCP,
-the workbench having no editor for runtimes and tasks (C8d). A retained block that moves into a configured
+and since C8d-1 also in the workbench, which edits and loads runtimes and tasks and shows no
+live value of a data block (D4b). A retained block that moves into a configured
 runtime loses its kept values, since the core keeps them per runtime id, and no warning of the
 build says so (only RETAIN variables are
 warned about). `VAR_GLOBAL` stays refused, and so do `VAR_EXTERNAL` in a function block or function, a

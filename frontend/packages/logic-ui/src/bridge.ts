@@ -259,9 +259,12 @@ export interface OutputStatus {
 export interface RuntimeStatus {
   id: string;
   module: string;
+  /** The PROGRAM names it runs, joined by `, `. */
   program: string;
+  /** Their versions, joined by `, `. */
   version: string;
-  interval_ms: number;
+  /** Its smallest cyclic interval; `null` when it has no cyclic task. */
+  interval_ms: number | null;
   /** `run`, `stop`, `fault`, or `unreachable`. */
   mode: string;
   reason: string | null;
@@ -280,6 +283,29 @@ export interface RuntimeStatus {
   forced?: ForcedValue[] | null;
   /** Every tag bound to a forced variable. */
   forced_tags?: string[];
+  /** Only for a runtime with its tasks written out (ADR-013 §2.19): each program and its version. */
+  programs?: Array<{ name: string; version: string }>;
+  /** Only for a runtime with its tasks written out: what it says of each task. Not shown yet (C8d-2). */
+  tasks?: TaskState[];
+  data?: unknown;
+}
+
+/**
+ * What a runtime says of one of its tasks (`TaskState` of crates/mythos-module/src/protocol.rs).
+ * A time not measured is absent, never 0. Not shown in C8d-1.
+ */
+export interface TaskState {
+  name: string;
+  kind: unknown;
+  priority: number;
+  programs: string[];
+  watchdog_ms: number;
+  runs: number;
+  overruns: number;
+  preemptions: number;
+  last_run_us?: number | null;
+  longest_run_us?: number | null;
+  run_age_us?: number | null;
 }
 
 /** A variable held at a value by an engineer (`POST /api/v1/runtimes/<id>/force`). */
@@ -296,7 +322,7 @@ export interface ForceAnswer {
 
 export interface RuntimesAnswer {
   runtimes: RuntimeStatus[];
-  modules: Array<{ provides: string; name?: string; profile?: { name?: string } | null }>;
+  modules: Array<{ provides: string; name?: string; profile?: { name?: string; tasks?: { kinds?: string[] } | null } | null }>;
   problem: string | null;
 }
 
@@ -318,7 +344,17 @@ export interface WatchAnswer {
    * before the read the program last completed a scan (absent before its first scan and from a
    * module that does not say), and `max_scan_us` its longest scan.
    */
-  state: { mode: string; program: string; version: string; scans: number; max_scan_us?: number; scan_age_us?: number | null };
+  state: {
+    mode: string;
+    program: string;
+    version: string;
+    scans: number;
+    max_scan_us?: number;
+    scan_age_us?: number | null;
+    /** A runtime with its tasks written out: its programs and tasks. Not read yet (C8d-2). */
+    programs?: Array<{ name: string; version: string }>;
+    tasks?: TaskState[];
+  };
   values: WatchedValue[];
   /** How long ago the runtime was read. */
   age_ms: number;
@@ -353,8 +389,30 @@ export interface RuntimeLoad {
   dropped: NotCarried[];
   /** Changed online: its variables that took no value of the running version. */
   initialized: NotCarried[];
-  /** The values kept under its id that it was not given, and why. Not shown yet. */
+  /** The RETAIN values kept under its id that it was not given, and why. */
   not_given?: NotCarried[];
+}
+
+/** One problem of a runtimes configuration the core refused to save: which connection, and why. */
+export interface ConfigProblem {
+  connection_id: string;
+  message: string;
+}
+
+/**
+ * The `problems` the core gave with a refusal to save the project's runtimes
+ * (`{error, problems: [{connection_id, message}]}`), verbatim; `null` when it gave none, or when
+ * the workbench did not hand the answer over.
+ */
+export function problemsOf(cause: unknown): ConfigProblem[] | null {
+  const body = (cause as { body?: unknown } | null)?.body;
+  const problems = body !== null && typeof body === 'object' ? (body as Record<string, unknown>).problems : undefined;
+  if (!Array.isArray(problems)) return null;
+  return problems.flatMap((p: unknown) => {
+    if (p === null || typeof p !== 'object') return [];
+    const { connection_id, message } = p as Record<string, unknown>;
+    return typeof message === 'string' ? [{ connection_id: typeof connection_id === 'string' ? connection_id : '', message }] : [];
+  });
 }
 
 /** What saving a project's runtimes answers. */
