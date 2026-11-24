@@ -2928,6 +2928,23 @@ mod tests {
         assert_eq!(answered(&states, &b), vec![given("b", 1)]);
     }
 
+    #[test]
+    fn a_list_that_names_a_variable_twice_is_read_for_it_once_and_let_go_whole() {
+        let states = RuntimeStates::default();
+        loaded(&states, "tank", 1);
+        // Another list stays, so what is still read is seen after the first is let go.
+        let (twice, other) = (names(&["a", "a", "b"]), names(&["c"]));
+        assert_eq!(states.watch("tank", &twice), Ok(true));
+        assert_eq!(states.watch("tank", &other), Ok(true));
+        assert_eq!(states.watch_wanted("tank"), Some(names(&["a", "b", "c"])));
+        asked_back(&states, "tank", &twice, LONG_AGO);
+        assert_eq!(
+            states.watch_wanted("tank"),
+            Some(other),
+            "no name of the list is read once it is let go"
+        );
+    }
+
     /// The names v{from} to v{to - 1}.
     fn numbered(from: usize, to: usize) -> Vec<String> {
         (from..to).map(|i| format!("v{i}")).collect()
