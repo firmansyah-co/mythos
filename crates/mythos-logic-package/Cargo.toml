@@ -15,4 +15,5 @@ zip.workspace = true
 sha2.workspace = true
 hex.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# raw_value: the text of `format` as written, so a number past u64 is told as written (R1).
+serde_json = { workspace = true, features = ["raw_value"] }

@@ -73,21 +73,62 @@ const MANIFEST_KEYS: &[&str] = &[
     "signature",
 ];
 
-/// A package read whole.
+/// A package read whole. [`read`] is the only way to make one, and its fields are read through
+/// methods, so a `Package` is always one that passed every check of [`read`]: it cannot be
+/// built or changed outside this crate.
+///
+/// ```compile_fail,E0451
+/// use mythos_logic_package::Package;
+/// fn forged(other: Package) -> Package {
+///     let manifest = other.manifest().clone();
+///     Package { manifest, sources: Vec::new(), sha256: String::new(), size: 0 }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Package {
-    pub manifest: Manifest,
+    manifest: Manifest,
+    sources: Vec<(String, String)>,
+    sha256: String,
+    size: u64,
+}
+
+impl Package {
+    /// The package's manifest.
+    pub fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+
     /// Each source as `(path in the package, text as written)`, in byte order of path.
-    pub sources: Vec<(String, String)>,
+    pub fn sources(&self) -> &[(String, String)] {
+        &self.sources
+    }
+
     /// The lowercase hex SHA-256 of the file exactly as given.
-    pub sha256: String,
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
     /// The file's length in bytes.
-    pub size: u64,
+    pub fn size(&self) -> u64 {
+        self.size
+    }
 }
 
 /// A package's `manifest.json`, format 1. An optional field that is absent is `None` and is
-/// left out when serialised: it is never filled with a default.
+/// left out when serialised: it is never filled with a default. Its fields are read directly,
+/// but only this crate makes one, so a manifest is one [`read`] took:
+///
+/// ```compile_fail,E0639
+/// use mythos_logic_package::Manifest;
+/// let forged = Manifest {
+///     format: 7, id: "x".into(), name: String::new(), version: "+".into(),
+///     form: "compiled".into(), languages: Vec::new(), files: vec!["../x".into()],
+///     depends: Vec::new(), license: String::new(), authors: None, description: None,
+///     targets: None, interface: None, signature: None,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
 pub struct Manifest {
     pub format: u32,
     pub id: String,
@@ -113,8 +154,14 @@ pub struct Manifest {
 }
 
 /// One entry of a manifest's `depends`. The version is kept as text and not compared
-/// (ADR-015 §5 question 1 is open).
+/// (ADR-015 §5 question 1 is open). Only this crate makes one.
+///
+/// ```compile_fail,E0639
+/// use mythos_logic_package::Dependency;
+/// let forged = Dependency { id: "CON".into(), version: "+".into() };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
 pub struct Dependency {
     pub id: String,
     pub version: String,
@@ -145,42 +192,49 @@ pub fn read(file: &[u8]) -> Result<Package, String> {
     }
     let mut unpacked: u64 = 0;
 
+    // R1: the format first. A package of a newer format may hold entries, or entries of a kind,
+    // format 1 does not know; its format is the better answer than any refusal of them.
+    // manifest.json passes the name rule, so reading it here reads nothing the rule refuses.
+    let manifests: Vec<usize> = (0..names.len())
+        .filter(|&i| names[i] == MANIFEST_FILE)
+        .collect();
+    let mut manifest_read = None;
+    if let [index] = manifests[..] {
+        let bytes = read_entry(
+            &mut archive,
+            index,
+            &layout[index],
+            &names[index],
+            &mut unpacked,
+        )?;
+        let map = manifest_object(&bytes)?;
+        manifest_read = Some((index, bytes, map));
+    }
     if let Some(problem) = names_problem(&names) {
-        // A package of a newer format may hold entries format 1 does not know; its format is
-        // the better answer. manifest.json passes the name rule, so reading it here reads
-        // nothing the rule refuses.
-        let manifests: Vec<usize> = (0..names.len())
-            .filter(|&i| names[i] == MANIFEST_FILE)
-            .collect();
-        if let [index] = manifests[..] {
-            let bytes = read_entry(&mut archive, index, &names[index], &mut unpacked)?;
-            manifest_object(&bytes)?;
-        }
         return Err(problem);
     }
 
-    let mut manifest_bytes = None;
     let mut checksums_bytes = None;
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     for (index, name) in names.iter().enumerate() {
-        let bytes = read_entry(&mut archive, index, name, &mut unpacked)?;
+        let bytes = match &manifest_read {
+            Some((at, bytes, _)) if *at == index => bytes.clone(),
+            _ => read_entry(&mut archive, index, &layout[index], name, &mut unpacked)?,
+        };
         if name == SOURCE_DIR {
             if !bytes.is_empty() {
                 return Err(format!("{SOURCE_DIR} is a directory and holds bytes"));
             }
             continue;
         }
-        if name == MANIFEST_FILE {
-            manifest_bytes = Some(bytes.clone());
-        } else if name == CHECKSUMS_FILE {
+        if name == CHECKSUMS_FILE {
             checksums_bytes = Some(bytes.clone());
         }
         files.push((name.clone(), bytes));
     }
 
-    let manifest_bytes =
-        manifest_bytes.ok_or_else(|| format!("the package has no {MANIFEST_FILE}"))?;
-    let manifest_map = manifest_object(&manifest_bytes)?;
+    let (_, _, manifest_map) =
+        manifest_read.ok_or_else(|| format!("the package has no {MANIFEST_FILE}"))?;
     let checksums_bytes =
         checksums_bytes.ok_or_else(|| format!("the package has no {CHECKSUMS_FILE}"))?;
     let checksums = checksums_of(&checksums_bytes)?;
@@ -192,8 +246,19 @@ pub fn read(file: &[u8]) -> Result<Package, String> {
             return Err(format!("{name} does not match its checksum"));
         }
     }
+    let held: HashSet<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
     for listed in checksums.keys() {
-        if listed == CHECKSUMS_FILE || !files.iter().any(|(name, _)| name == listed) {
+        if listed == CHECKSUMS_FILE {
+            return Err(format!(
+                "{CHECKSUMS_FILE} lists itself; it lists every other entry"
+            ));
+        }
+        if listed == SOURCE_DIR {
+            return Err(format!(
+                "{CHECKSUMS_FILE} lists {SOURCE_DIR}, a directory; it lists the files"
+            ));
+        }
+        if !held.contains(listed.as_str()) {
             return Err(format!(
                 "{CHECKSUMS_FILE} lists {}, which the package does not hold",
                 shown(listed)
@@ -214,12 +279,18 @@ pub fn read(file: &[u8]) -> Result<Package, String> {
         sources.push((name.clone(), source_text(&name, bytes)?));
     }
     for listed in &manifest.files {
-        if !sources.iter().any(|(name, _)| name == listed) {
+        if sources.iter().any(|(name, _)| name == listed) {
+            continue;
+        }
+        if listed == MANIFEST_FILE || listed == CHECKSUMS_FILE || listed == SOURCE_DIR {
             return Err(format!(
-                "{MANIFEST_FILE} lists {}, which the package does not hold",
-                shown(listed)
+                "{MANIFEST_FILE} lists {listed} among its files, which is not a source: its files are the {SOURCE_DIR}<name>{SOURCE_EXTENSION} entries"
             ));
         }
+        return Err(format!(
+            "{MANIFEST_FILE} lists {}, which the package does not hold",
+            shown(listed)
+        ));
     }
     sources.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
 
@@ -294,9 +365,12 @@ fn device_name(name: &str) -> bool {
         .any(|d| d.eq_ignore_ascii_case(name))
 }
 
-/// What is wrong with `version`, as the words of the refusal; `None` when it is
-/// `MAJOR.MINOR.PATCH` (decimal, no leading zero), optionally `-<pre>` of `[0-9A-Za-z.-]` with
-/// no empty part, no `+`, at most [`MAX_VERSION_LEN`] characters.
+/// What is wrong with `version`, as the words of the refusal; `None` when it is a version of
+/// SemVer 2.0.0 without build metadata: `MAJOR.MINOR.PATCH` (decimal, no leading zero, each a
+/// number of at most `u64::MAX`), optionally `-<pre>` of `[0-9A-Za-z.-]` with no empty part and
+/// no numeric part with a leading zero, no `+`, at most [`MAX_VERSION_LEN`] characters. What
+/// SemVer refuses is refused here, so versions can be compared by it later (ADR-015 §5
+/// question 1).
 fn version_problem(field: &str, version: &str) -> Option<String> {
     let length = version.chars().count();
     if length > MAX_VERSION_LEN {
@@ -304,28 +378,31 @@ fn version_problem(field: &str, version: &str) -> Option<String> {
             "{field} is at most {MAX_VERSION_LEN} characters; this one is {length}"
         ));
     }
+    let numeric = |n: &str| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit());
+    let no_leading_zero = |n: &str| n.len() == 1 || !n.starts_with('0');
     let (core, pre) = match version.split_once('-') {
         Some((core, pre)) => (core, Some(pre)),
         None => (version, None),
     };
     let numbers: Vec<&str> = core.split('.').collect();
     let core_ok = numbers.len() == 3
-        && numbers.iter().all(|n| {
-            !n.is_empty()
-                && n.bytes().all(|b| b.is_ascii_digit())
-                && (n.len() == 1 || !n.starts_with('0'))
-        });
+        && numbers
+            .iter()
+            .all(|n| numeric(n) && no_leading_zero(n) && n.parse::<u64>().is_ok());
     let pre_ok = pre.is_none_or(|pre| {
         pre.split('.').all(|part| {
-            !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            !part.is_empty()
+                && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && (!numeric(part) || no_leading_zero(part))
         })
     });
     if core_ok && pre_ok {
         return None;
     }
     Some(format!(
-        "{field} '{}' is not a version: MAJOR.MINOR.PATCH in decimal with no leading zero, optionally -<pre> of letters, digits, '.' and '-' with no empty part, and no + (build metadata is not taken)",
-        shown(version)
+        "{field} '{}' is not a version: MAJOR.MINOR.PATCH in decimal with no leading zero, each at most {}, optionally -<pre> of letters, digits, '.' and '-' with no empty part and no number with a leading zero, and no + (build metadata is not taken)",
+        shown(version),
+        u64::MAX
     ))
 }
 
@@ -372,20 +449,45 @@ fn names_problem(names: &[String]) -> Option<String> {
 
 /// Reads entry `index` whole, counting its bytes against [`MAX_UNPACKED_BYTES`] as they are
 /// read: never more than one byte past what is left is read, and never by its declared size.
+///
+/// Before the zip crate is given the entry, what its central directory says of it is checked:
+/// the file type in its external attributes, whatever system its header says made it (Info-ZIP
+/// unzip makes a symbolic link of it on several), and its extra fields, of which only those in
+/// [`TAKEN_EXTRA_IDS`] are taken (another may give it a second name or a file type that a
+/// second reader of the file takes and this one does not see).
 fn read_entry(
     archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
     index: usize,
+    central: &CentralEntry,
     name: &str,
     unpacked: &mut u64,
 ) -> Result<Vec<u8>, String> {
+    let mode = central.mode;
+    if mode & 0o170000 == 0o120000 {
+        return Err(format!("{name} is a symbolic link; a package holds files"));
+    }
+    let file_type = mode & FILE_TYPE_MASK;
+    let plain = file_type == 0
+        || file_type == FILE_TYPE_REGULAR
+        || (file_type == FILE_TYPE_DIRECTORY && name == SOURCE_DIR);
+    if !plain {
+        return Err(format!(
+            "{name} is not a plain file: its attributes give it the file type {file_type:#o}; a package holds files"
+        ));
+    }
+    if let Some(id) = central.foreign_extra {
+        return Err(format!(
+            "{name} carries an extra field of id {id:#06x}; a package takes only the extra fields {}",
+            TAKEN_EXTRA_IDS
+                .iter()
+                .map(|id| format!("{id:#06x}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     let mut entry = archive
         .by_index(index)
         .map_err(|e| format!("{name}: {e}"))?;
-    if let Some(mode) = entry.unix_mode() {
-        if mode & 0o170000 == 0o120000 {
-            return Err(format!("{name} is a symbolic link; a package holds files"));
-        }
-    }
     let budget = MAX_UNPACKED_BYTES.saturating_sub(*unpacked);
     let mut bytes = Vec::new();
     let taken = (&mut entry).take(budget + 1).read_to_end(&mut bytes);
@@ -446,17 +548,37 @@ fn manifest_object(bytes: &[u8]) -> Result<Map<String, Value>, String> {
             "{MANIFEST_FILE} is not a package manifest: it is not a JSON object"
         ));
     };
-    let format = map
-        .get("format")
-        .and_then(Value::as_u64)
-        .filter(|&format| format >= 1)
-        .ok_or_else(|| format!("{MANIFEST_FILE} has no format: an integer from 1"))?;
-    if format > u64::from(PACKAGE_FORMAT) {
-        return Err(format!(
+    // The format as written: a JSON integer is digits only (JSON has no leading zero and no
+    // plus sign), so `1.0`, `1e0`, `-1`, `"1"` and `0` are no format. Its text is read, not its
+    // value: serde_json holds an integer past u64 as a float, which would tell it as no format.
+    let no_format = || format!("{MANIFEST_FILE} has no format: an integer from 1");
+    let newer = |format: &str| {
+        format!(
             "the package is of format {format}; this logic module takes format {PACKAGE_FORMAT}"
-        ));
+        )
+    };
+    let digits = format_text(bytes)
+        .map_err(|why| format!("{MANIFEST_FILE} is not a package manifest: {why}"))?
+        .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+        .filter(|text| text != "0")
+        .ok_or_else(no_format)?;
+    let Ok(format) = digits.parse::<u64>() else {
+        // Digits only and not a u64: a number past u64::MAX, so past PACKAGE_FORMAT.
+        return Err(newer(&shown(&digits)));
+    };
+    if format > u64::from(PACKAGE_FORMAT) {
+        return Err(newer(&format.to_string()));
     }
     Ok(map)
+}
+
+/// The text of the manifest's top-level `format` value exactly as written, when it has one.
+fn format_text(bytes: &[u8]) -> Result<Option<String>, String> {
+    let raw: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+        serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    Ok(raw
+        .get("format")
+        .map(|value| value.get().trim().to_string()))
 }
 
 /// Every other field of a format 1 manifest, each refused with words naming it.
@@ -493,15 +615,22 @@ fn manifest_of(map: Map<String, Value>) -> Result<Manifest, String> {
         ));
     }
     let files = required_texts(&map, "files")?;
-    let mut seen: Vec<&String> = Vec::with_capacity(files.len());
+    // `files` equals the package's sources, which are fewer than its entries: a longer list is
+    // refused before anything is done with each of its items.
+    if files.len() > MAX_PACKAGE_ENTRIES {
+        return Err(format!(
+            "{MANIFEST_FILE}'s files name {} files; a package holds at most {MAX_PACKAGE_ENTRIES} entries",
+            files.len()
+        ));
+    }
+    let mut seen: HashSet<String> = HashSet::with_capacity(files.len());
     for file in &files {
-        if seen.iter().any(|s| s.eq_ignore_ascii_case(file)) {
+        if !seen.insert(file.to_ascii_lowercase()) {
             return Err(format!(
                 "{MANIFEST_FILE}'s files name {} twice",
                 shown(file)
             ));
         }
-        seen.push(file);
     }
     let depends = dependencies(&map, &id)?;
     let license = required_text(&map, "license")?;
@@ -599,7 +728,11 @@ fn dependencies(map: &Map<String, Value>, own_id: &str) -> Result<Vec<Dependency
         return Err(not_a(MANIFEST_FILE, "depends", "a list"));
     };
     let mut depends: Vec<Dependency> = Vec::with_capacity(items.len());
-    for item in items {
+    // Each id once in any case, looked up in one step: the list has no bound of its own beyond
+    // the manifest's bytes, so nothing here takes time growing with the square of its length.
+    let mut seen: HashSet<String> = HashSet::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let which = index + 1;
         let Value::Object(entry) = item else {
             return Err(format!(
                 "{MANIFEST_FILE}'s depends holds an entry that is not an object of id and version"
@@ -619,17 +752,21 @@ fn dependencies(map: &Map<String, Value>, own_id: &str) -> Result<Vec<Dependency
             ));
         };
         if let Some(problem) = id_problem(id) {
-            return Err(format!("{MANIFEST_FILE}'s depends: {problem}"));
+            return Err(format!(
+                "{MANIFEST_FILE}'s depends, dependency {which}: {problem}"
+            ));
         }
         if let Some(problem) = version_problem("the version of a dependency", version) {
-            return Err(format!("{MANIFEST_FILE}'s depends: {problem}"));
+            return Err(format!(
+                "{MANIFEST_FILE}'s depends, dependency {which}: {problem}"
+            ));
         }
         if id.eq_ignore_ascii_case(own_id) {
             return Err(format!(
                 "{MANIFEST_FILE}'s depends names the package itself, {id}"
             ));
         }
-        if depends.iter().any(|d| d.id.eq_ignore_ascii_case(id)) {
+        if !seen.insert(id.to_ascii_lowercase()) {
             return Err(format!("{MANIFEST_FILE}'s depends names {id} twice"));
         }
         depends.push(Dependency {
@@ -772,10 +909,30 @@ const ZIP64_EXTRA_ID: u16 = 0x0001;
 const AES_EXTRA_ID: u16 = 0x9901;
 const FLAG_ENCRYPTED: u16 = 1;
 const FLAG_DATA_DESCRIPTOR: u16 = 1 << 3;
+const METHOD_STORED: u16 = 0;
+/// The length of a data descriptor after an entry's data, without and with its signature.
+const DATA_DESCRIPTOR_LEN: usize = 12;
+const SIGNED_DATA_DESCRIPTOR_LEN: usize = 16;
+/// The file type bits of the mode in an entry's external attributes (`S_IFMT`), and the two
+/// types a package's entries may have: none or a regular file, and a directory for `src/`.
+const FILE_TYPE_MASK: u32 = 0o170000;
+const FILE_TYPE_REGULAR: u32 = 0o100000;
+const FILE_TYPE_DIRECTORY: u32 = 0o040000;
+/// The extra fields a package's entries may carry, in their local or central header: the
+/// NTFS times (0x000a, 7-Zip), the extended time stamp (0x5455) and the Unix owner (0x7875,
+/// Info-ZIP and bsdtar). None of them names the entry or gives it a file type. Any other is
+/// refused: among them the Info-ZIP Unicode path (0x7075), which gives the entry a second name
+/// that unzip, 7-Zip, bsdtar and Python's zipfile show and extract, and the ASi Unix field
+/// (0x756e), which can make it a symbolic link for unzip.
+const TAKEN_EXTRA_IDS: &[u16] = &[0x000a, 0x5455, 0x7875];
 
 /// One entry of the central directory, as far as [`read`] needs it before the zip crate.
 struct CentralEntry {
     name: Vec<u8>,
+    /// The upper half of its external attributes, where Unix-like systems keep the mode.
+    mode: u32,
+    /// The first id of its extra fields, local or central, that is not in [`TAKEN_EXTRA_IDS`].
+    foreign_extra: Option<u16>,
 }
 
 fn not_zip(why: &str) -> String {
@@ -796,6 +953,40 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
     bytes
         .get(at..end)
         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+/// The ids of the extra fields in `extra`, refusing a zip64 field (the sizes and offsets of a
+/// plain zip are in its headers), an AES field (a package holds files that are not encrypted)
+/// and a field that runs past the end; `None` when every other id is taken, else the first that
+/// is not.
+fn foreign_extra(extra: &[u8], shown_name: &str) -> Result<Option<u16>, String> {
+    let truncated = || {
+        not_zip(&format!(
+            "the extra field of {shown_name} runs past its end"
+        ))
+    };
+    let mut foreign = None;
+    let mut field = 0;
+    while field < extra.len() {
+        let id = u16_at(extra, field).ok_or_else(truncated)?;
+        let len = usize::from(u16_at(extra, field + 2).ok_or_else(truncated)?);
+        field += 4 + len;
+        if field > extra.len() {
+            return Err(truncated());
+        }
+        if id == ZIP64_EXTRA_ID {
+            return Err(not_zip(&format!("{shown_name} carries zip64 sizes")));
+        }
+        if id == AES_EXTRA_ID {
+            return Err(format!(
+                "{shown_name} declares AES encryption; a package holds files that are not encrypted"
+            ));
+        }
+        if foreign.is_none() && !TAKEN_EXTRA_IDS.contains(&id) {
+            foreign = Some(id);
+        }
+    }
+    Ok(foreign)
 }
 
 /// Walks the zip's end record, central directory and local headers, refusing anything a plain
@@ -890,6 +1081,7 @@ fn zip_layout(file: &[u8]) -> Result<Vec<CentralEntry>, String> {
         let extra_len = usize::from(c16(30)?);
         let comment_len = usize::from(c16(32)?);
         let disk = c16(34)?;
+        let external = c32(38)?;
         let local = c32(42)?;
         let name_end = CENTRAL_HEADER_LEN + name_len;
         let extra_end = name_end + extra_len;
@@ -912,28 +1104,11 @@ fn zip_layout(file: &[u8]) -> Result<Vec<CentralEntry>, String> {
         if compressed == ZIP64_MARK || size == ZIP64_MARK || local == ZIP64_MARK {
             return Err(not_zip(&format!("{shown_name} carries zip64 sizes")));
         }
-        let mut field = 0;
-        while field < extra.len() {
-            let id = u16_at(extra, field).ok_or_else(truncated)?;
-            let len = usize::from(u16_at(extra, field + 2).ok_or_else(truncated)?);
-            field += 4 + len;
-            if field > extra.len() {
-                return Err(not_zip(&format!(
-                    "the extra field of {shown_name} runs past its end"
-                )));
-            }
-            if id == ZIP64_EXTRA_ID {
-                return Err(not_zip(&format!("{shown_name} carries zip64 sizes")));
-            }
-            if id == AES_EXTRA_ID && flags & FLAG_ENCRYPTED == 0 {
-                return Err(format!(
-                    "{shown_name} declares AES encryption; a package holds files that are not encrypted"
-                ));
-            }
-        }
+        let central_foreign = foreign_extra(extra, &shown_name)?;
 
-        // Its local header: at its offset, the same name, method and encryption, and (when no
-        // data descriptor follows) the same checksum and sizes.
+        // Its local header: at its offset, the same name, method and encryption, the same
+        // checksum and sizes (or, when a data descriptor follows, zero there and the same in the
+        // descriptor), and extra fields walked as the central ones.
         let local = local as usize;
         let no_local = || not_zip(&format!("{shown_name} has no local header at its offset"));
         if !local
@@ -965,20 +1140,53 @@ fn zip_layout(file: &[u8]) -> Result<Vec<CentralEntry>, String> {
         {
             return Err(disagree());
         }
-        if flags & FLAG_DATA_DESCRIPTOR == 0
-            && (l32(14) != Some(crc) || l32(18) != Some(compressed) || l32(22) != Some(size))
-        {
+        let local_extra = file[..directory_start]
+            .get(local_name_start + local_name_len..data_start)
+            .ok_or_else(|| {
+                not_zip(&format!(
+                    "the data of {shown_name} runs into its central directory"
+                ))
+            })?;
+        let foreign = central_foreign.or(foreign_extra(local_extra, &shown_name)?);
+        let descriptor = flags & FLAG_DATA_DESCRIPTOR != 0;
+        // (checksum, compressed size, size) as a header or a descriptor holds them at `at`.
+        let sums_at = |at: usize| {
+            (
+                u32_at(file, at),
+                u32_at(file, at.saturating_add(4)),
+                u32_at(file, at.saturating_add(8)),
+            )
+        };
+        let central_sums = (Some(crc), Some(compressed), Some(size));
+        let local_sums = sums_at(local + 14);
+        let local_sums_ok =
+            local_sums == central_sums || (descriptor && local_sums == (Some(0), Some(0), Some(0)));
+        if !local_sums_ok {
             return Err(disagree());
+        }
+        if descriptor && method == METHOD_STORED {
+            // A reader that streams the file finds the end of stored data only by looking for
+            // a descriptor in it, so the data may hold a second entry that this reader never
+            // sees.
+            return Err(format!(
+                "{shown_name} is stored with a data descriptor after it; a reader that streams the file cannot tell where its data ends"
+            ));
         }
         let data_end = data_start
             .checked_add(compressed as usize)
             .ok_or_else(truncated)?;
-        let span_end = if flags & FLAG_DATA_DESCRIPTOR == 0 {
+        let span_end = if !descriptor {
             data_end
-        } else if u32_at(file, data_end) == Some(DATA_DESCRIPTOR_SIGNATURE) {
-            data_end.saturating_add(16)
+        } else if u32_at(file, data_end) == Some(DATA_DESCRIPTOR_SIGNATURE)
+            && sums_at(data_end.saturating_add(4)) == central_sums
+        {
+            data_end.saturating_add(SIGNED_DATA_DESCRIPTOR_LEN)
+        } else if sums_at(data_end) == central_sums {
+            data_end.saturating_add(DATA_DESCRIPTOR_LEN)
         } else {
-            data_end.saturating_add(12)
+            return Err(not_zip(&format!(
+                "the data descriptor of {shown_name} disagrees with its central directory"
+            )));
         };
         if span_end > directory_start {
             return Err(not_zip(&format!(
@@ -986,7 +1194,11 @@ fn zip_layout(file: &[u8]) -> Result<Vec<CentralEntry>, String> {
             )));
         }
         spans.push((local, span_end));
-        entries.push(CentralEntry { name });
+        entries.push(CentralEntry {
+            name,
+            mode: external >> 16,
+            foreign_extra: foreign,
+        });
         at += entry_len;
     }
     if at != directory_end {
