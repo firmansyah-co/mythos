@@ -52,7 +52,7 @@ import {
 } from './ldedit';
 import { idsFor, open, ownBoxes, write, type DocModel, type Drawn, type El, type Ids, type Item, type Section, type Source, type VarInfo } from './ldmodel';
 import { readLadder, type LdElement, type LdPou } from './ladder';
-import { allInstructions, dragged, Favourites, useLdPalette, type Instruction } from './LdInstructions';
+import { allInstructions, callable, dragged, Favourites, useLdPalette, useLibraryBoxes, type Instruction } from './LdInstructions';
 import { PouView, type LadderLive } from './LadderView';
 
 // ---------------------------------------------------------------------------------------------
@@ -485,16 +485,20 @@ export function LadderEditor({
   const ldPous = useMemo(() => (session ? session.source.pous.map((p, i) => ({ i, p })).filter(({ p }) => p.ld !== null) : []), [session]);
   const pou = model?.pous[pouIndex] ?? null;
   const pouSource = session?.source.pous[pouIndex] ?? null;
-  const own = useMemo(
+  const documentOwn = useMemo(
     () => (session ? ownBoxes(session.source).filter((d) => d.name.toLowerCase() !== (pouSource?.name ?? '').toLowerCase()) : []),
     [session, pouSource]
   );
+  // The library's blocks follow its stored check: a change is taken without opening the text
+  // again, so the undo history stays, and the document is not rewritten.
+  const library = useLibraryBoxes();
+  const own = useMemo(() => callable(documentOwn, library), [documentOwn, library]);
   const vars: VarInfo[] = useMemo(
     () => [...(pouSource?.vars ?? []), ...(pou?.declared ?? []).map((d) => ({ name: d.name, type: d.type, section: d.section }))],
     [pouSource, pou]
   );
   const suggestions = useMemo(() => operands(vars, own), [vars, own]);
-  const problems = useMemo(() => (pou ? check(pou, vars, own) : null), [pou, vars, own]);
+  const problems = useMemo(() => (pou ? check(pou, vars, own, library) : null), [pou, vars, own, library]);
   const ladder = useMemo(() => (session ? readLadder(session.text) : null), [session]);
   const drawnPou = ladder?.ok ? (ladder.pous.find((p) => p.name === pouSource?.name) ?? null) : null;
 
@@ -599,8 +603,8 @@ export function LadderEditor({
     return () => useLdPalette.setState({ place: null });
   }, [editable]);
   useEffect(() => {
-    useLdPalette.setState({ own });
-  }, [own]);
+    useLdPalette.setState({ own: documentOwn });
+  }, [documentOwn]);
 
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     if (!session || !model || !pou) return;
@@ -1080,12 +1084,12 @@ function ElementFields({
   const offer = (text: string, where: Parameters<typeof declarationFor>[1]) => {
     const name = undeclared(text);
     if (!name) return null;
-    const proposed = declarationFor(el, where);
+    const proposed = declarationFor(el, where, own);
     return <DeclareOffer name={name} proposed={proposed} fixedType={where.instance === true} onDeclare={(type, section) => onDeclare(name, type, section)} />;
   };
   const declareNow = (text: string, where: Parameters<typeof declarationFor>[1]) => {
     const name = undeclared(text);
-    const proposed = declarationFor(el, where);
+    const proposed = declarationFor(el, where, own);
     if (name && proposed.type !== '') onDeclare(name, proposed.type, proposed.section);
   };
   let fields: ReactNode = null;
@@ -1160,20 +1164,25 @@ function ElementFields({
           }}
           onLeave={onLeave}
         />
-        {def?.kind === 'functionBlock' && (
+        {/* A function's box shows the instance it still keeps (its block was a function block), so it can be cleared. */}
+        {def !== null && (def.kind === 'functionBlock' || el.instance !== '') && (
           <OperandField
             label={`Instance of box ${el.id}`}
             testId="ld-box-instance"
             value={el.instance}
-            suggestions={suggestions.filter((v) => v.type.toUpperCase() === def.name.toUpperCase())}
+            suggestions={def.kind === 'functionBlock' ? suggestions.filter((v) => v.type.toUpperCase() === def.name.toUpperCase()) : []}
             focusToken={needsType ? 0 : focus}
             onFocused={onFocused}
-            declareOnEnter
+            declareOnEnter={def.kind === 'functionBlock'}
             onCommit={(text) => onEdit((m, ids) => setInstance(m, ids, pouIndex, el.id, text))}
-            onDeclare={(text) => {
-              onEdit((m, ids) => setInstance(m, ids, pouIndex, el.id, text));
-              declareNow(text, { instance: true });
-            }}
+            onDeclare={
+              def.kind === 'functionBlock'
+                ? (text) => {
+                    onEdit((m, ids) => setInstance(m, ids, pouIndex, el.id, text));
+                    declareNow(text, { instance: true });
+                  }
+                : undefined
+            }
             onLeave={onLeave}
           />
         )}

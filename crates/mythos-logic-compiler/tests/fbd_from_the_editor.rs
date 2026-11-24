@@ -10,9 +10,9 @@
 
 mod support;
 
-use mythos_logic_compiler::{compile_in, Language, TargetProfile};
+use mythos_logic_compiler::{compile_in, compile_sources, Language, Sources, TargetProfile};
 use mythos_logic_vm::Value;
-use support::{Run, MS};
+use support::{Run, MOTOR_LIBRARY, MS};
 
 fn fbd(file: &str) -> Run {
     let path = format!("{}/tests/fbd/{file}", env!("CARGO_MANIFEST_DIR"));
@@ -112,4 +112,64 @@ fn another_tools_diagram_runs_the_same_after_the_editor_changed_one_network_of_i
             "pulse at scan {scan}"
         );
     }
+}
+
+#[test]
+fn the_network_the_editor_wrote_with_a_library_block_runs_as_the_same_program_in_st() {
+    // Written by the editor with the library's boxes (no EN or ENO in FBD): Motor's pins written
+    // RUN and SPEED as the editor writes a pin (declared in lower case), and Scale's OUT.
+    let compiled = |sources: Sources| Run::of(compile_sources(&sources, &TargetProfile::pc()));
+    let path = format!(
+        "{}/tests/fbd_library/editor_library.xml",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let mut fbd = compiled(Sources {
+        tc6: &[("editor_library.xml", &text)],
+        library: &[MOTOR_LIBRARY],
+        ..Default::default()
+    });
+    let mut st = compiled(Sources {
+        st: Some((
+            "main.st",
+            "PROGRAM Main
+VAR_INPUT start : BOOL; speed : INT; END_VAR
+VAR_OUTPUT running : BOOL; rpm : INT; scaled : INT; END_VAR
+VAR motor1 : Motor; END_VAR
+motor1(run := start, speed := speed);
+running := motor1.running;
+rpm := motor1.rpm;
+scaled := Scale(raw := rpm, factor := 3);
+END_PROGRAM",
+        )),
+        library: &[MOTOR_LIBRARY],
+        ..Default::default()
+    });
+    let mut seed: u32 = 0x85eb_ca6b;
+    let mut started = false;
+    for scan in 0..400 {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let start = seed & 1 != 0;
+        let speed = ((seed >> 8) % 100) as i16;
+        for r in [&mut fbd, &mut st] {
+            set(r, "start", start);
+            r.set("speed", Value::Int(speed));
+            r.scan_at(scan * 10);
+        }
+        assert_eq!(fbd.bool("running"), st.bool("running"), "scan {scan}");
+        for var in ["rpm", "scaled"] {
+            assert_eq!(fbd.int(var), st.int(var), "{var} at scan {scan}");
+        }
+        // The library's code ran: rpm is ten times speed while started, and scaled three times that.
+        assert_eq!(
+            fbd.int("rpm"),
+            if start { i64::from(speed) * 10 } else { 0 },
+            "scan {scan}"
+        );
+        assert_eq!(fbd.int("scaled"), fbd.int("rpm") * 3, "scan {scan}");
+        started |= start;
+    }
+    assert!(started, "Motor was called with run");
 }

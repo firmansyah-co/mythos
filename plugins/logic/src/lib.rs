@@ -1660,7 +1660,7 @@ pub fn manifest() -> ModuleManifest {
             route("DELETE", "/library/:name", "engineer", "delete_logic_library_source",
                 "Remove a source from the project's library. Every program is then compiled without it: one that uses what it held no longer compiles. Nothing is built or loaded.", None, &[]),
             route("POST", "/library/check", "viewer", "check_logic_library",
-                "Check the project's library with the compiler, with the project's user types and data blocks, without saving or building anything: the stored sources, or with 'name' and 'source' (both or neither) that one source's text put in, new or replacing. Answers 'ok' and the diagnostics, each with 'source' naming its file (logic/library/<name>.st or data/types/<Name>.st); when the project's types and data blocks do not check, the library is checked without them and 'project_problems' says why.",
+                "Check the project's library with the compiler, with the project's user types and data blocks, without saving or building anything: the stored sources, or with 'name' and 'source' (both or neither) that one source's text put in, new or replacing. Answers 'ok' and the diagnostics, each with 'source' naming its file (logic/library/<name>.st or data/types/<Name>.st); when the project's types and data blocks do not check, the library is checked without them and 'project_problems' says why. Only when 'ok' is true it also answers 'blocks': each FUNCTION and FUNCTION_BLOCK the library declares, in the order of the sources by file name and then of their declarations, as {name, kind: 'function' or 'function_block', inputs: [{name, type}], outputs: [{name, type}], result}: inputs are the VAR_INPUT variables and outputs the VAR_OUTPUT ones in declaration order, names as declared and types as a program writes them, outputs empty for a function, and result the function's type or null for a function block; no block of the standard library and no PROGRAM is in it. A library that does not check answers no 'blocks'.",
                 Some(json!({
                     "type": "object",
                     "properties": {
@@ -2109,20 +2109,43 @@ fn check_library(mut project: Project, draft: Option<(String, String)>) -> Value
         }
     }
     let given = given(&project);
-    let mut diagnostics = library_refusals(&project);
-    if diagnostics.is_empty() {
-        if let Err(found) = check_project(&Sources {
+    let diagnostics = library_refusals(&project);
+    let checked = if diagnostics.is_empty() {
+        mythos_logic_compiler::library_blocks(&Sources {
             library: &given.library,
             data: &given.data,
             ..Default::default()
-        }) {
-            diagnostics = found;
+        })
+    } else {
+        Err(diagnostics)
+    };
+    let body = match checked {
+        Ok(blocks) => {
+            let mut body = json!({ "ok": true, "diagnostics": [] });
+            // Only a library that checks names its blocks: one that does not answers no
+            // `blocks` at all, never an empty list.
+            body["blocks"] = Value::Array(blocks.iter().map(block_json).collect());
+            body
         }
-    }
-    with_problems(
-        json!({ "ok": diagnostics.is_empty(), "diagnostics": diagnostics }),
-        &given.problems,
-    )
+        Err(diagnostics) => json!({ "ok": diagnostics.is_empty(), "diagnostics": diagnostics }),
+    };
+    with_problems(body, &given.problems)
+}
+
+/// A function or function block of the library as `POST /library/check` answers it.
+fn block_json(b: &mythos_logic_compiler::LibraryBlock) -> Value {
+    let pins = |list: &[(String, String)]| -> Vec<Value> {
+        list.iter()
+            .map(|(name, ty)| json!({ "name": name, "type": ty }))
+            .collect()
+    };
+    json!({
+        "name": b.name,
+        "kind": if b.function_block { "function_block" } else { "function" },
+        "inputs": pins(&b.inputs),
+        "outputs": pins(&b.outputs),
+        "result": b.result,
+    })
 }
 
 #[async_trait]
@@ -3611,7 +3634,12 @@ END_PROGRAM";
             "logic/library/Motors.st"
         );
         let (reply, _) = library(&call("POST", "/library/check", None, None, logic), logic);
-        assert_eq!(reply.body, json!({"ok": true, "diagnostics": []}));
+        assert_eq!(
+            reply.body,
+            json!({"ok": true, "diagnostics": [], "blocks": [
+                {"name": "Twice", "kind": "function", "inputs": [{"name": "x", "type": "INT"}], "outputs": [], "result": "INT"}
+            ]})
+        );
         // Deleted by another spelling: the stored file goes.
         let (reply, event) = library(
             &call("DELETE", "/library/:name", Some("motors"), None, logic),
@@ -3633,6 +3661,111 @@ END_PROGRAM";
                 404,
                 json!({"error": "the project has no library source 'Motors'"})
             )
+        );
+    }
+
+    /// `POST /library/check` of the stored library, or with `draft` (`name`, `source`) put in.
+    fn check_the_library(logic: &Path, draft: Option<(&str, &str)>) -> Value {
+        let body = draft.map(|(name, source)| json!({"name": name, "source": source}));
+        let (reply, _) = library(&call("POST", "/library/check", None, body, logic), logic);
+        assert_eq!(reply.status, 200, "{}", reply.body);
+        reply.body
+    }
+
+    #[test]
+    fn a_library_that_checks_answers_each_block_with_its_inputs_and_outputs_in_declaration_order() {
+        let dir = project_dir();
+        dir.types("TYPE Point : STRUCT x : INT; y : INT; END_STRUCT; END_TYPE\n");
+        dir.library(
+            "Valves",
+            "FUNCTION_BLOCK Valve
+  VAR_INPUT open : BOOL; END_VAR
+  VAR_OUTPUT position : REAL; END_VAR
+  VAR travel : REAL; END_VAR
+  VAR_INPUT limit : REAL; spot : Point; END_VAR
+  IF open THEN travel := travel + 1.0; END_IF;
+  position := travel;
+END_FUNCTION_BLOCK
+",
+        );
+        dir.library(
+            "Pumps",
+            "FUNCTION Scale : REAL
+  VAR_INPUT raw : INT; gain : REAL; END_VAR
+  Scale := INT_TO_REAL(raw) * gain;
+END_FUNCTION
+",
+        );
+        assert_eq!(
+            check_the_library(&dir.logic, None),
+            json!({"ok": true, "diagnostics": [], "blocks": [
+                {"name": "Scale", "kind": "function",
+                 "inputs": [{"name": "raw", "type": "INT"}, {"name": "gain", "type": "REAL"}],
+                 "outputs": [], "result": "REAL"},
+                {"name": "Valve", "kind": "function_block",
+                 "inputs": [{"name": "open", "type": "BOOL"}, {"name": "limit", "type": "REAL"}, {"name": "spot", "type": "Point"}],
+                 "outputs": [{"name": "position", "type": "REAL"}], "result": null}
+            ]})
+        );
+    }
+
+    #[test]
+    fn the_drafts_blocks_are_answered_not_the_stored_ones() {
+        let dir = project_dir();
+        dir.library("Motors", MOTORS);
+        let thrice =
+            "FUNCTION Thrice : DINT\nVAR_INPUT y : DINT; END_VAR\n  Thrice := y * 3;\nEND_FUNCTION\n";
+        // The draft replaces the stored source of its name.
+        assert_eq!(
+            check_the_library(&dir.logic, Some(("Motors", thrice))),
+            json!({"ok": true, "diagnostics": [], "blocks": [
+                {"name": "Thrice", "kind": "function", "inputs": [{"name": "y", "type": "DINT"}], "outputs": [], "result": "DINT"}
+            ]})
+        );
+        // A draft of a new name is put in beside the stored sources, in file name order.
+        assert_eq!(
+            check_the_library(&dir.logic, Some(("Axis", thrice))),
+            json!({"ok": true, "diagnostics": [], "blocks": [
+                {"name": "Thrice", "kind": "function", "inputs": [{"name": "y", "type": "DINT"}], "outputs": [], "result": "DINT"},
+                {"name": "Twice", "kind": "function", "inputs": [{"name": "x", "type": "INT"}], "outputs": [], "result": "INT"}
+            ]})
+        );
+        // Nothing was saved: the stored library still answers its own.
+        assert_eq!(
+            check_the_library(&dir.logic, None)["blocks"],
+            json!([{"name": "Twice", "kind": "function", "inputs": [{"name": "x", "type": "INT"}], "outputs": [], "result": "INT"}])
+        );
+    }
+
+    #[test]
+    fn a_library_that_does_not_check_answers_no_blocks() {
+        let dir = project_dir();
+        dir.library("Motors", MOTORS);
+        // Refused by the compiler.
+        let body = check_the_library(
+            &dir.logic,
+            Some(("Motors", &MOTORS.replace("x * 2", "y * 2"))),
+        );
+        assert_eq!(body["ok"], false, "{body}");
+        assert_eq!(keys(&body), ["diagnostics", "ok"], "{body}");
+        // Refused before the compiler: a source that is not text.
+        put_bytes(
+            &dir,
+            &["logic", "library", "Old.st"],
+            &latin1("FUNCTION Old : INT\n  Old := 1;\nEND_FUNCTION\n"),
+        );
+        let body = check_the_library(&dir.logic, None);
+        assert_eq!(body["ok"], false, "{body}");
+        assert_eq!(keys(&body), ["diagnostics", "ok"], "{body}");
+    }
+
+    #[test]
+    fn a_library_of_types_alone_answers_an_empty_list() {
+        let dir = project_dir();
+        dir.types("TYPE Point : STRUCT x : INT; y : INT; END_STRUCT; END_TYPE\n");
+        assert_eq!(
+            check_the_library(&dir.logic, None),
+            json!({"ok": true, "diagnostics": [], "blocks": []})
         );
     }
 
@@ -3786,7 +3919,13 @@ END_PROGRAM";
             None,
             Some(json!({"name": "Old", "source": old})),
         );
-        assert_eq!(body, json!({"ok": true, "diagnostics": []}));
+        assert_eq!(
+            body,
+            json!({"ok": true, "diagnostics": [], "blocks": [
+                {"name": "Twice", "kind": "function", "inputs": [{"name": "x", "type": "INT"}], "outputs": [], "result": "INT"},
+                {"name": "Old", "kind": "function", "inputs": [], "outputs": [], "result": "INT"}
+            ]})
+        );
         // Its neighbour can be saved, and it can be replaced or deleted by its route.
         assert_eq!(
             route(

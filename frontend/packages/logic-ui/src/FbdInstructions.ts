@@ -11,7 +11,8 @@
 
 import { FBD_BOXES, type FbdSpec } from './fbdedit';
 import { GROUPS, type BoxDef } from './ldcatalog';
-import { boxInstruction, paletteStore, type Instruction, type Kit } from './LdInstructions';
+import { LIBRARY_GROUP } from './libraryblocks';
+import { boxInstruction, libraryGroup, paletteStore, type Instruction, type Kit } from './LdInstructions';
 
 /** What an FBD instruction does: put an element, branch an output, add an input, or name the network. */
 export type FbdInstructionSpec = FbdSpec | 'fbd-branch' | 'insert-input' | 'label';
@@ -67,12 +68,16 @@ export const FBD_KIT: Kit = {
   store: useFbdPalette,
   prefix: 'fbd',
   all: (own) => allFbdInstructions(own),
-  groups: (own) => [
-    ['Bit logic', FBD_BIT_LOGIC],
-    ...GROUPS.map((g): [string, FbdInstruction[]] => [g, [...(g === 'Timers' ? [FBD_EMPTY_BOX] : []), ...libraryBoxes(g)]]),
-    ...(own.length > 0 ? [['This document', own.map((d) => asFbd(boxInstruction(d)))] as [string, FbdInstruction[]]] : []),
-    ['Program control', FBD_CONTROL],
-  ],
+  groups: (own, library) => {
+    const document = own.filter((d) => d.group !== LIBRARY_GROUP);
+    return [
+      ['Bit logic', FBD_BIT_LOGIC],
+      ...GROUPS.map((g): [string, FbdInstruction[]] => [g, [...(g === 'Timers' ? [FBD_EMPTY_BOX] : []), ...libraryBoxes(g)]]),
+      libraryGroup(own, library, (d) => asFbd(boxInstruction(d))),
+      ...(document.length > 0 ? [['This document', document.map((d) => asFbd(boxInstruction(d)))] as [string, FbdInstruction[]]] : []),
+      ['Program control', FBD_CONTROL],
+    ];
+  },
   open: ['Bit logic', 'Timers'],
   idle: 'No Function Block Diagram can take an instruction now.',
 };

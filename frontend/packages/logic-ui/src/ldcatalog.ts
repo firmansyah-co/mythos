@@ -2,8 +2,8 @@
 // standard function blocks of the library written in ST (§2.14), the standard functions the
 // front-end knows (§5, "2.1 ST front-end"), and the function and function block POUs of the
 // document itself. A program is also compiled with every source of the project's library
-// (ADR-014 §2.8), whose functions and function blocks this catalogue does not know yet: a box
-// naming one is marked as unknown to the editor, and the compiler decides at Check.
+// (ADR-014 §2.8), whose functions and function blocks this catalogue does not hold: the editors
+// add them after the document's own, as the logic module answers them (libraryblocks.ts).
 //
 // Which pin carries the rung's power (IEC 61131-3 ed. 3 §8.2.6): a function block whose first
 // input is a BOOL takes the power there (TON's IN, CTU's CU, SR's S1), and gives it from its

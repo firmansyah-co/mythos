@@ -22,6 +22,15 @@
 
 import { EXTENSIBLE, FBD_STANDARD, findFbdBox, mainOutput } from "./fbdcatalog";
 import { family, type BoxDef } from "./ldcatalog";
+import {
+  declaredType,
+  instanceOfFunctionWords,
+  LIBRARY_GROUP,
+  pinProblems,
+  twinWords,
+  unknownBoxWords,
+  type LibraryBoxes,
+} from "./libraryblocks";
 import { operandProblem, operands, PLACE } from "./ldedit";
 import type { Declared, Ids, Section, VarInfo } from "./ldmodel";
 import type {
@@ -784,11 +793,17 @@ export function orAt(
   const found = netOf(m, sel);
   if (typeof found === "string") return { ok: false, error: found };
   const root = found.net.root;
-  const pin =
+  const box =
     root?.t === "sink" && root.sink.id === sel.box
       ? null
-      : findBoxIn(root, sel.box)?.inputs.find((p) => p.formal === sel.formal);
-  const type = pin?.type ?? "BOOL";
+      : findBoxIn(root, sel.box);
+  const pin = box?.inputs.find((p) => p.formal === sel.formal);
+  // The type the box's block declares now (a pin read from the text before the library's
+  // blocks were known is typed ANY), else the one the model took.
+  const type =
+    box && pin
+      ? declaredType(findFbdBox(box.typeName, own), "inputs", pin.formal, pin.type)
+      : "BOOL";
   if (family(type) !== null && family(type) !== "BOOL")
     return {
       ok: false,
@@ -953,10 +968,16 @@ export interface Problems {
 export const concrete = (type: string) =>
   family(type) !== null && !type.toUpperCase().startsWith("ANY");
 
+/**
+ * `own`: the boxes this program may call besides the standard ones (the document's own POUs, then
+ * the library's blocks). `library`: whether the library's blocks are known, and why not; left
+ * out, the editor says only what it does not know.
+ */
 export function check(
   pou: PouModel,
   vars: readonly VarInfo[],
   own: readonly BoxDef[],
+  library?: LibraryBoxes,
 ): Problems {
   const elements = new Map<number, string[]>();
   const networks = new Map<number, string[]>();
@@ -1004,30 +1025,46 @@ export function check(
     }
     for (const box of boxesOf(root)) {
       const problem = (text: string) => say(elements, box.id, text);
-      for (const o of box.outputs)
+      const known = findFbdBox(box.typeName, own);
+      for (const o of box.outputs) {
+        const type = declaredType(known, "outputs", o.formal, o.type);
         for (const s of o.to)
           sink(
             s,
             s.kind === "assign"
-              ? concrete(o.type)
+              ? concrete(type)
                 ? o.negated
                   ? "BOOL"
-                  : o.type
+                  : type
                 : null
               : "BOOL",
             true,
           );
+      }
       if (box.typeName === "") {
         problem("The box has no type: name a function or a function block.");
         continue;
       }
-      const def = findFbdBox(box.typeName, own);
+      const def = known;
       if (!def) {
-        problem(
-          `${box.typeName} is not a function or function block this editor knows: it knows this program's own and the standard ones. If the project's library declares it, Check compiles the program with it.`,
-        );
+        for (const words of unknownBoxWords(box.typeName, library))
+          problem(words);
         continue;
       }
+      // A block whose declaration can change under the diagram: said per pin, never re-pinned.
+      if (def.group === LIBRARY_GROUP || def.group === 'This document') {
+        for (const words of pinProblems(box.inputs, box.outputs, def))
+          problem(words);
+      }
+      if (
+        def.group === "This document" &&
+        library?.boxes?.some(
+          (b) => b.name.toUpperCase() === def.name.toUpperCase(),
+        )
+      )
+        problem(twinWords(def.name));
+      if (def.kind === "function" && box.instance !== "")
+        problem(instanceOfFunctionWords(def.name, box.instance));
       if (def.kind === "functionBlock") {
         if (box.instance === "")
           problem(
@@ -1049,6 +1086,7 @@ export function check(
         }
       }
       for (const pin of box.inputs) {
+        const pinType = declaredType(def, "inputs", pin.formal, pin.type);
         if (pin.src === null) {
           if (def.kind === "function" && pin.formal.toUpperCase() !== "EN")
             problem(`${pin.formal} has no operand.`);
@@ -1060,21 +1098,29 @@ export function check(
           const out = pin.src.box.outputs.find(
             (o) => o.formal === (pin.src as { output: string }).output,
           );
+          const outType = out
+            ? declaredType(
+                findFbdBox(pin.src.box.typeName, own),
+                "outputs",
+                out.formal,
+                out.type,
+              )
+            : "";
           if (
             out &&
-            concrete(out.type) &&
-            concrete(pin.type) &&
-            family(out.negated ? "BOOL" : out.type) !== family(pin.type)
+            concrete(outType) &&
+            concrete(pinType) &&
+            family(out.negated ? "BOOL" : outType) !== family(pinType)
           ) {
             problem(
-              `${pin.formal} takes a ${pin.type}; block ${pin.src.box.id} gives ${out.formal} as ${out.type}.`,
+              `${pin.formal} takes a ${pinType}; block ${pin.src.box.id} gives ${out.formal} as ${outType}.`,
             );
           }
           continue;
         }
         const p = operandProblem(
           pin.src.text,
-          pin.negated || pin.src.negated ? "BOOL" : pin.type,
+          pin.negated || pin.src.negated ? "BOOL" : pinType,
           false,
           vars,
           own,

@@ -1556,7 +1556,17 @@ async fn the_library_is_written_read_checked_and_deleted_through_the_server() {
         .send(&rig.viewer, "POST", &format!("{library}/check"), None)
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(checked, json!({"ok": true, "diagnostics": []}));
+    // A library that checks answers its blocks with their pins, for the editors' palettes.
+    assert_eq!(
+        checked,
+        json!({"ok": true, "diagnostics": [], "blocks": [{
+            "name": "Twice",
+            "kind": "function",
+            "inputs": [{"name": "x", "type": "INT"}],
+            "outputs": [],
+            "result": "INT"
+        }]})
+    );
 
     // Every program is compiled with it.
     let tank = format!("{PROGRAMS}/Tank");

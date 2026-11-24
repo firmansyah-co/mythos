@@ -8,6 +8,26 @@ use mythos_logic_vm::{
 };
 
 pub const MS: i64 = 1_000_000;
+
+/// The project library the editors' library fixtures (`ladder_library/editor_library.xml`,
+/// `fbd_library/editor_library.xml`) are compiled with: a function block whose first input is a BOOL
+/// declared in lower case, and a function. The workbench's tests place them with the pins the
+/// logic module answers for it (`frontend/packages/logic-ui/src/__tests__/libraryanswer.ts`).
+pub const MOTOR_LIBRARY: (&str, &str) = (
+    "logic/library/Motors.st",
+    "FUNCTION_BLOCK Motor
+VAR_INPUT run : BOOL; speed : INT; END_VAR
+VAR_OUTPUT running : BOOL; rpm : INT; END_VAR
+running := run;
+IF run THEN rpm := speed * 10; ELSE rpm := 0; END_IF;
+END_FUNCTION_BLOCK
+
+FUNCTION Scale : INT
+VAR_INPUT raw : INT; factor : INT; END_VAR
+Scale := raw * factor;
+END_FUNCTION
+",
+);
 pub const BUDGET: u32 = 1_000_000;
 
 pub struct Run {

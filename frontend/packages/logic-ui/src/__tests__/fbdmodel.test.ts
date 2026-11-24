@@ -37,6 +37,7 @@ import {
 import { open, write, type Box, type DocModel, type Root, type Source, type Src } from '../fbdmodel';
 import type { Ids } from '../ldmodel';
 import { parseXml, type XNode } from '../ldxml';
+import { motorLibrary } from './libraryanswer';
 
 const FIXTURES = resolve(__dirname, '../../../../../crates/mythos-logic-compiler/tests/fbd');
 
@@ -291,6 +292,62 @@ function mixer(): Run {
   ]);
   return r;
 }
+
+/**
+ * A library function block and a library function put as the editor puts them, with the boxes
+ * the module's answer gives (libraryanswer.ts): Motor with its instance and both outputs
+ * assigned; Scale, its OUT assigned. An FBD box has no EN or ENO of its own.
+ */
+function withLibrary(): Run {
+  const own = motorLibrary();
+  const r = new Run(TEMPLATE('Main'));
+  r.step((m) => addNetwork(m, 0, 0));
+  r.step((m) => insert(m, r.ids, network(0), { kind: 'box', type: 'Motor' }, own));
+  const motor = r.id;
+  r.step((m) => setInstance(m, r.ids, 0, 0, motor, 'motor1'));
+  r.step((m) => setPinOperand(m, r.ids, pin(0, motor, 'RUN'), 'start'));
+  r.step((m) => setPinOperand(m, r.ids, pin(0, motor, 'SPEED'), 'speed'));
+  r.step((m) => insert(m, r.ids, element(0, motor), { kind: 'assign' }, own));
+  const running = r.id;
+  r.step((m) => setSinkText(m, r.ids, 0, 0, running, 'running'));
+  r.step((m) => addSink(m, r.ids, 0, 0, motor, 'RPM'));
+  const rpm = r.id;
+  r.step((m) => setSinkText(m, r.ids, 0, 0, rpm, 'rpm'));
+  r.step((m) => addNetwork(m, 0, 1));
+  r.step((m) => insert(m, r.ids, network(1), { kind: 'box', type: 'Scale' }, own));
+  const scale = r.id;
+  r.step((m) => setPinOperand(m, r.ids, pin(1, scale, 'RAW'), 'rpm'));
+  r.step((m) => setPinOperand(m, r.ids, pin(1, scale, 'FACTOR'), '3'));
+  r.step((m) => insert(m, r.ids, element(1, scale), { kind: 'assign' }, own));
+  const scaled = r.id;
+  r.step((m) => setSinkText(m, r.ids, 0, 1, scaled, 'scaled'));
+  declareAll(r, [
+    ['start', 'BOOL', 'inputVars'],
+    ['speed', 'INT', 'inputVars'],
+    ['running', 'BOOL', 'outputVars'],
+    ['rpm', 'INT', 'outputVars'],
+    ['scaled', 'INT', 'outputVars'],
+    ['motor1', 'Motor', 'localVars'],
+  ]);
+  return r;
+}
+
+describe('the compiler runs what the editor writes with the library', () => {
+  it('writes a library function block and a library function the compiler tests run (editor_library.xml)', () => {
+    const r = withLibrary();
+    expect([r.tree(0), r.tree(1)]).toEqual([
+      'Motor[motor1](RUN:=start, SPEED:=speed) RUNNING => running; RPM => rpm',
+      'Scale(RAW:=rpm, FACTOR:=3) OUT => scaled',
+    ]);
+    expect(r.text).toContain('<variable name="motor1"><type><derived name="Motor"/></type></variable>');
+    const opened = open(r.text);
+    if (!opened.ok) throw new Error(opened.error);
+    const own = motorLibrary();
+    const problems = check(opened.model.pous[0] as DocModel['pous'][number], opened.source.pous[0]?.vars ?? [], own, { boxes: own, why: null });
+    expect([...problems.elements.values(), ...problems.networks.values()].flat()).toEqual([]);
+    fixture('../fbd_library/editor_library.xml', r.text);
+  });
+});
 
 describe('reading and writing back', () => {
   it('writes every FBD document of the corpus back byte for byte when nothing changed', () => {

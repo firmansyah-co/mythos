@@ -58,7 +58,8 @@ import { FbdPouView, type FbdLive } from './FbdView';
 import type { BoxDef } from './ldcatalog';
 import { ownBoxes } from './ldmodel';
 import type { Ids, Section, VarInfo } from './ldmodel';
-import { dragged, Favourites } from './LdInstructions';
+import { callable, dragged, Favourites, useLibraryBoxes } from './LdInstructions';
+import { declaredType, type LibraryBoxes } from './libraryblocks';
 import { DeclareOffer, instanceName, OperandField } from './LadderEditor';
 
 interface Session {
@@ -190,13 +191,19 @@ export function FbdEditor({
   const fbdPous = useMemo(() => (session ? session.source.pous.map((p, i) => ({ i, p })).filter(({ p }) => p.fbd !== null) : []), [session]);
   const pou = model?.pous[pouIndex] ?? null;
   const pouSource = session?.source.pous[pouIndex] ?? null;
-  const own = useMemo(
+  const documentOwn = useMemo(
     () => (session ? ownBoxes(session.source).filter((d) => d.name.toLowerCase() !== (pouSource?.name ?? '').toLowerCase()) : []),
     [session, pouSource]
   );
+  // The library's blocks follow its stored check: a change is taken without opening the text
+  // again, so the undo history stays, and the document is not rewritten.
+  const library = useLibraryBoxes();
+  const libraryRef = useRef<LibraryBoxes>(library);
+  libraryRef.current = library;
+  const own = useMemo(() => callable(documentOwn, library), [documentOwn, library]);
   const vars: VarInfo[] = useMemo(() => (session && model ? varsOfPou(session.source, model, pouIndex) : []), [session, model, pouIndex]);
   const suggestions = useMemo(() => operands(vars, own), [vars, own]);
-  const problems = useMemo(() => (pou ? check(pou, vars, own) : null), [pou, vars, own]);
+  const problems = useMemo(() => (pou ? check(pou, vars, own, library) : null), [pou, vars, own, library]);
   const read = useMemo(() => (session ? readFbd(session.text) : null), [session]);
   const drawnPou = read?.ok ? (read.pous.find((p) => p.name === pouSource?.name) ?? null) : null;
 
@@ -219,7 +226,10 @@ export function FbdEditor({
       if (focus && edited.sel) {
         const s = edited.sel;
         const rootNow = edited.model.pous[s.pou]?.networks[s.net]?.root ?? null;
-        const ownNow = ownBoxes(now.source).filter((d) => d.name.toLowerCase() !== (now.source.pous[s.pou]?.name ?? '').toLowerCase());
+        const ownNow = callable(
+          ownBoxes(now.source).filter((d) => d.name.toLowerCase() !== (now.source.pous[s.pou]?.name ?? '').toLowerCase()),
+          libraryRef.current
+        );
         const key = firstField(rootNow, s, ownNow);
         if (key) setFocusReq({ key, token: Date.now() });
       }
@@ -292,8 +302,8 @@ export function FbdEditor({
     return () => useFbdPalette.setState({ place: null });
   }, [editable]);
   useEffect(() => {
-    useFbdPalette.setState({ own });
-  }, [own]);
+    useFbdPalette.setState({ own: documentOwn });
+  }, [documentOwn]);
 
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     if (!session || !model || !pou) return;
@@ -892,20 +902,25 @@ function Fields({
         }}
         onLeave={onLeave}
       />
-      {def?.kind === 'functionBlock' && (
+      {/* A function's box shows the instance it still keeps (its block was a function block), so it can be cleared. */}
+      {def !== null && (def.kind === 'functionBlock' || box.instance !== '') && (
         <OperandField
           label={`Instance of box ${box.id}`}
           testId="fbd-box-instance"
           value={box.instance}
-          suggestions={suggestions.filter((v) => v.type.toUpperCase() === def.name.toUpperCase())}
+          suggestions={def.kind === 'functionBlock' ? suggestions.filter((v) => v.type.toUpperCase() === def.name.toUpperCase()) : []}
           focusToken={token(instanceKey(box.id))}
           onFocused={onFocused}
-          declareOnEnter
+          declareOnEnter={def.kind === 'functionBlock'}
           onCommit={(text) => onEdit((m, ids) => setInstance(m, ids, pou, net, box.id, text))}
-          onDeclare={(text) => {
-            onEdit((m, ids) => setInstance(m, ids, pou, net, box.id, text));
-            declareNow(text, { instance: def.name });
-          }}
+          onDeclare={
+            def.kind === 'functionBlock'
+              ? (text) => {
+                  onEdit((m, ids) => setInstance(m, ids, pou, net, box.id, text));
+                  declareNow(text, { instance: def.name });
+                }
+              : undefined
+          }
           onLeave={onLeave}
         />
       )}
@@ -937,7 +952,7 @@ function Fields({
                 onCommit={(text) => onEdit((m, ids) => setPinOperand(m, ids, pinSel(p.formal), text))}
                 onDeclare={(text) => {
                   onEdit((m, ids) => setPinOperand(m, ids, pinSel(p.formal), text));
-                  declareNow(text, { pinType: p.type });
+                  declareNow(text, { pinType: declaredType(def, 'inputs', p.formal, p.type) });
                 }}
                 onLeave={onLeave}
               />
@@ -951,7 +966,7 @@ function Fields({
               />{' '}
               negated
             </label>
-            {p.src?.t === 'operand' && offer(p.src.text, { pinType: p.type })}
+            {p.src?.t === 'operand' && offer(p.src.text, { pinType: declaredType(def, 'inputs', p.formal, p.type) })}
           </span>
         );
       })}
@@ -978,7 +993,10 @@ function Fields({
               />{' '}
               negated
             </label>
-            {o.to.map((s) => sinkFields(s, compiled ?? (concrete(o.type) ? o.type : null)))}
+            {o.to.map((s) => {
+              const declared = declaredType(def, 'outputs', o.formal, o.type);
+              return sinkFields(s, compiled ?? (concrete(declared) ? declared : null));
+            })}
             <button
               type="button"
               className="btn btn--flat"
