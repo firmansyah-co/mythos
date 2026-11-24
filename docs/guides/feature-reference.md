@@ -90,6 +90,7 @@ Everything that runs today, piece by piece, with where it lives in the tree. Thi
 | `crates/mythos-logic-backend-vm` | The VM backend: the IR to bytecode. |
 | `crates/mythos-logic-vm` | The VM that runs compiled logic: `no_std`, no allocation, for the PC runner and microcontrollers; it computes SQRT, LN, SIN and the other real functions itself, the same bits on every target. |
 | `crates/mythos-logic-graphic` | The Ladder Diagram, Function Block Diagram and Sequential Function Chart front-end: PLCopen TC6 XML to the IR. |
+| `crates/mythos-logic-package` | Reads a library package file (ADR-015): a zip of a manifest, checksums and Structured Text sources, given whole or refused with words. Nothing uses it yet: no route, tool or storage. |
 | `crates/mythos-logic-compiler` | Joins a front-end, a target profile and a backend. |
 | `plugins/drivers/driver-modbus` | Modbus TCP driver, its module executable, and a device simulator (`sim` feature). |
 | `plugins/hmi` | The HMI service module: screens and faceplates. Its workbench UI is `frontend/packages/hmi-ui`. |
