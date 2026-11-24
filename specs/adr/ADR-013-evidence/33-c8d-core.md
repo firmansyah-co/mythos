@@ -79,7 +79,9 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
     verbatim. A runtime's Load shows "The project's runtimes were changed since this Load read
     them, so nothing was loaded. Load again." before them. Load's second read of the
     configuration after the question is dropped: the revision of its first read covers the whole
-    span. `plugins/logic` and `@mythos/logic-ui` are 0.11.0 (0.10.0 before), with the `mythos-logic`
+    span. `plugins/logic` and `@mythos/logic-ui` are 0.12.0 (0.11.0 before; the stage wrote 0.11.0 on
+    0.10.0, and the orchestrator set 0.12.0 when the slice was put after the palette slice, which
+    took 0.11.0), with the `mythos-logic`
     entry of `Cargo.lock`. The core's version is unchanged. `ui-shell` and `data-ui` read `config`
     only and are unchanged.
 
