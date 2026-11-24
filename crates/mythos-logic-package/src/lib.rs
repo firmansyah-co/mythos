@@ -556,9 +556,8 @@ fn manifest_object(bytes: &[u8]) -> Result<Map<String, Value>, String> {
         ));
     };
     // A JSON integer from 1: `1.0`, `1e0`, `-1`, `"1"` and `0` are no format. serde_json holds
-    // an integer past u64 as a float and its digits are lost (the feature that keeps them,
-    // `raw_value`, changes how every `Value` of a build is read: an object of one private key
-    // is then taken for the value its string holds). A whole number from 2^64 is past
+    // an integer past u64 as a float and its digits are lost (this crate does not ask for the
+    // feature that keeps them, `raw_value`: see RAW_VALUE_KEY). A whole number from 2^64 is past
     // PACKAGE_FORMAT whatever its digits were, and is told so.
     let no_format = || format!("{MANIFEST_FILE} has no format: an integer from 1");
     let Some(Value::Number(number)) = map.get("format") else {
@@ -833,8 +832,14 @@ fn json_value(bytes: &[u8]) -> Result<Value, String> {
     serde_json::from_slice::<Value>(bytes).map_err(|e| e.to_string())
 }
 
-/// A JSON value walked only to refuse a key that is there twice.
+/// A JSON value walked only to refuse a key that is there twice, and [`RAW_VALUE_KEY`].
 struct KeysOnce;
+
+/// The key serde_json keeps for itself. Where its `raw_value` feature is on in a build (axum and
+/// tauri turn it on, and cargo gives every crate of one build the same serde_json), a `Value`
+/// reads an object of this one key as the value its string holds: a field every other JSON
+/// reader sees as an object. No key of a package's JSON is this one.
+const RAW_VALUE_KEY: &str = "$serde_json::private::RawValue";
 
 impl<'de> Deserialize<'de> for KeysOnce {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -883,6 +888,11 @@ impl<'de> Visitor<'de> for KeysOnceVisitor {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<KeysOnce, A::Error> {
         let mut keys: HashSet<String> = HashSet::new();
         while let Some(key) = map.next_key::<String>()? {
+            if key == RAW_VALUE_KEY {
+                return Err(de::Error::custom(format!(
+                    "the key '{RAW_VALUE_KEY}' is not taken: a JSON reader may read its object as another value"
+                )));
+            }
             if keys.contains(&key) {
                 return Err(de::Error::custom(format!(
                     "the key '{}' is there twice",

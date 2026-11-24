@@ -193,9 +193,10 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
     digits. With it, every `Value` of a build reads an object of the one key
     `$serde_json::private::RawValue` as the value its string holds, so a manifest could give
     `files` or `depends` in a form every other JSON reader sees as an object, and a key twice
-    inside that string was not seen. The feature is gone; a whole number from 2^64 is told as a
-    format past `u64::MAX`, and one of more digits than the JSON reader takes is "not a package
-    manifest: number out of range". Tests:
+    inside that string was not seen. The crate no longer asks for the feature; a whole number
+    from 2^64 is told as a format past `u64::MAX`, and one of more digits than the JSON reader
+    takes is "not a package manifest: number out of range". Not asking for it was not enough:
+    see the second red of CI below. Tests:
     `a_manifest_field_wrapped_in_a_private_key_of_the_json_library_is_refused`,
     `a_format_past_u64_is_refused_as_a_newer_format`,
     `a_format_of_more_digits_than_a_json_reader_takes_is_not_a_manifest`.
@@ -223,8 +224,26 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
   dependency at all. The orchestrator had run the crate's own tests and `module_boundaries`, not
   the compiler crate's.
 
+  **A second red found by CI: the feature is on anyway.** On `86200c0` the same job failed in
+  `a_manifest_field_wrapped_in_a_private_key_of_the_json_library_is_refused`: the wrapped
+  `files` was taken. `cargo tree --workspace -e features -i serde_json` shows why: axum and tauri
+  turn `raw_value` on, and cargo gives every crate of one build the same serde_json, so the
+  feature is on whenever the workspace is built together and off when this crate is built alone
+  (which is how the orchestrator had run it). The reader now refuses the key
+  `$serde_json::private::RawValue` itself, wherever it stands in `manifest.json` or
+  `checksums.json`, before any value is read, so the answer is the same in both builds:
+  "manifest.json is not a package manifest: the key '$serde_json::private::RawValue' is not
+  taken: a JSON reader may read its object as another value". Run in both builds:
+  `cargo test -p mythos-logic-package` 95 passed (feature off), and
+  `cargo test -p mythos-logic-package -p mythos-module-tests --test read --test
+  module_boundaries` 95 and 3 passed (feature on, shown by `cargo tree` for that selection).
+  LATENT and not this slice's: every other place of the workspace that reads JSON into a
+  `Value` in a build with axum (the core) reads such an object as the value its string holds.
+  No use of it against the core was looked for; it is listed for a later slice.
+
   **Verification of the finished slice** (the orchestrator; this is what "run after this text"
-  above was waiting for).
+  above was waiting for). The runs named for `e582335` were made before the second red of CI;
+  what was run again after its correction is said at the end.
   - On `e582335` (the corrections of the second review): `cargo fmt --all --check` clean;
     `cargo clippy -p mythos-logic-package --all-targets -- -D warnings` clean;
     `cargo test -p mythos-logic-package` 95 passed and the 3 `compile_fail` doctests;
@@ -236,7 +255,10 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
     with its own target directory, both baselines green, against the crate's whole test suite:
     **29 of 29 red.** They are 12 of the stage, 11 for the first review's fixes (the twelfth no
     longer applies: its lines were replaced by the second review's correction) and 6 of the
-    orchestrator's for that correction, one of them turning `raw_value` on again. The tool prints
+    orchestrator's for that correction, one of them turning `raw_value` on again in the crate's
+    own manifest (red then, with the feature off in that build; after the key is refused by the
+    reader that mutation changes nothing, and the one that replaces it, the refusal of the key
+    taken out, is red in the same test). The tool prints
     "did not compile" for one, the mutation that takes `#[non_exhaustive]` off `Manifest`: its
     log shows the doctest "Manifest - compile fail ... FAILED", which is the red; the tool
     mislabels a failing `compile_fail` doctest.

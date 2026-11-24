@@ -1656,33 +1656,31 @@ fn a_format_of_more_digits_than_a_json_reader_takes_is_not_a_manifest() {
 
 #[test]
 fn a_manifest_field_wrapped_in_a_private_key_of_the_json_library_is_refused() {
-    // With serde_json's `raw_value` feature anywhere in a build, an object of this one key is
-    // read as the value its string holds: a field every other JSON reader sees as an object.
+    // Where serde_json's `raw_value` feature is on in a build (axum and tauri turn it on, so it
+    // is on when the whole workspace is tested and off when this crate is tested alone), an
+    // object of this one key is read as the value its string holds: a field every other JSON
+    // reader sees as an object. The key is refused before a value is read, in both builds.
     const KEY: &str = "$serde_json::private::RawValue";
-    let files = with_manifest(|m| {
-        m.insert(
-            "files".into(),
-            json!({ KEY: r#"["src/motor.st","src/ramp.st"]"# }),
-        );
-    });
-    assert_eq!(
-        refused(&files),
-        "manifest.json's files is not a list of strings"
-    );
-    let depends = with_manifest(|m| {
-        m.insert(
-            "depends".into(),
-            json!({ KEY: r#"[{"id":"org.example.evil","version":"1.0.0","id":"org.example.base"}]"# }),
-        );
-    });
-    assert_eq!(refused(&depends), "manifest.json's depends is not a list");
-    let format = with_manifest(|m| {
-        m.insert("format".into(), json!({ KEY: "1" }));
-    });
-    assert_eq!(
-        refused(&format),
-        "manifest.json has no format: an integer from 1"
-    );
+    const WORDS: &str = "manifest.json is not a package manifest: the key '$serde_json::private::RawValue' is not taken: a JSON reader may read its object as another value";
+    for (field, held) in [
+        ("files", r#"["src/motor.st","src/ramp.st"]"#),
+        (
+            "depends",
+            r#"[{"id":"org.example.evil","version":"1.0.0","id":"org.example.base"}]"#,
+        ),
+        ("format", "1"),
+        ("name", r#""Motor blocks""#),
+    ] {
+        let file = with_manifest(|m| {
+            m.insert(field.into(), json!({ KEY: held }));
+        });
+        let words = refused(&file);
+        assert!(words.starts_with(WORDS), "{field}: {words}");
+    }
+    // The whole manifest wrapped, and checksums.json wrapped.
+    let whole = serde_json::to_string(&manifest()).unwrap();
+    let words = refused(&with_manifest_text(&json!({ KEY: whole }).to_string()));
+    assert!(words.starts_with(WORDS), "{words}");
 }
 
 #[test]
