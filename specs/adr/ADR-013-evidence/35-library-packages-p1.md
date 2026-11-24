@@ -481,3 +481,55 @@ Part of [ADR-013](../ADR-013-logic-compiler-and-vm.md), section 5.
     symbolic link planted at `logic/packages/<id>` is followed by the module's synced write, as
     by every write helper of the module (read, not run); `read_project` drops unreadable
     `data/types` files silently from the clash set (LATENT, partly covered above).
+
+  **A review of the fix commit alone** (one reviewer, asked for by the orchestrator: the six
+  fixes above had been read by nobody but their author). Five findings, none high, all corrected
+  by the orchestrator in `d1a0ae3`:
+  - Low, LATENT: when the directory `data/types` cannot be listed, the project's types are not
+    known, and the add and its check went ahead without the clash check against types (only a
+    problem that names a file stopped the add). It is refused 409 now, in the same words as an
+    unreadable type file. Test: `a_package_is_refused_while_the_project_s_types_cannot_be_listed`
+    (a file where the directory should be, so it runs on every OS).
+  - Low, TEST-ONLY: no test had a type file that is not text; a case of it is added to
+    `a_package_is_refused_while_a_project_source_declares_what_cannot_be_named`.
+  - Low, LIVE, cost: a remove read every stored file the package reaches even when nothing
+    depends on it (39 file opens for the top of a chain of 20, counted by the reviewer). What it
+    reaches is read now only when something depends on it.
+  - Low, DOC, twice: the remove's description said a cycle is "this one depends on that one too"
+    while the code follows dependencies through other packages; and the keys `removed` and `left`
+    of the remove and `package` of the check were not named. The descriptions say them now.
+  - Checked by the reviewer and found right, among others: no package that reads is left with a
+    missing dependency except inside a hand-made cycle, where the answer names it; the walk of
+    what a package reaches ends on every hand-made list tried; the check's `refusal` equals the
+    add's status and words in the 20 cases tried.
+
+  **Verification of the finished slice** (the orchestrator; this is what "run after this text"
+  above was waiting for).
+  - On `24feb1d` (the slice on dev with the version line): `cargo fmt --all --check` clean;
+    `cargo clippy -p mythos-logic -p mythos-module-tests --all-targets -- -D warnings` clean;
+    `cargo test -p mythos-logic` 107 passed; `cargo test -p mythos-module-tests --no-fail-fast`
+    every suite green (`logic_module` 13, `runtime_api` 16, `runtime_vm` 27, `data_and_logic` 18,
+    `module_boundaries` 3 and the others); `cargo test -p mythos-core --test
+    version_agreement_tests` 3 passed; `cargo test -p mythos-logic-compiler` (the whole crate,
+    with its sweeping tests) green; the Windows lint printed "win-clippy: GREEN".
+  - In a build where serde_json's `raw_value` is on (`cargo test -p mythos-logic
+    -p mythos-logic-package -p mythos-module-tests --lib --test read --test module_boundaries`):
+    107, 95 and 3 passed.
+  - On `d1a0ae3` (the corrections of the review above): clippy as above clean;
+    `cargo test -p mythos-logic` 108 passed; `cargo test -p mythos-module-tests --no-fail-fast`
+    every suite green; the Windows lint "win-clippy: GREEN".
+  - **Mutations**, with `scripts/mutation-check.py`, in a copy made by `git archive` with its own
+    target directory, both baselines green, against the module's package tests and
+    `logic_module`: on `24feb1d`, **18 of 18 red** (12 of the stage, 6 for the first fixes); on
+    `d1a0ae3`, **3 of 3 red** for the orchestrator's corrections (types that cannot be listed; a
+    type file that is not text; what a package reaches read only when nothing depends on it).
+  - **A red of CI that is not this slice's:** on `24feb1d` the macOS job failed in
+    `a_watchdog_shorter_than_its_interval_faults_no_task_waiting_for_its_time`
+    (`plugins/runtime-vm/tests/tasks.rs`: a 100 ms watchdog measured on a runner that came back
+    after 274 ms). The Linux job of the same commit passed. The test is a wall-clock test listed
+    for correction; this slice touches nothing of the runtime.
+  - **Read by one reader only:** the orchestrator's corrections (`d1a0ae3`); their three
+    mutations are their check.
+  - **Not run by the orchestrator:** the full gate (`./scripts/check.sh`), the frontend gate (the
+    slice changes one version line of the frontend and nothing else), `cargo test --workspace`,
+    macOS. No green full gate of this commit exists from this machine; CI is the gate.
